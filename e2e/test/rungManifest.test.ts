@@ -86,6 +86,44 @@ describe('what a rung manifest says', () => {
   });
 
   /**
+   * ⛔ A gap entry stands in for a sequence the broadcast lost, so its URI names no chunk and a probe
+   * that took it would ask the node for an address that does not exist and score the miss as a
+   * retrieval. It is refused by its shape rather than by a rule of its own: a reference is 64
+   * lowercase hex characters and `gap-<sequence>` is not one, which is the same test that already
+   * keeps a tag line out.
+   */
+  it('leaves a gap entry out of the references and out of the segment count', () => {
+    const withHole = [
+      '#EXTM3U',
+      '#EXT-X-TARGETDURATION:3',
+      '#EXTINF:2.000, no desc',
+      REF_A,
+      '#EXT-X-GAP',
+      '#EXTINF:2.000,',
+      'gap-1',
+      '#EXTINF:2.000, no desc',
+      REF_B,
+    ].join('\n');
+
+    const parsed = parseRungManifest('360p', 'topic', withHole);
+
+    assert.deepEqual(parsed.refs, [REF_A, REF_B]);
+    assert.equal(parsed.manifest.segmentCount, 2, 'a gap entry is not media, so it is not a segment');
+  });
+
+  /**
+   * ⭐ The other half of the same decision, and it goes the other way. The durations are read to say
+   * how long a recording covers and which stage it belongs to, and a hole really does occupy that time
+   * on the timeline, so a gap entry's own `#EXTINF` counts. It carries the deployment's declared
+   * fragment length, so it can only pull the median toward the nominal.
+   */
+  it('counts a gap entry’s duration, because the timeline does span it', () => {
+    const withHole = ['#EXTM3U', '#EXTINF:2.000,', REF_A, '#EXT-X-GAP', '#EXTINF:2.000,', 'gap-1'].join('\n');
+
+    assert.equal(parseRungManifest('360p', 'topic', withHole).manifest.medianSegmentSeconds, 2);
+  });
+
+  /**
    * Every playlist the uploader writes now carries a wall clock before each `#EXTINF`. This reader
    * counts segments and reads durations off the tags it wants, so the new line must change neither.
    * A probe that counted one extra segment per stamp would take a reference pool it does not have.

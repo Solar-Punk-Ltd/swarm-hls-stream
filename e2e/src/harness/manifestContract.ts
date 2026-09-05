@@ -12,6 +12,10 @@
  * broadcast re-anchors the dating on the wall clock the engine came back at, so the step across the
  * break is the length of the outage rather than a whole number of fragments. See {@link stampFailures}.
  *
+ * A fourth, of 2026-09-06, is how a hole is said. A segment the broadcast lost is listed as an
+ * `#EXT-X-GAP` entry rather than left out, so the stamps step one fragment at a time straight through
+ * it and the entries behind it keep the numbers they were published with.
+ *
  * ⛔ It answers with reasons rather than throwing, and it asserts nothing about timing. Every reason
  * it can give is a statement the playlist makes about itself being wrong, which is correctness. See
  * the repository's rule on what an e2e suite may gate on.
@@ -122,11 +126,17 @@ function mediaSequenceFailures(text: string, contract: ManifestContract): string
 }
 
 /**
- * Whether every segment is dated, and whether the dates step by the fragment length.
+ * Whether every entry is dated, and whether the dates step by the fragment length.
  *
  * Without an `#EXT-X-DISCONTINUITY` the step must be exactly one fragment. The stamp is derived from
- * a segment's playlist sequence rather than measured, so anything else means it was taken from
+ * an entry's playlist sequence rather than measured, so anything else means it was taken from
  * something else: an arrival time, a measured `#EXTINF`, or media the playlist does not name.
+ *
+ * ⭐ Owner ruling of 2026-09-06. A segment the broadcast lost is listed as an `#EXT-X-GAP` entry
+ * carrying its own derived stamp, so a hole that was said still steps one fragment at a time and
+ * passes here by construction. A step of two fragments or more therefore means the hole was left out
+ * of the playlist entirely, which is the numbering defect the gap entries exist to prevent, and it is
+ * still what this refuses.
  *
  * ⛔ Across a discontinuity a forward step of **any** size is legal, and this required a whole number
  * of fragments until the owner's decision of 2026-09-03. An engine restart re-anchors the dating on
@@ -176,8 +186,9 @@ function stampFailures(segments: Segment[], fragmentSeconds: number): string[] {
 
     if (fragments > 1) {
       failures.push(
-        `segment ${i} is dated ${fragments} fragments after the one before it with no ` +
-          '#EXT-X-DISCONTINUITY between them, so the playlist promises a viewer media it does not name',
+        `entry ${i} is dated ${fragments} fragments after the one before it with no #EXT-X-GAP entries ` +
+          'for the sequences in between, so the playlist promises a viewer media it does not name and ' +
+          'renumbers everything behind the hole',
       );
     }
   }

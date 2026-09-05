@@ -137,7 +137,7 @@ describe('service — ABR ladder: every rung publishes and stays gapless', { ski
    * sibling's healthy index just as easily as it can invent one, so contiguity is judged per rung
    * stream and never on the merge. Found 2026-08-27: the merged view read a healthy ladder as chaos.
    */
-  it('arms no discontinuity and loses no segment, as the single-rendition path does not', async () => {
+  it('announces no loss and no break, and loses no segment, as the single-rendition path does not', async () => {
     const text = await log();
     const uploads = segmentUploads(text);
 
@@ -146,7 +146,11 @@ describe('service — ABR ladder: every rung publishes and stays gapless', { ski
       const indices = uploads.filter((upload) => upload.streamId === streamId).map((upload) => upload.index);
       assert.ok(isContiguous(indices), `segment indices of ${streamId} must be gapless; got: ${indices.join(',')}`);
     }
-    assert.equal(parseUploaderLog(text).discontinuitiesArmed, 0, 'transcoding a ladder should not arm a discontinuity');
+    assert.equal(
+      parseUploaderLog(text).discontinuitiesArmed,
+      0,
+      'transcoding a ladder should cost no segment and declare no break',
+    );
   });
 
   /**
@@ -173,6 +177,17 @@ describe('service — ABR ladder: every rung publishes and stays gapless', { ski
 
     console.log(verdict.summary);
     assert.equal(verdict.refusal, null, verdict.refusal ?? '');
+
+    // ⛔ Nothing was lost, so no rung has a hole to say. This is the published half of the zero the
+    // case above asserts off the log: a gap entry is written for a sequence no segment filled, and on
+    // a clean broadcast there is none. The same fault reds both, which is the point of reading it in
+    // the playlist as well as in the log.
+    assert.equal(
+      verdict.gapsSeen,
+      0,
+      `a broadcast with no fault in it published ${verdict.gapsSeen} gap entry(s), so some rung lost ` +
+        'media the log did not account for',
+    );
   });
 });
 

@@ -27,14 +27,20 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * recoverStreams restores the stream + a 60s timer; SRS keeps POSTing segments (it was not
  * restarted, so seq_no keeps climbing) → handleSegment accepts them and cancels the timer.
  *
- * ⭐ **The join the crash leaves is what this scenario is really about.** SRS posts each closed
+ * ⭐ **The hole the crash leaves is what this scenario is really about.** SRS posts each closed
  * segment to the webhook once and never retries, so the segments it closed while the uploader was
- * dead are gone and nothing reports them. The uploader infers that gap from the index it is handed
- * being above the last it accounted for, arms an `#EXT-X-DISCONTINUITY` for it, and re-anchors the
- * dating across it. So the playlist a viewer is already reading has to hold two things at once: a
- * media sequence that never moved backwards, and a break in front of the join, because a forward
- * date step wider than one fragment is legal only across one. Both are read here while the join is
- * still in the live window, which is what the wait below is for.
+ * dead are gone and nothing reports them. The uploader infers that hole from the index it is handed
+ * being above the last it accounted for, and since the owner's ruling of 2026-09-06 it says the hole
+ * out loud: every missing sequence is published as an `#EXT-X-GAP` entry. So the playlist a viewer is
+ * already reading has to hold two things at once, a media sequence that never moved backwards and an
+ * entry for every sequence the crash cost, because a playlist that simply left them out would
+ * renumber the media behind the hole. Both are read here while the hole is still in the live window,
+ * which is what the wait below is for.
+ *
+ * ⛔ **No discontinuity, and that is the change.** A lost segment does not restart the encoder's
+ * clock, so the media behind the hole is a continuation. The dates step one fragment at a time
+ * straight across it, which is exactly what the contract requires of a playlist with nothing wrong
+ * with it, and there is no break for a suite to wait on any more.
  */
 
 const RECOVERY_TIMEOUT_MS = 60_000; // mirrors the uploader RECOVERY_TIMEOUT default
@@ -43,14 +49,14 @@ const WARMUP_WAIT_MS = 120_000;
 const REBOOT_WAIT_MS = 60_000;
 const RESUME_WAIT_MS = 120_000;
 /** How long the uploader is given to report the gap the crash left, once segments are flowing again. */
-const GAP_ARMED_WAIT_MS = 60_000;
+const GAP_REPORTED_WAIT_MS = 60_000;
 /**
- * How long the join is given to appear in a published playlist.
+ * How long the hole is given to appear in a published playlist.
  *
- * A feed read costs no BZZ, so this is generous: the arming is in the log by the time it starts, and
+ * A feed read costs no BZZ, so this is generous: the report is in the log by the time it starts, and
  * what is being waited on is one more manifest publish reaching the gateway.
  */
-const JOIN_VISIBLE_WAIT_MS = 90_000;
+const HOLE_VISIBLE_WAIT_MS = 90_000;
 const POST_TIMEOUT_MARGIN_MS = 20_000;
 // The recovered stream is live on the uploader immediately, but that state reaches the
 // gateway-served catalog on the deferred single-node push path — allow minutes for it to surface.
@@ -88,28 +94,28 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
     });
 
   /**
-   * The timeline read once the join is visible in it, so the verdict is about a window that contains
-   * the break rather than about whatever the window happened to hold.
+   * The timeline read once the hole is visible in it, so the verdict is about a window that contains
+   * the gap entries rather than about whatever the window happened to hold.
    *
-   * ⚠️ A run that pinned no segment length checks no timeline at all and can see no break, so
-   * waiting for one would spend the whole window for nothing. Such a run returns the unchecked
-   * verdict, which is what every other wired suite prints on one.
+   * ⚠️ A run that pinned no segment length checks no timeline at all and can see no hole, so waiting
+   * for one would spend the whole window for nothing. Such a run returns the unchecked verdict, which
+   * is what every other wired suite prints on one.
    */
-  const waitForJoinedTimeline = async () => {
+  const waitForHoleInTheTimeline = async () => {
     let latest = await readTimeline();
-    if (fragmentSecondsFor(cfg.segmentExpectation) === null || latest.discontinuitiesSeen >= 1) {
+    if (fragmentSecondsFor(cfg.segmentExpectation) === null || latest.gapsSeen >= 1) {
       return latest;
     }
 
     await waitFor(
       async () => {
         latest = await readTimeline();
-        return latest.discontinuitiesSeen >= 1;
+        return latest.gapsSeen >= 1;
       },
       {
-        timeoutMs: JOIN_VISIBLE_WAIT_MS,
+        timeoutMs: HOLE_VISIBLE_WAIT_MS,
         intervalMs: 5_000,
-        label: 'the break the crash left is inside a published live window',
+        label: 'the hole the crash left is inside a published live window, said with gap entries',
       },
     );
     return latest;
@@ -173,24 +179,38 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
 
     // ⛔ The gap the crash left, read as soon as segments are flowing again rather than at the end.
     // Nothing reported those segments, so this family is the only evidence they were accounted for:
-    // the whole armed count would be satisfied by a spent retry window on a stage that armed nothing
-    // for the crash. A red here says the join reached the playlist as a silent hole.
+    // the whole armed count would be satisfied by a spent retry window on a stage that noticed
+    // nothing about the crash. A red here says the hole reached the playlist unaccounted for.
     await waitFor(async () => (await gapsInferred()) >= 1, {
-      timeoutMs: GAP_ARMED_WAIT_MS,
+      timeoutMs: GAP_REPORTED_WAIT_MS,
       intervalMs: 3_000,
       label: 'the uploader reports the segments the engine never posted while it was dead',
     });
     console.log(`  ${await gapsInferred()} rung(s) reported a gap the engine never posted`);
 
-    // ⛔ Then the playlist, and only once the join is IN it. The break is what makes the date step
-    // across the join legal, so a read taken before the post-crash segments reached the window would
-    // be judging a timeline that does not contain the thing under test. This used to be read once at
-    // the very end, after the recovery-timeout sleep and the catalog wait, by which time the join had
-    // long slid out of the roughly 31 segment window and F said nothing about it at all.
-    const joined = await waitForJoinedTimeline();
+    // ⛔ Then the playlist, and only once the hole is IN it. The gap entries are what keep the dates
+    // stepping one fragment at a time across the crash, so a read taken before the post-crash
+    // segments reached the window would be judging a timeline that does not contain the thing under
+    // test. This used to be read once at the very end, after the recovery-timeout sleep and the
+    // catalog wait, by which time the hole had long slid out of the roughly 31 entry window and F
+    // said nothing about it at all.
+    const joined = await waitForHoleInTheTimeline();
 
     console.log(joined.summary);
     assert.equal(joined.refusal, null, joined.refusal ?? '');
+
+    // ⛔ And the tool it was said with. A lost segment does not restart the encoder's clock, so the
+    // media behind the hole is a continuation: a break here would tell every viewer already holding
+    // this playlist to flush what they had buffered for a join that never happened.
+    if (fragmentSecondsFor(cfg.segmentExpectation) !== null) {
+      assert.equal(
+        joined.discontinuitiesSeen,
+        0,
+        `the crash left a hole and the playlists declare ${joined.discontinuitiesSeen} discontinuity(s) ` +
+          'as well. A hole is said with gap entries, and a break says the media after it is a fresh ' +
+          'encode, which nothing about an uploader crash makes true',
+      );
+    }
 
     // Wait past the recovery timeout, then assert on the AUTHORITATIVE, lag-free signal: the uploader
     // must still track the stream as active. If the timer had VOD-ed it, stopStream would have removed

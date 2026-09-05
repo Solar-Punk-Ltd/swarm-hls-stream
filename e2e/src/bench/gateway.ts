@@ -59,6 +59,11 @@ const SWARM_REFERENCE_RE = /^(?:[0-9a-f]{64}|[0-9a-f]{128})$/;
  * no path yields a host and port, which then reads as a reference all the way to a request for
  * `/bytes/host:1633` — a 404 an operator would spend the run blaming the gateway for. A reference is
  * a fixed-width content address, so a wrong one can be refused here by looking at it.
+ *
+ * ⛔ A gap entry is refused by that same check. The uploader lists every sequence a broadcast lost as
+ * an `#EXT-X-GAP` entry named `gap-<sequence>`, which is neither 64 nor 128 hex characters, so a bench
+ * cannot time a fetch for an address that never existed and file the miss beside real retrievals. The
+ * caller's own `!ref` branch skips it, and a gap never ends a live window in any case.
  */
 export function segmentRefFromUri(uri: string): string | null {
   const withoutQuery = uri.split(/[?#]/)[0];

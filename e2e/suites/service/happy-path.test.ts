@@ -17,8 +17,8 @@ import { waitFor } from '../../src/harness/wait.js';
 
 /**
  * Service — happy-path live publish with no faults. The full pipeline (SRS → uploader → bee) must
- * upload segments in a gapless run AND keep the manifest advancing in lockstep, arming no
- * discontinuity. This is the baseline the fault scenarios (A/B) deviate from.
+ * upload segments in a gapless run AND keep the manifest advancing in lockstep, announcing no loss
+ * and no break. This is the baseline the fault scenarios (A/B) deviate from.
  *
  * ⭐ It also reads the playlists the broadcast published and holds them to the manifest contract:
  * `#EXT-X-MEDIA-SEQUENCE:0`, a wall clock on every segment, and steps of a whole fragment. Neither
@@ -122,9 +122,8 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
     assert.equal(
       ev.discontinuitiesArmed,
       0,
-      `no fault → no discontinuity should be armed; armed: ${
-        ev.discontinuitiesArmed
-      } (upload-failure segments: ${ev.discontinuitySegments.join(',')})`,
+      `no fault → nothing to announce, so no loss, no break and no gap entry in any playlist; ` +
+        `announced: ${ev.discontinuitiesArmed} (upload-failure segments: ${ev.discontinuitySegments.join(',')})`,
     );
 
     // ⛔ Per rung, for the same reason the segment check above is. `isContiguous` deduplicates, so
@@ -173,5 +172,16 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
 
     console.log(verdict.summary);
     assert.equal(verdict.refusal, null, verdict.refusal ?? '');
+
+    // ⛔ Nothing was lost, so no rung has a hole to say. This is the published half of the zero the
+    // case above asserts off the log: a gap entry is written for a sequence no segment filled, and on
+    // a clean broadcast there is none. The same fault reds both, which is the point of reading it in
+    // the playlist as well as in the log.
+    assert.equal(
+      verdict.gapsSeen,
+      0,
+      `a broadcast with no fault in it published ${verdict.gapsSeen} gap entry(s), so some rung lost ` +
+        'media the log did not account for',
+    );
   });
 });

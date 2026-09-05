@@ -194,6 +194,7 @@ describe('reading one rung playlist back', () => {
     assert.equal(parse.segments, 4);
     assert.equal(parse.mediaSequence, 0);
     assert.equal(parse.discontinuities, 0);
+    assert.equal(parse.gaps, 0);
     assert.equal(parse.firstDate, fixtureDateOf(0));
     assert.equal(parse.lastDate, fixtureDateOf(3));
     assert.equal(parse.recording, false);
@@ -212,6 +213,38 @@ describe('reading one rung playlist back', () => {
 
   it('counts no break on a feed that answered no playlist, which is a read rather than a window', () => {
     assert.equal(rungPlaylistParse(feed, GATEWAY_ERROR_ENVELOPE).discontinuities, 0);
+    assert.equal(rungPlaylistParse(feed, GATEWAY_ERROR_ENVELOPE).gaps, 0);
+  });
+
+  /**
+   * ⛔ What lets a suite wait for a hole rather than guess at the clock, which is what the uploader
+   * crash scenario needs: the segments the engine closed while the uploader was dead are named by
+   * nothing else, and the gap entries are the playlist's own statement that they are missing.
+   */
+  it('counts the gap entries a window declares, so a suite can tell a hole is in it', () => {
+    assert.equal(rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3], { gaps: [2] })).gaps, 1);
+    assert.equal(rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3], { gaps: [1, 2] })).gaps, 2);
+  });
+
+  /**
+   * ⛔⛔ A gap entry is not media, and this count decides whether a live window is judged as the
+   * broadcast's first. `namesEverySegmentPublished` weighs it against the uploads the log attributes
+   * to the rung, and a gap entry counted as a segment would make a window that HAS dropped segments
+   * look like one that has not, which demands `#EXT-X-MEDIA-SEQUENCE:0` of a playlist that is right
+   * to have moved past it.
+   */
+  it('counts only the media entries as segments, never the gaps', () => {
+    const parse = rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3], { gaps: [1, 2] }));
+
+    assert.equal(parse.segments, 2);
+    assert.equal(parse.gaps, 2);
+  });
+
+  it('does not call a window with a hole in it a playlist that dropped nothing', () => {
+    const held = rungPlaylist([0, 1, 2, 3], { gaps: [1, 2] });
+
+    assert.equal(namesEverySegmentPublished(rungPlaylistParse(feed, held), 4), false);
+    assert.equal(namesEverySegmentPublished(rungPlaylistParse(feed, held), 2), true);
   });
 
   it('hashes the raw topic into the hex the gateway answers for', () => {
@@ -292,7 +325,7 @@ describe('holding a playlist to the contract', () => {
     const failures = readingOf(feed, rungPlaylist([0, 1, 3, 4]), FIRST_PLAYLIST).failures;
 
     assert.equal(failures.length, 1, failures.join('\n'));
-    assert.match(failures[0], /segment 2 is dated 2 fragments after/);
+    assert.match(failures[0], /entry 2 is dated 2 fragments after/);
   });
 
   it('asks per rung whether the window still starts at the broadcast’s first segment', () => {
@@ -423,6 +456,7 @@ describe('what a wired suite prints', () => {
     assert.match(summary, new RegExp(fixtureDateOf(0)));
     assert.match(summary, new RegExp(fixtureDateOf(2)));
     assert.match(summary, /3 segments/);
+    assert.match(summary, /0 gaps/);
     assert.match(summary, /0 discontinuities/);
   });
 
@@ -436,6 +470,21 @@ describe('what a wired suite prints', () => {
     ]);
 
     assert.match(summary, /1 discontinuities/);
+  });
+
+  /**
+   * Beside the break count rather than folded into it, because the two say different things: a gap
+   * entry is media the broadcast lost and a break is media that is not a continuation. A read that
+   * showed only one of them would leave an operator guessing which had happened.
+   */
+  it('says how many gap entries a rung’s window declares, beside the breaks', () => {
+    const summary = describeRungPlaylists([
+      rungPlaylistParse(feedOf('360p', TOPIC_360), rungPlaylist([0, 1, 2, 3], { gaps: [1, 2] })),
+    ]);
+
+    assert.match(summary, /2 segments/);
+    assert.match(summary, /2 gaps/);
+    assert.match(summary, /0 discontinuities/);
   });
 
   it('says which rung read a recording and which read a live playlist', () => {

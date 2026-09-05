@@ -11,7 +11,8 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
 /**
  * Scenario G — a bee-GATEWAY (viewer-side) outage must NOT affect UPLOADING.
  * The uploader writes through bee-uploader; the gateway only serves viewers. Stopping the gateway
- * should leave segment uploads completely unaffected — no stall, no loss, no discontinuity.
+ * should leave segment uploads completely unaffected: no stall, no loss, nothing announced, and so
+ * no gap entry in any rung's playlist either.
  * (Stop/start keeps the same container, so the client nginx-cached-IP 502 gotcha does not apply.)
  *
  * ⛔ **Every reading is per rung, and the merged view is what was taken out of it.** It got both
@@ -110,16 +111,17 @@ describe('G — gateway (viewer-side) outage: uploads unaffected', () => {
       );
     }
 
-    // ⛔ One log read for both verdicts below, so the discontinuity count and the per-rung indices
+    // ⛔ One log read for both verdicts below, so the announcement count and the per-rung indices
     // describe the same moment rather than two fetches apart.
     const settled = await host.logsSince(uploader, startedAt);
     const events = parseUploaderLog(settled);
     assert.equal(
       events.discontinuitiesArmed,
       0,
-      `a viewer-side outage must not arm a discontinuity; armed: ${
-        events.discontinuitiesArmed
-      } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
+      `a viewer-side outage must cost the uploader nothing, so it announces no loss and no break; ` +
+        `announced: ${events.discontinuitiesArmed} (upload-failure segments: ${events.discontinuitySegments.join(
+          ',',
+        )})`,
     );
     // ⛔ Guarded first, the way `bee-outage-long` guards it. A loop over an empty map makes no
     // assertion and passes, so an empty window would print this suite's verdict over nothing: no

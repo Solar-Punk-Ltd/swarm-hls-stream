@@ -41,7 +41,7 @@
  * repository's rule on what an e2e suite may gate on.
  */
 
-import { HLS_DISCONTINUITY, HLS_PLAYLIST_TYPE_VOD, parseManifest } from '@swarm-hls-stream/shared';
+import { HLS_DISCONTINUITY, HLS_GAP, HLS_PLAYLIST_TYPE_VOD, parseManifest } from '@swarm-hls-stream/shared';
 
 import { feedTopicHexOf } from '../browser/rungManifest.js';
 import type { E2EConfig } from '../config.js';
@@ -94,6 +94,14 @@ interface RungPlaylistParse {
   playlist: string | null;
   /** Why nothing could be read, or null. Kept apart from a contract failure: this is the transport. */
   unreadable: string | null;
+  /**
+   * How many entries this playlist names that are actually media.
+   *
+   * ⛔⛔ Gap entries are excluded, and that is load bearing. {@link namesEverySegmentPublished} weighs
+   * this against the segment uploads the log attributes to the rung, and a gap entry counted here
+   * would make a window that HAS dropped segments look like one that has not, which then demands
+   * `#EXT-X-MEDIA-SEQUENCE:0` of a playlist that is right to have moved past it.
+   */
   segments: number;
   mediaSequence: number | null;
   /**
@@ -105,6 +113,16 @@ interface RungPlaylistParse {
    * still counted: this answers "does the playlist declare a break" and never "which segment has it".
    */
   discontinuities: number;
+  /**
+   * How many `#EXT-X-GAP` entries this window carries, which is how many sequences it lost.
+   *
+   * ⛔ Beside the break count rather than folded into it. The two say different things: a gap entry is
+   * media the broadcast lost, a break is media that is not a continuation of what came before it, and
+   * since the owner's ruling of 2026-09-06 a lost segment produces only the first. It is what lets the
+   * uploader-crash scenario wait for the hole to be visible in a published window, because nothing
+   * else in the playlist names the segments the engine closed while the uploader was dead.
+   */
+  gaps: number;
   /** The first and last `#EXT-X-PROGRAM-DATE-TIME`, as ISO text, or null where a segment carried none. */
   firstDate: string | null;
   lastDate: string | null;
@@ -256,18 +274,24 @@ export function rungPlaylistParse(feed: RungFeed, body: string): RungPlaylistPar
     ...base,
     playlist: text,
     unreadable: null,
-    segments: parsed.segments.length,
+    segments: parsed.segments.filter((segment) => !segment.gap).length,
     mediaSequence: mediaSequenceOf(text),
-    discontinuities: discontinuityCountOf(text),
+    discontinuities: tagCountOf(text, HLS_DISCONTINUITY),
+    gaps: tagCountOf(text, HLS_GAP),
     firstDate: isoOf(dates[0]),
     lastDate: isoOf(dates[dates.length - 1]),
     recording: parsed.headers.includes(HLS_PLAYLIST_TYPE_VOD),
   };
 }
 
-/** Tag lines, so a break the parse could not attach to a segment is still counted. See {@link RungPlaylistParse.discontinuities}. */
-function discontinuityCountOf(text: string): number {
-  return text.split('\n').filter((line) => line.trim() === HLS_DISCONTINUITY).length;
+/**
+ * How many lines of a playlist are exactly this tag.
+ *
+ * Read off the tag lines rather than off the parsed entries, so a tag the parse could not attach to
+ * one is still counted. See {@link RungPlaylistParse.discontinuities}.
+ */
+function tagCountOf(text: string, tag: string): number {
+  return text.split('\n').filter((line) => line.trim() === tag).length;
 }
 
 /** The fields a parse carries when the feed produced no playlist to read. */
@@ -276,6 +300,7 @@ const NOTHING_READ = {
   segments: 0,
   mediaSequence: null,
   discontinuities: 0,
+  gaps: 0,
   firstDate: null,
   lastDate: null,
   recording: false,
@@ -455,6 +480,16 @@ interface TimelineVerdict {
    * segment length, which is a read that never happened rather than a window holding no break.
    */
   discontinuitiesSeen: number;
+  /**
+   * How many `#EXT-X-GAP` entries this read saw across every rung.
+   *
+   * ⛔ What lets a suite wait for a HOLE instead of guessing at the clock, which is a different wait
+   * from the one above. Since the owner's ruling of 2026-09-06 a lost segment produces gap entries and
+   * no break, so a scenario that drops segments on purpose watches this and a scenario that restarts
+   * the engine watches the breaks. Zero on a run that pinned no segment length, which is a read that
+   * never happened rather than a window holding no hole.
+   */
+  gapsSeen: number;
 }
 
 /**
@@ -471,7 +506,7 @@ export async function checkPublishedTimeline(
 ): Promise<TimelineVerdict> {
   const fragmentSeconds = fragmentSecondsFor(check.expectation);
   if (fragmentSeconds === null) {
-    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null, discontinuitiesSeen: 0 };
+    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null, discontinuitiesSeen: 0, gapsSeen: 0 };
   }
 
   const parses = await readRungPlaylists(host, cfg, { owner: check.owner, rungs: check.rungs });
@@ -488,6 +523,7 @@ export async function checkPublishedTimeline(
     summary: describeRungPlaylists(parses),
     refusal: rungPlaylistRefusal(readings),
     discontinuitiesSeen: parses.reduce((total, parse) => total + parse.discontinuities, 0),
+    gapsSeen: parses.reduce((total, parse) => total + parse.gaps, 0),
   };
 }
 
@@ -498,7 +534,9 @@ export async function checkPublishedTimeline(
  * Printed by every wired suite whether it passes or fails, so a red names the segment and the date
  * it objected to beside a reading of what the whole ladder held at that moment. The break count is
  * on the line because it is what makes a wide date step legal, so a reader looking at a step and a
- * verdict can see which of the two rules applied.
+ * verdict can see which of the two rules applied. The gap count is beside it because the two are
+ * different statements about a broadcast, media that was lost against media that is not a
+ * continuation, and a line carrying only one of them leaves a reader guessing which happened.
  */
 export function describeRungPlaylists(parses: readonly RungPlaylistParse[]): string {
   return parses.map(lineFor).join('\n');
@@ -515,7 +553,10 @@ function lineFor(parse: RungPlaylistParse): string {
     parse.mediaSequence === null ? 'no #EXT-X-MEDIA-SEQUENCE' : `#EXT-X-MEDIA-SEQUENCE:${parse.mediaSequence}`;
   const span = parse.firstDate === null ? 'no dates' : `${parse.firstDate} to ${parse.lastDate}`;
 
-  return `  ${name}: ${kind}, ${parse.segments} segments, ${parse.discontinuities} discontinuities, ${sequence}, ${span}`;
+  return (
+    `  ${name}: ${kind}, ${parse.segments} segments, ${parse.gaps} gaps, ` +
+    `${parse.discontinuities} discontinuities, ${sequence}, ${span}`
+  );
 }
 
 /** How a report names one feed: its rung, or what a deployment with no rungs is. */

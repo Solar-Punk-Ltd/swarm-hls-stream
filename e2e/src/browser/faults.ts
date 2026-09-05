@@ -5,7 +5,7 @@
  *
  * Six crash scenarios already run against this deployment and all six pass. Every one of them asks
  * the same kind of question: did the **uploader** do the right thing. Did it resume without a
- * spurious VOD, did it arm a discontinuity, did segment numbering stay contiguous. Those are the
+ * spurious VOD, did it report what it lost, did segment numbering stay contiguous. Those are the
  * right questions and they are answered from the uploader's log.
  *
  * None of them has a viewer. So the project can say that an eight second bee outage loses no
@@ -186,7 +186,7 @@ const ENGINE_RESTART: FaultScenario = {
  * segment for fifteen seconds before giving up, so an outage shorter than that should back-pressure,
  * buffer in order and flush on recovery, losing nothing.
  * `suites/scenarios/bee-outage-short.test.ts` already establishes that from the upload side: indices
- * stay gapless and no discontinuity is armed. What has never been asked is whether it reaches a
+ * stay gapless and the uploader announces nothing. What has never been asked is whether it reaches a
  * viewer at all, and the answer should be no, because the feed keeps advancing once the flush lands
  * and the viewer has six seconds of buffer in front of it.
  *
@@ -211,11 +211,12 @@ const WRITER_BEE_PAUSE: FaultScenario = {
 /**
  * The writer's bee node taken away for longer than the uploader can retry.
  *
- * ⭐ **The first time a viewer plays through a discontinuity.** Past the fifteen second window the
- * uploader gives up on the segment in flight and arms `#EXT-X-DISCONTINUITY` so the next good segment
- * declares that the timeline broke. `suites/scenarios/bee-outage-long.test.ts` proves the uploader
- * does this correctly and stops there. Whether hls.js then recovers the timeline, or stalls on a
- * discontinuity it was told about, is a different question and nothing has ever watched it.
+ * ⭐ **The first time a viewer plays through a hole in the timeline.** Past the fifteen second window
+ * the uploader gives up on the segment in flight, and since the owner's ruling of 2026-09-06 the
+ * playlist lists that sequence as an `#EXT-X-GAP` entry rather than leaving it out, so the numbering
+ * behind the hole never moves. `suites/scenarios/bee-outage-long.test.ts` proves the uploader does
+ * this correctly and stops there. Whether hls.js then plays on past the entries it was told to skip,
+ * or stalls on them, is a different question and nothing has ever watched it.
  *
  * `stop` rather than `kill`: a SIGKILL risks the node's database, and this is the node that holds the
  * postage batch every measurement is paid for with. A clean shutdown fails uploads just as hard.
@@ -227,10 +228,10 @@ const WRITER_BEE_OUTAGE: FaultScenario = {
   downMs: 20_000,
   breaks: 'the bee node the uploader writes through, for longer than it can retry',
   expectation:
-    'The segment in flight is dropped and a discontinuity is armed, so the viewer meets a break in ' +
-    'the timeline rather than a gap in the numbering. The picture should stop while nothing is ' +
-    'being written and then resume across the discontinuity without a reload and without ending the ' +
-    'broadcast.',
+    'The segment in flight is dropped and its sequence is published as a gap entry, so the viewer ' +
+    'meets media the playlist admits it does not have rather than a renumbering. The picture should ' +
+    'stop while nothing is being written and then resume past the hole without a reload and without ' +
+    'ending the broadcast.',
   expectFreeze: true,
   expectRecovery: true,
   ready: { port: 'beeUploaderApi', path: '/readiness', is: { status: 'ready' } },

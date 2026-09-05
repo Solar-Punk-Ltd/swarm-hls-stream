@@ -30,15 +30,15 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * Arm 4 of the crash matrix, `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`. An eight second
  * pause, which is shorter than the uploader's fifteen second retry window, so segments buffer and
  * flush rather than being lost. `suites/scenarios/bee-outage-short.test.ts` already proves the
- * indices stay gapless and no discontinuity is armed, with nobody watching. What had never been asked
- * is whether it reaches a viewer at all.
+ * indices stay gapless and the uploader announces nothing, with nobody watching. What had never been
+ * asked is whether it reaches a viewer at all.
  *
  * ## What this asserts
  *
  * That the viewer was watching, that they are watching again once the node is unpaused, that nothing
  * untrue was put in front of them while their picture was stopped, and that the timeline they came
- * back to is unbroken. That last one is the discontinuity, asked here of the run this viewer actually
- * sat through rather than of a separate broadcast nobody watched.
+ * back to is whole. That last one is the loss-and-break counter, asked here of the run this viewer
+ * actually sat through rather than of a separate broadcast nobody watched.
  *
  * ⭐ **The timeline is asked twice, because it is two questions.** Once bounded by the fault, which
  * is what this scenario is named after and is the only count the pause may be blamed for. Once across
@@ -191,12 +191,13 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
 
     // ⭐ The other half of what this viewer is owed, and the only correctness question here that a
     // duration used to stand in for. The pause is shorter than the uploader's retry window, so the
-    // segment in flight is buffered and flushed rather than dropped, and a discontinuity armed anyway
-    // would put a break in the timeline of the viewer who just sat through it.
-    // `suites/scenarios/bee-outage-short.test.ts` asks the same of the uploader with nobody watching.
+    // segment in flight is buffered and flushed rather than dropped. Anything announced here means a
+    // segment WAS lost, and the playlist under this viewer then carries gap entries for media that
+    // should have arrived. `suites/scenarios/bee-outage-short.test.ts` asks the same of the uploader
+    // with nobody watching.
     //
     // ⛔ Bounded by the fault rather than by the arm. This read the whole run once, which charged an
-    // eight second pause with every discontinuity the deployment armed across six minutes. See
+    // eight second pause with everything the deployment announced across six minutes. See
     // `faultLogWindow`.
     const window = faultLogWindow(recovery.fault);
     const wholeRun = parseUploaderLog(await log()).discontinuitiesArmed;
@@ -207,9 +208,9 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     assert.equal(
       byThePause,
       0,
-      `${byThePause} discontinuit(y/ies) were armed inside a pause shorter than the uploader's retry ` +
-        'window, so this viewer was handed a broken timeline by an outage that should have cost them ' +
-        'nothing',
+      `${byThePause} loss or break line(s) were written inside a pause shorter than the uploader's ` +
+        'retry window, so this viewer was handed a timeline with holes in it by an outage that should ' +
+        'have cost them nothing',
     );
 
     // ⭐ The same counter over the whole broadcast, which is a DIFFERENT question and is asserted as
@@ -224,8 +225,8 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     assert.equal(
       wholeRun,
       0,
-      `the pause itself armed ${byThePause}, and yet the whole broadcast this viewer sat through carries ` +
-        `${wholeRun} arming log lines. The fault is exonerated and the timeline is still broken, so this ` +
+      `the pause itself cost ${byThePause}, and yet the whole broadcast this viewer sat through carries ` +
+        `${wholeRun} such log lines. The fault is exonerated and the timeline still has holes in it, so this ` +
         'is the deployment losing segments over minutes rather than over the outage. ⚠️ The figure is an ' +
         'UPPER BOUND rather than a count: the parser matches three different messages and one of them ' +
         'repeats a segment up to four times. Zero is exact, anything else needs the log read',

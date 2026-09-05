@@ -23,17 +23,21 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
 
 /**
  * V9 — the writer's node is taken away for longer than the uploader can retry, and a viewer plays
- * through the break in the timeline.
+ * through the hole it tears in the timeline.
  *
  * ## What this promotes
  *
  * Arm 5 of the crash matrix, `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`. Past the fifteen
- * second retry window the uploader gives up on the segment in flight and arms `#EXT-X-DISCONTINUITY`,
- * so the next good segment declares that the timeline broke.
- * `suites/scenarios/bee-outage-long.test.ts` proves the uploader does that correctly and stops there.
- * Whether hls.js then recovers the timeline, or stalls on a discontinuity it was told about, is a
- * different question, and the matrix is the first time anything watched it: 29.5s frozen, playback
- * moving again 12.5s after the node answered, two rebuffers.
+ * second retry window the uploader gives up on the segment in flight, and since the owner's ruling of
+ * 2026-09-06 the playlist lists that sequence as an `#EXT-X-GAP` entry so the numbering behind it does
+ * not move. `suites/scenarios/bee-outage-long.test.ts` proves the uploader does that correctly and
+ * stops there. Whether hls.js then plays on past the entries it was told to skip, or stalls on them,
+ * is a different question, and the matrix is the first time anything watched it: 29.5s frozen,
+ * playback moving again 12.5s after the node answered, two rebuffers.
+ *
+ * ⚠️ The matrix figures were measured when this fault armed an `#EXT-X-DISCONTINUITY` instead, which
+ * makes hls.js reset its timeline rather than skip an entry. They are readings of a different
+ * playlist, and nothing here asserts on them.
  *
  * ⚠️ **No control ran for this fault inside that sitting**, and the readings of it disagree by era
  * and by configuration: 54.9s frozen on 2026-08-06 before the loop fix, 29.5s in the matrix, and
@@ -83,8 +87,8 @@ const WATCH_MINUTES = crashArmMinutes(SCENARIO);
  * picture that the client knows and is still trying, which is what is happening.
  *
  * ⛔ `ended` is the lie. The broadcaster never stopped, the node comes back, and the viewer plays on
- * across the discontinuity, so being told the broadcast is over would make them leave one that is
- * still running and about to resume.
+ * past the hole, so being told the broadcast is over would make them leave one that is still running
+ * and about to resume.
  */
 const TRUTHFUL_WHILE_FROZEN = [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_DEGRADED] as const;
 
@@ -98,7 +102,7 @@ const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
 const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir);
 
-describe("V9 — a viewer plays through the discontinuity a writer's outage arms", { skip }, () => {
+describe("V9 — a viewer plays through the hole a writer's outage tears", { skip }, () => {
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   const broken = containerName(cfg, SCENARIO.service);
@@ -161,11 +165,11 @@ describe("V9 — a viewer plays through the discontinuity a writer's outage arms
     const recovery = result.recovery;
     assert.ok(recovery, 'the refusal above should already have caught an artifact with no fault verdict');
 
-    // ⭐ The whole question `bee-outage-long` could not answer: hls.js was told the timeline broke,
-    // and this is whether it carried on across the break or stalled on being told. A pass or a fail
-    // here is that, and nothing about how long the crossing took.
+    // ⭐ The whole question `bee-outage-long` could not answer: hls.js was told there is media it
+    // cannot have, and this is whether it carried on past the gap entries or stalled on being told. A
+    // pass or a fail here is that, and nothing about how long the crossing took.
     const notBack = resumeRefusal(recovery, { expectRecovery: true });
-    assert.equal(notBack, null, `the viewer did not play through the discontinuity: ${notBack}`);
+    assert.equal(notBack, null, `the viewer did not play through the hole: ${notBack}`);
 
     // ⭐ Nothing untrue, and silence tolerated. See the docblock: #100 means this client may genuinely
     // not know, so the day it starts explaining this fault the case stays green.

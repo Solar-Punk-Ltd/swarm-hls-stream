@@ -100,6 +100,17 @@ describe('taking the reference out of a manifest entry', () => {
   it('reports nothing for an empty entry', () => {
     assert.equal(segmentRefFromUri(''), null);
   });
+
+  /**
+   * ⛔ A gap entry is a sequence the broadcast lost, listed so the numbering behind it does not move.
+   * Its URI names no chunk, so a bench that read one as a reference would time a fetch for an address
+   * that never existed and file the miss beside real retrievals. Refused by shape, which is why the
+   * uploader gives a hole a name that cannot be 64 or 128 hex characters.
+   */
+  it('reports nothing for a gap entry, which names media the broadcast lost', () => {
+    assert.equal(segmentRefFromUri('gap-41'), null);
+    assert.equal(segmentRefFromUri('http://host:1633/bytes/gap-41'), null);
+  });
 });
 
 /**

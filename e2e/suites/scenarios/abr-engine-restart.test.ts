@@ -165,9 +165,11 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
 
   /**
    * A restart is a real discontinuity and the uploader is expected to arm one, so this asserts the
-   * uploader kept working rather than that nothing happened. What is ABR-specific is that a stall in
-   * one rung must not stop the others: every recovered rung has to keep its own segment counter
-   * moving, which the segment lines can be scoped to because they carry the stream id.
+   * uploader kept working rather than that nothing happened. Since the owner's ruling of 2026-09-06
+   * it is one of only two things that still arm one, the other being the origin declaring a break: a
+   * lost segment now leaves a hole the playlist says with gap entries instead. What is ABR-specific is
+   * that a stall in one rung must not stop the others: every recovered rung has to keep its own
+   * segment counter moving, which the segment lines can be scoped to because they carry the stream id.
    */
   it('keeps uploading segments after the restart rather than stalling on one rung', async () => {
     const { restartedAt, priorTopics } = await restartAndReconnect();

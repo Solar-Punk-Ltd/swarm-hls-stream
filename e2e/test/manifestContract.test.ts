@@ -31,11 +31,16 @@ function stamp(sequence: number): string {
 /**
  * A playlist as `ManifestManager` writes one.
  *
- * @param sequences the playlist sequence of each segment, so a caller can build a gap or a repeat
- * @param breaks sequences that carry an `#EXT-X-DISCONTINUITY`
+ * @param sequences the playlist sequence of each entry, so a caller can build a hole or a repeat
+ * @param options.breaks sequences that carry an `#EXT-X-DISCONTINUITY`
+ * @param options.gaps sequences listed as an `#EXT-X-GAP` entry rather than as media
  */
-function playlist(sequences: readonly number[], options: { mediaSequence?: number; breaks?: number[] } = {}): string {
+function playlist(
+  sequences: readonly number[],
+  options: { mediaSequence?: number; breaks?: number[]; gaps?: number[] } = {},
+): string {
   const breaks = new Set(options.breaks ?? []);
+  const gaps = new Set(options.gaps ?? []);
   return [
     '#EXTM3U',
     '#EXT-X-VERSION:3',
@@ -44,9 +49,10 @@ function playlist(sequences: readonly number[], options: { mediaSequence?: numbe
     '',
     ...sequences.flatMap((sequence) => [
       ...(breaks.has(sequence) ? ['#EXT-X-DISCONTINUITY'] : []),
+      ...(gaps.has(sequence) ? ['#EXT-X-GAP'] : []),
       stamp(sequence),
       '#EXTINF:2,',
-      ref(sequence),
+      gaps.has(sequence) ? `gap-${sequence}` : ref(sequence),
     ]),
     '',
   ].join('\n');
@@ -112,21 +118,39 @@ describe('the timeline a playlist declares', () => {
   });
 
   /**
-   * A segment whose upload failed leaves a hole, and the next segment carries the break that tells a
-   * player to skip it. The stamps are derived from a segment count, so the hole is a whole number of
-   * fragments wide and that is what makes it distinguishable from an uneven step.
+   * A segment whose upload failed leaves a hole, and since the owner's ruling of 2026-09-06 the hole
+   * is listed: every missing sequence is an `#EXT-X-GAP` entry carrying its own derived stamp. So the
+   * dates step by exactly one fragment across a hole that was said, which is the whole point of
+   * saying it.
    */
-  it('accepts a gap that a discontinuity accounts for', () => {
-    const gapped = playlist([0, 1, 3, 4], { breaks: [3] });
+  it('accepts a hole said with gap entries', () => {
+    const said = playlist([0, 1, 2, 3, 4], { gaps: [2] });
 
-    assert.deepEqual(manifestContractFailures(gapped, CONTRACT), []);
+    assert.deepEqual(manifestContractFailures(said, CONTRACT), []);
   });
 
-  it('refuses a gap with no discontinuity to account for it', () => {
+  it('accepts a run of gap entries, which is what a wider hole is', () => {
+    const said = playlist([0, 1, 2, 3, 4], { gaps: [1, 2, 3] });
+
+    assert.deepEqual(manifestContractFailures(said, CONTRACT), []);
+  });
+
+  it('refuses a hole that nothing says', () => {
     const silent = playlist([0, 1, 3, 4]);
 
     assert.equal(manifestContractFailures(silent, CONTRACT).length, 1);
-    assert.match(manifestContractFailures(silent, CONTRACT)[0], /no #EXT-X-DISCONTINUITY between them/);
+    assert.match(manifestContractFailures(silent, CONTRACT)[0], /no #EXT-X-GAP entries/);
+  });
+
+  /**
+   * ⚠️ A break still excuses a wide step, and that is deliberate rather than an oversight. The step
+   * across an engine restart is the length of the outage and is not a whole number of fragments, so
+   * a check that refused a wide step across a break would red a correct restart on any outage that
+   * happened to land on one. A hole answered with a discontinuity instead of gap entries therefore
+   * passes here, and is caught in the uploader's own tests where the two are told apart.
+   */
+  it('still excuses a wide step across a discontinuity, which is where the dating re-anchors', () => {
+    assert.deepEqual(manifestContractFailures(playlist([0, 1, 3, 4], { breaks: [3] }), CONTRACT), []);
   });
 
   /**

@@ -12,7 +12,9 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
 /**
  * Scenario A — bee-uploader outage SHORTER than the segment retry window (15s).
  * Expectation: segment uploads back-pressure and buffer in order, then flush on recovery.
- * No segment lost (indices stay gapless), and NO discontinuity is armed.
+ * No segment lost (indices stay gapless), and the uploader announces nothing: no spent retry window,
+ * no reported loss, no break. Nothing lost means nothing for the playlist to say, so no rung
+ * publishes an `#EXT-X-GAP` entry either.
  *
  * Uses `docker pause`/`unpause`, NOT stop/start: stop+restart-readiness alone is ~20-30s (bee must
  * reboot and become reachable again), which can never be a sub-15s outage. Pause freezes bee
@@ -25,8 +27,8 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * ⛔ **Counted per rung and waited for per rung, never merged.** The claim here is that nothing was
  * lost, so every reading has to be of a rung that has finished flushing the backlog the pause built
  * up. Waiting on the merged fastest rung clears as soon as ONE rung is past the outage, and the
- * contiguity and discontinuity checks then run against slower rungs that are still catching up: a
- * loss or a discontinuity landing seconds later is a green this suite has already printed. That is a
+ * contiguity and announcement checks then run against slower rungs that are still catching up: a
+ * loss or a break landing seconds later is a green this suite has already printed. That is a
  * false pass in the one scenario whose entire claim is zero loss, and it is why the per-rung
  * structure its sibling `bee-outage-long` carries belongs here too.
  */
@@ -40,7 +42,7 @@ const MIN_STAMP_TTL_S = 600;
 
 const cfg = loadConfig();
 
-describe('A — bee outage < retry window: buffer, zero loss, no discontinuity', () => {
+describe('A — bee outage < retry window: buffer, zero loss, nothing announced', () => {
   const host = makeHost(cfg);
   /**
    * ⛔⛔⛔ EVERY publisher node, and this suite is why that matters more here than in its sibling.
@@ -71,7 +73,7 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
     await Promise.all(bees.map((bee) => host.unpause(bee).catch(() => undefined)));
   });
 
-  it('loses no segments across an 8s outage and arms no discontinuity', async () => {
+  it('loses no segments across an 8s outage and announces nothing', async () => {
     const byStream = async () => segmentIndicesByStream(await host.logsSince(uploader, startedAt));
     // ⛔ Floored at one. This count is DECLARED by the deployment's `ABR_LADDER` rather than observed,
     // so a stage declaring no rungs at all would make `size >= 0` true of an empty map and `every()`
@@ -115,7 +117,7 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
     );
 
     // ⛔ One log read for both verdicts below, so they describe the same moment. Off two fetches
-    // they describe two, and a discontinuity arming in between is absent from the count while the
+    // they describe two, and a loss landing in between is absent from the count while the
     // hole it left is present in the indices, which reads as the two checks contradicting each
     // other rather than as the one finding it is.
     const settled = await host.logsSince(uploader, startedAt);
@@ -123,9 +125,10 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
     assert.equal(
       events.discontinuitiesArmed,
       0,
-      `an ${OUTAGE_MS / 1000}s outage (< 15s window) must not arm a discontinuity; armed: ${
-        events.discontinuitiesArmed
-      } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
+      `an ${OUTAGE_MS / 1000}s outage (< 15s window) must cost nothing and announce nothing, so no ` +
+        `rung publishes a gap entry either; announced: ${
+          events.discontinuitiesArmed
+        } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
     );
     // Per stream: the merged view of a ladder's four counters holes at window boundaries while no
     // rung has lost anything, and can mask a real one-rung gap behind a sibling's healthy index.

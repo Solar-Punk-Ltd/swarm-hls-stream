@@ -20,6 +20,7 @@ import {
   buildProgramDateTime,
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
+  HLS_GAP,
   HLS_M3U,
   HLS_MEDIA_SEQUENCE,
   HLS_PLAYLIST_TYPE_VOD,
@@ -49,6 +50,11 @@ interface PlaylistOptions {
   mediaSequence?: number;
   /** Sequences that carry an `#EXT-X-DISCONTINUITY`. */
   breaks?: readonly number[];
+  /**
+   * Sequences listed as an `#EXT-X-GAP` entry rather than as media, which is how the uploader says a
+   * segment the broadcast lost. Named `gap-<sequence>` there, so that is what goes on the URI line.
+   */
+  gaps?: readonly number[];
   /** A finished recording: `#EXT-X-PLAYLIST-TYPE:VOD` and an `#EXT-X-ENDLIST`. */
   recording?: boolean;
   /** The closing live playlist: an `#EXT-X-ENDLIST` and no playlist type, which is not a recording. */
@@ -58,10 +64,11 @@ interface PlaylistOptions {
 /**
  * One rung's playlist naming the given sequences.
  *
- * @param sequences the playlist sequence of each segment, so a caller can build a gap or a repeat
+ * @param sequences the playlist sequence of each entry, so a caller can build a hole or a repeat
  */
 export function rungPlaylist(sequences: readonly number[], options: PlaylistOptions = {}): string {
   const breaks = new Set(options.breaks ?? []);
+  const gaps = new Set(options.gaps ?? []);
   const lines = [
     HLS_M3U,
     `${HLS_VERSION}:3`,
@@ -71,9 +78,10 @@ export function rungPlaylist(sequences: readonly number[], options: PlaylistOpti
     '',
     ...sequences.flatMap((sequence) => [
       ...(breaks.has(sequence) ? [HLS_DISCONTINUITY] : []),
+      ...(gaps.has(sequence) ? [HLS_GAP] : []),
       buildProgramDateTime(FIXTURE_ANCHOR_MS + sequence * FIXTURE_FRAGMENT_SECONDS * MS_PER_SECOND),
       buildExtinf(FIXTURE_FRAGMENT_SECONDS),
-      reference(sequence),
+      gaps.has(sequence) ? `gap-${sequence}` : reference(sequence),
     ]),
     ...(options.recording || options.closed ? [HLS_ENDLIST] : []),
   ];

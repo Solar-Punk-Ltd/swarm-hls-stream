@@ -2,7 +2,7 @@
  * `pnpm browser:crash` — break something under a watching viewer, and report what they saw.
  *
  * Six crash scenarios already run against this deployment and all six pass, and every one of them
- * reads the **uploader's** log: no spurious VOD, a discontinuity armed, segment numbering contiguous.
+ * reads the **uploader's** log: no spurious VOD, a loss reported, segment numbering contiguous.
  * So this project can say an eight second bee outage loses no segments, and cannot say whether
  * anybody watching noticed, how long their picture stopped, whether it came back without a reload,
  * or whether the client told them anything while it was stopped.

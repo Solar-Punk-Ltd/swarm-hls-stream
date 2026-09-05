@@ -225,16 +225,21 @@ describe('the postage batch refusals in a log', () => {
   });
 });
 
-describe('every path that arms a discontinuity is counted', () => {
+describe('every path that loses a segment or declares a break is counted', () => {
   /**
-   * `StreamUploader` arms `pendingDiscontinuity` from four call sites and only one of them says
-   * "Failed to upload segment". Anchoring on that one matched a quarter of them, and two of the
-   * misses are reachable only through the OME puller, an engine this harness supports as a
-   * first-class target. Six suites assert `discontinuitiesArmed === 0` in the general wording "must
-   * not arm a discontinuity", so on OME each of them was asserting something it could not observe.
+   * `StreamUploader` announces from four call sites and only one of them says "Failed to upload
+   * segment". Anchoring on that one matched a quarter of them, and two of the misses are reachable
+   * only through the OME puller, an engine this harness supports as a first-class target. Six suites
+   * assert `discontinuitiesArmed === 0` in the general wording "must not arm a discontinuity", so on
+   * OME each of them was asserting something it could not observe.
    *
    * The fifth path does not go through `pendingDiscontinuity` at all, and the sixth is the one the
    * shipped SRS path actually takes. See the cases for both below.
+   *
+   * ⚠️ Since the owner's ruling of 2026-09-06 only two of the six really are a break: the origin
+   * declaring one and the engine's counter restarting. The rest report a lost segment, whose hole the
+   * playlist says with `#EXT-X-GAP` entries. All six stay in the counter, which is what every suite
+   * reading it means: did this broadcast lose or break anything.
    */
   for (const [name, line] of [
     ['the upload retry window being spent', DISCONTINUITY(2)],

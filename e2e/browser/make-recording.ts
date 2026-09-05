@@ -1,21 +1,32 @@
 /**
  * `pnpm make:recording` — produce a finished recording long enough to be worth seeking around in,
- * with a discontinuity at a known point, and print what a playback run needs to address it.
+ * with a hole in its timeline at a known point, and print what a playback run needs to address it.
+ *
+ * ## ⚠️ What this used to make, and what it makes now
+ *
+ * Until the owner's ruling of 2026-09-06 a writer-bee outage armed an `#EXT-X-DISCONTINUITY`, and this
+ * driver existed to put one in the middle of a long recording. A lost segment no longer arms one: the
+ * playlist lists every sequence it lost as an `#EXT-X-GAP` entry instead, so the media behind the hole
+ * keeps the numbers it was published with. **So this can no longer make a recording with a
+ * discontinuity in it at all.** The two things that still arm one are the origin declaring a break,
+ * which the shipped SRS webhook path never does, and the engine's own counter restarting, which is a
+ * different fault from the one this drives. What it makes now is a recording with a HOLE at a known
+ * point, which is the thing worth seeking across on the shipped build.
  *
  * ## Why this exists
  *
  * Phase 1.2 left two questions unreached, and the roadmap blamed the harness for both: seeking **past
- * a discontinuity**, and seeking into a region **whose chunks have left the local gateway**. Neither
- * is a harness gap. `browser:vod` already seeks to 0.5, 0.9 and then back to 0.2 of the duration, so
- * it crosses anything sitting in the middle, forwards and backwards.
+ * a break in the timeline**, and seeking into a region **whose chunks have left the local gateway**.
+ * Neither is a harness gap. `browser:vod` already seeks to 0.5, 0.9 and then back to 0.2 of the
+ * duration, so it crosses anything sitting in the middle, forwards and backwards.
  *
  * ⭐ **What was missing is the recording.** Every recording this project had was 27 seconds, which
  * fits in the player's buffer whole, so the harness asked both questions and the player answered
  * neither: nothing was retrieved during a seek because everything was already held.
  *
  * So this makes the artifact rather than another instrument. It publishes, takes the writer's bee node
- * away for longer than the uploader's retry window so a discontinuity is armed mid-recording,
- * publishes for as long again, and stops cleanly into a VOD.
+ * away for longer than the uploader's retry window so a segment is lost mid-recording, publishes for
+ * as long again, and stops cleanly into a VOD.
  *
  * ⚠️ **`stop` rather than `kill` on the bee node**, for the reason `faults.ts` gives: a SIGKILL risks
  * the database of the node holding the postage batch every measurement is paid for with.
@@ -25,18 +36,18 @@
  * Since the per-rung split of 2026-08-31 each rung publishes through its own Bee node, and
  * `bee-uploader` is the LOWEST rung's, because the stream catalog and every ladder's master playlist
  * go through the longest-lived batch, which is the cheapest rung's. So taking that container away
- * arms `#EXT-X-DISCONTINUITY` on the bottom rung alone: the other three keep publishing through
- * their own nodes and their playlists come out unbroken. A player that rides 720p through this
- * recording therefore crosses nothing, and `events.discontinuitiesArmed` is above zero either way.
- * The run prints which rung it landed on rather than leaving a reader to infer it, and a playback
- * run that needs to cross one has to ride that rung.
+ * costs the bottom rung a segment alone: the other three keep publishing through their own nodes and
+ * their playlists come out whole. A player that rides 720p through this recording therefore crosses
+ * nothing, and `events.discontinuitiesArmed`, which counts the uploader's loss lines as well as its
+ * break lines, is above zero either way. The run prints which rung it landed on rather than leaving a
+ * reader to infer it, and a playback run that needs to cross the hole has to ride that rung.
  *
  * Usage, from the repo root against a deployed profile:
  *
  *     E2E_PROFILE=latbench E2E_PORT_SLOT=7 pnpm make:recording
  *
  * It prints `BROWSER_VOD_OWNER` and `BROWSER_VOD_TOPIC` for the playback run, and where in the
- * recording the discontinuity landed so a report can say which seeks crossed it.
+ * recording the hole landed so a report can say which seeks crossed it.
  */
 
 import { envNumber } from '../src/browser/runFiles.js';
@@ -69,24 +80,28 @@ import { stageSegmentSeconds } from '../src/segmentLength.js';
  * rather than replay what it already holds.
  */
 const BEFORE_SEGMENTS = 45;
-/** Segments after it, so the discontinuity sits near the middle and seeks cross it in both directions. */
+/** Segments after it, so the hole sits near the middle and seeks cross it in both directions. */
 const AFTER_SEGMENTS = 45;
 /**
  * How long the writer's node stays down.
  *
  * Longer than `MANIFEST_UPLOAD_RETRY_WINDOW_MS` (15s), which is what makes the uploader give up on the
- * segment in flight and arm `#EXT-X-DISCONTINUITY`. Shorter and the segments merely buffer and flush,
- * which is scenario A and leaves no discontinuity to seek across.
+ * segment in flight and leave a hole its playlist lists as gap entries. Shorter and the segments merely
+ * buffer and flush, which is scenario A and leaves nothing to seek across.
  */
 const OUTAGE_MS = 20_000;
 /**
  * `RECORDING_ARM_DISCONTINUITY=0` makes the same recording without the outage.
  *
- * ⭐ **The control arm, and it is the whole reason this is a knob.** A long recording with a
- * discontinuity in it differs from the 27 second ones this project already has in **two** ways, so a
- * playback failure against it names neither. The same length with no discontinuity separates them.
+ * ⭐ **The control arm, and it is the whole reason this is a knob.** A long recording with a hole in
+ * it differs from the 27 second ones this project already has in **two** ways, so a playback failure
+ * against it names neither. The same length with no hole separates them.
+ *
+ * ⚠️ The variable keeps its name. It is what an operator types, it is written down in the bench
+ * records that used this driver, and renaming it would silently ignore every existing invocation.
+ * What it arms is now a hole rather than a discontinuity, which is what everything below says.
  */
-const ARM_DISCONTINUITY = process.env.RECORDING_ARM_DISCONTINUITY !== '0';
+const ARM_HOLE = process.env.RECORDING_ARM_DISCONTINUITY !== '0';
 const SEGMENT_WAIT_MS = 600_000;
 /** How often the finalize wait reads the log. Part of the wait's own derivation, so it is named. */
 const VOD_POLL_MS = 3_000;
@@ -136,15 +151,15 @@ async function main(): Promise<void> {
     console.log(`recording: ${await report()}`);
 
     beforeOutage = await progress();
-    if (ARM_DISCONTINUITY) {
+    if (ARM_HOLE) {
       const rungs = recordingProgress(await log()).rungs.map((rung) => rung.rung);
       armedRung = lowestRungOf(rungs);
-      console.log(`recording: taking ${beeUploader} away for ${OUTAGE_MS / 1000}s to arm a discontinuity`);
+      console.log(`recording: taking ${beeUploader} away for ${OUTAGE_MS / 1000}s to tear a hole`);
       if (armedRung !== null) {
         console.log(
           `recording: ${beeUploader} publishes the ${armedRung} rung of ${rungs.length} (${rungs.join(', ')}), ` +
             "plus the stream catalog and this ladder's master playlist. The other rungs publish through " +
-            `their own nodes and keep going, so the discontinuity is armed on ${armedRung} alone and only a ` +
+            `their own nodes and keep going, so the hole is torn in ${armedRung} alone and only a ` +
             'player riding that rung crosses one',
         );
       }
@@ -154,12 +169,12 @@ async function main(): Promise<void> {
       await host.start(beeUploader);
       beeIsDown = false;
     } else {
-      console.log('recording: control arm, no outage and no discontinuity');
+      console.log('recording: control arm, no outage and no hole');
     }
 
     console.log(
-      ARM_DISCONTINUITY
-        ? `recording: publishing ${after} more segments per rung past the discontinuity`
+      ARM_HOLE
+        ? `recording: publishing ${after} more segments per rung past the hole`
         : `recording: publishing ${after} more segments per rung`,
     );
     await waitFor(async () => (await progress()) >= beforeOutage + after, {
@@ -187,26 +202,26 @@ async function main(): Promise<void> {
       );
     }
 
-    if (!ARM_DISCONTINUITY) {
+    if (!ARM_HOLE) {
       // The control has to be a control. An outage nobody asked for, from a real hiccup, would put
       // the variable back in and the arm would look like a clean comparison.
       if (events.discontinuitiesArmed > 0) {
         throw new Error(
-          `the control arm armed ${events.discontinuitiesArmed} discontinuity(s) on its own, so it is not a control`,
+          `the control arm lost ${events.discontinuitiesArmed} segment(s) on its own, so it is not a control`,
         );
       }
-      console.log('recording: control arm clean, no discontinuity armed');
+      console.log('recording: control arm clean, nothing lost');
     } else if (events.discontinuitiesArmed === 0) {
-      // Reported rather than tolerated: a recording with no discontinuity answers a different
-      // question from the one this was made for, and a playback run against it would look like a
-      // pass. See scenario A — an outage inside the retry window buffers and flushes instead.
+      // Reported rather than tolerated: a recording with no hole answers a different question from
+      // the one this was made for, and a playback run against it would look like a pass. See
+      // scenario A — an outage inside the retry window buffers and flushes instead.
       throw new Error(
-        'the outage armed no discontinuity, so this recording cannot answer whether a viewer seeks ' +
-          'across one. The node came back inside the retry window.',
+        'the outage cost no segment, so this recording cannot answer whether a viewer seeks across a ' +
+          'hole. The node came back inside the retry window.',
       );
     }
     console.log(
-      `recording: ${events.discontinuitiesArmed} discontinuity(s) armed after ${beforeOutage} segments per rung`,
+      `recording: ${events.discontinuitiesArmed} loss line(s) after ${beforeOutage} segments per rung`,
     );
   } finally {
     await publisher.stop();
@@ -247,9 +262,9 @@ async function main(): Promise<void> {
     );
   } else {
     console.log(
-      ARM_DISCONTINUITY
-        ? 'recording ready. To play it back and seek across the discontinuity:'
-        : 'control recording ready, no discontinuity in it. To play it back and seek:',
+      ARM_HOLE
+        ? 'recording ready. To play it back and seek across the hole:'
+        : 'control recording ready, no hole in it. To play it back and seek:',
     );
   }
   console.log('');
@@ -259,10 +274,10 @@ async function main(): Promise<void> {
   console.log('');
   console.log(`  ${await report()}`);
   console.log(
-    ARM_DISCONTINUITY
-      ? `  discontinuity after roughly ${((100 * beforeOutage) / total).toFixed(0)}% of the recording` +
+    ARM_HOLE
+      ? `  hole after roughly ${((100 * beforeOutage) / total).toFixed(0)}% of the recording` +
           (armedRung === null ? '' : `, on the ${armedRung} rung and no other`)
-      : '  no discontinuity',
+      : '  no hole',
   );
 
   if (notFinalized !== null) {

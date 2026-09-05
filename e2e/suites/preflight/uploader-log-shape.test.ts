@@ -140,12 +140,16 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     'the same wait, for a rung whose drain lost the race to its own reconnect, which is the half of ' +
       'that scenario nothing else can observe',
   ),
-  // ⛔ The six below are one counter, `discontinuitiesArmed`. Six suites assert it is zero on a
-  // clean run, so a line nothing matches does not fail them, it passes them for ever on a stage
-  // arming discontinuities all night. A vacuous green is the worst thing this gate can be asked to
-  // prevent, which is why each of the six is listed rather than the family.
+  // ⛔ The six below are one counter, `discontinuitiesArmed`, which counts the uploader announcing a
+  // lost segment or a declared break. Six suites assert it is zero on a clean run, so a line nothing
+  // matches does not fail them, it passes them for ever on a stage losing segments all night. A
+  // vacuous green is the worst thing this gate can be asked to prevent, which is why each of the six
+  // is listed rather than the family.
+  //
+  // ⚠️ Only the third and the fifth are a break. Since the owner's ruling of 2026-09-06 the other
+  // four report a lost segment, whose hole the playlist says with `#EXT-X-GAP` entries instead.
   deployedMessage(
-    'discontinuities armed by a spent retry window',
+    'a spent retry window, which loses the segment in flight',
     (stream, index) => segmentUploadFailed(stream, index),
     'the zero-arm assertions in happy-path, abr-ladder, bee-outage-short, gateway-outage-viewer, ' +
       'multi-stream-concurrent and crash-writer-bee-pause, which turn vacuously green rather than ' +
@@ -153,7 +157,7 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
       'every one of them prints when it fails',
   ),
   deployedMessage(
-    'discontinuities armed by segments that never arrived',
+    'segments that never arrived',
     (stream) => segmentsNeverArrived(stream, stream),
     'the same seven assertions, for the path an engine that could not download from the origin takes',
   ),
@@ -164,20 +168,20 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
       'in the suite can see it at all',
   ),
   deployedMessage(
-    'discontinuities the OME puller reported',
+    'losses the OME puller reported',
     (stream) => omeSegmentLossReported(stream, stream, stream),
     "the same seven assertions on an OME deployment, where this line is written beside the uploader's " +
       'own and both have always counted, so losing it changes a count as well as blinding a check',
   ),
   deployedMessage(
-    'discontinuities the engine’s own counter restarting armed',
+    'the discontinuity the engine’s own counter restarting arms',
     (text, index) => datingReanchored(index, text, text),
     'the same seven assertions, for the path that goes nowhere near `pendingDiscontinuity`: the ' +
       'shipped SRS webhook declares no break of its own, so the reset is the only evidence there ' +
       'is and the segment run stays gapless, which leaves nothing else in the suite able to see it',
   ),
   deployedMessage(
-    'discontinuities armed for a gap the uploader inferred from the numbering',
+    'a hole the uploader inferred from the numbering',
     // ⚠️ Every substituted value takes the placeholder, the two indexes and the count included. A
     // real-looking number instead bakes itself into the fixed half, and the gate then demands the
     // deployment contain that number.
@@ -185,8 +189,8 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     "the same seven assertions, and scenario F's post-recovery wait, which is the only check in the " +
       'suite that asks for this family by itself. It is the only kind of loss the shipped SRS path ' +
       'produces: SRS posts each closed segment once and never retries, so a segment closed while ' +
-      'the uploader was dead is reported by nothing, the run either side of the join stays gapless, ' +
-      'and a deployment that cannot write this line leaves F asserting a gap it cannot see',
+      'the uploader was dead is reported by nothing, the run either side of the hole stays gapless, ' +
+      'and a deployment that cannot write this line leaves F asserting a hole it cannot see',
   ),
   /**
    * ⛔⛔⛔ **THIS ENTRY REFUSES EVERY LIVE SUITE UNTIL THE UPLOADER IS REDEPLOYED, AND THAT IS

@@ -117,10 +117,11 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'the retry counter the bee-outage scenarios report',
   },
   /*
-   * The four below are one counter, `discontinuitiesArmed` in `harness/logwatch.ts`. Six suites
-   * assert it is zero and scenarios/bee-outage-long asserts it is at least one, so a level that
-   * drops any of the four does not fail those six. It passes them, on a stage arming discontinuities
-   * all night. `originDeclaredDiscontinuity` is the one at `info` and so the first to go.
+   * The four below are one counter, `discontinuitiesArmed` in `harness/logwatch.ts`, which counts the
+   * uploader announcing a lost segment or a declared break. Six suites assert it is zero and
+   * scenarios/bee-outage-long asserts it is at least one, so a level that drops any of the four does
+   * not fail those six. It passes them, on a stage losing segments all night.
+   * `originDeclaredDiscontinuity` is the one at `info` and so the first to go.
    */
   {
     what: 'a spent upload retry window ("Failed to upload segment N for stream <stream>")',
@@ -135,7 +136,7 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     what: 'segments that never arrived ("… for stream <stream> never reached the uploader")',
     level: 'error',
     emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'segmentsNeverArrived(subject, this.streamId)' },
-    neededBy: 'discontinuitiesArmed, for a gap the engine could not download from the origin at all',
+    neededBy: 'discontinuitiesArmed, for a hole the engine could not download from the origin at all',
   },
   {
     what: 'origin-declared discontinuities ("Origin declared a discontinuity for stream <stream>")',
@@ -143,7 +144,8 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'originDeclaredDiscontinuity(this.streamId)' },
     neededBy:
       'discontinuitiesArmed, and the dangerous one to lose: the segment carrying the marker IS ' +
-      'uploaded, so nothing is missing and the gapless check is no backstop either',
+      'uploaded, so nothing is missing and the gapless check is no backstop either. Since 2026-09-06 ' +
+      'it is also one of only two lines in the family that really do mean a break',
   },
   {
     what: 'the OME puller reporting a loss ("[OME] … lost for <stream> after …")',
@@ -154,7 +156,7 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     },
     neededBy:
       "discontinuitiesArmed on an OME deployment, where this line rides beside the uploader's own " +
-      'report of the same loss rather than instead of it. One loss there arms the counter twice',
+      'report of the same loss rather than instead of it. One loss there moves the counter twice',
   },
   {
     what: 'the catalog giving up on its own state ("[StreamCatalog] State at index N failed to read")',

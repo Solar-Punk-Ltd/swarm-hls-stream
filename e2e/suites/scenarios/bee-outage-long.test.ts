@@ -11,13 +11,19 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
  * Scenario B — bee-uploader CRASH outage longer than the retry window (15s).
- * Expectation: the segment in flight when bee crashed exhausts its retry window and is dropped;
- * the uploader arms a discontinuity so the next good segment carries #EXT-X-DISCONTINUITY, then
- * uploads resume. Result: >=1 discontinuity armed, a gap in uploaded indices, clean resume.
+ * Expectation: the segment in flight when bee crashed exhausts its retry window and is dropped, the
+ * uploader reports the loss, and uploads resume. Result: >=1 loss reported, a gap in uploaded
+ * indices, clean resume.
+ *
+ * ⭐ Since the owner's ruling of 2026-09-06 the dropped segment leaves its sequence empty and the
+ * playlist lists it as an `#EXT-X-GAP` entry, so the numbering behind the hole never moves. It does
+ * NOT arm an `#EXT-X-DISCONTINUITY` any more: nothing restarted the encoder, so the media behind the
+ * hole is a continuation. What this suite reads is the uploader's own log, where the spent retry
+ * window is still announced in the same words, and `discontinuitiesArmed` still counts that line.
  *
  * Uses stop/start, NOT pause: a crashed bee refuses connections (ECONNREFUSED), which fails FAST
- * and trips the 15s retry deadline. A pause only *hangs* the request (it completes on unpause and
- * never arms a discontinuity — that is the frozen-but-alive case, exercised by scenario A). Since
+ * and trips the 15s retry deadline. A pause only *hangs* the request, so it completes on unpause and
+ * costs nothing at all, which is the frozen-but-alive case exercised by scenario A. Since
  * bee 2.8.1 a stopped node restarts fast enough that stop + 8s + readiness fits INSIDE the 15s
  * window (zero loss, nothing to assert), so the sleep is 25s to keep the fail-fast outage
  * comfortably past the window.
@@ -40,7 +46,7 @@ const MANIFEST_RESUME_WAIT_MS = 45_000;
  * gate trips as soon as any three segments exist anywhere on the ladder, which at two second
  * segments is before the 1080p rung has uploaded even one. That rung then has no pre-outage index
  * at all, its first surviving index is whatever came after the outage, and the hole the outage tore
- * has nothing on its left to make it visible. Live, 2026-08-29: the discontinuity was armed and the
+ * has nothing on its left to make it visible. Live, 2026-08-29: the loss was reported and the
  * product was correct, and this suite failed on `got: 5,6,7,8`.
  */
 const WARMUP_SEGMENTS = 3;
@@ -50,7 +56,7 @@ const MIN_STAMP_TTL_S = 600;
 
 const cfg = loadConfig();
 
-describe('B — bee crash > retry window: discontinuity, clean skip, resume', () => {
+describe('B — bee crash > retry window: the segment is dropped, reported, and uploads resume', () => {
   const host = makeHost(cfg);
   /**
    * ⛔⛔⛔ EVERY publisher node, not `bee-uploader` alone, and that is what this suite got wrong on a
@@ -80,7 +86,7 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
     await Promise.all(bees.map((bee) => host.start(bee).catch(() => undefined)));
   });
 
-  it('arms a discontinuity for the dropped segment and resumes cleanly', async () => {
+  it('reports the dropped segment and resumes cleanly', async () => {
     const events = async () => parseUploaderLog(await host.logsSince(uploader, startedAt));
     const byStream = async () => segmentIndicesByStream(await host.logsSince(uploader, startedAt));
     const expectedStreams = cfg.abrEnabled ? cfg.abrRungs.length : 1;
@@ -133,13 +139,13 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
       { timeoutMs: SEGMENT_WAIT_MS, intervalMs: 2_000, label: 'every stream resumes after the crash outage' },
     );
 
-    // One log read for both verdicts below, so the discontinuity count and the per-rung indices
-    // describe the same moment rather than two fetches apart.
+    // One log read for both verdicts below, so the loss count and the per-rung indices describe the
+    // same moment rather than two fetches apart.
     const settled = await host.logsSince(uploader, startedAt);
     const ev = parseUploaderLog(settled);
     assert.ok(
       ev.discontinuitiesArmed >= 1,
-      `a crash outage (> 15s window) must arm at least one discontinuity; armed: ${
+      `a crash outage (> 15s window) must cost at least one segment and say so; announced: ${
         ev.discontinuitiesArmed
       } (upload-failure segments: ${ev.discontinuitySegments.join(',')})`,
     );

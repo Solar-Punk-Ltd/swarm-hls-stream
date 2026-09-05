@@ -83,6 +83,12 @@ function taggedNumber(lines: readonly string[], tag: string): number | null {
  * Its own function because a caller can hold a playlist without knowing which rung of a ladder it
  * belongs to: `browser:vod` reads one off the address the player's own fragment log names, and a
  * rung name it invented would put a label nobody chose on a reference.
+ *
+ * ⛔ A gap entry is not one of these. Since the owner's ruling of 2026-09-06 the uploader lists every
+ * sequence it lost as an `#EXT-X-GAP` entry, so the numbering behind a hole does not move, and such an
+ * entry's URI names no chunk. It is refused by the same shape test that keeps a tag line out, because
+ * a hole is named `gap-<sequence>` and a reference is 64 lowercase hex characters. A probe that took
+ * one would ask a node for an address that never existed and file the miss as a retrieval.
  */
 export function segmentRefsOf(text: string): string[] {
   return text
@@ -97,6 +103,11 @@ export function segmentRefsOf(text: string): string[] {
  * Its own function because two readers want different things from the same list: a probe wants the
  * typical segment length, which says which stage a recording belongs to, and `browser:vod` wants the
  * sum, which is how long the rung actually holds.
+ *
+ * ⭐ A gap entry's own `#EXTINF` is counted, unlike its URI. Both readers are asking about the
+ * timeline rather than about the bytes, and a hole really does occupy that stretch of it. The
+ * duration on a gap entry is the deployment's declared fragment length, so it can only pull the
+ * median toward the nominal.
  */
 export function segmentSecondsOf(text: string): number[] {
   return text

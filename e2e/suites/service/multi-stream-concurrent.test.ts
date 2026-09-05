@@ -17,7 +17,7 @@ import { waitFor } from '../../src/harness/wait.js';
 /**
  * Service — two concurrent live streams upload independently. The uploader must track both in
  * activeStreams, give each its own catalog entry (distinct topic), and finalize each to its own VOD
- * — no cross-talk, no spurious discontinuity from the concurrency.
+ * — no cross-talk, and the concurrency costs neither a segment nor a break.
  *
  * Segments carry their stream now: the uploader writes `Segment N of <stream> uploaded`, so the
  * ladder case below judges gaps per rung-stream through `segmentIndicesByStream` rather than over a
@@ -116,7 +116,8 @@ describe('service — two concurrent streams upload independently', () => {
     assert.equal(
       duringConcurrency.discontinuitiesArmed,
       0,
-      `concurrent streams (no fault) must not arm a discontinuity; armed: ${duringConcurrency.discontinuitiesArmed}` +
+      `concurrent streams (no fault) must cost nothing and announce nothing; announced: ` +
+        `${duringConcurrency.discontinuitiesArmed}` +
         ` (upload-failure segments: ${duringConcurrency.discontinuitySegments.join(',')})`,
     );
 
