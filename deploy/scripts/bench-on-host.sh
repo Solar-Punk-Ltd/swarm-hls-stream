@@ -45,12 +45,18 @@
 # `uploader-log-shape` now refuses that before the first frame, but it only covers the log messages.
 # Deploy first whenever the change is in the uploader rather than in the suite.
 #
-# ⛔ SINCE 2026-09-04 EVERY `browser:*` SCRIPT RUNS THE TEN PREFLIGHT GATES FIRST, in the container,
-# before the driver starts. The suite's own scripts have always chained them with `&&`, and the
-# browser drivers were the one path with nothing in front of them at all. It cost twice: the served
-# client sat fifteen days stale between 2026-08-13 and 08-28 and every browser sitting in between
-# measured the old build, and the 2026-09-01 sitting above was lost to a stale uploader. `client-shape`
-# and `uploader-log-shape` both answer that, and neither ran here. There is no flag to switch it off,
+# ⛔ EVERY SCRIPT THAT DOES NOT RUN THE TEN PREFLIGHT GATES ITSELF RUNS BEHIND THEM HERE, in the
+# container, before the driver starts. The suite's own `test:e2e*` scripts chain them with `&&` in
+# `e2e/package.json` and need nothing from this file. A `browser:*` driver and a `bench:*` run chain
+# nothing, and both publish into the deployed stage and spend its postage. It cost twice on the
+# browser path: the served client sat fifteen days stale between 2026-08-13 and 08-28 and every
+# browser sitting in between measured the old build, and the 2026-09-01 sitting above was lost to a
+# stale uploader. `client-shape` and `uploader-log-shape` both answer that, and neither ran here.
+#
+# The fix of 2026-09-04 named `browser:*` alone, which left the benches, this script's own default
+# included, publishing with nothing in front of them. Which family a script belongs to is now READ
+# from `package.json` and `e2e/package.json` at launch rather than listed here, so a script written
+# tomorrow is gated until its own definition says it gates itself. There is no flag to switch it off,
 # because a gate that can be switched off from the command line is a warning.
 #
 # ⛔ AND IT REFUSES A CHECKOUT WITHOUT `.spend-ledger.env` BEFORE THE SYNC. The rsync below runs with
@@ -403,18 +409,40 @@ done
 # rather than a warning: a refusal exits non-zero and nothing after it runs.
 CONTAINER_PRELUDE=""
 
-# ⛔ The ten gates in `e2e/suites/preflight` judge the stage a viewer arm is about to measure, and
-# until 2026-09-04 the browser drivers were the one path that ran none of them. See this file's
-# header for the two sittings that cost. No flag turns this off: a gate that can be switched off
-# from the command line is a warning, and `browser:selfcheck` is not exempt either, since a stage
-# fault is exactly what the selfcheck would otherwise be blamed for.
+# ⛔ The ten gates in `e2e/suites/preflight` judge the stage a run is about to measure and spend on.
+# See this file's header for the sittings that cost. No flag turns this off: a gate that can be
+# switched off from the command line is a warning, and `browser:selfcheck` is not exempt either,
+# since a stage fault is exactly what the selfcheck would otherwise be blamed for.
+#
+# ⛔ Which scripts already carry the gates is read from the manifests rather than listed here, because
+# a list is edited by whoever remembers it and the whole cost of this defect was a list naming
+# `browser:*` and not `bench:*`. `pnpm ${SCRIPT}` runs from the repo root, every entry there
+# delegates to the e2e package, and the definition on that side is the one that either runs the
+# preflight suites ahead of every other suite or does not.
+#
+# ⛔ A script this cannot resolve, a manifest it cannot read and a missing `node` all come back as
+# ungated, which is the safe direction: the gates cost a script that already runs them a second
+# refusal and cost an ungated one nothing it was not about to spend anyway.
+runs_gates_first() {
+  node -e '
+const { readFileSync } = require("node:fs");
+const [root, wanted] = process.argv.slice(1);
+const scriptsIn = (manifest) => JSON.parse(readFileSync(root + manifest, "utf8")).scripts || {};
+const declared = scriptsIn("/package.json")[wanted];
+if (declared === undefined) process.exit(1);
+const delegated = /^pnpm --filter \S+ (\S+)$/.exec(declared.trim());
+const definition = delegated ? scriptsIn("/e2e/package.json")[delegated[1]] : declared;
+if (definition === undefined) process.exit(1);
+const firstSuite = definition.split("&&").find((step) => step.includes("suites/"));
+process.exit(firstSuite !== undefined && firstSuite.includes("suites/preflight/") ? 0 : 1);
+' "${REPO_ROOT}" "${SCRIPT}" 2> /dev/null
+}
+
 RUNS_PREFLIGHT=0
-case "${SCRIPT}" in
-  browser:*)
-    RUNS_PREFLIGHT=1
-    CONTAINER_PRELUDE="pnpm e2e:preflight && "
-    ;;
-esac
+if ! runs_gates_first; then
+  RUNS_PREFLIGHT=1
+  CONTAINER_PRELUDE="pnpm e2e:preflight && "
+fi
 
 # ⛔ The shaper runs in the same shell as the script it shapes, and after the gates: they judge the
 # stage rather than the link, so a refusal should install nothing on the interface. Sourcing the file
