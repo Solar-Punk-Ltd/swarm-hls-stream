@@ -5,8 +5,7 @@ import { describe, it } from 'node:test';
 
 import { ROOT_DIR } from '../src/config.js';
 import { parseBrowserArmState } from '../src/harness/browser.js';
-import { weeb3ArmRefusal } from '../src/harness/browserVerdict.js';
-import { MAX_WEEB3_SEGMENT_REQUESTS } from '../src/harness/crashArm.js';
+import { MAX_WEEB3_SEGMENT_REQUESTS, weeb3ArmRefusal } from '../src/harness/browserVerdict.js';
 
 import { armState } from './helpers/browserArmFixtures.js';
 
@@ -62,7 +61,7 @@ const CONSTANT = 'MAX_WEEB3_SEGMENT_REQUESTS';
  * for the numbers to differ.
  */
 const DECLARED_IN = {
-  'the harness, which every crash and rung arm imports': join('src', 'harness', 'crashArm.ts'),
+  'the harness, beside the rule it feeds': join('src', 'harness', 'browserVerdict.ts'),
   'V1, a viewer watching a live broadcast': join('suites', 'viewer', 'live-playback.test.ts'),
   'V4, a viewer playing a recording back': join('suites', 'viewer', 'vod-playback.test.ts'),
   'V5, a viewer watching a broadcast end': join('suites', 'viewer', 'broadcast-ended.test.ts'),

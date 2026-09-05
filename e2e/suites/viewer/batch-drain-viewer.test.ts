@@ -19,9 +19,9 @@ import { runBrowserArm } from '../../src/harness/browser.js';
 import {
   byteSourceArmRefusal,
   ladderResolutionRefusal,
+  MAX_WEEB3_SEGMENT_REQUESTS,
   viewerPlaybackRefusal,
 } from '../../src/harness/browserVerdict.js';
-import { MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/crashArm.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedRungs,

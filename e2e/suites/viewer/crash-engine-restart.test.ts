@@ -11,13 +11,12 @@ import {
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
-import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
+import { ladderResolutionRefusal, MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/browserVerdict.js';
 import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
   frozenOverlayRefusal,
-  MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
 } from '../../src/harness/crashArm.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';

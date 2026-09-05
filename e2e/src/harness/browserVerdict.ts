@@ -68,6 +68,22 @@ export function viewerPlaybackRefusal(result: BrowserArmResult): string | null {
   return null;
 }
 
+/**
+ * The most `/bytes/` requests an in-tab arm may make across a whole run.
+ *
+ * Every weeb-3 arm of the matrix made 8 or 9, against the gateway control's 366 in the same sitting.
+ * An arm reads through the gateway while its own node boots, so the honest figure is a handful rather
+ * than a zero, and single digits is the boundary between "the node served the video" and "the gateway
+ * did".
+ *
+ * ⛔ It was declared in `crashArm.ts` until 2026-09-05, so a squeeze, a rung outage and a batch drain
+ * each took their ceiling from the crash module. The number is a property of how an in-tab node boots
+ * and not of any one fault, so it belongs beside the rule that applies it.
+ * `test/weeb3RequestCeilingAgreement.test.ts` holds the three suites that declare their own copy
+ * against this one.
+ */
+export const MAX_WEEB3_SEGMENT_REQUESTS = 9;
+
 interface Weeb3ArmExpectation {
   /**
    * The most `/bytes/` requests an in-tab arm may make over the whole run.

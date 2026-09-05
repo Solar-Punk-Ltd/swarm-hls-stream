@@ -13,6 +13,7 @@ import {
 } from '../src/browser/feedState.js';
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import { type BrowserArmResult, type CrashRecoveryResult, parseBrowserArmState } from '../src/harness/browser.js';
+import { MAX_WEEB3_SEGMENT_REQUESTS } from '../src/harness/browserVerdict.js';
 import {
   CRASH_RECOVER_SECONDS,
   CRASH_SETTLE_SECONDS,
@@ -21,7 +22,6 @@ import {
   crashArmSummary,
   faultLogWindow,
   frozenOverlayRefusal,
-  MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
   UPLOAD_RETRY_WINDOW_MS,
 } from '../src/harness/crashArm.js';

@@ -77,16 +77,6 @@ const RESTORE_ALLOWANCE_S = 30;
 const MAX_ARM_MINUTES = 6;
 
 /**
- * The most `/bytes/` requests an in-tab crash arm may make across a whole run.
- *
- * Every weeb-3 arm of the matrix made 8 or 9, against the gateway control's 366 in the same sitting.
- * An arm reads through the gateway while its own node boots, so the honest figure is a handful rather
- * than a zero, and single digits is the boundary between "the node served the video" and "the gateway
- * did".
- */
-export const MAX_WEEB3_SEGMENT_REQUESTS = 9;
-
-/**
  * How much wall clock one crash arm gets, derived from the fault rather than chosen per suite.
  *
  * ⛔ It must outlast the driver's whole timeline: the in-tab node's settle before the measurement
