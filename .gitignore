@@ -82,3 +82,6 @@ docs/bench/in-tab-throttle-probe-*.md
 # carries whole batch ids and it is live state for one deployment, so it belongs beside that
 # deployment's env file and nowhere else. The `.env*` rule above does not cover it.
 .drain-stage.*.env
+
+# Python bytecode caches, written beside deploy/scripts/*.py by any invocation.
+__pycache__/
