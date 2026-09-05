@@ -4,10 +4,11 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
-import { BeePublisherPool, parsePublisherSpecs, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
+import { BeePublisher, BeePublisherPool, parsePublisherSpecs, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
 import { getErrorMessage } from '../src/utils/common.js';
 
 import { LOOPBACK_HOST } from './helpers/loopbackServer.js';
+import { PENDING, waitAndConfirmNothingHappened, waitFor, watchSettlement } from './helpers/waiting.js';
 
 const BATCH = {
   '360p': '1'.repeat(64),
@@ -280,57 +281,26 @@ describe('the request timeout every pooled node is built with', () => {
    */
   const UNBOUNDED_MS = 0;
 
-  /**
-   * How long a case waits before calling an upload stuck.
-   *
-   * A case about a bound needs a bound of its own. Awaiting an unbounded request would hang the
-   * runner rather than fail it, and a run that never ends is not a red test.
-   */
-  const GIVE_UP_MS = 1_500;
+  /** The control has to sit through the whole of this on every run, so it stays short. */
+  const CONTROL_WINDOW_MS = 1_500;
 
-  const STILL_IN_FLIGHT = Symbol('still in flight');
+  /** Only spent when a case is failing, so it is generous on purpose. See `waitFor`. */
+  const SETTLE_BUDGET_MS = 5_000;
 
-  /** What `work` failed with, `null` if it succeeded, or {@link STILL_IN_FLIGHT} if it did neither. */
-  async function outcomeWithin(work: Promise<unknown>, ms: number): Promise<unknown> {
-    let expire: ReturnType<typeof setTimeout> | undefined;
-    const giveUp = new Promise<symbol>((resolve) => {
-      expire = setTimeout(() => resolve(STILL_IN_FLIGHT), ms);
-    });
-
-    try {
-      return await Promise.race([
-        work.then(
-          () => null,
-          (error: unknown) => error,
-        ),
-        giveUp,
-      ]);
-    } finally {
-      clearTimeout(expire);
-    }
-  }
-
-  const upload = (pool: BeePublisherPool) => pool.coordinator().bee.uploadData(BATCH['360p'], new Uint8Array([0x2a]));
+  const upload = (publisher: BeePublisher) => publisher.bee.uploadData(publisher.stamp, new Uint8Array([0x2a]));
 
   it('fails an upload to a node that never answers, and the control shows the node never does', async () => {
-    const [bounded, unbounded] = await Promise.all([
-      silentBee().then(async (url) =>
-        outcomeWithin(upload(BeePublisherPool.single(url, BATCH['360p'], BOUND_MS)), GIVE_UP_MS),
-      ),
-      silentBee().then(async (url) =>
-        outcomeWithin(upload(BeePublisherPool.single(url, BATCH['360p'], UNBOUNDED_MS)), GIVE_UP_MS),
-      ),
-    ]);
+    const [boundedUrl, unboundedUrl] = await Promise.all([silentBee(), silentBee()]);
+    const bounded = watchSettlement(upload(BeePublisherPool.single(boundedUrl, BATCH['360p'], BOUND_MS).coordinator()));
+    const unbounded = watchSettlement(
+      upload(BeePublisherPool.single(unboundedUrl, BATCH['360p'], UNBOUNDED_MS).coordinator()),
+    );
 
     // The control first: without it a node that answered would pass this case for the wrong reason.
-    assert.equal(unbounded, STILL_IN_FLIGHT, 'the server answered, so nothing here was ever black-holed');
+    await waitAndConfirmNothingHappened(() => unbounded() === PENDING, CONTROL_WINDOW_MS);
 
-    assert.notEqual(
-      bounded,
-      STILL_IN_FLIGHT,
-      `an upload through a pool built with a ${BOUND_MS}ms timeout was still in flight after ${GIVE_UP_MS}ms`,
-    );
-    assert.match(getErrorMessage(bounded), /timeout/i, 'the upload failed, but not on its own deadline');
+    await waitFor(() => bounded() !== PENDING, SETTLE_BUDGET_MS);
+    assert.match(getErrorMessage(bounded()), /timeout/i, 'the upload failed, but not on its own deadline');
   });
 
   it('carries the same timeout on every node of a split deployment, not only the coordinator', async () => {
@@ -341,15 +311,15 @@ describe('the request timeout every pooled node is built with', () => {
       BOUND_MS,
     );
 
-    const outcomes = await Promise.all(
-      RUNG_ORDER.map((rung) =>
-        outcomeWithin(pool.forRung(rung).bee.uploadData(pool.forRung(rung).stamp, new Uint8Array([0x2a])), GIVE_UP_MS),
-      ),
-    );
+    const outcomes = RUNG_ORDER.map((rung) => watchSettlement(upload(pool.forRung(rung))));
 
     for (const [index, outcome] of outcomes.entries()) {
-      assert.notEqual(outcome, STILL_IN_FLIGHT, `${RUNG_ORDER[index]} is publishing through an unbounded client`);
-      assert.match(getErrorMessage(outcome), /timeout/i, `${RUNG_ORDER[index]} failed, but not on its own deadline`);
+      await waitFor(() => outcome() !== PENDING, SETTLE_BUDGET_MS);
+      assert.match(
+        getErrorMessage(outcome()),
+        /timeout/i,
+        `${RUNG_ORDER[index]} failed, but not on a deadline of its own`,
+      );
     }
   });
 });

@@ -15,7 +15,7 @@ import {
   retryUntilDeadlineAsync,
 } from '../src/utils/common.js';
 
-import { waitFor } from './helpers/waiting.js';
+import { PENDING, waitFor, watchSettlement } from './helpers/waiting.js';
 
 describe('getErrorMessage', () => {
   it('returns the message of a real Error', () => {
@@ -287,28 +287,11 @@ describe('retryUntilDeadlineAsync when an attempt does not end', () => {
   /** Only spent when a case is failing, so it is generous on purpose. See `waitFor`. */
   const GIVE_UP_MS = 5_000;
 
-  const PENDING = Symbol('pending');
-
-  /** Follows a promise without awaiting it, so a case can assert on one that may never settle. */
-  function watch(work: Promise<unknown>): () => unknown {
-    let outcome: unknown = PENDING;
-    void work.then(
-      (value) => {
-        outcome = value;
-      },
-      (error: unknown) => {
-        outcome = error;
-      },
-    );
-
-    return () => outcome;
-  }
-
   const neverSettles = () => new Promise<never>(() => {});
 
   it('rejects on the deadline instead of waiting on the attempt for ever', async () => {
     let calls = 0;
-    const outcome = watch(
+    const outcome = watchSettlement(
       retryUntilDeadlineAsync(
         () => {
           calls++;
@@ -332,7 +315,7 @@ describe('retryUntilDeadlineAsync when an attempt does not end', () => {
 
   it('spends one deadline over every attempt, not a fresh one per attempt', async () => {
     let calls = 0;
-    const outcome = watch(
+    const outcome = watchSettlement(
       retryUntilDeadlineAsync(
         async () => {
           calls++;
@@ -363,7 +346,7 @@ describe('retryUntilDeadlineAsync when an attempt does not end', () => {
 
     try {
       let failTheAttempt!: (error: Error) => void;
-      const outcome = watch(
+      const outcome = watchSettlement(
         retryUntilDeadlineAsync(
           () =>
             new Promise<never>((_, reject) => {

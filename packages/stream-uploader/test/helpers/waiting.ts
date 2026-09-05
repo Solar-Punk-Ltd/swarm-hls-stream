@@ -51,3 +51,30 @@ export async function waitAndConfirmNothingHappened(stillTrue: () => boolean, wi
     );
   }
 }
+
+/** {@link watchSettlement}'s answer while the promise it follows has neither resolved nor rejected. */
+export const PENDING = Symbol('pending');
+
+/**
+ * Follows a promise without awaiting it, and reports what it did or {@link PENDING} if it has yet to
+ * do anything.
+ *
+ * For the cases that assert a bound. Awaiting a promise that may never settle hangs the runner rather
+ * than failing it, and a run that never ends is not a red test, so the waiting above does the asserting
+ * instead: `waitFor` for the one that must settle, `waitAndConfirmNothingHappened` for the control that
+ * must not. Following the promise here is also what keeps a late rejection from reaching the process
+ * unhandled once the case has moved on.
+ */
+export function watchSettlement(work: Promise<unknown>): () => unknown {
+  let outcome: unknown = PENDING;
+  void work.then(
+    (value) => {
+      outcome = value;
+    },
+    (error: unknown) => {
+      outcome = error;
+    },
+  );
+
+  return () => outcome;
+}
