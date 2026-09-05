@@ -335,6 +335,26 @@ export class StreamOrchestrator {
       // unknown-owner rule in `mayTakeOver`. Reaching here at all is the uncommon case: an engine
       // that resumed the stream with segments never calls this method again.
       this.streamClaimants.set(streamId, claimant);
+      // ⛔ Reaching here at all proves the engine opened a NEW publish session, so what the recovered
+      // session left in these two is a fact about a counter that no longer exists. Every caller of
+      // this method is a fresh publish (SRS's on_publish, OME's opening admission, `POST
+      // /stream/start`), and a session that stayed open across our crash resumes through
+      // `handleSegment` instead and never arrives here. Both shipped engines restart their segment
+      // counter per session, and a whole-stack restart restarts SRS itself, so the arrivals after
+      // this open at zero.
+      //
+      // Kept, the filter answered every one of those first indexes `{ accepted: true }` without
+      // uploading anything, so the engine never retried, and `lastAccountedIndex` sitting above the
+      // new counter meant no gap was inferred either. The new session's opening was simply gone.
+      // `ManifestManager.placeInBroadcast` re-anchors a restarted counter forwards, so those
+      // segments publish at fresh sequences rather than colliding with what the recovered manifest
+      // already names.
+      //
+      // The accounting entry is deleted rather than reset, for the reason `recoverStream` gives for
+      // seeding nothing from an entry that holds nothing: there is no index to measure the new
+      // counter against, so the first arrival must infer no gap at all.
+      this.processedSegments.set(streamId, this.newDuplicateFilter());
+      this.lastAccountedIndex.delete(streamId);
       // The recovery timer that was watching this stream has just been cancelled, so from here it is
       // an ordinary live stream and needs the ordinary watchdog. `handleSegment` arms it on the other
       // route out of recovery, which is the one both shipped engines take.

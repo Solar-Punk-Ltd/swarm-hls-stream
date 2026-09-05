@@ -1024,6 +1024,100 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     await orch.cleanup();
   });
 
+  /**
+   * A recovering stream that is announced again is a NEW engine session, by construction: an engine
+   * whose publish session stayed open across our crash resumes by delivering segments and never calls
+   * `startStream`. Every caller of it is a fresh publish, and both shipped engines restart their
+   * segment counter per session, so the arrivals after the announce open at zero and collide with the
+   * indexes the previous session left in the filter.
+   *
+   * Nothing noticed, which is the worst part. A collision returns `{ accepted: true }`, so the engine
+   * never retries, and `lastAccountedIndex` sat above the new counter so no gap was inferred either.
+   */
+  it('starts the duplicate filter fresh when a recovering stream is announced again', async () => {
+    const id = 'live/stream';
+    const uploaded: string[] = [];
+    const restored = makeRecoveredState(id);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+      },
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(id)],
+        load: () => ({
+          ...restored,
+          segments: [0, 1, 2].map((index) => ({ index, duration: 2, ref: `ref${index}`, discontinuity: false })),
+        }),
+      }),
+    );
+
+    await orch.recoverStreams();
+    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 'the re-announce resumes the recovered stream');
+
+    const delivered = [0, 1, 2, 3].map((index) => `new session seg${index}`);
+    delivered.forEach((payload, index) => {
+      assert.deepEqual(orch.handleSegment(id, index, 2, Buffer.from(payload)), { accepted: true });
+    });
+
+    // The queue runs at concurrency 1 in delivery order, so waiting on the last is a barrier on
+    // every one before it rather than a guess at timing.
+    await waitFor(() => uploaded.includes(delivered[3]), SETTLE_CEILING_MS);
+    assert.deepEqual(
+      uploaded,
+      delivered,
+      'the new session opened at zero and its segments were swallowed as duplicates of the recovered session',
+    );
+    await orch.cleanup();
+  });
+
+  /**
+   * The half that must not change. Segments resuming with no announce is the route both shipped
+   * engines actually take out of recovery, and there the counter did not restart: a resumed puller
+   * re-serves the origin's whole current window, so its opening arrivals really are media this
+   * broadcast has already paid to publish.
+   */
+  it('keeps the restored filter for a session that resumes by delivering segments', async () => {
+    const id = 'live/stream';
+    const uploaded: string[] = [];
+    const restored = makeRecoveredState(id);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+      },
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(id)],
+        load: () => ({
+          ...restored,
+          segments: [0, 1, 2].map((index) => ({ index, duration: 2, ref: `ref${index}`, discontinuity: false })),
+        }),
+      }),
+    );
+
+    await orch.recoverStreams();
+
+    for (const index of [1, 2, 3]) {
+      assert.deepEqual(orch.handleSegment(id, index, 2, Buffer.from(`replayed window seg${index}`)), {
+        accepted: true,
+      });
+    }
+
+    await waitFor(() => uploaded.includes('replayed window seg3'), SETTLE_CEILING_MS);
+    assert.deepEqual(
+      uploaded,
+      ['replayed window seg3'],
+      'a redelivered window has to stay suppressed, or surviving a crash re-pays for the segments it restored',
+    );
+    await orch.cleanup();
+  });
+
   it('reports that a stream with no pending finalize had nothing to defer', async () => {
     const clock = new FakeClock();
     const orch = makeRecoveringOrchestrator(clock, [], []);
