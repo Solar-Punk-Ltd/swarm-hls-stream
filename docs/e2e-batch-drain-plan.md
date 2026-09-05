@@ -185,6 +185,18 @@ not see and the ladder suite's timeline check caught after the restore. The segm
 compares the uploader container's value with the engine's, and the durable value belongs in the
 profile's engine env file, the owner's.
 
+## What the second sitting found, 2026-09-05
+
+Scenario L is green live. With the fragment length in the engine's env file, the refusal line written
+once per answer bee gives, bee's own words in it, and the drop counter read as the difference of two
+scrapes, the suite saw the 1080p batch fill after 15.7 s of broadcast, bee answer `402 batch is
+overissued`, the master come down to three rungs 37.3 s after the first refusal, and 20 segments dropped
+on the drained rung over about a minute of ramp, near the eighteen the model above expected. The other
+three rungs lost nothing. The restore put the original batch back and the ladder suite passed after it.
+Cost 0.0591 BZZ across the four publishing nodes plus the 0.0383 BZZ batch. The record is
+`docs/bench/one-rung-runs-dry-2026-09-05.md`. V11 on each byte source is still to run, and decision 5
+is still not built.
+
 ## What is built, in order
 
 1. The named log line and the per-rung dropped count in the uploader, in the log contract, unit tested.
@@ -193,5 +205,5 @@ profile's engine env file, the owner's.
    sandbox the other scripts use.
 4. The scenario suite and the viewer variant, behind the ten gates, with the new script wired into
    `bench-on-host.sh` like the others.
-5. One proving sitting for scenario L, then one for V11 on each byte source, each with its own arming
-   because a small batch is drained once. Then the coverage map row.
+5. One proving sitting for scenario L, green on 2026-09-05, then one for V11 on each byte source, each
+   with its own arming because a small batch is drained once. Then the coverage map row.
