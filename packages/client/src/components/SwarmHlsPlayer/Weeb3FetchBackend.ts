@@ -22,11 +22,16 @@ type WithoutMethodBivariance<T> = {
  *
  * The opposite mistake, a member invented here that weeb-3 never had, is caught where the real module
  * is loaded. See {@link Weeb3Module}, and read its note before reaching for a cast there.
+ *
+ * ⛔ **Function-typed properties rather than method signatures, and that is load-bearing too**, for
+ * the same reason {@link WithoutMethodBivariance} exists. Written as `start(options?: unknown): void`
+ * these are methods, the loader's check against them is the loose one, and a release that narrowed a
+ * parameter this client passes would satisfy the interface in silence.
  */
 export interface Weeb3Node extends WithoutMethodBivariance<Pick<Weeb3No103, 'start' | 'ready' | 'retrieveBytes'>> {
-  start(options?: unknown): void;
-  ready(minConnections: number, timeoutMs: number): Promise<boolean>;
-  retrieveBytes(address: string): Promise<Uint8Array>;
+  start: (options?: unknown) => void;
+  ready: (minConnections: number, timeoutMs: number) => Promise<boolean>;
+  retrieveBytes: (address: string) => Promise<Uint8Array>;
 }
 
 /**
