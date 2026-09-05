@@ -315,8 +315,8 @@ describe(
         );
         assert.ok(
           isContiguous(run),
-          `${streamId} lost a segment after the ladder was down to the rungs that kept their postage; ` +
-            `got: ${run.join(',')}`,
+          `${streamId} lost a segment after the ladder was down to the rungs that kept their postage. ` +
+            `Got: ${run.join(',')}`,
         );
       }
 
