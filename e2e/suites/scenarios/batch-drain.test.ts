@@ -55,7 +55,8 @@ import { waitFor } from '../../src/harness/wait.js';
  * `deploy/scripts/drain-stage.sh arm --rung=<r> --batch=<64hex>` writes a fresh depth 17 batch into
  * that rung's entry of `BEE_PUBLISHERS` and redeploys the uploader, and `restore` puts the original
  * back. Both are the operator's, and `restore` is the operator's **after** this suite has run: the
- * batch is spent by then and the rung publishes nothing until it is replaced. Nothing here calls
+ * batch has filled by then and the rung is refused on most of what it publishes until the original
+ * is put back. Nothing here calls
  * either script, and nothing here buys a batch. `requireArmedStage` in `before()` refuses a stage
  * that was not armed, and refuses a drain batch a previous run already spent.
  *
