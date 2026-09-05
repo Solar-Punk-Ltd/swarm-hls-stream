@@ -133,29 +133,56 @@ restart: it is a segment that arrived out of order, and it takes its true place 
 
 ⚠️ **The segment the restart lands on carries the discontinuity itself**, whatever the engine
 declared, and only that one segment. The SRS webhook path delivers a segment with no break of its
-own, so on the shipped engine the reset is the only evidence there is: the other things that arm a
-break are a failed segment upload, a loss the OME puller reported, and a gap in the engine's own
-numbering, and a counter reset implies none of them.
+own, so on the shipped engine the reset is the only evidence there is. It is one of only two things
+that arm a break at all: the other is the origin declaring one through `markDiscontinuity`.
+
+### A segment that was lost is said with `#EXT-X-GAP`, not with a break
+
+⛔ **Owner ruling of 2026-09-06, "Option A, say the gap".** A segment nothing took leaves its sequence
+empty, and the playlist lists every empty sequence between two held segments as an `#EXT-X-GAP` entry
+carrying the same derived date-time, the deployment's declared fragment length and a URI of
+`gap-<sequence>`. RFC 8216bis §4.4.4.7 defines the tag as an entry whose URI holds no media and which
+a client should skip, and hls.js 1.6.15 reads it into `frag.gap` and skips the fragment.
+
+The alternative was leaving the hole out, which is what the playlists did until then, and HLS numbers
+the entries it lists consecutively from `#EXT-X-MEDIA-SEQUENCE`. So every entry behind a hole was
+numbered one lower than its own sequence until the window's head crossed the hole, and one higher
+after. Two things broke there: the rolling playlist renumbered media a viewer was already holding, and
+a rung that lost one segment stopped agreeing with its siblings about which instant segment N covers,
+which is the whole reason all four rungs derive their numbering from one anchor.
+
+⚠️ **A hole is not a break.** A lost segment does not restart the encoder's clock, so the media behind
+the hole is a continuation and the dates carry on stepping one fragment per sequence. The three loss
+paths, a failed upload, a loss the OME puller reported and a hole inferred from the numbering, arm no
+`#EXT-X-DISCONTINUITY` and keep their log lines unchanged.
+
+⛔ A gap entry never starts a live window and never ends a playlist: the window is a slice of the
+segments actually held, so `#EXT-X-MEDIA-SEQUENCE` is always a held segment's own sequence and a hole
+behind the window's first held segment is not emitted. The window budgets the gap lines against
+`LIVE_WINDOW_MAX_BYTES` too, and a hole too wide to afford stops the window at it rather than pushing
+the published manifest past one bee chunk.
+
+⭐ `#EXT-X-VERSION` stays at 3. RFC 8216bis §8 lists no minimum protocol version for `#EXT-X-GAP`.
 
 ### A gap in the engine's numbering is a loss nobody reported
 
 ⛔ **SRS posts each closed segment to `on_hls` once and never retries.** So every segment it closed
 while this service was down or unreachable is simply gone, and nothing tells the uploader: the OME
 puller is what calls `handleSegmentLoss`, and the SRS path only calls it for a segment it delivered
-and had refused. Left there, the playlist published the arriving index at a sequence and a date the
-width of the gap above the last one with no `#EXT-X-DISCONTINUITY` in front, which promises a viewer
-media the playlist does not name and stalls hls.js on the join.
+and had refused. Left unnoticed, the loss is never counted, never reaches the health signal and
+never reaches an operator.
 
 `StreamOrchestrator` therefore keeps the last index it accounted for per stream, and a segment
 arriving more than one above it is a skip. The indexes in between that its duplicate filter does not
 hold are the loss: they are counted into `swarm_hls_segments_lost_total`, they set the
-`segment_loss` health signal, and the arriving segment carries the break.
+`segment_loss` health signal, and their sequences stay empty so the playlist lists them as gap
+entries.
 
-⚠️ **Three things it does not do.** It does not report a gap the engine already reported, because a
-reported loss moves the accounting too, so one hole is one break on OME as well. It does not read
-the engine's counter going backwards as a gap, which is the restart above. And a session recovered
+⚠️ **Three things it does not do.** It does not report a hole the engine already reported, because a
+reported loss moves the accounting too, so one hole is announced once on OME as well. It does not read
+the engine's counter going backwards as a hole, which is the restart above. And a session recovered
 from an entry holding no segments infers nothing on its first arrival, because a broadcast opens at
-whatever number a warm engine's counter is on and there is nothing to measure a gap from.
+whatever number a warm engine's counter is on and there is nothing to measure a hole from.
 
 ⚠️ **A stamp costs the live window about 50 bytes per segment.** The window is a byte budget against
 one bee chunk (`LIVE_WINDOW_MAX_BYTES`), so it now holds roughly 30 segments where it held about 50,

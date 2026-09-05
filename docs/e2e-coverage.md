@@ -110,7 +110,8 @@ refusal names redeploying as the fix and rewording the patterns as the wrong one
 one is tempting and buys a green run against code nobody is shipping.
 
 Since 2026-09-01 it lists every family the harness parses, nineteen at this writing and the gate prints its own count rather than trusting this sentence: the four originals, the
-finalize flips and session ends seven scenarios wait on, the six lines that arm a discontinuity
+finalize flips and session ends seven scenarios wait on, the six lines that say the uploader lost a
+segment or declared a break
 (six suites assert that count is zero, and a line nothing matches passes them vacuously green), the
 catalog-lost discriminator, the catalog announce, and the finalize that resumes rather than
 republishes after a crash. The finalize one reports whether scenario H's kill landed inside the window
@@ -121,10 +122,13 @@ The newest, added 2026-09-04, is the line naming a postage batch bee refused, an
 and worked out from the engine's own numbering. It is the only kind of loss the shipped SRS path
 produces, because SRS posts each closed segment to the webhook once and never retries, so everything
 it closed while the uploader was dead is simply absent. Scenario F waits on that family by itself,
-which is why `logwatch` counts it separately as well as inside the armed total. The fifth was added
+which is why `logwatch` counts it separately as well as inside the total. The fifth was added
 the same day with the re-anchored dating: the segment where the engine's own counter restarted now
 carries a break, and that path goes nowhere near `pendingDiscontinuity`. Both leave the uploaded
-segment run gapless, so nothing else in the suite can see either of them. Three entries now refuse
+segment run gapless, so nothing else in the suite can see either of them. ⚠️ Since 2026-09-06 only two
+of the six really are a break, the origin declaring one and the counter restarting. The other four
+report a lost segment, whose hole the playlist says with gap entries, and they stay in the family
+because every suite reading the count is asking whether the broadcast lost or broke anything. Three entries now refuse
 any uploader built
 before the messages moved into the shared contract even though no wording changed, one string used
 to be assembled across a `+` join and one lived in a file the gate does not read, so the first run
@@ -221,7 +225,7 @@ prints as 50% full, which is the arithmetic being honest rather than a batch hal
 | Viewer: broadcast ends cleanly on screen                                                                 | V5, green 2026-09-04 in both byte sources at `bc9df49`                                                                                                                                                                                                                                                                                                            | in every full sitting                                         |
 | Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, green 2026-09-04 in both byte sources at `bc9df49`                                                                                                                                                                                                                                                                                                     | in every full sitting                                         |
 | weeb3 actually served the bytes (arm proof)                                                              | every one of the eleven in-browser viewer tests refuses an arm that is not the condition it is filed as, eight through `weeb3ArmRefusal` directly and V4, V5 and V11 through `byteSourceArmRefusal`, which applies the whole-run ceiling of nine gateway reads to an in-tab arm and no ceiling to a gateway one. V4 and V5 proven live 2026-09-04, six reads each | in every in-browser sitting                                   |
-| Playlist timeline: sequence 0 and a date-time on every segment                                           | asserted live by seven suites since 2026-09-03, green 2026-09-04 in both byte sources at `bc9df49`                                                                                                                                                                                                                                                                | in every full sitting                                         |
+| Playlist timeline: sequence 0, a date-time on every entry, and every hole said with gap entries          | asserted live by seven suites since 2026-09-03, green 2026-09-04 in both byte sources at `bc9df49`. Since the owner's ruling of 2026-09-06 a segment the broadcast lost is published as an `#EXT-X-GAP` entry rather than left out, so the numbering behind a hole never moves, and the count is read per rung and printed beside the discontinuities. Not yet run live | in every full sitting                                         |
 | One rung's postage batch runs dry, the broadcast survives                                                | scenario L green live 2026-09-05 at `cb333ca`: the 1080p batch filled after 15.7 s of broadcast, bee answered `402 batch is overissued`, the master came down to three rungs 37.3 s after the first refusal, and the other three rungs lost nothing. The record is `docs/bench/one-rung-runs-dry-2026-09-05.md`. `batch-drain-viewer` has not run live yet        | V11 on each byte source, one arming each, a batch drains once |
 
 ### Reading the letters
@@ -298,8 +302,8 @@ deployment's nominal fragment length. The contract is described in
 
 `manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the rulebook, and
 `e2e/test/manifestContract.test.ts` proves it against playlist text: sequence 0 on the first playlist
-of a broadcast, a readable wall clock on every segment, strictly rising stamps, and a step of exactly
-one fragment between segments that carry no `#EXT-X-DISCONTINUITY` between them. That is free and it
+of a broadcast, a readable wall clock on every entry, strictly rising stamps, and a step of exactly
+one fragment between entries that carry no `#EXT-X-DISCONTINUITY` between them. That is free and it
 runs in CI.
 
 Across a discontinuity a forward step of any size is legal, decided by the owner on 2026-09-03. An
@@ -307,6 +311,14 @@ engine restart inside a broadcast re-anchors the dating on the wall clock the en
 the step across that break is the length of the outage and nothing rounds it to fragments. A step
 that does not move forwards stays a failure wherever it appears, discontinuity or not, because a date
 that repeats or goes backwards is media a viewer is already holding being re-dated.
+
+**A hole is said with gap entries, decided by the owner on 2026-09-06.** A segment the broadcast lost
+is published as an `#EXT-X-GAP` entry carrying its own derived date-time, rather than left out, so the
+stamps step one fragment at a time straight through it and the media behind it keeps the numbers it
+was published with. A step of two fragments or more therefore means the hole was left out of the
+playlist, which is the numbering defect the entries exist to prevent, and that is still what the
+contract refuses. A lost segment arms no discontinuity any more: it does not restart the encoder's
+clock, so the media behind the hole is a continuation.
 
 ⛔ **The uploader's log cannot falsify any of it, by design.** The log names the engine's own segment
 index and the feed's SOC index, because those are what correlate with the engine's logs and with a
@@ -327,10 +339,13 @@ call it:
 | F `uploader-crash-recovery`                 | the recovered session still writing the playlist a viewer holds, on sequences restored off disk | no         |
 
 Each one prints one line per rung: whether the feed answered a live playlist or a recording, how many
-segments it names, the sequence it declares and the span of dates it holds. A refusal names the rung,
-the segment and the date it objected to. Everything but the sequence is asserted in all seven: a wall
-clock on every segment, strictly rising, stepping by a whole number of fragments, nothing wider
-without an `#EXT-X-DISCONTINUITY`, and no date before this project existed.
+media segments it names, how many gap entries and how many discontinuities it declares, the sequence
+it declares and the span of dates it holds. A refusal names the rung, the entry and the date it
+objected to. Everything but the sequence is asserted in all seven: a wall clock on every entry,
+strictly rising, stepping by a whole number of fragments, nothing wider without an
+`#EXT-X-DISCONTINUITY`, and no date before this project existed. `service/happy-path` and
+`service/abr-ladder` also assert zero gap entries, which is the published half of the zero they
+already assert off the log.
 
 ⚠️ **Where the sequence column says less than "asserted", read the next section for why.** It is never
 a promise nobody checked: the sequence is asserted exactly where the playlist can be shown to be the
@@ -375,13 +390,14 @@ at the broadcast's first segment. F is there for the dates and the gaps, which i
 session's restored numbering shows.
 
 Since 2026-09-03 F reads the timeline **twice**, and the first read is the one the scenario is about.
-As soon as segments resume it waits for the uploader to report the gap the engine never posted, then
-polls a read until an `#EXT-X-DISCONTINUITY` is inside a published window and judges that read. The
-old single read at the end could not see the join at all: the window is about 31 segments and the read
-came after a 60 second timeout plus the catalog's lag, so the join had always slid out, and F was
-green on 2026-09-03 while saying nothing about it. The break has to be there because the date step
-across the join is the length of the outage, and a step wider than one fragment is legal only across
-a break.
+As soon as segments resume it waits for the uploader to report the hole the engine never posted, then
+polls a read until the gap entries for that hole are inside a published window and judges that read.
+The old single read at the end could not see the join at all: the window is about 31 entries and the
+read came after a 60 second timeout plus the catalog's lag, so the join had always slid out, and F was
+green on 2026-09-03 while saying nothing about it. Since 2026-09-06 F waits on the gap entries rather
+than on a break, and also asserts the playlists declare no discontinuity: the entries are what keep
+the dates stepping one fragment at a time across the crash, and a break would tell every viewer
+already holding the playlist to flush what they had buffered for a join that never happened.
 
 The fragment length is the run's own declaration, `E2E_EXPECT_SEGMENT_S`, which
 `suites/preflight/segment-length.test.ts` has already held the deployed stage to. A run declaring
@@ -391,5 +407,7 @@ The wired assertions ran green in the 36 of 36 gateway sitting of 2026-09-03, an
 the break across the uploader's own downtime on both runs of that night: one `#EXT-X-DISCONTINUITY` per
 rung at `MEDIA-SEQUENCE:0`, across a two to three segment gap, with the contract holding, and the same
 window a minute later with the join gone. See `docs/bench/sequence-zero-and-timestamps-2026-09-03.md`.
+⚠️ That reading is of the old behaviour. On the build after 2026-09-06 the same fault publishes two to
+three gap entries per rung and no discontinuity.
 Two things still to read off a sitting's printed summaries: whether the ladder's four rungs really
 agree segment for segment, and which of E and the ABR restart actually reached the sequence assertion.

@@ -842,9 +842,11 @@ equally what any other container looks like from here, so `countPesPackets` sepa
 picture from bytes that are not media. `opening_segments_withheld_total` read next to
 `segments_uploaded_total` tells the guard working from a publisher sending nothing.
 
-⚠️ **Still unreached, and both need a longer recording than 27 seconds**: seeking **past a
-discontinuity**, and seeking into a region **whose chunks have left the local gateway**. On a recording
-that fits in the buffer whole the harness asks both questions and neither is exercised.
+⚠️ **Still unreached, and both need a longer recording than 27 seconds**: seeking **past a break in
+the timeline**, and seeking into a region **whose chunks have left the local gateway**. On a recording
+that fits in the buffer whole the harness asks both questions and neither is exercised. ⚠️ Since
+2026-09-06 the fault `make:recording` drives leaves a HOLE said with `#EXT-X-GAP` entries rather than
+a discontinuity, so that driver can no longer produce a recording with a break in it at all.
 
 Live seeking is a different feature and belongs in 1.3.
 
@@ -876,9 +878,13 @@ was **not** what shipped: it waits 30 polls and then pays for the slowest reques
 ## Phase 2 — crash recovery, the scenarios that are missing
 
 **Covered today** (`e2e/suites/scenarios/`): uploader hard crash resumes without a spurious VOD;
-engine restart yields a fresh stream on reconnect; an 8s bee outage loses nothing and arms no
-discontinuity; a long bee outage arms one and resumes; a viewer-gateway outage does not stop uploads;
-a clean stop finalizes a VOD.
+engine restart yields a fresh stream on reconnect; an 8s bee outage loses nothing and announces
+nothing; a long bee outage loses the segment in flight, says so, and resumes; a viewer-gateway outage
+does not stop uploads; a clean stop finalizes a VOD.
+
+⚠️ Since the owner's ruling of 2026-09-06 a lost segment leaves a hole the playlist lists as
+`#EXT-X-GAP` entries rather than a break, so a bee outage no longer arms an `#EXT-X-DISCONTINUITY`.
+The two things that still do are the origin declaring one and the engine's own counter restarting.
 
 ⚠️ **Every one of those reads the uploader's log.** They answer whether the publisher did the right
 thing, and all six pass. **`pnpm browser:crash` asks the other question**: what a viewer saw, from a

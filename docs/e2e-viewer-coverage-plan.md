@@ -213,7 +213,9 @@ Where the three blockers stand:
   green rather than as a diagnosis.
 - **V8's counter is soft.** `discontinuitiesArmed` counts log lines across three different messages,
   one of which repeats the same segment up to four times. It is not a count of discontinuities and
-  any figure quoted from it should be treated as an upper bound.
+  any figure quoted from it should be treated as an upper bound. ⚠️ Since the owner's ruling of
+  2026-09-06 it is not even a count of the right thing: four of its six lines report a lost segment,
+  whose hole the playlist says with `#EXT-X-GAP` entries, and only two are a break.
 
 ## Order and why
 

@@ -313,8 +313,8 @@ Fault scenarios:
 
 | file                                    | proves                                                                                                                                     |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `scenarios/bee-outage-short` (A)        | bee frozen under the 15s retry window → buffers, zero loss, **no** discontinuity                                                           |
-| `scenarios/bee-outage-long` (B)         | bee down past the window → **arms** a discontinuity, gap, clean resume                                                                     |
+| `scenarios/bee-outage-short` (A)        | bee frozen under the 15s retry window → buffers, zero loss, **nothing** announced                                                          |
+| `scenarios/bee-outage-long` (B)         | bee down past the window → the segment in flight is **lost** and reported, gap, clean resume                                               |
 | `scenarios/publish-stop-to-vod` (D)     | clean broadcaster stop → immediate VOD finalize                                                                                            |
 | `scenarios/gateway-outage-viewer` (G)   | viewer gateway down → uploads unaffected                                                                                                   |
 | `scenarios/engine-restart` (E)          | media engine restart → orchestrator re-announces, a fresh `live` topic resumes                                                             |
@@ -330,7 +330,7 @@ Service coverage, no faults:
 
 | file                               | proves                                                                    |
 | ---------------------------------- | ------------------------------------------------------------------------- |
-| `service/happy-path`               | gapless segments and an advancing manifest, no discontinuity              |
+| `service/happy-path`               | gapless segments and an advancing manifest, nothing lost or broken        |
 | `service/health-endpoint`          | `/health` across live → idle                                              |
 | `service/catalog-via-gateway`      | player-visible: a `live` entry through the bee-gateway, flipping to `vod` |
 | `service/multi-stream-concurrent`  | two concurrent streams, distinct topics, each finalizing to its own VOD   |
@@ -351,7 +351,7 @@ browser image on the host and the settings under **Saying whether a real browser
 | `viewer/crash-gateway-outage`    | (V6) the gateway is taken away for 20s: the picture plays out its buffer, says why it stopped, and comes back on its own                                                                                                                       |
 | `viewer/crash-uploader-killed`   | (V7) the uploader is killed: the viewer waits **in silence**, which is issue #100, and resumes when it answers again                                                                                                                           |
 | `viewer/crash-writer-bee-pause`  | (V8) an 8s pause of the writer's node costs a viewer no more than the pause itself, and needs telling nothing                                                                                                                                  |
-| `viewer/crash-writer-bee-outage` | (V9) a 20s writer outage arms a discontinuity and the viewer plays through it, **in silence**, which is #100 again                                                                                                                             |
+| `viewer/crash-writer-bee-outage` | (V9) a 20s writer outage costs a segment, its sequence is published as a gap entry, and the viewer plays through the hole **in silence**, which is #100 again                                                                                  |
 | `viewer/crash-engine-restart`    | (V10) the engine restart ends the broadcast, and the reap's terminal message reaches the screen                                                                                                                                                |
 | `viewer/batch-drain-viewer`      | (V11) a viewer watches through one rung's prepaid postage running out: the picture keeps moving, they are never told the broadcast ended, and the master this broadcast published loses exactly that rung. **Needs an armed stage**, see below |
 

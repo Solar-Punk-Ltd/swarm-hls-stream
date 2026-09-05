@@ -23,9 +23,11 @@ and the proof is scenario L and V11. The stamp gate now judges the batch a rung 
 rather than the healthiest one its node holds.
 
 - An upload error with HTTP status 400 or 402 is **not retried at all**. The segment is dropped on the
-  first attempt, a discontinuity is armed for the next one that lands, the line
+  first attempt, its sequence stays empty so the playlist lists it as an `#EXT-X-GAP` entry, the line
   `Failed to upload segment N for stream S within the retry window; marking a discontinuity` is logged
-  at error level, `/health` turns degraded, and the process carries on. A 5xx or a network error is
+  at error level, `/health` turns degraded, and the process carries on. ⚠️ Since the owner's ruling of
+  2026-09-06 that line no longer arms a discontinuity. Its wording is unchanged, because the harness
+  waits on it. A 5xx or a network error is
   retried for 15 seconds first. Which family bee answers for a full batch is not recorded anywhere in
   this repo. The tests assume 402. ⛔ The first drain did not settle it: its uploader log went with the
   container the restore recreated, and the message the line carried was the HTTP client's own words

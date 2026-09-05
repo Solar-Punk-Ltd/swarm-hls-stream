@@ -79,6 +79,21 @@ client's ladder tests.
 specification has the exact tool for a missing segment. Either way the change is proven in a sitting
 before it ships, on both byte sources, with a deliberately dropped segment.
 
+**Ruled 2026-09-06: Option A, say the gap.** Built on `wt/gap-entries`. `ManifestManager` in
+`packages/stream-uploader/src/libs/ManifestManager.ts` lists every missing sequence between two held
+segments as an `#EXT-X-GAP` entry with the derived date-time, the declared fragment length and a URI
+of `gap-<sequence>`, in the live window and in the recording alike, and budgets those lines against
+`LIVE_WINDOW_MAX_BYTES`. The three loss paths in
+`packages/stream-uploader/src/libs/StreamUploader.ts` no longer arm a discontinuity, which answers the
+question the option raised, and they keep their log lines unchanged. `#EXT-X-GAP` was added to
+`packages/shared/src/hlsTags.ts` and read into `Segment.gap` by `packages/shared/src/manifest.ts`, and
+the viewer writes the tag back in
+`packages/client/src/components/SwarmHlsPlayer/ManifestManagement.ts`. On the harness side
+`e2e/src/harness/manifestContract.ts` now names gap entries in the failure a silent hole produces, and
+`e2e/src/harness/manifestContractLive.ts` counts them per rung beside the discontinuities. RFC 8216bis
+§8 asks for no minimum protocol version for the tag, so the playlists stay at `#EXT-X-VERSION:3`. Not
+yet run live.
+
 ## Four older suggestions, still relevant, folded in
 
 Four suggestion chips from earlier sessions were re-checked against `4e0474b` on the same day. All
@@ -139,9 +154,9 @@ uploader's request timeout, the recovery fixes and the deploy image met cleanly.
 
 ## What the owner decides
 
-1. **Finding 5.** Option A, say the gap with `#EXT-X-GAP` entries, or option B, count published
-   segments per rung and align rungs by date-time alone. Recommendation above: A. Nothing is built
-   until this is ruled.
+1. **Finding 5. Ruled on 2026-09-06: option A**, say the gap with `#EXT-X-GAP` entries. Built on
+   `wt/gap-entries`, see the end of the finding 5 section above for where it landed. Not yet run
+   live.
 2. **`__pycache__/` in `.gitignore`.** One line. Recommendation: add it, since importing any of the
    six python scripts from the repository root creates the directory and it showed as untracked on
    2026-09-05.
