@@ -321,9 +321,10 @@ export class StreamUploader {
   private async uploadSegment(segmentIndex: number, duration: number, data: Buffer): Promise<void> {
     const result = await this.uploadDataToBee(data);
     if (!result) {
-      // Nothing landed within the retry window; flag the next segment as a discontinuity
-      // so players skip the gap instead of stalling on a silent hole.
-      this.pendingDiscontinuity = true;
+      // Nothing landed within the retry window, so this segment's sequence stays empty and
+      // `ManifestManager` lists it as a gap entry. No discontinuity: the encoder did not restart, so
+      // the media behind the hole is a continuation, and telling a player otherwise makes it flush
+      // what it had buffered.
       this.consecutiveSegmentFailures += 1;
       this.logger.error(segmentUploadFailed(this.streamId, segmentIndex));
       this.metrics?.recordSegmentDropped(this.ladder?.rung.name);
@@ -352,20 +353,22 @@ export class StreamUploader {
 
   /**
    * Segments that never reached this uploader, because the engine could not download them from the
-   * origin. The next segment carries a discontinuity so players skip the gap rather than stalling on
-   * a hole they were told is contiguous. One contiguous gap is one call, however many it spans.
+   * origin. One contiguous gap is one call, however many it spans.
+   *
+   * ⛔ **Reported, not marked.** The lost sequences stay empty and `ManifestManager` lists each of
+   * them as a gap entry, which is what tells a player there is media there it cannot have. No
+   * discontinuity, because nothing restarted the encoder: the media behind the hole carries on from
+   * the media in front of it, and a break would tell a player to flush what it had buffered for a
+   * join that never happened. See the gap-entry section of {@link ManifestManager}.
    *
    * Deliberately does **not** touch `consecutiveSegmentFailures`. That counter clears on the next
    * successful segment, and the engine writes a segment off and then downloads the one behind it in
    * the same pass, so the clearing success always lands before anything can read the count. The
    * signal for a loss is an age recorded by the orchestrator, which no later event makes untrue.
-   *
-   * Queued rather than applied inline so it takes its place behind segments already awaiting upload.
-   * Applied inline, the discontinuity would attach to a segment that arrived before the gap.
    */
   public handleSegmentLoss(firstIndex: number, count: number): void {
     const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
-    this.queueDiscontinuity(() => this.logger.error(segmentsNeverArrived(subject, this.streamId)));
+    this.queueAnnouncement(() => this.logger.error(segmentsNeverArrived(subject, this.streamId)));
   }
 
   /**
@@ -375,20 +378,24 @@ export class StreamUploader {
    * ⛔ **The two must not share a line.** A reported loss is the engine saying it could not fetch
    * something, which only the OME puller ever says. This is the SRS path, where a segment closed
    * while this process was dead is never posted again and the following index is the only evidence
-   * there is. Scenario F waits on this family by itself to prove the gap after a crash was armed, and
-   * a wait on the reported-loss wording would be satisfied by an OME broadcast losing a segment.
+   * there is. Scenario F waits on this family by itself to prove the gap after a crash was reported,
+   * and a wait on the reported-loss wording would be satisfied by an OME broadcast losing a segment.
    *
    * @param fromIndex the last index accounted for, whose own segment is already queued or published
-   * @param toIndex the index that has just arrived, which the marker attaches to
+   * @param toIndex the index that has just arrived, which the hole runs up to
    */
   public handleInferredSegmentLoss(fromIndex: number, toIndex: number, count: number): void {
-    this.queueDiscontinuity(() => this.logger.error(engineSkippedSegments(fromIndex, toIndex, this.streamId, count)));
+    this.queueAnnouncement(() => this.logger.error(engineSkippedSegments(fromIndex, toIndex, this.streamId, count)));
   }
 
   /**
    * A discontinuity the origin declared with `#EXT-X-DISCONTINUITY`, meaning the media from here on is
    * not a continuation of what came before it. An encoder restart upstream produces exactly this, and
    * a manifest that omits it tells players the join is seamless, which is what they stall on.
+   *
+   * ⛔ One of only two things that still arm the flag, the other being the engine's own counter
+   * restarting inside `ManifestManager.placeInBroadcast`. A lost segment is not one of them: it
+   * leaves a hole, and a hole is said with gap entries.
    *
    * Ordinary rather than an error, unlike a loss: nothing went wrong here and nothing was dropped.
    */
@@ -397,14 +404,27 @@ export class StreamUploader {
   }
 
   /**
-   * Queued rather than applied inline so it takes its place behind segments already awaiting upload.
-   * Applied inline, the discontinuity would attach to a segment that arrived before the break.
+   * Say something about the media and write the state down, behind whatever is already queued.
+   *
+   * Queued rather than run inline so it takes its place behind segments already awaiting upload.
+   * Inline, a loss would be announced in front of media that arrived before it, and a suite reading a
+   * log window bounded by the fault would charge it to the wrong moment.
    */
-  private queueDiscontinuity(announce: () => void): void {
+  private queueAnnouncement(announce: () => void): void {
     this.segmentQueue.add(() => {
-      this.pendingDiscontinuity = true;
       announce();
       this.persistState();
+    });
+  }
+
+  /**
+   * {@link queueAnnouncement} for the one caller that also arms the break, so the marker attaches to
+   * the next segment taken rather than to one that arrived before it.
+   */
+  private queueDiscontinuity(announce: () => void): void {
+    this.queueAnnouncement(() => {
+      this.pendingDiscontinuity = true;
+      announce();
     });
   }
 

@@ -1137,7 +1137,7 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
 });
 
 describe('StreamOrchestrator segment loss (OBS-11)', () => {
-  it('carries a loss through to the uploader, so the next segment is a discontinuity', async () => {
+  it('carries a loss through to the uploader without calling it a break', async () => {
     // Neither side of this link was crossed: the uploader tests call its method directly and the
     // health tests read /health, so the orchestrator could stop forwarding entirely and stay green.
     const saved: StreamState[] = [];
@@ -1156,10 +1156,10 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
 
     const withSegment = saved.filter((state) => state.segments.length > 0);
     assert.ok(withSegment.length > 0, 'a segment reached the manifest');
-    assert.equal(
+    assert.notEqual(
       withSegment[withSegment.length - 1].segments.find((s) => s.index === 8)?.discontinuity,
       true,
-      'the segment after a lost one has to carry the marker, or players are told the gap is contiguous',
+      'a lost segment leaves a hole the playlist lists as gap entries, and it is not a fresh encode',
     );
   });
 
@@ -1323,15 +1323,16 @@ describe('StreamOrchestrator inferring a loss from a skipped index', () => {
 
       await waitFor(() => saved.some((state) => state.segments.some((s) => s.index === 9)), SETTLE_CEILING_MS);
       const manifest = saved.filter((state) => state.segments.some((s) => s.index === 9)).pop() as StreamState;
-      assert.equal(
-        manifest.segments.find((s) => s.index === 9)?.discontinuity,
-        true,
-        'the segment that closes the gap has to carry the marker, or the playlist calls the join seamless',
+      // The hole stays in the numbering, which is what `ManifestManager` lists as gap entries. No
+      // break: nothing restarted the encoder, so the media on either side of the hole is one encode.
+      assert.deepEqual(
+        manifest.segments.map((segment) => segment.sequence),
+        [0, 1, 2, 3, 4, 9],
       );
-      assert.notEqual(
-        manifest.segments.find((s) => s.index === 4)?.discontinuity,
+      assert.equal(
+        manifest.segments.every((segment) => segment.discontinuity !== true),
         true,
-        'and the segment in front of the gap is not flagged retroactively',
+        'a hole the playlist names is not a fresh encode, and a break would tell a player to flush',
       );
       await orch.cleanup();
     });

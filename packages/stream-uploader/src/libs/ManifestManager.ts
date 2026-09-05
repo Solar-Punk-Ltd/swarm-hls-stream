@@ -226,6 +226,14 @@ export class ManifestManager {
     return this.anchor;
   }
 
+  /**
+   * Take a segment that landed, at the sequence its engine index publishes as.
+   *
+   * ⛔ `discontinuity` says the media here is not a continuation of what came before it, which is a
+   * different statement from "something is missing". A segment that never landed leaves a hole, and
+   * the hole is said by the gap entries {@link gapLines} writes for the sequences nothing fills. See
+   * the gap-entry section of the class docblock.
+   */
   public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
     const placed = this.placeInBroadcast(index);
     this.segments.push({
@@ -426,9 +434,9 @@ export class ManifestManager {
    *
    * These were uploaded, so their bytes are in Swarm and any viewer handed the address could fetch
    * them. The window slid past them before a manifest naming them was published, and a viewer learns
-   * of a segment only from a manifest, so nothing will ever tell one that they exist. No
-   * discontinuity is armed either, because `pendingDiscontinuity` answers a failed segment upload
-   * rather than a window that outran its own publishing.
+   * of a segment only from a manifest, so nothing will ever tell one that they exist. No gap entry
+   * names them either: a gap entry is written for a sequence nothing fills, and these sequences are
+   * filled by segments this manager is holding.
    *
    * Counted over the segments actually held rather than as an index range, so a segment whose upload
    * failed and which was therefore never added is not counted a second time here on top of

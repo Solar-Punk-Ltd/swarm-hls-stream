@@ -135,25 +135,52 @@ async function drain(uploader: StreamUploader): Promise<void> {
   await (uploader as unknown as { manifestQueue: { onIdle(): Promise<void> } }).manifestQueue.onIdle();
 }
 
+/** An uploader whose every persisted state lands in `saved`, which is what a crash would restore from. */
+function uploaderSaving(saved: StreamState[], bee: Bee): StreamUploader {
+  return new StreamUploader({
+    anchor: TEST_ANCHOR,
+    bee,
+    streamCatalog: makeFakeCatalog(),
+    recoveryStore: makeFakeRecoveryStore({
+      save: (_id: string, state: StreamState) => {
+        saved.push(state);
+      },
+    }),
+    streamKey: TEST_STREAM_KEY,
+    stamp: 'stamp',
+    redundancyLevel: 1,
+    streamId: 'stream-test',
+    streamTopic: 'topic-test',
+    mediatype: MEDIA_TYPE_VIDEO,
+  });
+}
+
+/**
+ * What a lost segment does to the playlist, and what it deliberately does not do.
+ *
+ * ⛔ Owner ruling of 2026-09-06. A lost segment leaves a hole, and the hole is said by the gap
+ * entries `ManifestManager` writes for every missing sequence. It is not a break: nothing restarted
+ * the encoder's clock, so the media after the hole is a continuation and saying otherwise would tell
+ * a player to flush what it had buffered. `#EXT-X-DISCONTINUITY` is left for the two things that
+ * really are one, the origin declaring a break and the engine's own counter restarting.
+ */
 describe('StreamUploader discontinuity lifecycle', () => {
-  it('marks the first segment after a failed upload as a discontinuity, then clears the flag', async () => {
+  it('leaves the segment after a failed upload a continuation, since the hole says itself', async () => {
     const control: SegmentUploadControl = {};
     const uploader = newUploader(control);
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
 
-    // Segment 1's upload fails permanently (fast) → dropped, discontinuity armed.
+    // Segment 1's upload fails permanently (fast) → dropped, leaving a hole at its sequence.
     control.fail = permanentError;
     uploader.handleSegment(1, 2, Buffer.from('seg1'));
     await drain(uploader);
 
-    // Segment 2 uploads cleanly → carries the discontinuity...
     control.fail = undefined;
     uploader.handleSegment(2, 2, Buffer.from('seg2'));
     await drain(uploader);
 
-    // ...and segment 3 does not (flag was reset).
     uploader.handleSegment(3, 2, Buffer.from('seg3'));
     await drain(uploader);
 
@@ -166,12 +193,18 @@ describe('StreamUploader discontinuity lifecycle', () => {
       'segment 1 should have been dropped after exhausting its upload',
     );
     assert.equal(byIndex.get(0)?.discontinuity, false);
-    assert.equal(byIndex.get(2)?.discontinuity, true);
+    assert.equal(byIndex.get(2)?.discontinuity, false, 'the segment behind the hole is not a fresh encode');
     assert.equal(byIndex.get(3)?.discontinuity, false);
     assert.equal(state.pendingDiscontinuity, false);
+    // The hole stays in the numbering, which is what `ManifestManager` turns into gap entries. A
+    // sequence closed up over the dropped segment would renumber media a viewer already holds.
+    assert.deepEqual(
+      state.segments.map((segment) => segment.sequence),
+      [0, 2, 3],
+    );
   });
 
-  it('flags the next segment as a discontinuity when the engine never delivered one', async () => {
+  it('leaves the segment after a reported loss a continuation too', async () => {
     const uploader = newUploader();
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
@@ -193,15 +226,11 @@ describe('StreamUploader discontinuity lifecycle', () => {
       [...byIndex.keys()].sort((a, b) => a - b),
       [0, 2],
     );
-    assert.equal(
-      byIndex.get(0)?.discontinuity,
-      false,
-      'a segment already queued when the loss arrives is not flagged retroactively',
-    );
-    assert.equal(byIndex.get(2)?.discontinuity, true, 'the first segment after the gap carries the discontinuity');
+    assert.equal(byIndex.get(0)?.discontinuity, false);
+    assert.equal(byIndex.get(2)?.discontinuity, false, 'the first segment after the hole is not a fresh encode');
   });
 
-  it('flags one discontinuity for a gap however many segments it spans', async () => {
+  it('says nothing about a break however many segments a loss spans', async () => {
     const uploader = newUploader();
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
@@ -212,17 +241,17 @@ describe('StreamUploader discontinuity lifecycle', () => {
 
     const byIndex = new Map(uploader.getStreamState().segments.map((s) => [s.index, s]));
 
-    assert.equal(byIndex.get(41)?.discontinuity, true, 'the segment that closes the gap carries the marker');
-    assert.equal(byIndex.get(42)?.discontinuity, false, 'and the one after it does not');
+    assert.equal(byIndex.get(41)?.discontinuity, false);
+    assert.equal(byIndex.get(42)?.discontinuity, false);
   });
 
   /**
    * The gap nobody reported. On the SRS path a segment closed while this process was dead is never
    * posted again, so the only evidence is the index that follows it, and the orchestrator hands the
-   * gap here. Queued the same way a reported loss is, so it lands in front of the arriving segment's
-   * own upload rather than on whatever was already waiting.
+   * gap here. Still queued behind the segments already awaiting upload, so the announcement lands
+   * where the hole is rather than in front of media that arrived before it.
    */
-  it('flags the segment that closes a gap the orchestrator inferred', async () => {
+  it('leaves the segment that closes an inferred gap a continuation', async () => {
     const uploader = newUploader();
 
     uploader.handleSegment(4, 2, Buffer.from('seg4'));
@@ -233,14 +262,35 @@ describe('StreamUploader discontinuity lifecycle', () => {
 
     const byIndex = new Map(uploader.getStreamState().segments.map((s) => [s.index, s]));
 
-    assert.equal(byIndex.get(4)?.discontinuity, false, 'the segment in front of the gap is not flagged retroactively');
-    assert.equal(byIndex.get(9)?.discontinuity, true, 'the segment that closes the gap carries the marker');
-    assert.equal(byIndex.get(10)?.discontinuity, false, 'and the one after it does not');
+    assert.equal(byIndex.get(4)?.discontinuity, false);
+    assert.equal(byIndex.get(9)?.discontinuity, false, 'the segment that closes the gap is not a fresh encode');
+    assert.equal(byIndex.get(10)?.discontinuity, false);
     assert.equal(
       uploader.getConsecutiveSegmentFailures(),
       0,
       'an inferred loss attempted no upload, so it must not move the upload-failure counter',
     );
+  });
+
+  /**
+   * ⛔ The one path that still arms one, and the reason the flag survives at all. An encoder restart
+   * upstream really does mean the media from here on is not a continuation, and a playlist that omits
+   * that tells a player the join is seamless, which is what it stalls on.
+   */
+  it('still marks a break the origin declared, on the segment that follows it', async () => {
+    const uploader = newUploader();
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    uploader.markDiscontinuity();
+    uploader.handleSegment(1, 2, Buffer.from('seg1'));
+    uploader.handleSegment(2, 2, Buffer.from('seg2'));
+    await drain(uploader);
+
+    const byIndex = new Map(uploader.getStreamState().segments.map((s) => [s.index, s]));
+
+    assert.equal(byIndex.get(0)?.discontinuity, false, 'a segment already queued is not flagged retroactively');
+    assert.equal(byIndex.get(1)?.discontinuity, true);
+    assert.equal(byIndex.get(2)?.discontinuity, false);
   });
 
   /**
@@ -265,6 +315,16 @@ describe('StreamUploader discontinuity lifecycle', () => {
     });
   });
 
+  /**
+   * ⛔ A recovered `true` is still applied, and the choice is deliberate.
+   *
+   * Since the loss paths stopped arming the flag, the only thing that writes a `true` to disk is the
+   * origin declaring a break, and that is the one case a restart must not swallow: the media after it
+   * is genuinely not a continuation and nothing else in the pipeline marks the join. An entry written
+   * by an older build can carry a `true` that came from a loss instead, and applying that one puts a
+   * single extra legal tag on one segment of one recovered playlist. Dropping a real break is a
+   * player stalling on a join it was told was seamless, so the trade is not close.
+   */
   it('restores pendingDiscontinuity across a restart so the next segment is flagged', async () => {
     const uploader = newUploader(
       {},
@@ -344,35 +404,31 @@ describe('StreamUploader discontinuity lifecycle', () => {
     });
   });
 
-  it('persists pendingDiscontinuity when a segment upload fails, so it survives a crash', async () => {
+  it('persists no pending discontinuity for a failed upload, which is a hole rather than a break', async () => {
     const saved: StreamState[] = [];
-    const recovery = {
-      save: (_id: string, state: StreamState) => {
-        saved.push(state);
-      },
-      load: () => null,
-      remove: () => {},
-      listActive: () => [],
-    } as unknown as RecoveryStore;
-    const uploader = new StreamUploader({
-      anchor: TEST_ANCHOR,
-      bee: makeBee({ fail: permanentError }),
-      streamCatalog: makeFakeCatalog(),
-      recoveryStore: recovery,
-      streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
-      redundancyLevel: 1,
-      streamId: 'stream-test',
-      streamTopic: 'topic-test',
-      mediatype: MEDIA_TYPE_VIDEO,
-    });
+    const uploader = uploaderSaving(saved, makeBee({ fail: permanentError }));
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
 
+    assert.ok(saved.length > 0, 'a dropped segment still has to persist its state');
+    assert.ok(
+      saved.every((s) => s.pendingDiscontinuity !== true),
+      'a dropped segment leaves a hole the gap entries say, and arming a break on top of it would ' +
+        'tell a player to flush what it had buffered',
+    );
+  });
+
+  it('persists the break the origin declared, so a crash does not swallow it', async () => {
+    const saved: StreamState[] = [];
+    const uploader = uploaderSaving(saved, makeBee({}));
+
+    uploader.markDiscontinuity();
+    await drain(uploader);
+
     assert.ok(
       saved.some((s) => s.pendingDiscontinuity === true),
-      'a failed segment upload must persist pendingDiscontinuity=true',
+      'an origin-declared break must survive a crash, since nothing else marks the join',
     );
   });
 });
