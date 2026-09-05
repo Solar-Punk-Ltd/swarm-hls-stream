@@ -330,7 +330,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | ------------------------------------------- | ------- | ----------------------------------------------------------- |
 | `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                        |
 | `swarm_hls_rung_segments_uploaded_total`    | counter | The same, by ABR rung. Empty with no ladder, see below      |
-| `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
+| `swarm_hls_segments_dropped_total`          | counter | Segments never stored: window spent, or bee refused it      |
 | `swarm_hls_rung_segments_dropped_total`     | counter | The same, by ABR rung. Empty with no ladder, see below      |
 | `swarm_hls_segments_lost_total`             | counter | Segments the engine never obtained, or never posted at all  |
 | `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |

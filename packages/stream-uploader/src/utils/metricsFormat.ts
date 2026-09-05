@@ -54,7 +54,7 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
     {
       name: 'segments_dropped_total',
       type: 'counter',
-      help: 'Segments that reached the uploader and whose upload retry window was spent. The data is gone.',
+      help: 'Segments that reached the uploader and were never stored. Two ways in, and they look the same here: an upload retried until its window was spent, which is what a bee node that went away produces, or an upload bee refused with a status the uploader does not retry, which is a postage batch filling up and costs the segment on the first answer with no window spent at all. The data is gone either way. rung_segments_dropped_total says which rung lost it and the refusal is named in the log.',
       value: snapshot.segmentsDroppedTotal,
     },
     {

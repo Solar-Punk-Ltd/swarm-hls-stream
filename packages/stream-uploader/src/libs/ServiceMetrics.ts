@@ -71,7 +71,11 @@ export class ServiceMetrics {
   }
 
   /**
-   * A segment that reached the uploader and whose upload retry window was spent. The data is gone.
+   * A segment that reached the uploader and was never stored, counted the same for both ways that
+   * happens. Either the upload was retried until its window was spent, which is what a bee node that
+   * went away produces, or bee refused it with a status the uploader does not retry, which is a
+   * postage batch filling up and costs the segment on the first answer with no window spent at all.
+   * The data is gone either way.
    *
    * `rung` is read exactly as {@link recordSegmentUploaded} reads it: absent on a single-rendition
    * stream, and absent means counted in the total and nowhere in the breakdown rather than counted
