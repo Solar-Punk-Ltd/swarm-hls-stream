@@ -124,14 +124,15 @@ export function weeb3ArmRefusal(result: BrowserArmResult, { maxSegmentRequests }
  * Why this arm is not the condition it is filed as, whichever condition that is, or null.
  *
  * ⛔⛔ **The rule was written four times and two viewer suites carried none of it.** `qualityArm`,
- * `rungArm` and `crashArm` each carry their own identical copy of these three branches. V4 and V5
- * carried none until 2026-09-04, so in the in-browser profile they passed whatever served them,
- * which is the exact failure `browser/byteSourceArm.ts` exists to prevent one layer down: an unread
- * setting looks precisely like a setting at its default. This is the one statement of it the suites
- * that were missing it now share.
+ * `rungArm` and `crashArm` each carried their own identical copy of these three branches until
+ * 2026-09-05 and call this instead. V4 and V5 carried none of it until 2026-09-04, so in the
+ * in-browser profile they passed whatever served them, which is the exact failure
+ * `browser/byteSourceArm.ts` exists to prevent one layer down: an unread setting looks precisely
+ * like a setting at its default. This is now the only statement of it, and
+ * `test/browserVerdict.test.ts` reads the arm modules and fails if a copy comes back.
  *
  * ⛔ Every suite under `suites/viewer/` does assert an arm proof, and this is not the only door in.
- * The three arm modules above wrap {@link weeb3ArmRefusal} for an in-tab arm, V4 arrives through
+ * The three arm modules above reach an in-tab arm's ceiling through here, V4 arrives through
  * `vodByteSourceRefusal`, which is this function under a name that says when to call it, and V1
  * calls {@link weeb3ArmRefusal} itself: it decides the byte source with `requireByteSource`, checks
  * the switch took inline, and applies the in-tab ceiling only to an in-tab arm. So the list is six

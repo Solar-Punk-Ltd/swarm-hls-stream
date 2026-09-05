@@ -42,10 +42,9 @@
 import { DEFAULT_BYTE_SOURCE_SETTLE_SECONDS } from '../browser/byteSourceArm.js';
 import { type FaultScenario } from '../browser/faults.js';
 import { FEED_STATE_LIVE, readFeedState, type ViewerFeedState } from '../browser/feedState.js';
-import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
 
 import { type BrowserArmResult, type CrashRecoveryResult, type FaultWindow } from './browser.js';
-import { weeb3ArmRefusal } from './browserVerdict.js';
+import { byteSourceArmRefusal } from './browserVerdict.js';
 
 /**
  * The baseline `browser/crash.ts` holds before it breaks anything.
@@ -222,20 +221,7 @@ export function crashArmRefusal(result: BrowserArmResult, expectation: CrashArmE
     );
   }
 
-  const { requested, reported } = result.proof;
-  if (requested === null) {
-    return 'this arm named no byte source, so its verdict would be filed against a condition nobody chose';
-  }
-  if (reported !== requested) {
-    return (
-      `this arm asked for ${requested} and the client reports ${reported}, so the switch did not take and ` +
-      'both conditions of the matrix would be one'
-    );
-  }
-
-  return requested === WEEB3_BYTES
-    ? weeb3ArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests })
-    : null;
+  return byteSourceArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests });
 }
 
 /** Whether this fault lets the viewer back in at all. */

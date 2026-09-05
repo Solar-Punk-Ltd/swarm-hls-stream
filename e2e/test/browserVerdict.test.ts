@@ -143,9 +143,10 @@ describe('whether the arm was the in-tab node it is filed as', () => {
 /**
  * The three-branch rule every viewer suite applies to its arm, stated once.
  *
- * ⛔⛔ It was stated four times before: inline in `qualityArm`, `rungArm` and `crashArm`, and
- * nowhere at all for V4 and V5, which is how those two came to pass in the in-browser profile
- * whatever served them. A rule with four copies and two gaps is the shape the copies produce.
+ * ⛔⛔ It was stated four times: inline in `qualityArm`, `rungArm` and `crashArm`, and nowhere at
+ * all for V4 and V5, which is how those two came to pass in the in-browser profile whatever served
+ * them. A rule with four copies and two gaps is the shape the copies produce. Those three modules
+ * call this one since 2026-09-05.
  *
  * ⭐ The gateway condition passes with no ceiling applied, and that is the branch worth a test of
  * its own. A gateway arm reads every segment through the gateway by definition, so holding one to
@@ -243,6 +244,39 @@ describe('whether an arm was the byte source it is filed as, in either condition
         'proof at all, in which case an in-browser run of it passes whatever served it, or it files ' +
         'one through a route nothing here knows about, in which case add it to this list and to the ' +
         'docblock on byteSourceArmRefusal that counts them.',
+    );
+  });
+
+  /**
+   * ⛔⛔ The other half of the same claim: one statement of the rule, not one per arm module.
+   *
+   * `qualityArm`, `rungArm` and `crashArm` each carried a byte-identical copy of the three branches
+   * until 2026-09-05, so the rule had four statements. A change to any one of them would have left
+   * the other three saying something else, and nothing would have shown it: the copies agreed, and
+   * the first place a divergence surfaces is an artifact a paid broadcast produced.
+   *
+   * ⚠️ Read out of the source rather than by calling them, because four identical copies and one
+   * shared call behave the same on every input. Same arrangement `weeb3RequestCeilingAgreement.test.ts`
+   * uses for the ceiling, and for the same reason.
+   */
+  const ASKS_THE_RULE = ['crashArm.ts', 'qualityArm.ts', 'rungArm.ts', 'vodArm.ts'];
+  const RESTATEMENT = 'this arm named no byte source, so its verdict';
+
+  it('is the one statement of the rule, which the arm modules delegate to rather than restate', () => {
+    const wrong = ASKS_THE_RULE.flatMap((name) => {
+      const source = readFileSync(join(E2E_DIR, 'src', 'harness', name), 'utf8');
+      if (source.includes(RESTATEMENT)) {
+        return [`${name} carries its own copy of the branches`];
+      }
+      return source.includes('byteSourceArmRefusal') ? [] : [`${name} asks the rule through neither route`];
+    });
+
+    assert.deepEqual(
+      wrong,
+      [],
+      `${wrong.join(', ')}. Every arm module puts its byte-source question through byteSourceArmRefusal, ` +
+        'so that a change to what counts as the wrong condition reaches all of them at once. An inline ' +
+        'copy drifts silently and is first read in an artifact somebody paid a broadcast for.',
     );
   });
 });

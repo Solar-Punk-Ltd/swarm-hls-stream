@@ -31,7 +31,6 @@
  */
 
 import { DEFAULT_BYTE_SOURCE_SETTLE_SECONDS } from '../browser/byteSourceArm.js';
-import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
 import {
   describeLevelRequests,
   fragmentLogVerdict,
@@ -40,7 +39,7 @@ import {
 import { type QualitySwitchVerdict } from '../browser/qualitySwitch.js';
 
 import { type BrowserArmResult } from './browser.js';
-import { weeb3ArmRefusal } from './browserVerdict.js';
+import { byteSourceArmRefusal } from './browserVerdict.js';
 
 /**
  * The driver's own windows, restated here because a suite cannot import the driver.
@@ -134,20 +133,7 @@ export function qualityArmRefusal(result: BrowserArmResult, expectation: Quality
     );
   }
 
-  const { requested, reported } = result.proof;
-  if (requested === null) {
-    return 'this arm named no byte source, so its verdict would be filed against a condition nobody chose';
-  }
-  if (reported !== requested) {
-    return (
-      `this arm asked for ${requested} and the client reports ${reported}, so the switch did not take and ` +
-      'both conditions of the matrix would be one'
-    );
-  }
-
-  return requested === WEEB3_BYTES
-    ? weeb3ArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests })
-    : null;
+  return byteSourceArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests });
 }
 
 /**
