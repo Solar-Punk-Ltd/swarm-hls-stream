@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { ROOT_DIR } from '../src/config.js';
+import { parseBrowserArmState } from '../src/harness/browser.js';
+import { weeb3ArmRefusal } from '../src/harness/browserVerdict.js';
 import { MAX_WEEB3_SEGMENT_REQUESTS } from '../src/harness/crashArm.js';
+
+import { armState } from './helpers/browserArmFixtures.js';
 
 /**
  * Every viewer suite has to mean the same thing by "the node served the video".
@@ -32,6 +36,19 @@ import { MAX_WEEB3_SEGMENT_REQUESTS } from '../src/harness/crashArm.js';
  * Read out of the source rather than imported: a suite file registers its tests at import time and
  * expects a deployment. Same mirror-and-prove arrangement as `rungDeathAgreement.test.ts` for the
  * two rung-death limits and `logLevel.test.ts` for the uploader's own call sites.
+ *
+ * ## ⚠️ What each half proves, and the one thing neither can
+ *
+ * The cases that read source text prove the four declarations agree on a number, and that is all
+ * they prove. The two at the end prove the number is load-bearing, by holding an arm sitting on the
+ * ceiling and the first arm above it against `weeb3ArmRefusal`, which is the call every one of those
+ * declarations is written to be passed into.
+ *
+ * ⛔ What nothing here can prove is that a given suite passes its own copy into that call at all. A
+ * suite file expects a deployment the moment it is imported, so the only thing that ever executes
+ * one is a paid broadcast. A copy that agreed with the harness and was then never used would clear
+ * every case in this file, and `test/browserVerdict.test.ts` holds the separate structural claim
+ * that each viewer suite names one of the arm verdicts.
  */
 
 const CONSTANT = 'MAX_WEEB3_SEGMENT_REQUESTS';
@@ -99,5 +116,35 @@ describe('every suite agrees how many gateway reads an in-tab arm may make', () 
         'node boots, so the honest figure is a handful rather than a zero, and a ceiling loose enough ' +
         'to admit a recording served half from the gateway would pass an arm that proves nothing.',
     );
+  });
+
+  /**
+   * ⛔ The other half of the question, and the half four agreeing declarations say nothing about.
+   *
+   * A number every file copies correctly and nothing then applies is a number in an artifact. These
+   * two put an arm on either side of the boundary through `weeb3ArmRefusal`, the call each of those
+   * declarations exists to be passed into, so the ceiling is shown deciding rather than only agreed.
+   */
+  const armReading = (segmentRequests: number) =>
+    weeb3ArmRefusal(parseBrowserArmState(armState({ segmentRequests })), {
+      maxSegmentRequests: MAX_WEEB3_SEGMENT_REQUESTS,
+    });
+
+  it('passes an in-tab arm sitting exactly on the ceiling, which is a node that served the video', () => {
+    assert.equal(
+      armReading(MAX_WEEB3_SEGMENT_REQUESTS),
+      null,
+      'an arm on the ceiling is inside it, and refusing one would refuse a correct arm at the boundary',
+    );
+  });
+
+  it('refuses the first in-tab arm above it, so the ceiling bounds an arm rather than only agreeing', () => {
+    const refusal = armReading(MAX_WEEB3_SEGMENT_REQUESTS + 1);
+
+    assert.ok(
+      refusal,
+      `${MAX_WEEB3_SEGMENT_REQUESTS + 1} gateway reads cleared a ceiling of ${MAX_WEEB3_SEGMENT_REQUESTS}`,
+    );
+    assert.match(refusal, new RegExp(String(MAX_WEEB3_SEGMENT_REQUESTS)));
   });
 });
