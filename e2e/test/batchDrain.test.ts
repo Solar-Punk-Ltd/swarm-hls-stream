@@ -359,6 +359,24 @@ describe('singleRefusalRefusal', () => {
   }
 
   /**
+   * ⛔ The owner's prose rule, landing where an operator reads it after a paid drain. Bee's answers
+   * were joined with semicolons, which is punctuation this repo writes nowhere else in prose, and
+   * two answers ran together as one clause on the line that is the whole record of what bee said.
+   */
+  it("separates one of bee's answers from the next in words rather than with a semicolon", () => {
+    const twoStrangers = [
+      { streamId: 'stream_from_somewhere_else', batch: 'ffffffff', status: 400, message: 'batch is not usable' },
+      { streamId: 'stream_from_a_co_tenant', batch: 'eeeeeeee', status: 402, message: 'payment required' },
+    ];
+
+    const refusal = singleRefusalRefusal(twoStrangers, { drainedStreamId: DRAINED, survivingStreamIds: SURVIVORS });
+
+    assert.ok(refusal, 'no refusal on the drained stream is not a drain');
+    assert.doesNotMatch(refusal, /;/, 'a refusal is prose, and this repo writes none of it with semicolons');
+    assert.match(refusal, /batch is not usable, then stream_from_a_co_tenant/);
+  });
+
+  /**
    * ⛔⛔ The assertion the whole feature rests on. One batch running out must cost one quality, so a
    * refusal on any other rung means the split is not isolating anything.
    */

@@ -667,6 +667,10 @@ interface RefusalExpectation {
  * the uploader's container log to the restore that followed it, and the counts it had reported said
  * nothing about which batch on which stream bee had refused or what bee said, which is the one thing
  * this whole feature was built to record. A refusal that only counts spends another sitting.
+ *
+ * ⚠️ Joined in words, because each entry already ends in bee's own message and one answer would
+ * otherwise run into the next as a single clause. This is prose an operator reads, and prose here
+ * carries no semicolons.
  */
 function quoteRefusals(refusals: UploaderEvents['batchRefusals']): string {
   if (refusals.length === 0) {
@@ -676,7 +680,7 @@ function quoteRefusals(refusals: UploaderEvents['batchRefusals']): string {
     .map(
       (refusal) => `${refusal.streamId} on batch ${refusal.batch}, bee answered ${refusal.status} ${refusal.message}`,
     )
-    .join('; ');
+    .join(', then ');
 }
 
 /**
