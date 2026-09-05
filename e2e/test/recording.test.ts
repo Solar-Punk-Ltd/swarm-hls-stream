@@ -1,8 +1,24 @@
 import { rungAnnounced, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { lowestRungOf, recordingProgress, recordingSummary } from '../src/harness/recording.js';
+import {
+  DRAIN_TIMEOUT_MS,
+  lowestRungOf,
+  ORPHAN_REAP_MS,
+  recordingProgress,
+  recordingSummary,
+  vodFinalizeWaitMs,
+} from '../src/harness/recording.js';
+
+const E2E_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
+
+function uploaderSource(...path: readonly string[]): string {
+  return readFileSync(join(dirname(E2E_DIR), 'packages', 'stream-uploader', 'src', ...path), 'utf8');
+}
 
 /**
  * What `pnpm make:recording` counts, held against a log rather than against the driver.
@@ -161,6 +177,73 @@ describe('what the driver prints about a recording in progress', () => {
 
     assert.doesNotMatch(summary, /0\.0s/);
     assert.match(summary, /does not report/);
+  });
+});
+
+/**
+ * ⛔⛔ **Found live on 2026-09-02.** The driver waited a flat 180 s for the finalize and exited 1
+ * four seconds before the uploader finished all four rungs. The publisher had stopped about three
+ * minutes earlier, right after an SRS restart, and the rungs stayed live because a ladder source's
+ * unpublish stops nothing and SRS never sent the per-rung ones. Nothing about 180 s came from the
+ * mechanism, so a wait that was going to be too short on that path was always going to be.
+ */
+describe('how long a recording may take to finalize', () => {
+  const POLL_MS = 3_000;
+  const waitFor2sSegments = vodFinalizeWaitMs({ segmentSeconds: 2, pollMs: POLL_MS });
+
+  /** The two legs the uploader can actually spend, which is the whole reason 180 s was short. */
+  it('outlasts the orphan reap and the drain deadline together', () => {
+    assert.ok(
+      waitFor2sSegments > ORPHAN_REAP_MS + DRAIN_TIMEOUT_MS,
+      `${waitFor2sSegments}ms does not cover a reap of ${ORPHAN_REAP_MS}ms followed by a drain that ` +
+        `runs to its ${DRAIN_TIMEOUT_MS}ms deadline`,
+    );
+  });
+
+  /** The reading that produced this, with the four seconds the old wait missed it by. */
+  it('covers the three minutes the 2026-09-02 stage took', () => {
+    assert.ok(waitFor2sSegments > 184_000, `${waitFor2sSegments}ms is inside the run that failed`);
+  });
+
+  it('grows with the segment the engine still has to close', () => {
+    assert.ok(waitFor2sSegments > vodFinalizeWaitMs({ segmentSeconds: 0.5, pollMs: POLL_MS }));
+  });
+
+  /**
+   * ⭐ A length this run could not read still gets a wait sized by the two legs that dominate it.
+   * The segment leg is seconds against a budget of minutes, and the uploader's own retry window
+   * already bounds it, so an unknown length costs nothing that matters.
+   */
+  it('still clears both deadlines where the stage would not say what it cuts', () => {
+    const unread = vodFinalizeWaitMs({ segmentSeconds: null, pollMs: POLL_MS });
+
+    assert.ok(unread > ORPHAN_REAP_MS + DRAIN_TIMEOUT_MS);
+  });
+
+  /** A segment length that is not one produces a wait that is not one, so it is refused at the door. */
+  it('refuses a segment length no arithmetic survives', () => {
+    assert.throws(() => vodFinalizeWaitMs({ segmentSeconds: -1, pollMs: POLL_MS }), /-1/);
+    assert.throws(() => vodFinalizeWaitMs({ segmentSeconds: Number.NaN, pollMs: POLL_MS }), /NaN/);
+  });
+
+  /**
+   * ⛔ Mirrored constants, so these are greps rather than promises. Both numbers belong to the
+   * uploader, and one moved there without moving here would silently put the driver back inside the
+   * window it exists to outlast, on a run that has already published for minutes and paid for it.
+   */
+  it('mirrors the orphan reap the uploader defaults to', () => {
+    const match = /orphanReapMs: optionalInt\('ORPHAN_REAP_MS', ([\d_]+)/.exec(uploaderSource('utils', 'config.ts'));
+
+    assert.ok(match, 'config.ts no longer defaults ORPHAN_REAP_MS where this can read it');
+    assert.equal(ORPHAN_REAP_MS, Number(match[1].split('_').join('')));
+  });
+
+  it('mirrors the deadline the uploader gives a drain', () => {
+    const source = uploaderSource('libs', 'StreamOrchestrator.ts');
+    const match = /const DRAIN_TIMEOUT_MS = (\d+) \* (\d+) \* (\d+);/.exec(source);
+
+    assert.ok(match, 'StreamOrchestrator.ts no longer declares DRAIN_TIMEOUT_MS as a product of three');
+    assert.equal(DRAIN_TIMEOUT_MS, Number(match[1]) * Number(match[2]) * Number(match[3]));
   });
 });
 

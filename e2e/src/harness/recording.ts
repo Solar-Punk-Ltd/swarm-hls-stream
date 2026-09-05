@@ -16,6 +16,7 @@
  * it, which puts the arithmetic in `pnpm verify` where it costs nothing.
  */
 
+import { UPLOAD_RETRY_WINDOW_MS } from './crashArm.js';
 import { announcedRungs, segmentIndicesByStream } from './logwatch.js';
 
 /** One rung's progress through a recording. */
@@ -93,6 +94,80 @@ export function recordingSummary(progress: RecordingProgress, segmentSeconds: nu
       : `, ${(progress.perRung * segmentSeconds).toFixed(1)}s of media at ${segmentSeconds}s segments`;
 
   return `${perRung || 'nothing published yet'}; ${progress.perRung} per rung${media}`;
+}
+
+/**
+ * How long a live rung may receive nothing before the uploader reaps it as an orphan.
+ *
+ * ⛔ Mirrors `ORPHAN_REAP_MS`'s default in `packages/stream-uploader/src/utils/config.ts`, and
+ * `test/recording.test.ts` greps that file and fails if the two drift.
+ */
+export const ORPHAN_REAP_MS = 60_000;
+
+/**
+ * The deadline a drain runs to before the uploader force-stops the stream instead.
+ *
+ * ⛔ Mirrors `DRAIN_TIMEOUT_MS` in `packages/stream-uploader/src/libs/StreamOrchestrator.ts`, greped
+ * the same way and for the same reason.
+ */
+export const DRAIN_TIMEOUT_MS = 5 * 60 * 1_000;
+
+/** What a run knows about the stage when it needs to size its finalize wait. */
+export interface VodWaitInputs {
+  /** What the running stage cuts at, or null where this run could not read the engine's config. */
+  segmentSeconds: number | null;
+  /** The interval the wait samples the log at, since it polls rather than watches. */
+  pollMs: number;
+}
+
+/**
+ * How long `make:recording` may wait for the uploader to turn a stopped broadcast into a recording.
+ *
+ * ## ⛔⛔ Why 180 s was not short by a little
+ *
+ * Live on 2026-09-02, right after an SRS restart: the driver exited 1 on its flat three minute wait
+ * and the uploader finalized all four rungs four seconds later, about three minutes after the
+ * publisher stopped. Nothing about 180 s came from the mechanism, so it was as likely to be short as
+ * long, and the run it lost had already published for minutes and paid for every segment of it.
+ *
+ * ## The derivation, in the order the uploader spends it
+ *
+ * **The segment still in the engine.** SRS closes the fragment it is cutting when the source goes
+ * away, so the last upload starts up to one segment length after the publisher stopped, and an
+ * upload in flight keeps trying for {@link UPLOAD_RETRY_WINDOW_MS}. That is when the orphan reaper's
+ * own window starts, because it measures from the last segment to arrive rather than from the stop.
+ *
+ * **The rung's stop, sized for the case that actually failed rather than the usual one.** A ladder
+ * source's `on_unpublish` clears the authenticated base and stops NOTHING: each rung is one of SRS's
+ * own loopback publishers and ends on its own `on_unpublish`, which `engines/srs.ts` answers with
+ * `stopStreamQuietly`. When those do not arrive, the only thing that ends a rung is the stall
+ * reaper, which fires {@link ORPHAN_REAP_MS} after the last segment and re-arms itself with the
+ * remainder when one arrived since. So a full reap window is the worst case, and it is exactly the
+ * case a driver's wait has to survive.
+ *
+ * **The drain.** `stopStream` runs `performDrain`, which races the uploader's finalize against
+ * {@link DRAIN_TIMEOUT_MS}. The line this waits for is written inside that finalize, so giving up
+ * earlier abandons a drain that is still running and could still write it. At the deadline either
+ * the line is there or the drain has force-stopped and said so in the log.
+ *
+ * ⭐ `RECOVERY_TIMEOUT` is deliberately not in this. It arms only for a stream a restarted uploader
+ * restored and is waiting for an engine to reconnect to, and nothing on this path restarts the
+ * uploader. It is the same 60 s `ORPHAN_REAP_MS` was chosen against, which is why one term covers
+ * the waiting-for-an-engine case either way.
+ *
+ * One poll interval on top, because the wait samples the log rather than watching it.
+ */
+export function vodFinalizeWaitMs({ segmentSeconds, pollMs }: VodWaitInputs): number {
+  if (segmentSeconds !== null && (!Number.isFinite(segmentSeconds) || segmentSeconds <= 0)) {
+    throw new Error(`a segment length of ${segmentSeconds}s is not a length, so no wait can be sized from it`);
+  }
+
+  // ⭐ Null contributes nothing, and that is safe rather than approximate: this leg is bounded by the
+  // uploader's own retry window, which is fifteen seconds against a budget of six minutes, and the
+  // segment inside it is one of those seconds.
+  const lastSegmentMs = Math.ceil((segmentSeconds ?? 0) * 1_000) + UPLOAD_RETRY_WINDOW_MS;
+
+  return lastSegmentMs + ORPHAN_REAP_MS + DRAIN_TIMEOUT_MS + pollMs;
 }
 
 /** `1080p` is 1080 and `live/stream` is nothing. */

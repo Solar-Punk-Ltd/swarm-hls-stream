@@ -33,7 +33,7 @@ import { containerName, type E2EConfig, loadConfig } from '../src/config.js';
 import { type Host, makeHost, waitForIdle } from '../src/harness/host.js';
 import { announcedLiveStreams, parseUploaderLog } from '../src/harness/logwatch.js';
 import { startPublisher } from '../src/harness/publisher.js';
-import { recordingProgress, recordingSummary } from '../src/harness/recording.js';
+import { recordingProgress, recordingSummary, vodFinalizeWaitMs } from '../src/harness/recording.js';
 import { readStageSegmenting } from '../src/harness/stage.js';
 import { requireStageStamps } from '../src/harness/stageStamps.js';
 import { waitFor } from '../src/harness/wait.js';
@@ -77,7 +77,8 @@ const OUTAGE_MS = 20_000;
  */
 const ARM_DISCONTINUITY = process.env.RECORDING_ARM_DISCONTINUITY !== '0';
 const SEGMENT_WAIT_MS = 600_000;
-const VOD_WAIT_MS = 180_000;
+/** How often the finalize wait reads the log. Part of the wait's own derivation, so it is named. */
+const VOD_POLL_MS = 3_000;
 const MIN_STAMP_TTL_S = 600;
 
 async function main(): Promise<void> {
@@ -192,11 +193,23 @@ async function main(): Promise<void> {
     }
   }
 
-  await waitFor(async () => /Updating stream in list to VOD/.test(await log()), {
-    timeoutMs: VOD_WAIT_MS,
-    intervalMs: 3_000,
-    label: 'the broadcast finalizes into a recording',
-  });
+  const vodWaitMs = vodFinalizeWaitMs({ segmentSeconds, pollMs: VOD_POLL_MS });
+  console.log(`recording: waiting up to ${(vodWaitMs / 1000).toFixed(0)}s for the broadcast to finalize`);
+
+  // ⛔⛔ The address is printed either way, and the run still exits non-zero. Live on 2026-09-02 this
+  // gave up four seconds before the uploader finished all four rungs, so the recording existed and
+  // the only thing lost was the owner and topic that address it. A finalize this run did not see is
+  // a reason to look at the uploader's log, not a reason to make the broadcast again.
+  let notFinalized: Error | null = null;
+  try {
+    await waitFor(async () => /Updating stream in list to VOD/.test(await log()), {
+      timeoutMs: vodWaitMs,
+      intervalMs: VOD_POLL_MS,
+      label: 'the broadcast finalizes into a recording',
+    });
+  } catch (error) {
+    notFinalized = error as Error;
+  }
 
   const announced = announcedLiveStreams(await log()).at(-1);
   if (!announced) {
@@ -205,11 +218,18 @@ async function main(): Promise<void> {
 
   const total = await progress();
   console.log('');
-  console.log(
-    ARM_DISCONTINUITY
-      ? 'recording ready. To play it back and seek across the discontinuity:'
-      : 'control recording ready, no discontinuity in it. To play it back and seek:',
-  );
+  if (notFinalized !== null) {
+    console.log(
+      'this run never saw the broadcast finalize, so the recording may still be live. Its address is ' +
+        'below either way, and the uploader may have finished since:',
+    );
+  } else {
+    console.log(
+      ARM_DISCONTINUITY
+        ? 'recording ready. To play it back and seek across the discontinuity:'
+        : 'control recording ready, no discontinuity in it. To play it back and seek:',
+    );
+  }
   console.log('');
   console.log(`  BROWSER_VOD_OWNER=${announced.owner} \\`);
   console.log(`  BROWSER_VOD_TOPIC=${announced.topic} \\`);
@@ -221,6 +241,10 @@ async function main(): Promise<void> {
       ? `  discontinuity after roughly ${((100 * beforeOutage) / total).toFixed(0)}% of the recording`
       : '  no discontinuity',
   );
+
+  if (notFinalized !== null) {
+    throw notFinalized;
+  }
 }
 
 /**
