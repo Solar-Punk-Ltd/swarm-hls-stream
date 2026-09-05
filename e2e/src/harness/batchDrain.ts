@@ -69,9 +69,8 @@ import {
   uploaderHealth,
 } from './host.js';
 import type { TimestampedMessage, UploaderEvents } from './logwatch.js';
-import { describeMaster, masterRungRefusal, masterRungsOf, NOTHING_EXPECTED, readLadderMaster } from './masterShape.js';
+import { waitForMasterRungs } from './masterShape.js';
 import { BEE_SERVICE_BY_RUNG, COORDINATOR_RUNG, nodesBehind } from './publishers.js';
-import { waitFor } from './wait.js';
 
 /**
  * Where a run says which rung to drain.
@@ -459,76 +458,38 @@ interface SurvivingMasterWait {
 }
 
 /**
- * How long between polls of the master.
- *
- * Bee's feed lookup is the slow part of each poll and the master is rewritten on a segment boundary,
- * so anything tighter re-reads a feed that cannot have moved.
- */
-const SURVIVING_MASTER_POLL_MS = 3_000;
-
-/**
  * Wait until one ladder's master offers exactly the rungs that kept their postage, and hand it back.
  *
  * ⛔ Exactly, not "no longer the drained one". A master down to two rungs has taken a healthy quality
  * away from viewers who were watching it, which is the failure the owner's ruling of 2026-09-01
  * capped the drop at one to prevent, and a wait that only asked about the drained rung would sail
  * past it and then assert on a master read seconds later. So the wait and the assertion ask the same
- * question, {@link masterRungRefusal}, of the same body.
+ * question, `masterRungRefusal`, of the same body.
  *
- * Hands the body back so the caller asserts on the one it waited on rather than on a fresh read that
- * could have moved.
- *
- * ⛔⛔ A timeout says what the master last held. Four minutes of paid broadcast used to end in "the
- * master offers exactly these rungs", which names what was wanted and nothing about what was there:
- * whether the gateway answered a playlist at all, which rungs it did offer, or whether the body was
- * an error envelope. {@link describeMaster} says all three and the last complete read is kept for it.
- * The scenario suite already takes this care over its own earlier wait and this one had none.
+ * ⭐ The drain's own patience and label over {@link waitForMasterRungs}, which is the same poll the
+ * suite that runs after a restore uses in the other direction. Two copies of it would be two places
+ * a change to what counts as a correct master has to reach, and only one of them is exercised by any
+ * given sitting.
  */
 export async function waitForSurvivingMaster(
   host: Host,
   cfg: E2EConfig,
   { owner, ladder, survivingRungs, readTopics, clock }: SurvivingMasterWait,
 ): Promise<string> {
-  // ⛔ Before the polling and not inside it. The predicate below can never be satisfied by an empty
-  // expectation, so the run would spend the whole ceiling on a paid broadcast and then time out
-  // naming no rungs at all, which is a red with no cause in it.
-  if (survivingRungs.length === 0) {
-    throw new Error(`${NOTHING_EXPECTED} Nothing was waited for on ladder ${ladder}.`);
-  }
-
-  let master = '';
-  let seen: string | null = null;
-
-  await waitFor(
-    async () => {
-      const body = await readLadderMaster(host, cfg, owner, ladder);
-      const read = masterRungsOf(body, await readTopics());
-      // Both together, so the description is never of a body the announces were not read beside.
-      master = body;
-      seen = describeMaster(read, body);
-      return masterRungRefusal(read, survivingRungs) === null;
-    },
-    {
-      timeoutMs: DEAD_RUNG_MASTER_WAIT_MS,
-      intervalMs: SURVIVING_MASTER_POLL_MS,
-      clock,
-      label:
-        `the master of ladder ${ladder} offers exactly ${survivingRungs.join(', ')}, the rungs that ` +
-        'kept their postage. A filling batch still lands a segment now and then, and every one of ' +
-        "those resets the drained rung's lag, so this waits out the ramp as well as the four " +
-        'segments of ladder progress the dead-rung rule needs and the feed write becoming readable',
-    },
-  ).catch((error: Error) => {
-    throw new Error(`${error.message}\n  what the master last held: ${seen ?? NOTHING_READ}`, { cause: error });
+  return waitForMasterRungs(host, cfg, {
+    owner,
+    ladder,
+    expected: survivingRungs,
+    readTopics,
+    clock,
+    timeoutMs: DEAD_RUNG_MASTER_WAIT_MS,
+    label:
+      `the master of ladder ${ladder} offers exactly ${survivingRungs.join(', ')}, the rungs that ` +
+      'kept their postage. A filling batch still lands a segment now and then, and every one of ' +
+      "those resets the drained rung's lag, so this waits out the ramp as well as the four " +
+      'segments of ladder progress the dead-rung rule needs and the feed write becoming readable',
   });
-
-  return master;
 }
-
-/** What a timeout can say when no poll ever got a body and this ladder's announces together. */
-const NOTHING_READ =
-  "nothing was read. No poll got both a body off the feed and this broadcast's own rung announces, " +
-  'so the master itself may be perfectly correct and the reading of it is what failed';
 
 /** How long one bucket of the ramp covers. Ten seconds, so a fifty second ramp reads as five rows. */
 const RAMP_BUCKET_MS = 10_000;

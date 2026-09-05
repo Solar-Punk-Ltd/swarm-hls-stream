@@ -44,7 +44,7 @@ import { feedTopicHexOf } from '../browser/rungManifest.js';
 import type { E2EConfig } from '../config.js';
 
 import type { Host } from './host.js';
-import { sleep } from './wait.js';
+import { sleep, waitFor } from './wait.js';
 
 /** How long one master read is given before the parse records what the gateway did answer. */
 const MASTER_READ_TIMEOUT_S = 15;
@@ -249,6 +249,96 @@ export async function readLadderMaster(host: Host, cfg: E2EConfig, owner: string
     await sleep(MASTER_RETRY_INTERVAL_MS);
   }
 }
+
+/**
+ * How long between polls of the master.
+ *
+ * Bee's feed lookup is the slow part of each poll and the master is rewritten on a segment boundary,
+ * so anything tighter re-reads a feed that cannot have moved.
+ */
+const MASTER_POLL_MS = 3_000;
+
+/** Which ladder to read, which rungs it has to be offering, and how to learn their feed topics. */
+export interface MasterRungsWait {
+  /** The signer's address, as `discoverCatalogFeed` reads it off the catalog line. */
+  owner: string;
+  /** The ladder group, which is also the master feed's topic. */
+  ladder: string;
+  /** The rungs the master must offer, exactly. Empty is a caller that could not work them out. */
+  expected: readonly string[];
+  /**
+   * Every rung of this ladder by its raw feed topic, re-read on each poll.
+   *
+   * A function rather than a map, because the master is joined to rung names through the announces in
+   * the uploader's log and a rung that announces late would otherwise read for ever as a stranger
+   * topic on a master that is perfectly correct.
+   */
+  readTopics: () => Promise<ReadonlyMap<string, string>>;
+  /** The caller's own patience, since a drain waits out a ramp and a restored stage has none. */
+  timeoutMs: number;
+  /** What the caller is waiting for, in an operator's words, which a timeout prints. */
+  label: string;
+  /** Injected so a test drives the polling window instead of spending it, as `waitFor` takes one. */
+  clock?: { now: () => number; wait: (ms: number) => Promise<void> };
+}
+
+/**
+ * Wait until one ladder's master offers exactly a given set of rungs, and hand the body back.
+ *
+ * ## ⛔ Exactly, in both directions, and that is the whole of why one wait serves two families
+ *
+ * A drain suite waits for the master to come DOWN to the rungs that kept their postage, and a master
+ * down to two has taken a healthy quality away from viewers who were watching it, which is the
+ * failure the owner's ruling of 2026-09-01 capped the drop at one to prevent. The suite that runs
+ * after a restore waits for it to come back UP to every rung the ladder announced. Both are
+ * {@link masterRungRefusal} asked of a body that is re-read, so the wait and the assertion ask the
+ * same question of the same reading, and a second copy of this poll would be the second place a
+ * change to what counts as a correct master has to land.
+ *
+ * Hands the body back so the caller asserts on the one it waited on rather than on a fresh read that
+ * could have moved.
+ *
+ * ⛔⛔ A timeout says what the master LAST HELD. Four minutes of paid broadcast used to end in "the
+ * master offers exactly these rungs", which names what was wanted and nothing about what was there:
+ * whether the gateway answered a playlist at all, which rungs it did offer, or whether the body was
+ * an error envelope. {@link describeMaster} says all three and the last complete read is kept for it.
+ */
+export async function waitForMasterRungs(
+  host: Host,
+  cfg: E2EConfig,
+  { owner, ladder, expected, readTopics, timeoutMs, label, clock }: MasterRungsWait,
+): Promise<string> {
+  // ⛔ Before the polling and not inside it. The predicate below can never be satisfied by an empty
+  // expectation, so the run would spend the whole ceiling on a paid broadcast and then time out
+  // naming no rungs at all, which is a red with no cause in it.
+  if (expected.length === 0) {
+    throw new Error(`${NOTHING_EXPECTED} Nothing was waited for on ladder ${ladder}.`);
+  }
+
+  let master = '';
+  let seen: string | null = null;
+
+  await waitFor(
+    async () => {
+      const body = await readLadderMaster(host, cfg, owner, ladder);
+      const read = masterRungsOf(body, await readTopics());
+      // Both together, so the description is never of a body the announces were not read beside.
+      master = body;
+      seen = describeMaster(read, body);
+      return masterRungRefusal(read, expected) === null;
+    },
+    { timeoutMs, intervalMs: MASTER_POLL_MS, clock, label },
+  ).catch((error: Error) => {
+    throw new Error(`${error.message}\n  what the master last held: ${seen ?? NOTHING_READ}`, { cause: error });
+  });
+
+  return master;
+}
+
+/** What a timeout can say when no poll ever got a body and this ladder's announces together. */
+const NOTHING_READ =
+  "nothing was read. No poll got both a body off the feed and this broadcast's own rung announces, " +
+  'so the master itself may be perfectly correct and the reading of it is what failed';
 
 /** One line an operator reads beside a verdict: what the master held at the moment it was read. */
 export function describeMaster(read: MasterRungs, body: string): string {

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { feedTopicHexOf } from '../src/browser/rungManifest.js';
-import { describeMaster, masterRungRefusal, masterRungsOf } from '../src/harness/masterShape.js';
+import type { E2EConfig } from '../src/config.js';
+import type { Host } from '../src/harness/host.js';
+import { describeMaster, masterRungRefusal, masterRungsOf, waitForMasterRungs } from '../src/harness/masterShape.js';
+import { StopWaiting } from '../src/harness/wait.js';
 
 /**
  * Which qualities a ladder's master playlist is offering a viewer who joins now.
@@ -323,5 +326,102 @@ describe('describeMaster', () => {
     assert.ok(said.length < 200, `the excerpt ran to ${said.length} characters`);
     assert.doesNotMatch(said, /\n/, 'a verdict line has to stay on one line');
     assert.match(said, /not a master x/, 'the newline should read as a space rather than being dropped');
+  });
+});
+
+/**
+ * ⛔⛔ The polling half, which two families of suite now share.
+ *
+ * A drain suite waits for the master to come DOWN to the rungs that kept their postage. The suite
+ * that runs after the restore waits for it to come back UP to every rung the ladder announced. Those
+ * are one wait asking {@link masterRungRefusal} of a body it re-reads, and a second copy of the poll
+ * would be the second place a change to what counts as a correct master has to land. See
+ * `waitForSurvivingMaster` in `batchDrain.ts`, which is now this under the drain's own label.
+ *
+ * ⚠️ `readTopics` throws {@link StopWaiting} here to end a wait on the poll this file chooses. A
+ * live one never does, and nothing in the wait depends on it: it is how a ceiling measured in
+ * minutes is reached inside one poll interval rather than by a knob that could later shorten a live
+ * wait.
+ */
+describe('waitForMasterRungs', () => {
+  const LADDER = 'ladder-7f21';
+  const GAVE_UP = 'this test has seen the poll it needed';
+
+  /** Answers every feed read with one body, which is all `readLadderMaster` asks of a host. */
+  function gatewayAnswering(body: string): Host {
+    return { localText: async () => body } as unknown as Host;
+  }
+
+  const cfg = { ports: { beeGatewayApi: 10_077 } } as unknown as E2EConfig;
+
+  function topicsFor(completePolls: number): () => Promise<ReadonlyMap<string, string>> {
+    let asked = 0;
+    return async () => {
+      if (asked++ >= completePolls) {
+        throw new StopWaiting(GAVE_UP);
+      }
+      return RUNG_BY_TOPIC;
+    };
+  }
+
+  function fakeClock(): { now: () => number; wait: (ms: number) => Promise<void> } {
+    let atMs = 0;
+    return {
+      now: () => atMs,
+      wait: async (ms: number) => {
+        atMs += ms;
+      },
+    };
+  }
+
+  const waitOn = (body: string, expected: readonly string[], completePolls: number) =>
+    waitForMasterRungs(gatewayAnswering(body), cfg, {
+      owner: OWNER,
+      ladder: LADDER,
+      expected,
+      readTopics: topicsFor(completePolls),
+      timeoutMs: 240_000,
+      label: 'the master offers the whole ladder again',
+      clock: fakeClock(),
+    });
+
+  /** The post-restore direction: every rung the ladder announced is offered again. */
+  it('returns the body it waited on once the master offers the whole set', async () => {
+    const body = await waitOn(master(FULL_LADDER), FULL_LADDER, 1);
+
+    assert.equal(body.match(/swarm:\/\//g)?.length, 4);
+  });
+
+  /** The drain direction, out of the same call: a set smaller than the master's is not satisfied. */
+  it('goes on waiting while the master offers a rung the caller did not expect', async () => {
+    await assert.rejects(waitOn(master(FULL_LADDER), SURVIVORS, 1), new RegExp(GAVE_UP));
+  });
+
+  /** ⛔ What the master last held, on whatever ends the wait. The finding, and not the expectation. */
+  it('says what the master last offered when the wait ends in nothing', async () => {
+    await assert.rejects(waitOn(master(['360p', '480p']), FULL_LADDER, 1), (error: Error) => {
+      assert.match(error.message, /the master last held: the master offers 2 rung\(s\): 360p, 480p/);
+      assert.ok(error.cause instanceof Error, 'the rethrow has to carry what it was rethrown from');
+      return true;
+    });
+  });
+
+  /**
+   * ⛔ Before anything is dialled, which is the assertion: the host and the config are null. An
+   * expectation `masterRungRefusal` can never clear would otherwise spend a whole ceiling of paid
+   * broadcast and time out naming no rungs at all.
+   */
+  it('refuses an expectation of no rungs rather than polling for one', async () => {
+    await assert.rejects(
+      waitForMasterRungs(null as never, null as never, {
+        owner: OWNER,
+        ladder: LADDER,
+        expected: [],
+        readTopics: async () => new Map(),
+        timeoutMs: 240_000,
+        label: 'nothing that could ever be satisfied',
+      }),
+      /no rungs/,
+    );
   });
 });
