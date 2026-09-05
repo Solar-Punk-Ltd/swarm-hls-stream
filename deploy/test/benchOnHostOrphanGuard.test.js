@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,14 @@ const CONTAINER_HOLDS_SECONDS = 3;
 const INTERRUPT_DEADLINE_MS = 20_000;
 const POLL_MS = 20;
 
+/**
+ * The cap the script puts on the stop, shortened from its default of 20s so a stop that never
+ * answers can be read without sitting out the real one. The stub below then hangs well past it, so
+ * the arm either gives up on its own or the deadline above ends the test.
+ */
+const SHORT_STOP_DEADLINE_SECONDS = '1';
+const STOP_HANGS_SECONDS = 30;
+
 /** 128 plus the signal number, which is what a shell reports for a run a signal ended. */
 const EXIT_ON_INT = 130;
 const EXIT_ON_TERM = 143;
@@ -85,6 +93,21 @@ if [ "$1" = "ps" ]; then
 fi
 exec node -- "$0.cjs" "$@"
 `,
+  );
+}
+
+/**
+ * Replaces `ssh` with a wrapper that treats the stop the handler issues differently and hands every
+ * other call to the sandbox's own stub, which is what actually runs the remote command and journals
+ * it. The wrapper sees the full argv, options included, which the stub deliberately strips.
+ */
+function sshOnStop(sandbox, body) {
+  const passthrough = join(sandbox.binDir, 'ssh-passthrough');
+  copyFileSync(join(sandbox.binDir, 'ssh'), passthrough);
+  chmodSync(passthrough, 0o755);
+  writeExecutable(
+    join(sandbox.binDir, 'ssh'),
+    `#!/bin/sh\ncase "$*" in *'docker stop'*) ${body} ;; esac\nexec ${passthrough} "$@"\n`,
   );
 }
 
@@ -142,13 +165,13 @@ async function waitForFile(path) {
  *
  * The process group is still its own, so the cleanup below can take the stubbed container with it.
  */
-async function interruptedRun(sandbox, args, { signal = 'SIGINT', stopExitCode = 0 } = {}) {
+async function interruptedRun(sandbox, args, { signal = 'SIGINT', stopExitCode = 0, env = {} } = {}) {
   const marker = join(sandbox.root, 'container-started');
   dockerRunBlocks(sandbox, { marker, stopExitCode });
 
   const child = spawn('bash', [sandbox.scriptPath('bench-on-host.sh'), ...args], {
     detached: true,
-    env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+    env: { ...process.env, ...env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -435,5 +458,42 @@ describe('bench-on-host stops the remote container when it is interrupted', () =
     assert.equal(run.exitCode, EXIT_ON_INT, 'a failed stop changed the exit code');
     assert.match(run.stderr, new RegExp(`${DEFAULT_CONTAINER} may still be running`));
     assert.match(run.stderr, new RegExp(`ssh manager-host 'docker stop ${DEFAULT_CONTAINER}'`));
+  });
+
+  /**
+   * ⛔⛔ A connect timeout bounds the handshake and nothing after it. This repository has already lost
+   * six readings to an ssh that connected and then sat on a wedged agent, and every one of them read
+   * as a product fault. An interrupt is the worst place for that: the operator has asked for the
+   * terminal back, and the handler holding it is the only thing between them and it.
+   */
+  it('gives up on a stop that never answers, and says the container may still be running', async () => {
+    const sandbox = benchSandbox();
+    sshOnStop(sandbox, `exec sleep ${STOP_HANGS_SECONDS}`);
+
+    const run = await interruptedRun(sandbox, ['--no-setup'], {
+      env: { BENCH_STOP_DEADLINE_SECONDS: SHORT_STOP_DEADLINE_SECONDS },
+    });
+
+    assert.match(run.stderr, new RegExp(`did not answer within ${SHORT_STOP_DEADLINE_SECONDS}s`));
+    assert.match(run.stderr, new RegExp(`${DEFAULT_CONTAINER} may still be running`));
+    assert.match(run.stderr, new RegExp(`ssh manager-host 'docker stop ${DEFAULT_CONTAINER}'`));
+    assert.equal(run.exitCode, EXIT_ON_INT, 'a stop that hit the cap changed the exit code');
+  });
+
+  /**
+   * ⛔ The other half of the same fault, and the one a cap cannot fix on its own. An ssh that stops to
+   * ask for a passphrase has not failed and has not hung, it is waiting on a human who is trying to
+   * leave. `BatchMode=yes` turns every such prompt into an immediate refusal.
+   */
+  it('runs the stop under BatchMode, so a prompt cannot hold the terminal at all', async () => {
+    const sandbox = benchSandbox();
+    const argv = join(sandbox.root, 'stop-argv');
+    sshOnStop(sandbox, `printf '%s\\n' "$*" > ${argv}`);
+
+    await interruptedRun(sandbox, ['--no-setup']);
+
+    const recorded = readFileSync(argv, 'utf8');
+    assert.match(recorded, /-o BatchMode=yes/, `the stop can still be asked for a passphrase: ${recorded}`);
+    assert.match(recorded, /-o ConnectTimeout=/, `the stop lost its connect timeout: ${recorded}`);
   });
 });

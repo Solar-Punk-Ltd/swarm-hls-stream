@@ -123,6 +123,24 @@ SSH_OPTS=(-o ServerAliveInterval=30 -o ServerAliveCountMax=20)
 # away must not hold the terminal the operator is trying to get back.
 STOP_CONNECT_TIMEOUT_SECONDS=10
 
+# ⛔⛔ A connect timeout bounds the handshake and nothing after it. An ssh that connects and then sits
+# on a wedged 1Password agent waiting for a key is the failure that killed six readings on this
+# project already, and the interrupt path is the worst place for it, because the operator has asked
+# for the terminal back and the handler is what holds it. Two things answer that: `BatchMode=yes`
+# below, which turns every prompt into an immediate refusal instead of a wait, and this wall-clock
+# cap on the whole call. macOS ships no `timeout`, so the cap is a background child and a poll, which
+# is the shape `overnight-chain.sh` already bounds a sitting with.
+#
+# Overridable so the cap itself can be exercised, and screened below because the arithmetic that
+# reads it runs inside a signal handler where a shell error would cost the stop entirely.
+STOP_DEADLINE_SECONDS="${BENCH_STOP_DEADLINE_SECONDS:-20}"
+STOP_POLL_SECONDS=1
+
+if ! [[ "${STOP_DEADLINE_SECONDS}" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  echo "bench-on-host: BENCH_STOP_DEADLINE_SECONDS must be a whole number of seconds from 1 to 9999 and is '${STOP_DEADLINE_SECONDS}'" >&2
+  exit 2
+fi
+
 # Docker's own name for the host as seen from a bridge network, published into the container with
 # `--add-host=…:host-gateway`. Not resolvable by default on Linux, which is why the flag is there.
 HOST_GATEWAY_ALIAS="host.docker.internal"
@@ -210,8 +228,25 @@ stop_harness_container() {
   [ "${HARNESS_CONTAINER_IN_FLIGHT}" -eq 1 ] || return 0
   HARNESS_CONTAINER_IN_FLIGHT=0
   echo "bench-on-host: interrupted, stopping ${HARNESS_CONTAINER} on ${TARGET}" >&2
-  if ! ssh "${SSH_OPTS[@]}" -o ConnectTimeout="${STOP_CONNECT_TIMEOUT_SECONDS}" "${TARGET}" \
-    "docker stop ${HARNESS_CONTAINER}"; then
+
+  local stop_pid waited=0 rc=0
+  ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout="${STOP_CONNECT_TIMEOUT_SECONDS}" -n \
+    "${TARGET}" "docker stop ${HARNESS_CONTAINER}" &
+  stop_pid=$!
+
+  while kill -0 "${stop_pid}" 2> /dev/null; do
+    if [ "${waited}" -ge "${STOP_DEADLINE_SECONDS}" ]; then
+      kill -TERM "${stop_pid}" 2> /dev/null || true
+      echo "bench-on-host: the stop did not answer within ${STOP_DEADLINE_SECONDS}s and was abandoned, so ${HARNESS_CONTAINER} may still be running and broadcasting on ${TARGET}." >&2
+      echo "bench-on-host: stop it with: ssh ${TARGET} 'docker stop ${HARNESS_CONTAINER}'" >&2
+      return 0
+    fi
+    sleep "${STOP_POLL_SECONDS}"
+    waited=$((waited + STOP_POLL_SECONDS))
+  done
+
+  wait "${stop_pid}" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
     echo "bench-on-host: the stop failed, so ${HARNESS_CONTAINER} may still be running and broadcasting on ${TARGET}." >&2
     echo "bench-on-host: stop it with: ssh ${TARGET} 'docker stop ${HARNESS_CONTAINER}'" >&2
   fi
