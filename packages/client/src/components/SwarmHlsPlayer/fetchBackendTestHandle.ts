@@ -26,7 +26,7 @@ export interface FetchBackendSwitch {
    * Boot the in-tab node without switching to it, so an arm does not pay the join inside its own
    * measurement.
    *
-   * ⛔ weeb-3 costs 4.5 MB of wasm and several seconds of dialling before its first byte. A2 measured
+   * ⛔ weeb-3 costs megabytes of wasm and several seconds of dialling before its first byte. A2 measured
    * that as a 9.4 to 10.5 second first retrieval against 3.2 to 4.0 warm. An arm that switches and
    * immediately starts scoring is measuring the join, and the join happens once per tab.
    */

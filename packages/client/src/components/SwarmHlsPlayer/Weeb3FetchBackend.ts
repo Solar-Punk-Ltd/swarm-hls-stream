@@ -83,10 +83,11 @@ function pageBaseUrl(): string {
 }
 
 /**
- * ⛔⛔ Dynamic, and it has to stay dynamic. The package is 4.5 MB of wasm plus 96 KB of glue, and a
- * static import would put all of it in the entry chunk of every viewer, including the overwhelming
- * majority who fetch through a gateway and never call this. As an `import()` inside a lazily reached
- * method it is a separate chunk that is only ever fetched by a build that selected this backend.
+ * ⛔⛔ Dynamic, and it has to stay dynamic. The pinned 0.0.341001 is 3.87 MB of wasm plus 96 KB of
+ * glue, and a static import would put all of it in the entry chunk of every viewer, including the
+ * overwhelming majority who fetch through a gateway and never call this. As an `import()` inside a
+ * lazily reached method it is a separate chunk that is only ever fetched by a build that selected
+ * this backend.
  *
  * ⛔⛔ **Uncast on purpose, and it needs no cast.** The package's declarations satisfy
  * {@link Weeb3Module} as written, so this one assignment is what holds every member we named against
@@ -110,7 +111,7 @@ const importWeeb3: Weeb3ModuleLoader = () => import('@lat-murmeldjur/weeb_3');
  * touched this. Treat it as unmeasured rather than as either proven or refuted.
  *
  * The singleton below stands on its own reasoning regardless. A player asks for a fragment every half
- * second and each node costs 4.5 MB of wasm plus seconds of dialling, so booting one per request
+ * second and each node costs megabytes of wasm plus seconds of dialling, so booting one per request
  * would be wasteful whatever the peer tables did.
  *
  * ## ⛔⛔⛔ The node is not in this tab, and 0.0.341001 left no way to put it there
@@ -142,7 +143,7 @@ export class Weeb3FetchBackend {
   /**
    * Boot the node and reach the network without fetching anything.
    *
-   * ⛔ The join is 4.5 MB of wasm and several seconds of dialling, and it happens once per tab.
+   * ⛔ The join is megabytes of wasm and several seconds of dialling, and it happens once per tab.
    * Measured in A2: a first retrieval right after `ready(1)` took 9,423-10,466ms against 3,185-4,003ms
    * warm. An arm that switches to this backend and immediately starts scoring is measuring the join
    * rather than the backend, so a harness calls this before the arm it wants to count.
