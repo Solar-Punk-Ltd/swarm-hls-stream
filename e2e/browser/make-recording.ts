@@ -29,24 +29,33 @@
  */
 
 import { envNumber } from '../src/browser/runFiles.js';
-import { containerName, loadConfig } from '../src/config.js';
-import { makeHost, waitForIdle } from '../src/harness/host.js';
+import { containerName, type E2EConfig, loadConfig } from '../src/config.js';
+import { type Host, makeHost, waitForIdle } from '../src/harness/host.js';
 import { announcedLiveStreams, parseUploaderLog } from '../src/harness/logwatch.js';
 import { startPublisher } from '../src/harness/publisher.js';
+import { recordingProgress, recordingSummary } from '../src/harness/recording.js';
+import { readStageSegmenting } from '../src/harness/stage.js';
 import { requireStageStamps } from '../src/harness/stageStamps.js';
 import { waitFor } from '../src/harness/wait.js';
+import { stageSegmentSeconds } from '../src/segmentLength.js';
 
 /**
- * ⚠️ **A segment here is one GOP, not one `hls_fragment`.**
+ * ⚠️ **A segment here is one segment of ONE RUNG, and it is one GOP rather than one `hls_fragment`.**
  *
  * SRS cuts at the first keyframe at or after `hls_fragment`, and `startPublisher` encodes at
- * `-g fps*2`, so against the shipping 0.25s fragment the publisher's two second GOP is what decides
- * the length: each segment is ~2s, not 0.25s. Counting these as fragments makes a recording **eight
- * times longer and eight times more expensive** than intended, which is the whole reason this is
- * written down rather than left as a number.
+ * `-g fps*2`, so against a fragment shorter than that the publisher's GOP is what decides the
+ * length. Counting these as fragments makes a recording several times longer and several times more
+ * expensive than intended, which is the whole reason this is written down rather than left as a
+ * number. The run prints what the stage actually cuts at, read off the running SRS config, so no
+ * reader has to hold that arithmetic.
  *
- * 45 either side is therefore about **three minutes of media**, comfortably past the ~6s the player
- * buffers, so every seek below has to retrieve rather than replay what it already holds.
+ * ⛔⛔ **Per rung, and it was not until 2026-09-05.** The uploader writes one upload line per rung,
+ * so on the four rung latbench stage a target of 60 before and 60 after produced 32 segments per
+ * rung: a quarter of what was asked, and a quarter of the recording a player sees, because a player
+ * rides one rung. `harness/recording.ts` holds the counting and `test/recording.test.ts` covers it.
+ *
+ * 45 either side is comfortably past the ~6s the player buffers, so every seek below has to retrieve
+ * rather than replay what it already holds.
  */
 const BEFORE_SEGMENTS = 45;
 /** Segments after it, so the discontinuity sits near the middle and seeks cross it in both directions. */
@@ -87,21 +96,33 @@ async function main(): Promise<void> {
   await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
   await waitForIdle(host, cfg);
 
+  const segmentSeconds = await stageSegmentLength(host, cfg);
+  console.log(
+    segmentSeconds === null
+      ? `recording: the ${cfg.engine} stage does not report a segment length this harness can read, so ` +
+          'the media figures below are segment counts alone'
+      : `recording: the stage cuts ${segmentSeconds}s segments, so ${before} + ${after} per rung is ` +
+          `${(((before + after) * segmentSeconds) / 60).toFixed(1)} minutes of media`,
+  );
+
   const startedAt = await host.nowIso();
   const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-  const uploaded = async (): Promise<number[]> => parseUploaderLog(await log()).uploadedSegments;
+  const progress = async (): Promise<number> => recordingProgress(await log()).perRung;
+  const report = async (): Promise<string> => recordingSummary(recordingProgress(await log()), segmentSeconds);
 
   const publisher = startPublisher(cfg);
   let beeIsDown = false;
+  let beforeOutage = 0;
   try {
-    console.log(`recording: publishing ${before} segments before the outage`);
-    await waitFor(async () => (await uploaded()).length >= before, {
+    console.log(`recording: publishing ${before} segments per rung before the outage`);
+    await waitFor(async () => (await progress()) >= before, {
       timeoutMs: SEGMENT_WAIT_MS,
       intervalMs: 5_000,
-      label: `${before} segments before the outage`,
+      label: `${before} segments per rung before the outage`,
     });
+    console.log(`recording: ${await report()}`);
 
-    const beforeOutage = (await uploaded()).length;
+    beforeOutage = await progress();
     if (ARM_DISCONTINUITY) {
       console.log(`recording: taking ${beeUploader} away for ${OUTAGE_MS / 1000}s to arm a discontinuity`);
       await host.stop(beeUploader);
@@ -115,14 +136,15 @@ async function main(): Promise<void> {
 
     console.log(
       ARM_DISCONTINUITY
-        ? `recording: publishing ${after} more segments past the discontinuity`
-        : `recording: publishing ${after} more segments`,
+        ? `recording: publishing ${after} more segments per rung past the discontinuity`
+        : `recording: publishing ${after} more segments per rung`,
     );
-    await waitFor(async () => (await uploaded()).length >= beforeOutage + after, {
+    await waitFor(async () => (await progress()) >= beforeOutage + after, {
       timeoutMs: SEGMENT_WAIT_MS,
       intervalMs: 5_000,
-      label: `${after} segments after the outage`,
+      label: `${after} segments per rung after the outage`,
     });
+    console.log(`recording: ${await report()}`);
 
     const events = parseUploaderLog(await log());
 
@@ -160,7 +182,9 @@ async function main(): Promise<void> {
           'across one. The node came back inside the retry window.',
       );
     }
-    console.log(`recording: ${events.discontinuitiesArmed} discontinuity(s) armed after ${beforeOutage} segments`);
+    console.log(
+      `recording: ${events.discontinuitiesArmed} discontinuity(s) armed after ${beforeOutage} segments per rung`,
+    );
   } finally {
     await publisher.stop();
     if (beeIsDown) {
@@ -179,7 +203,7 @@ async function main(): Promise<void> {
     throw new Error('the uploader announced no stream, so the recording cannot be addressed');
   }
 
-  const total = (await uploaded()).length;
+  const total = await progress();
   console.log('');
   console.log(
     ARM_DISCONTINUITY
@@ -191,11 +215,40 @@ async function main(): Promise<void> {
   console.log(`  BROWSER_VOD_TOPIC=${announced.topic} \\`);
   console.log('  pnpm browser:vod');
   console.log('');
+  console.log(`  ${await report()}`);
   console.log(
     ARM_DISCONTINUITY
-      ? `  segments: ${total}, discontinuity after roughly ${((100 * before) / total).toFixed(0)}% of them`
-      : `  segments: ${total}, no discontinuity`,
+      ? `  discontinuity after roughly ${((100 * beforeOutage) / total).toFixed(0)}% of the recording`
+      : '  no discontinuity',
   );
+}
+
+/**
+ * What the running stage cuts a segment at, or null where this run cannot learn it.
+ *
+ * ⛔ Off the running container rather than out of the env files, for the reason `harness/stage.ts`
+ * gives at length: an env file edited after the last deploy states an intention, and this bench host
+ * is shared. It costs one `docker exec cat`, publishes nothing and spends nothing.
+ *
+ * ⭐ A read that fails is a figure this run cannot print, not a reason to abandon a recording. The
+ * stamp gate above has already refused the faults that make a recording unusable, and an engine with
+ * no config reader here still produces a perfectly good recording. So the reason is printed and the
+ * media clause is dropped, rather than an unreadable length ending the run.
+ */
+async function stageSegmentLength(host: Host, cfg: E2EConfig): Promise<number | null> {
+  if (cfg.engine !== 'srs') {
+    return null;
+  }
+
+  try {
+    return stageSegmentSeconds(await readStageSegmenting(host, cfg));
+  } catch (error) {
+    console.log(
+      `recording: could not read what ${containerName(cfg, 'srs')} cuts at, so this run states segment ` +
+        `counts and no media length: ${(error as Error).message}`,
+    );
+    return null;
+  }
 }
 
 main().catch((error: unknown) => {
