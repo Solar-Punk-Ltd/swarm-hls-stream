@@ -41,11 +41,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WRITE=0
 STAMPS_FROM=""
+
 # The same floor and ceiling PostageGate applies at startup (STAMP_MIN_TTL_HOURS,
 # STAMP_MAX_UTILIZATION). Kept in step on purpose so the config this writes is config the service
 # will accept, and a batch that fails here fails there for the same stated reason.
-MIN_TTL_HOURS="${STAMP_MIN_TTL_HOURS:-24}"
-MAX_UTILIZATION="${STAMP_MAX_UTILIZATION:-0.9}"
+#
+# ⛔⛔⛔ READ FROM THE ENV FILE, never from this shell. The uploader takes its environment from
+# `.env.<profile>` and never from the terminal this runs in, so an export here moved both thresholds
+# in this script and nowhere else. The line it then wrote could name a batch the container refuses at
+# startup, or leave out one the container would have accepted. `drain-stage.sh` closed the same hole
+# on its own copy of the floor and this is the other half of it.
+#
+# The shell values are captured here rather than read later, because `load_env` copies the file's
+# values into this shell as defaults and the two are indistinguishable once it has run. They are
+# unset for the same reason: `load_env_file` skips any key this shell already declares, so the file
+# only wins once the shell stops holding one.
+readonly DEFAULT_MIN_TTL_HOURS=24
+readonly DEFAULT_MAX_UTILIZATION=0.9
+MIN_TTL_HOURS="$DEFAULT_MIN_TTL_HOURS"
+MAX_UTILIZATION="$DEFAULT_MAX_UTILIZATION"
+MIN_TTL_HOURS_IN_SHELL="${STAMP_MIN_TTL_HOURS:-}"
+MAX_UTILIZATION_IN_SHELL="${STAMP_MAX_UTILIZATION:-}"
+unset STAMP_MIN_TTL_HOURS STAMP_MAX_UTILIZATION
 
 parse_profile_args "$@"
 # ⛔ `${arr[@]+"${arr[@]}"}` rather than `"${REST_ARGS[@]}"`, because macOS ships bash 3.2 and there an
@@ -67,6 +84,27 @@ done
 require_env
 load_env
 apply_port_slot
+
+# Now that the env file has been read, both thresholds are the ones the container will apply. A value
+# left in this shell as well is refused rather than quietly ignored, because an operator who exported
+# it did it to change something and has to be told it changes nothing.
+MIN_TTL_HOURS="${STAMP_MIN_TTL_HOURS:-$DEFAULT_MIN_TTL_HOURS}"
+MAX_UTILIZATION="${STAMP_MAX_UTILIZATION:-$DEFAULT_MAX_UTILIZATION}"
+
+if [ -n "$MIN_TTL_HOURS_IN_SHELL" ] && [ "$MIN_TTL_HOURS_IN_SHELL" != "$MIN_TTL_HOURS" ]; then
+  echo "bee-publishers: REFUSING, STAMP_MIN_TTL_HOURS is ${MIN_TTL_HOURS_IN_SHELL} in this shell and ${MIN_TTL_HOURS} for the uploader."
+  echo "  The uploader reads ${ENV_FILE##*/} and never this shell, so the floor this run would apply is"
+  echo "  not the floor the container will apply. Set it in ${ENV_FILE##*/} and redeploy, or unset it here."
+  exit 1
+fi
+
+if [ -n "$MAX_UTILIZATION_IN_SHELL" ] && [ "$MAX_UTILIZATION_IN_SHELL" != "$MAX_UTILIZATION" ]; then
+  echo "bee-publishers: REFUSING, STAMP_MAX_UTILIZATION is ${MAX_UTILIZATION_IN_SHELL} in this shell and ${MAX_UTILIZATION} for the uploader."
+  echo "  The uploader reads ${ENV_FILE##*/} and never this shell, so the ceiling this run would apply"
+  echo "  is not the ceiling the container will apply. Set it in ${ENV_FILE##*/} and redeploy, or unset"
+  echo "  it here."
+  exit 1
+fi
 
 # ⛔ The one hardcoded map in this script, and it has to be: the deploy has exactly these services.
 # A ladder with a rung not named here has no node to publish through, and the check below refuses

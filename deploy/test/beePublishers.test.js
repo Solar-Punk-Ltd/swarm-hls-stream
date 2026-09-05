@@ -82,21 +82,27 @@ if (at !== -1 && at + 1 < argv.length) {
   return sandbox;
 }
 
-/** A sandbox on a remote topology, which is where the ssh-and-curl read route is the real one. */
-function publisherSandbox(options) {
+/**
+ * A sandbox on a remote topology, which is where the ssh-and-curl read route is the real one.
+ *
+ * @param {object} [options]
+ * @param {string} [options.extra] Lines appended to the profile env file, which is the only place
+ *   the uploader's own container reads its environment from.
+ */
+function publisherSandbox({ extra = '', ...options } = {}) {
   const sandbox = makeSandbox({
     config: ALL_REMOTE,
     project: PROFILE,
     envFiles: {
       '.env': 'STAMP=stamp\nSTREAM_KEY=key\n',
-      [`.env.${PROFILE}`]: 'STAMP=stamp\nSTREAM_KEY=key\nABR_ENABLED=true\n',
+      [`.env.${PROFILE}`]: `STAMP=stamp\nSTREAM_KEY=key\nABR_ENABLED=true\n${extra}`,
     },
   });
   return stubCurl(sandbox, options);
 }
 
-function generate(sandbox) {
-  return runScript(sandbox, SCRIPT_NAME, [`--profile=${PROFILE}`, `--portSlot=${PORT_SLOT}`]);
+function generate(sandbox, env = {}) {
+  return runScript(sandbox, SCRIPT_NAME, [`--profile=${PROFILE}`, `--portSlot=${PORT_SLOT}`], env);
 }
 
 /**
@@ -159,10 +165,112 @@ describe('the BEE_PUBLISHERS generator', () => {
       encoding: 'utf8',
     });
 
-    assert.match(script, /MIN_TTL_HOURS="\$\{STAMP_MIN_TTL_HOURS:-24\}"/);
-    assert.match(script, /MAX_UTILIZATION="\$\{STAMP_MAX_UTILIZATION:-0\.9\}"/);
+    assert.match(script, /readonly DEFAULT_MIN_TTL_HOURS=24$/m);
+    assert.match(script, /readonly DEFAULT_MAX_UTILIZATION=0\.9$/m);
     assert.match(gate, /DEFAULT_STAMP_MIN_TTL_HOURS = 24/);
     assert.match(gate, /DEFAULT_STAMP_MAX_UTILIZATION = 0\.9/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ THE CONTAINER NEVER SEES THE OPERATOR'S SHELL. This script writes the line the uploader
+ * starts on, and it refuses a batch on the two thresholds the uploader's own `PostageGate` applies.
+ * Both were read off the shell with a literal default, and the uploader reads its environment from
+ * `.env.<profile>`. So an export in one terminal moved the floor here and nowhere else, and the line
+ * this wrote could carry a batch the container refuses at startup, or leave out one it would have
+ * taken.
+ *
+ * `drain-stage.sh` closed the same hole on its own copy of the floor. This is the other half of it.
+ */
+describe('the generator takes its thresholds from the file the container reads', () => {
+  /** 40 hours clears the default floor of 24 and misses the 48 the env file below asks for. */
+  const FORTY_HOURS = JSON.stringify({ stamps: [{ ...healthy(BATCHES['720p']), batchTTL: 40 * 3600 }] });
+
+  it('applies the TTL floor the env file names, rather than its own default', async () => {
+    const sandbox = publisherSandbox({
+      extra: 'STAMP_MIN_TTL_HOURS=48\n',
+      bodies: { [PORTS['720p']]: FORTY_HOURS },
+    });
+
+    const { exitCode, stdout, stderr } = await generate(sandbox);
+
+    assert.notEqual(exitCode, 0, 'a batch the container will refuse at startup was written into the line');
+    const out = `${stdout}${stderr}`;
+    assert.match(out, /40\.0h left/);
+    assert.match(out, /floor is 48\.0h/, 'the floor came from this script’s default rather than from the env file');
+  });
+
+  it('refuses when a shell TTL floor disagrees with the env file, naming both', async () => {
+    const sandbox = publisherSandbox({ extra: 'STAMP_MIN_TTL_HOURS=48\n' });
+
+    const { exitCode, stdout, stderr } = await generate(sandbox, { STAMP_MIN_TTL_HOURS: '24' });
+
+    assert.notEqual(exitCode, 0, 'a shell value the container never sees was allowed to set the floor');
+    const out = `${stdout}${stderr}`;
+    assert.match(out, /STAMP_MIN_TTL_HOURS/);
+    assert.match(out, /24/, 'the refusal did not name the value in this shell');
+    assert.match(out, /48/, 'the refusal did not name the value the container will read');
+  });
+
+  /** ⛔ And a shell value with nothing in the file, which is exactly the export nobody deployed. */
+  it('refuses a shell TTL floor the env file says nothing about', async () => {
+    const sandbox = publisherSandbox();
+
+    const { exitCode, stdout, stderr } = await generate(sandbox, { STAMP_MIN_TTL_HOURS: '48' });
+
+    assert.notEqual(exitCode, 0, 'a shell export the container never sees was allowed to set the floor');
+    const out = `${stdout}${stderr}`;
+    assert.match(out, /48/, 'the refusal did not name the value in this shell');
+    assert.match(out, /24/, 'the refusal did not name the floor the container will actually apply');
+  });
+
+  it('applies the utilization ceiling the env file names, rather than its own default', async () => {
+    const sandbox = publisherSandbox({ extra: 'STAMP_MAX_UTILIZATION=0.05\n' });
+
+    const { exitCode, stdout, stderr } = await generate(sandbox);
+
+    assert.notEqual(exitCode, 0, 'a batch over the ceiling the container will apply was written into the line');
+    const out = `${stdout}${stderr}`;
+    assert.match(out, /10\.0% used/);
+    assert.match(out, /ceiling is 5\.0%/, 'the ceiling came from this script’s default rather than from the env file');
+  });
+
+  it('refuses when a shell utilization ceiling disagrees with the env file, naming both', async () => {
+    const sandbox = publisherSandbox({ extra: 'STAMP_MAX_UTILIZATION=0.5\n' });
+
+    const { exitCode, stdout, stderr } = await generate(sandbox, { STAMP_MAX_UTILIZATION: '0.9' });
+
+    assert.notEqual(exitCode, 0, 'a shell value the container never sees was allowed to set the ceiling');
+    const out = `${stdout}${stderr}`;
+    assert.match(out, /STAMP_MAX_UTILIZATION/);
+    assert.match(out, /0\.9/, 'the refusal did not name the value in this shell');
+    assert.match(out, /0\.5/, 'the refusal did not name the value the container will read');
+  });
+
+  it('refuses a shell utilization ceiling the env file says nothing about', async () => {
+    const sandbox = publisherSandbox();
+
+    const { exitCode, stdout, stderr } = await generate(sandbox, { STAMP_MAX_UTILIZATION: '0.5' });
+
+    assert.notEqual(exitCode, 0, 'a shell export the container never sees was allowed to set the ceiling');
+    const out = `${stdout}${stderr}`;
+    assert.match(out, /0\.5/, 'the refusal did not name the value in this shell');
+    assert.match(out, /0\.9/, 'the refusal did not name the ceiling the container will actually apply');
+  });
+
+  /** ⛔ The control. A refusal that fired whatever the two values were would pass every test above. */
+  it('writes the ordinary line when the shell and the env file agree', async () => {
+    const sandbox = publisherSandbox({ extra: 'STAMP_MIN_TTL_HOURS=48\nSTAMP_MAX_UTILIZATION=0.5\n' });
+
+    const { exitCode, stdout, stderr } = await generate(sandbox, {
+      STAMP_MIN_TTL_HOURS: '48',
+      STAMP_MAX_UTILIZATION: '0.5',
+    });
+
+    assert.equal(exitCode, 0, `${stdout}${stderr}`);
+    for (const [rung, port] of Object.entries(PORTS)) {
+      assert.match(stdout, new RegExp(`${rung}@http://127\\.0\\.0\\.1:${port}<${BATCHES[rung].slice(0, 8)}…>`));
+    }
   });
 });
 
