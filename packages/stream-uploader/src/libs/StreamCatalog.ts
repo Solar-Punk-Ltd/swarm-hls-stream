@@ -22,6 +22,19 @@ const CATALOG_RETRY_WINDOW_MS = 10_000;
 export const TREAT_STATE_AS_LOST_AFTER = 3;
 
 /**
+ * How long a master rewrite that did not reach the feed waits before a delivery may try it again.
+ *
+ * A rewrite is a master feed write with a catalog feed write behind it, both on serialised queues,
+ * and each already spends ten seconds retrying inside itself. Deliveries arrive several a second on
+ * a four rung ladder, so retrying on the next one would put a continuous stream of attempts onto a
+ * node that has just proved it cannot take one. Longer than that inner window, so a failing writer
+ * is asked once per period rather than back to back, and short enough that a rung death is corrected
+ * well inside one broadcast rather than at the next transition, which a steady broadcast never
+ * produces.
+ */
+export const MASTER_REWRITE_RETRY_MS = 30_000;
+
+/**
  * Node's error codes for a request that reached bee and then lost the transfer, as opposed to one
  * that never arrived. bee-js is built on axios and passes its `code` through as `statusText`,
  * leaving `status` unset when no response completed — which is what separates these from an HTTP
@@ -98,8 +111,29 @@ export class StreamCatalog {
    */
   private readonly liveness = new Map<string, LadderLiveness>();
 
-  /** The last ladder shape a master was written for, by group, as a joined list of rung names. */
+  /**
+   * The last ladder shape that reached the feed, by group, as a joined list of rung names.
+   *
+   * ⛔ Only ever what a viewer can actually be offered. A shape a rewrite was merely attempted for
+   * belongs in {@link rewritingShape}: recording it here is how a master that never landed stopped
+   * anything from trying again.
+   */
   private readonly advertised = new Map<string, string>();
+
+  /**
+   * The shape a master rewrite is in flight for, by group, and absent while none is.
+   *
+   * This is what keeps a burst of deliveries across one transition to a single write, which is the
+   * job {@link advertised} used to be doing by being stamped early. They are separate because they
+   * answer different questions, and the one a later delivery compares itself against must hold only
+   * shapes the feed took.
+   */
+  private readonly rewritingShape = new Map<string, string>();
+
+  /** Per group, the reading before which a rewrite that did not land is not attempted again. */
+  private readonly rewriteRetryAt = new Map<string, number>();
+
+  private readonly now: () => number;
 
   /** The identity each ladder last announced under, so a rung dying can be written as that owner. */
   private readonly lastIdentity = new Map<string, LadderIdentity>();
@@ -126,14 +160,26 @@ export class StreamCatalog {
    * the dead rung for the whole outage even with the filter deployed and correct.
    *
    * Fire and forget, deliberately: the caller is the segment path and a master write is a feed write
-   * behind a queue. `advertised` is stamped BEFORE the write rather than after, so a burst of
-   * deliveries across the transition queues one republish instead of one per segment. The cost of
-   * that ordering is that a failed write is not retried here, which is right: the next transition
-   * republishes, and `upsertRendition` rewrites the master on every announce regardless.
+   * behind a queue. A burst of deliveries across one transition still queues a single rewrite,
+   * because the shape being written is held in {@link rewritingShape} until that write settles.
+   *
+   * ⛔ **A rewrite that did not reach the feed is not a shape anyone is being offered, and this used
+   * to record it as one.** `advertised` was stamped before the write ran, so a master the writer
+   * could not publish was remembered as published: `republishMaster` rejects when the master feed
+   * exhausts its own retry window, the catch only logged, and nothing ever tried again. The reasoning
+   * written here leaned on the next transition or the next announce to put it right, and a steady
+   * broadcast produces neither, so one failed write left a viewer joining that broadcast offered a
+   * dead rung for the rest of it. Now `advertised` records only what the feed took, and a failure
+   * holds the group off for {@link MASTER_REWRITE_RETRY_MS} rather than for good.
    */
   private republishIfLadderShapeChanged(group: string, liveRungs: readonly string[]): void {
+    if (this.masterWriter === undefined) {
+      // No master exists to correct: the entry points a viewer straight at a rung. See `upsertRendition`.
+      return;
+    }
+
     const shape = liveRungs.join(',');
-    if (this.advertised.get(group) === shape) {
+    if (this.advertised.get(group) === shape || this.rewritingShape.get(group) === shape) {
       return;
     }
     const identity = this.lastIdentity.get(group);
@@ -142,11 +188,37 @@ export class StreamCatalog {
       // write as. The first announce publishes the right shape anyway.
       return;
     }
+    const retryAt = this.rewriteRetryAt.get(group);
+    if (retryAt !== undefined && this.now() < retryAt) {
+      return;
+    }
 
-    this.advertised.set(group, shape);
-    void this.republishMaster(identity).catch((error) => {
+    this.rewritingShape.set(group, shape);
+    void this.rewriteMaster(group, shape, identity);
+  }
+
+  /** Runs one rewrite and records what it actually achieved. Never rejects: its caller is a segment. */
+  private async rewriteMaster(group: string, shape: string, identity: LadderIdentity): Promise<void> {
+    try {
+      if (await this.republishMaster(identity)) {
+        this.advertised.set(group, shape);
+        this.rewriteRetryAt.delete(group);
+        return;
+      }
+      // Resolved without writing, which is the ladder having no entry to rewrite or no rendition left
+      // to name. Held off like a failure: both are conditions that persist, and asking again on the
+      // next segment would ask several times a second for the rest of the broadcast.
+      this.holdOffRewriting(group);
+    } catch (error) {
+      this.holdOffRewriting(group);
       this.logger.error(`[StreamCatalog] Could not rewrite the master for ${group} after its rungs changed:`, error);
-    });
+    } finally {
+      this.rewritingShape.delete(group);
+    }
+  }
+
+  private holdOffRewriting(group: string): void {
+    this.rewriteRetryAt.set(group, this.now() + MASTER_REWRITE_RETRY_MS);
   }
 
   private livenessOf(group: string): LadderLiveness {
@@ -159,18 +231,26 @@ export class StreamCatalog {
     return created;
   }
 
+  /**
+   * @param now a monotonic reading in milliseconds, for the one thing here that measures a duration:
+   * how long a failed master rewrite waits before it may be tried again. Monotonic rather than a
+   * date so a clock adjustment cannot move the deadline, and injected so a test can step it rather
+   * than wait out {@link MASTER_REWRITE_RETRY_MS}.
+   */
   constructor(
     publishers: BeePublisherPool,
     streamKey: string,
     feedTopic: string,
     indexStore?: CatalogIndexStore,
     masterWriter?: MasterFeedWriter,
+    now: () => number = () => performance.now(),
   ) {
     this.publishers = publishers;
     this.signer = new PrivateKey(streamKey);
     this.feedTopic = Topic.fromString(feedTopic);
     this.indexStore = indexStore;
     this.masterWriter = masterWriter;
+    this.now = now;
 
     const publisher = this.publisher;
     this.logger.debug(
@@ -335,6 +415,7 @@ export class StreamCatalog {
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<void> {
     return this.queue.add(async () => {
       let flippedToVod = false;
+      let shapeThatLanded: string | null = null;
 
       await this.writeFeed(async (previous) => {
         const held = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
@@ -356,17 +437,28 @@ export class StreamCatalog {
         // behind it. The player moves them off within about seven seconds, so this is the last few
         // seconds of that harm rather than all of it, and it is harm a stream need not cause.
         const advertised = advertisableRenditions(entry.renditions ?? [], this.livenessOf(identity.group));
-        // Both remembered here because this is the path that always runs: a ladder that never
-        // announces has no master for a rung death to correct, and no owner to write it as.
+        // Remembered here because this is the path that always runs: a ladder that never announces
+        // has no master for a rung death to correct, and no owner to write it as.
         this.lastIdentity.set(identity.group, identity);
-        this.advertised.set(identity.group, advertised.map((rendition) => rendition.name).join(','));
         const published = await this.masterWriter?.publish(identity.group, advertised);
+        if (published) {
+          shapeThatLanded = advertised.map((rendition) => rendition.name).join(',');
+        }
 
         return [
           ...withoutGroup(previous, identity.owner, identity.group),
           published ? withMaster(entry, published) : entry,
         ];
       });
+
+      // ⛔ After the write and only when the master went out, for the reason the line below is after
+      // it too. `advertised` is what a later rung death compares itself against, so a shape recorded
+      // here that the feed did not take is a correction that will never be attempted. This announce
+      // can fail at the master write or at the catalog write that names it, and neither leaves a
+      // viewer resolving the new shape.
+      if (shapeThatLanded !== null) {
+        this.advertised.set(identity.group, shapeThatLanded);
+      }
 
       // ⛔⛔⛔ After the write, never inside the update. The one externally visible moment a ladder
       // ends, and the line scenario H arms its kill on, so written from inside the callback it
@@ -381,14 +473,23 @@ export class StreamCatalog {
   }
 
   /**
-   * Rewrite one ladder's master from the entry the catalog already holds.
+   * Rewrite one ladder's master from the entry the catalog already holds, and answer whether the new
+   * shape reached the feed.
    *
    * Shares `writeFeed` with {@link upsertRendition} rather than reaching for the master writer
    * directly, because the entry carries the master's index and a master written without updating it
    * leaves the catalog pointing a viewer at the previous version.
+   *
+   * That is also why the answer is taken from inside the update and returned only once the whole
+   * write has settled: a master on its own feed that no catalog entry names yet is one no viewer
+   * resolves, so it is not a shape this ladder is advertising. Two ways to reach here having written
+   * nothing, and neither throws: the group has no catalog entry, and the master writer had no
+   * rendition to name.
    */
-  private async republishMaster(identity: LadderIdentity): Promise<void> {
-    return this.queue.add(() =>
+  private async republishMaster(identity: LadderIdentity): Promise<boolean> {
+    let rewritten = false;
+
+    await this.queue.add(() =>
       this.writeFeed(async (previous) => {
         const entry = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
         if (!entry) {
@@ -404,9 +505,12 @@ export class StreamCatalog {
         this.logger.log(
           `[StreamCatalog] Ladder ${identity.group} now produces ${advertised.length} rung(s), master rewritten`,
         );
+        rewritten = true;
         return [...withoutGroup(previous, identity.owner, identity.group), withMaster(entry, published)];
       }),
     );
+
+    return rewritten;
   }
 
   private async writeFeed(update: (previous: StreamEntry[]) => StreamEntry[] | Promise<StreamEntry[]>): Promise<void> {

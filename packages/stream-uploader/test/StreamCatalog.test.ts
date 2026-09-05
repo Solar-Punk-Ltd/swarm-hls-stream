@@ -6,8 +6,10 @@ import { BeePublisherPool, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool
 import { CatalogIndexStore } from '../src/libs/CatalogIndexStore.js';
 import { Logger } from '../src/libs/Logger.js';
 import { MasterFeedWriter } from '../src/libs/MasterFeedWriter.js';
-import { StreamCatalog, TREAT_STATE_AS_LOST_AFTER } from '../src/libs/StreamCatalog.js';
-import { MEDIA_TYPE_VIDEO, STREAM_STATUS_LIVE } from '../src/types.js';
+import { MASTER_REWRITE_RETRY_MS, StreamCatalog, TREAT_STATE_AS_LOST_AFTER } from '../src/libs/StreamCatalog.js';
+import { MEDIA_TYPE_VIDEO, Rendition, STREAM_STATUS_LIVE } from '../src/types.js';
+
+import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 const TEST_TOPIC = 'test-topic';
@@ -1018,6 +1020,203 @@ describe('StreamCatalog ladder write path', () => {
       written[0].topic,
       'rung-topic',
       'without a master the entry points at the rung a bare client can play',
+    );
+  });
+});
+
+/**
+ * A rung dying is corrected by rewriting the master from the segment path, and that write can fail
+ * like any other. What must not happen is that the failure is recorded as a correction: the shape a
+ * rewrite was attempted for used to be stamped as advertised before the write ran, so a master that
+ * never reached the feed left the catalog believing it had, and nothing tried again. The docstring
+ * leaned on the next transition or the next announce, and a steady broadcast produces neither, so a
+ * viewer joining was offered a dead rung for the rest of the broadcast.
+ */
+describe('StreamCatalog master rewrite retry', () => {
+  const identity = { title: 'title', owner: 'owner', group: 'group-1', mediatype: MEDIA_TYPE_VIDEO };
+
+  /** Ascending, and the order rungs are announced and fed in, so the shape strings line up. */
+  const LADDER: Rendition[] = [
+    { name: '360p', width: 640, height: 360, topic: 'topic-360p', bandwidth: 800_000, avgBandwidth: 700_000 },
+    { name: '480p', width: 854, height: 480, topic: 'topic-480p', bandwidth: 1_400_000, avgBandwidth: 1_200_000 },
+    { name: '720p', width: 1280, height: 720, topic: 'topic-720p', bandwidth: 2_800_000, avgBandwidth: 2_500_000 },
+    { name: '1080p', width: 1920, height: 1080, topic: 'topic-1080p', bandwidth: 5_000_000, avgBandwidth: 4_500_000 },
+  ];
+
+  const HEALTHY = LADDER.slice(0, 3).map((rendition) => rendition.name);
+  const DYING = LADDER[3].name;
+
+  /**
+   * Enough rounds of the healthy rungs for the ladder to leave the quiet one
+   * `RUNG_DEATH_LAG_SEGMENTS` behind, plus the two warmup rounds that get every rung onto the
+   * tracker in the first place.
+   */
+  const WARMUP_ROUNDS = 2;
+  const ROUNDS_TO_KILL_A_RUNG = 4;
+
+  /** A budget for a fire-and-forget rewrite to land, not a measurement of how long one takes. */
+  const SETTLE_CEILING_MS = 4_000;
+
+  interface FakeMaster {
+    writer: MasterFeedWriter;
+    /** The rung names of every publish that was allowed through, in order. */
+    accepted: string[][];
+    /** Every publish, including the ones that threw, so a suppressed retry is visible. */
+    attempts: number;
+    /** How many further publishes throw before one is accepted. */
+    failing: number;
+    /** Awaited inside publish, so a test can hold one write open while it delivers into it. */
+    hold?: () => Promise<void>;
+  }
+
+  function fakeMaster(): FakeMaster {
+    const master: FakeMaster = { accepted: [], attempts: 0, failing: 0, writer: null as unknown as MasterFeedWriter };
+    master.writer = {
+      publish: async (_group: string, renditions: Rendition[]) => {
+        master.attempts += 1;
+        await master.hold?.();
+        if (master.failing > 0) {
+          master.failing -= 1;
+          throw new Error('the master feed refused the write');
+        }
+        master.accepted.push(renditions.map((rendition) => rendition.name));
+        return { topic: 'master-topic', index: master.accepted.length };
+      },
+    } as unknown as MasterFeedWriter;
+    return master;
+  }
+
+  interface Ladder {
+    catalog: StreamCatalog;
+    master: FakeMaster;
+    /** Moves the injected reading forward, which is the only way the backoff elapses. */
+    advance: (ms: number) => void;
+    /** One segment on each of these rungs, in the order given. */
+    deliver: (rungs: readonly string[], rounds?: number) => void;
+  }
+
+  /**
+   * A four rung ladder mid-broadcast, with every rung announced and fed, and nothing in flight.
+   *
+   * ⚠️ Fed before it is announced, which is the opposite of the order a broadcast takes and is what
+   * makes the fixture deterministic. A rung reaching the liveness tracker changes the ladder's shape,
+   * so warming up after the announces leaves four fire-and-forget rewrites racing whatever the test
+   * does next. Before them the rewrite path returns at its own `lastIdentity` guard, writing nothing,
+   * and the announces then leave the advertised shape agreeing with the tracker.
+   */
+  async function announcedLadder(): Promise<Ladder> {
+    const writes: CapturedWrite[] = [];
+    const master = fakeMaster();
+    let nowMs = 0;
+    const catalog = new StreamCatalog(
+      makePublishers(feedbackBee(writes)),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      undefined,
+      master.writer,
+      () => nowMs,
+    );
+    await catalog.init();
+
+    const deliver = (rungs: readonly string[], rounds = 1): void => {
+      for (let round = 0; round < rounds; round++) {
+        for (const rung of rungs) {
+          catalog.recordRungDelivered(identity.group, rung);
+        }
+      }
+    };
+
+    deliver(
+      LADDER.map((rendition) => rendition.name),
+      WARMUP_ROUNDS,
+    );
+    for (const rendition of LADDER) {
+      await catalog.upsertRendition(identity, rendition);
+    }
+
+    assert.equal(master.attempts, LADDER.length, 'the fixture is only settled if nothing is still being rewritten');
+    return {
+      catalog,
+      master,
+      deliver,
+      advance: (ms) => {
+        nowMs += ms;
+      },
+    };
+  }
+
+  it('rewrites the master on the first delivery after the backoff, when the write for a rung death failed', async () => {
+    const { master, advance, deliver } = await announcedLadder();
+    const acceptedBeforeTheDeath = master.accepted.length;
+    master.failing = 1;
+
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    await waitFor(() => master.attempts > 0 && master.failing === 0, SETTLE_CEILING_MS);
+    assert.equal(
+      master.accepted.length,
+      acceptedBeforeTheDeath,
+      'the rewrite was supposed to fail, so this case is not about a retry unless it did',
+    );
+
+    advance(MASTER_REWRITE_RETRY_MS + 1);
+    deliver(HEALTHY);
+
+    await waitFor(() => master.accepted.length > acceptedBeforeTheDeath, SETTLE_CEILING_MS);
+    assert.deepEqual(
+      master.accepted[master.accepted.length - 1],
+      HEALTHY,
+      'the retry has to write the shape the ladder is actually in, without the rung that stopped',
+    );
+    assert.ok(
+      !master.accepted[master.accepted.length - 1].includes(DYING),
+      'a viewer joining is still offered the rung that stopped producing',
+    );
+  });
+
+  it('queues one rewrite for a burst of deliveries across one transition', async () => {
+    const { master, deliver } = await announcedLadder();
+    const attemptsBeforeTheDeath = master.attempts;
+    let release = (): void => {};
+    master.hold = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    await waitFor(() => master.attempts > attemptsBeforeTheDeath, SETTLE_CEILING_MS);
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    await waitAndConfirmNothingHappened(() => master.attempts === attemptsBeforeTheDeath + 1, 150);
+
+    master.hold = undefined;
+    release();
+    await waitFor(() => master.accepted.length > 0, SETTLE_CEILING_MS);
+    assert.equal(
+      master.attempts,
+      attemptsBeforeTheDeath + 1,
+      'every delivery across one transition queued its own master write',
+    );
+  });
+
+  it('does not retry a writer that keeps failing more often than the backoff', async () => {
+    const { master, advance, deliver } = await announcedLadder();
+    const attemptsBeforeTheDeath = master.attempts;
+    master.failing = Number.MAX_SAFE_INTEGER;
+
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    await waitFor(() => master.attempts > attemptsBeforeTheDeath, SETTLE_CEILING_MS);
+
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    advance(MASTER_REWRITE_RETRY_MS - 1);
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    await waitAndConfirmNothingHappened(() => master.attempts === attemptsBeforeTheDeath + 1, 150);
+
+    advance(2);
+    deliver(HEALTHY);
+    await waitFor(() => master.attempts === attemptsBeforeTheDeath + 2, SETTLE_CEILING_MS);
+    assert.equal(
+      master.attempts,
+      attemptsBeforeTheDeath + 2,
+      'a failing writer is asked once per backoff period, not once per delivery',
     );
   });
 });
