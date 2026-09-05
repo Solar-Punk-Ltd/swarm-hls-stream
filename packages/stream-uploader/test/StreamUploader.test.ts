@@ -545,11 +545,12 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
  * of the master a few segments later. An encoder that died looks the same from every other
  * instrument, and `segmentUploadFailed` says only that the retry window is spent.
  *
- * Once per stream per process rather than once per segment, because a batch that has started refusing
- * goes on refusing for as long as it stays configured and a line per segment would bury the diagnosis
- * under its own consequences. Never re-armed by a segment that lands: a filling batch refuses a
- * growing share of segments rather than all of them, and the batch itself cannot change without a
- * redeploy, which is a new process.
+ * Once per answer bee gives, per stream, for the life of the process, rather than once per segment. A
+ * batch that has started refusing goes on refusing for as long as it stays configured, so a line per
+ * segment would bury the diagnosis under its own consequences, while a status bee has not answered
+ * with before is a different condition and gets a line of its own. Never re-armed by a segment that
+ * lands: a filling batch refuses a growing share of segments rather than all of them, and the batch
+ * itself cannot change without a redeploy, which is a new process.
  */
 describe('StreamUploader names the postage batch bee refused', () => {
   /** A batch id is 64 hex characters. One repeated group, so nothing here reads as a real one. */
