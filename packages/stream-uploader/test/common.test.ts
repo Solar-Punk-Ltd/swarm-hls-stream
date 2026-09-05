@@ -2,6 +2,7 @@ import { BeeResponseError } from '@ethersphere/bee-js';
 import { BEE_ANSWER_LIMIT } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   backoffDelayMs,
@@ -10,8 +11,11 @@ import {
   isRetryableError,
   jitteredDelayMs,
   nonRetryableStatus,
+  RetryDeadlineError,
   retryUntilDeadlineAsync,
 } from '../src/utils/common.js';
+
+import { waitFor } from './helpers/waiting.js';
 
 describe('getErrorMessage', () => {
   it('returns the message of a real Error', () => {
@@ -266,5 +270,136 @@ describe('retryUntilDeadlineAsync', () => {
     );
 
     assert.equal(calls, 1);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **The deadline was checked only after an attempt had rejected, so an attempt that never
+ * settled was never bounded at all.** Every bee call this service makes goes through here, and
+ * `StreamUploader.uploadDataAsSoc` says in its own comment above the call that blocking is safe
+ * because this bounds it. It bounded retries, and retries and calls are the same thing only while
+ * every call ends.
+ */
+describe('retryUntilDeadlineAsync when an attempt does not end', () => {
+  /** Short, so a case costs a fraction of a second, and well clear of a scheduling hiccup. */
+  const DEADLINE_MS = 150;
+
+  /** Only spent when a case is failing, so it is generous on purpose. See `waitFor`. */
+  const GIVE_UP_MS = 5_000;
+
+  const PENDING = Symbol('pending');
+
+  /** Follows a promise without awaiting it, so a case can assert on one that may never settle. */
+  function watch(work: Promise<unknown>): () => unknown {
+    let outcome: unknown = PENDING;
+    void work.then(
+      (value) => {
+        outcome = value;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+
+    return () => outcome;
+  }
+
+  const neverSettles = () => new Promise<never>(() => {});
+
+  it('rejects on the deadline instead of waiting on the attempt for ever', async () => {
+    let calls = 0;
+    const outcome = watch(
+      retryUntilDeadlineAsync(
+        () => {
+          calls++;
+          return neverSettles();
+        },
+        DEADLINE_MS,
+        10,
+        40,
+      ),
+    );
+
+    await waitFor(() => outcome() !== PENDING, GIVE_UP_MS);
+
+    assert.ok(
+      outcome() instanceof RetryDeadlineError,
+      `expected the deadline to be named, got ${getErrorMessage(outcome())}`,
+    );
+    assert.match(getErrorMessage(outcome()), new RegExp(`${DEADLINE_MS}ms`));
+    assert.equal(calls, 1, 'an attempt was started after the deadline had already passed');
+  });
+
+  it('spends one deadline over every attempt, not a fresh one per attempt', async () => {
+    let calls = 0;
+    const outcome = watch(
+      retryUntilDeadlineAsync(
+        async () => {
+          calls++;
+          if (calls === 1) {
+            throw new Error('transient');
+          }
+          return neverSettles();
+        },
+        DEADLINE_MS,
+        10,
+        40,
+      ),
+    );
+
+    await waitFor(() => outcome() !== PENDING, GIVE_UP_MS);
+
+    assert.ok(
+      outcome() instanceof RetryDeadlineError,
+      `expected the deadline to be named, got ${getErrorMessage(outcome())}`,
+    );
+    assert.equal(calls, 2, 'the hung second attempt was given a deadline of its own');
+  });
+
+  it('swallows the abandoned attempt when it fails after the caller has given up', async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+
+    try {
+      let failTheAttempt!: (error: Error) => void;
+      const outcome = watch(
+        retryUntilDeadlineAsync(
+          () =>
+            new Promise<never>((_, reject) => {
+              failTheAttempt = reject;
+            }),
+          DEADLINE_MS,
+          10,
+          40,
+        ),
+      );
+
+      await waitFor(() => outcome() !== PENDING, GIVE_UP_MS);
+      failTheAttempt(new Error('the node answered long after anyone was listening'));
+
+      // Two turns, because a rejection is only reported unhandled once the microtask queue has
+      // drained on the turn it was raised.
+      await sleep(0);
+      await sleep(0);
+
+      assert.deepEqual(unhandled, [], 'the abandoned attempt reached the process as an unhandled rejection');
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+
+  it('still returns an attempt that is slow and finishes in time', async () => {
+    const result = await retryUntilDeadlineAsync(
+      async () => {
+        await sleep(DEADLINE_MS / 5);
+        return 'slow but in time';
+      },
+      DEADLINE_MS,
+      10,
+      40,
+    );
+
+    assert.equal(result, 'slow but in time');
   });
 });

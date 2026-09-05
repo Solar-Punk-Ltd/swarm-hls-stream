@@ -162,6 +162,32 @@ export function jitteredDelayMs(delayMs: number, random: () => number = Math.ran
   return delayMs / 2 + random() * (delayMs / 2);
 }
 
+/**
+ * The retry deadline elapsed with an attempt still in flight.
+ *
+ * A class rather than a message a caller string-matches, for the same reason `DrainTimeoutError` is
+ * one: this is the only failure here that no bee node ever reported, so anything reading it back has
+ * to be able to tell it from an answer bee gave.
+ */
+export class RetryDeadlineError extends Error {
+  constructor(public readonly deadlineMs: number) {
+    super(`No attempt settled within the ${deadlineMs}ms retry deadline`);
+    this.name = 'RetryDeadlineError';
+  }
+}
+
+/**
+ * Retries `fn` until it succeeds, until it fails in a way retrying cannot fix, or until `deadlineMs`
+ * has passed, whichever comes first.
+ *
+ * ⛔⛔⛔ **The deadline bounds each attempt, not only the gaps between them.** It used to be read in
+ * the catch alone, so an attempt that rejected late was bounded and an attempt that never settled was
+ * not bounded at all. That is the shape a Bee node with an open connection and nothing to say
+ * produces, and every bee call this service makes is wrapped in here: a rung's uploads run at
+ * concurrency 1, so one such call stopped the rung, and the same call on the coordinator stopped the
+ * catalog for the whole stage. Bee clients now carry a request timeout of their own as well, and this
+ * is the backstop for everything that is not an HTTP request.
+ */
 export async function retryUntilDeadlineAsync<T>(
   fn: () => Promise<T>,
   deadlineMs: number,
@@ -171,9 +197,9 @@ export async function retryUntilDeadlineAsync<T>(
   const deadline = Date.now() + deadlineMs;
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fn();
+      return await abandonAfter(fn(), Math.max(0, deadline - Date.now()), deadlineMs);
     } catch (error) {
-      if (!isRetryableError(error) || Date.now() >= deadline) {
+      if (error instanceof RetryDeadlineError || !isRetryableError(error) || Date.now() >= deadline) {
         throw error;
       }
       const sleepMs = Math.min(
@@ -185,4 +211,25 @@ export async function retryUntilDeadlineAsync<T>(
       await sleep(sleepMs);
     }
   }
+}
+
+/**
+ * `attempt`, or a {@link RetryDeadlineError} once `remainingMs` has gone by.
+ *
+ * Abandoned, never cancelled: nothing here can stop work already in flight, so the attempt keeps
+ * running and whatever it produces arrives after the caller has moved on. The catch is what makes
+ * that quiet. Without a rejection handler of its own, a request failing long after its deadline
+ * reaches `registerCrashHandlers`, which reports every unhandled rejection as a crash, so a call
+ * nobody was waiting for any more would file a crash report of its own. On a process that installs
+ * no such handler, Node's own default for one is to end the process.
+ */
+function abandonAfter<T>(attempt: Promise<T>, remainingMs: number, deadlineMs: number): Promise<T> {
+  attempt.catch(() => {});
+
+  let expire: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    expire = setTimeout(() => reject(new RetryDeadlineError(deadlineMs)), remainingMs);
+  });
+
+  return Promise.race([attempt, expiry]).finally(() => clearTimeout(expire));
 }
