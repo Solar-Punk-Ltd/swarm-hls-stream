@@ -68,6 +68,68 @@ describe('nodesBehind', () => {
     assert.equal(nodes[0].port, 10075);
   });
 
+  /**
+   * ⛔⛔ One node spends one batch, and everything downstream is built on that. `readStageStamps`
+   * polls a node's configured batch once per node, and `readArmedStage` judges a drained rung's
+   * depth and fill on the batch of whichever node carries it. A second batch on the same host was
+   * silently dropped by the grouping, so the rung that named it was judged on its neighbour's
+   * postage: a fresh depth 17 drain batch could read as the depth 24 batch beside it, and an armed
+   * stage would be refused as unarmed after the arming was paid for.
+   *
+   * Reachable only from a hand-written `BEE_PUBLISHERS` such as `360p@http://n:1633<A>
+   * 480p@http://n:1633<B>`, which the uploader accepts, and never from what
+   * `deploy/scripts/bee-publishers.sh` writes.
+   */
+  it('keeps one node when two rungs on it spend the same batch', () => {
+    const nodes = nodesBehind(
+      [route('480p', 'http://127.0.0.1:11071', 'aaaaaaaa…'), route('720p', 'http://127.0.0.1:11071', 'aaaaaaaa…')],
+      DEPLOY_PORT,
+    );
+
+    assert.equal(nodes.length, 1);
+    assert.deepEqual(nodes[0].rungs, ['480p', '720p']);
+    assert.equal(nodes[0].batch, 'aaaaaaaa…');
+  });
+
+  /**
+   * ⛔ Refused rather than split into two nodes. A chequebook and a wallet belong to the node and not
+   * to the batch, so two entries for one host would have the funding preflight read one chequebook
+   * twice, `judgeCost` count that node's spend twice against the run's bytes once, and
+   * `publisherServices` name two containers where the deployment runs one.
+   */
+  it('refuses one node configured with two batches, naming both of them', () => {
+    assert.throws(
+      () =>
+        nodesBehind(
+          [route('480p', 'http://127.0.0.1:11071', 'aaaaaaaa…'), route('720p', 'http://127.0.0.1:11071', 'bbbbbbbb…')],
+          DEPLOY_PORT,
+        ),
+      (error: Error) => {
+        assert.match(error.message, /aaaaaaaa…/, 'the refusal has to name the batch already read');
+        assert.match(error.message, /bbbbbbbb…/, 'and the batch that disagrees with it');
+        assert.match(error.message, /480p/);
+        assert.match(error.message, /720p/);
+        return true;
+      },
+    );
+  });
+
+  /** Two hosts with a batch each is the split stage, and nothing about it is ambiguous. */
+  it('keeps a batch per node when two hosts name two batches', () => {
+    const nodes = nodesBehind(
+      [route('480p', 'http://127.0.0.1:11071', 'aaaaaaaa…'), route('720p', 'http://127.0.0.1:11073', 'bbbbbbbb…')],
+      DEPLOY_PORT,
+    );
+
+    assert.deepEqual(
+      nodes.map((node) => ({ rungs: node.rungs, port: node.port, batch: node.batch })),
+      [
+        { rungs: ['480p'], port: 11071, batch: 'aaaaaaaa…' },
+        { rungs: ['720p'], port: 11073, batch: 'bbbbbbbb…' },
+      ],
+    );
+  });
+
   it('takes the host port from a loopback url, which is what a split deployment configures', () => {
     const nodes = nodesBehind([route('360p', 'http://localhost:11073')], DEPLOY_PORT);
 

@@ -138,6 +138,9 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
  * way is the unsplit deployment, and `deployPort` is the port the deploy published for it. Anything
  * else is refused, because a preflight that guessed would read one node's chequebook and report it
  * under another node's name.
+ *
+ * ⛔ Every rung on one node has to name the same batch, and a node named with two is refused rather
+ * than answered. See {@link twoBatchesOnOneNode}.
  */
 export function nodesBehind(routes: readonly PublisherRoute[] | undefined, deployPort: number): PublisherNode[] {
   if (routes === undefined || routes.length === 0) {
@@ -157,15 +160,45 @@ export function nodesBehind(routes: readonly PublisherRoute[] | undefined, deplo
   for (const route of routes) {
     const key = parseUrl(route.url).host;
     const existing = byNode.get(key);
-    if (existing) {
-      existing.rungs.push(route.rung);
+    if (existing === undefined) {
+      byNode.set(key, { rungs: [route.rung], url: route.url, batch: route.batch, port: 0 });
       continue;
     }
-    byNode.set(key, { rungs: [route.rung], url: route.url, batch: route.batch, port: 0 });
+    if (existing.batch !== route.batch) {
+      throw new Error(twoBatchesOnOneNode(existing, route));
+    }
+    byNode.set(key, { ...existing, rungs: [...existing.rungs, route.rung] });
   }
 
   const nodes = [...byNode.values()];
   return nodes.map((node) => ({ ...node, port: portOf(node, nodes.length, deployPort) }));
+}
+
+/**
+ * Why one node spending two batches cannot be answered, naming both.
+ *
+ * ⛔⛔ Refused rather than kept as two entries or as one. A node has ONE chequebook and ONE wallet
+ * and one container behind it, so two entries for one host would have `chequebook-funding` read the
+ * same chequebook twice, `judgeCost` count that node's spend twice while dividing by the run's bytes
+ * once, and `publisherServices` name a second container the deployment does not run. Keeping one
+ * entry is what this used to do, and it dropped whichever batch came second: `readStageStamps` then
+ * polled one batch per host and `readArmedStage` judged a drained rung's depth and fill on its
+ * neighbour's postage, so a freshly armed rung could be reported as unarmed after the arming had
+ * been paid for.
+ *
+ * Only a hand-written `BEE_PUBLISHERS` reaches this. `deploy/scripts/bee-publishers.sh` writes one
+ * node per rung, and the uploader accepts two entries on one host without comment.
+ */
+function twoBatchesOnOneNode(existing: PublisherNode, route: PublisherRoute): string {
+  return (
+    `${route.url} carries ${existing.rungs.join(', ')} on batch ${existing.batch} and ${route.rung} on ` +
+    `batch ${route.batch}, so one Bee node is configured to spend two batches. Everything that reads ` +
+    'a batch here reads one per node, and a node with two has no answer to give: the stamp gate ' +
+    "polls a single configured batch and a drain judges a rung's fill on it, so one of these rungs " +
+    "would be judged on the other one's postage. Give each batch its own node in BEE_PUBLISHERS, " +
+    'which is what deploy/scripts/bee-publishers.sh writes and what deploy/docker-compose.host.yml ' +
+    'runs.'
+  );
 }
 
 function portOf(node: PublisherNode, nodeCount: number, deployPort: number): number {
