@@ -12,7 +12,7 @@ import { discoverCatalogFeed } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
- * Service — the ladder's master offers every rung a viewer joining now could choose.
+ * Service: the ladder's master offers every rung a viewer joining now could choose.
  *
  * ## What a master playlist is, in one sentence
  *
@@ -72,7 +72,7 @@ const MIN_STAMP_TTL_S = 600;
 const cfg = loadConfig();
 
 describe(
-  'service — the master offers every rung of the ladder',
+  'service: the master offers every rung of the ladder',
   { skip: drainStillDeclared() || abrOff(cfg.abrEnabled) },
   () => {
     const host = makeHost(cfg);
