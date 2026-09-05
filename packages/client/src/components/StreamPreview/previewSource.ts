@@ -28,13 +28,20 @@ export type PreviewSource =
  *
  * Both still end as `unavailable`, because a viewer can do nothing about either. They are kept apart
  * so the reason reaching the log names the one that happened.
+ *
+ * ⛔ A gap entry is skipped rather than taken. It is a sequence the broadcast lost, listed so the
+ * numbering behind it does not move, and its URI names nothing a gateway can serve. The publisher
+ * never opens a playlist on one, so this cannot be reached today, and it costs one predicate to keep
+ * it that way: a card built on a gap would ask the gateway for a reference that does not exist and
+ * spin until it gave up.
  */
 export function previewSourceFrom(response: PreviewManifestResponse, segments: readonly Segment[]): PreviewSource {
   if (!response.ok) {
     return { kind: 'unavailable', reason: `the gateway answered ${response.status} for this preview manifest` };
   }
-  if (segments.length === 0) {
+  const media = segments.filter((segment) => !segment.gap);
+  if (media.length === 0) {
     return { kind: 'unavailable', reason: 'the preview manifest lists no segments' };
   }
-  return { kind: 'playable', firstSegment: segments[0] };
+  return { kind: 'playable', firstSegment: media[0] };
 }

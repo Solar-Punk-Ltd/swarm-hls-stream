@@ -46,4 +46,24 @@ describe('what a preview card should do with the manifest it fetched', () => {
 
     assert.equal(source.kind, 'unavailable', 'a 500 body is not a playlist however well it parses');
   });
+
+  /**
+   * A gap entry stands in for a sequence the broadcast lost, so its URI names nothing a gateway can
+   * serve. A card built on one would ask for a reference that does not exist and spin until it gave up.
+   */
+  it('takes the first real segment rather than a gap entry', () => {
+    const source = previewSourceFrom(OK, [
+      { extinf: '#EXTINF:2.0,', uri: 'gap-0', gap: true },
+      { extinf: '#EXTINF:2.0,', uri: 'seg1.ts' },
+    ]);
+
+    assert.equal(source.kind, 'playable');
+    assert.equal(source.kind === 'playable' ? source.firstSegment.uri : '', 'seg1.ts');
+  });
+
+  it('reports a manifest of nothing but gap entries as unavailable', () => {
+    const source = previewSourceFrom(OK, [{ extinf: '#EXTINF:2.0,', uri: 'gap-0', gap: true }]);
+
+    assert.equal(source.kind, 'unavailable', 'a card cannot be built from media the broadcast lost');
+  });
 });
