@@ -77,7 +77,7 @@ export async function waitFor(condition: () => Promise<boolean>, opts: WaitOptio
   let polls = 0;
   let threw = 0;
   let threwInARow = 0;
-  let lastError: Error | null = null;
+  let lastThrown: unknown = null;
 
   for (;;) {
     polls++;
@@ -92,7 +92,7 @@ export async function waitFor(condition: () => Promise<boolean>, opts: WaitOptio
       }
       threw++;
       threwInARow++;
-      lastError = error as Error;
+      lastThrown = error;
     }
     const elapsedMs = clock.now() - startedAt;
     if (threwInARow >= CONSECUTIVE_THROW_LIMIT && elapsedMs >= THROW_GRACE_MS) {
@@ -100,17 +100,17 @@ export async function waitFor(condition: () => Promise<boolean>, opts: WaitOptio
         `waitFor gave up ${elapsedMs}ms in, on ${threwInARow} reads in a row that threw rather than ` +
           `answering: ${opts.label}. Nothing has answered since, so this is an instrument that is down ` +
           `rather than a product that did nothing, and the rest of the ${opts.timeoutMs}ms ceiling would ` +
-          `only spend it. The last one said: ${lastError?.message}`,
+          `only spend it. The last one said: ${describeThrown(lastThrown)}`,
         {
-          cause: lastError ?? undefined,
+          cause: lastThrown,
         },
       );
     }
     if (clock.now() >= deadline) {
       throw new Error(
-        `waitFor timed out after ${opts.timeoutMs}ms: ${opts.label}${describeThrows(polls, threw, lastError)}`,
+        `waitFor timed out after ${opts.timeoutMs}ms: ${opts.label}${describeThrows(polls, threw, lastThrown)}`,
         {
-          cause: lastError ?? undefined,
+          cause: threw === 0 ? undefined : lastThrown,
         },
       );
     }
@@ -119,12 +119,37 @@ export async function waitFor(condition: () => Promise<boolean>, opts: WaitOptio
 }
 
 /** Nothing at all where every poll was answered, so an untroubled timeout reads exactly as it always did. */
-function describeThrows(polls: number, threw: number, lastError: Error | null): string {
-  if (threw === 0 || lastError === null) {
+function describeThrows(polls: number, threw: number, lastThrown: unknown): string {
+  if (threw === 0) {
     return '';
   }
   return (
     `. The condition threw on ${threw} of ${polls} polls rather than answering, which is a read that ` +
-    `failed rather than a product that did nothing. The last one said: ${lastError.message}`
+    `failed rather than a product that did nothing. The last one said: ${describeThrown(lastThrown)}`
   );
+}
+
+/**
+ * What was thrown, as something a reader can act on.
+ *
+ * ⛔ Nothing obliges a condition to throw an Error. A shell helper throws a string, and bee's own
+ * error envelope arrives as a plain object with a `code` and no `message` on it. Reading `.message`
+ * off either put "The last one said: undefined" at the end of a four minute wait that had been
+ * holding the answer the whole time.
+ *
+ * A structure that will not serialise falls back to its own coercion rather than costing the wait
+ * its refusal, which is the one thing worse than an unhelpful sentence.
+ */
+function describeThrown(thrown: unknown): string {
+  if (thrown instanceof Error) {
+    return thrown.message;
+  }
+  if (typeof thrown !== 'object' || thrown === null) {
+    return String(thrown);
+  }
+  try {
+    return JSON.stringify(thrown) ?? String(thrown);
+  } catch {
+    return String(thrown);
+  }
 }

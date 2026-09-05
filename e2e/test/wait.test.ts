@@ -149,6 +149,43 @@ describe('waitFor', () => {
     );
   });
 
+  /**
+   * ⛔ Not everything thrown is an Error, and reading `.message` off the rest said `undefined`.
+   *
+   * A shell helper throws a string, a JSON error envelope arrives as a plain object with a `code`
+   * and no `message`, and a timeout that printed "The last one said: undefined" threw away the one
+   * thing it had been holding on to for four minutes.
+   */
+  it('says what a thrown string was, rather than reading a message off something that has none', async () => {
+    const refused = 'ssh: connect to host manager-host port 22: Connection refused';
+
+    await assert.rejects(
+      waitFor(async () => {
+        throw refused;
+      }, opts()),
+      (error: Error) => {
+        assert.match(error.message, /Connection refused/);
+        assert.doesNotMatch(error.message, /undefined/);
+        assert.equal(error.cause, refused, 'what was thrown has to survive as the cause whatever it is');
+        return true;
+      },
+    );
+  });
+
+  it('says what a thrown object held, so an error envelope reaches the reader', async () => {
+    await assert.rejects(
+      waitFor(async () => {
+        throw { code: 'ECONNRESET', errno: -54 };
+      }, opts()),
+      (error: Error) => {
+        assert.match(error.message, /ECONNRESET/);
+        assert.match(error.message, /-54/);
+        assert.doesNotMatch(error.message, /undefined/);
+        return true;
+      },
+    );
+  });
+
   /** ⚠️ An untroubled timeout reads exactly as it always did, so no existing red gains a sentence. */
   it('says nothing about throws when every poll was answered', async () => {
     await assert.rejects(
@@ -278,5 +315,23 @@ describe('waitFor, once a read has stopped working altogether', () => {
     }, opts({ timeoutMs: UNREACHED_TIMEOUT_MS, clock }));
 
     assert.equal(asked, 40, 'nineteen throws either side of one answer is a link that works, not a dead read');
+  });
+
+  /** The same as the timeout above: a refusal that could not name what was thrown names nothing. */
+  it('says what was thrown even where it was never an Error', async () => {
+    const clock = fakeClock();
+    const refused = 'ssh: connect to host manager-host port 22: Connection refused';
+
+    await assert.rejects(
+      waitFor(async () => {
+        clock.advance(FAILED_READ_MS);
+        throw refused;
+      }, opts({ timeoutMs: UNREACHED_TIMEOUT_MS, clock })),
+      (error: Error) => {
+        assert.match(error.message, /Connection refused/);
+        assert.doesNotMatch(error.message, /undefined/);
+        return true;
+      },
+    );
   });
 });
