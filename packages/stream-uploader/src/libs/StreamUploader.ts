@@ -742,8 +742,8 @@ export class StreamUploader {
 
   /**
    * Segments dropped back to back, each after its retry window was already spent. Unlike a manifest
-   * publish, a dropped segment is not retried later: the data is gone and the next one is marked as a
-   * discontinuity, so this counter is the only trace an upload failure leaves.
+   * publish, a dropped segment is not retried later: the data is gone and its sequence is published as
+   * a gap entry, so this counter is the only trace an upload failure leaves in this class.
    */
   public getConsecutiveSegmentFailures(): number {
     return this.consecutiveSegmentFailures;
@@ -843,7 +843,8 @@ export class StreamUploader {
    *
    * Their bytes are in Swarm and any viewer handed the address could fetch them. A viewer learns of a
    * segment only from a manifest, and the window slid past these before one naming them was
-   * published, so the media is simply missing from every playlist with no discontinuity to mark it.
+   * published, so the media is simply missing from every playlist with not even a gap entry to mark
+   * it: their sequences are filled, by segments this uploader is holding and nobody was told about.
    * That makes this the quietest way this uploader can lose a piece of a broadcast, and until now
    * nothing counted it: `recordSegmentDropped` answers a failed upload and `recordSegmentsLost`
    * answers segments the engine never had.

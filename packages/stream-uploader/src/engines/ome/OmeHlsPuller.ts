@@ -471,8 +471,8 @@ export class OmeHlsPuller {
    *
    * Announced as one range rather than one report per index, because the origin picks the size of that
    * gap: a restarted OME serving a high `#EXT-X-MEDIA-SEQUENCE` would otherwise cost a log line and a
-   * queued job per missing index, millions of each. The uploader needs a discontinuity and a count,
-   * and neither is any truer for being delivered a million times.
+   * queued job per missing index, millions of each. The uploader needs the range and a count, and
+   * neither is any truer for being delivered a million times.
    *
    * Nothing is reported before the first delivery, because a playlist legitimately starts at whatever
    * media sequence the origin is serving when the puller joins.
@@ -488,9 +488,9 @@ export class OmeHlsPuller {
 
   /**
    * Segments that will never be delivered, `firstSeq` through `lastSeq` inclusive. `lastSeq` advances
-   * past an undelivered segment only here, so the gap reaches the uploader instead of appearing as a
-   * silent hole: `handleSegmentLoss` marks the next segment as a discontinuity and moves the counter
-   * `/health` reads.
+   * past an undelivered segment only here, so the loss reaches the uploader instead of passing
+   * unnoticed: `handleSegmentLoss` announces it and moves the counter `/health` reads, and the
+   * sequences it leaves empty are published as gap entries.
    */
   private reportSegmentLoss(firstSeq: number, lastSeq: number, cause: string): boolean {
     const count = lastSeq - firstSeq + 1;
@@ -498,8 +498,8 @@ export class OmeHlsPuller {
 
     if (this.isStopped) {
       // A fetch started before the stop can answer after it, and by then the id may belong to a new
-      // session. Reporting there degrades a healthy stream and marks its first segment with a
-      // discontinuity that never happened.
+      // session. Reporting there degrades a healthy stream and puts a hole in a playlist that never
+      // lost anything.
       logger.warn(`[OME] ${subject} lost for ${this.streamId} after the puller stopped, not reporting`);
       return false;
     }

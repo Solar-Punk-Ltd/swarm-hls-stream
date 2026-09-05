@@ -215,17 +215,23 @@ const SUBJECT_SLOT = 'SUBJECTSLOT';
 const CAUSE_SLOT = 'CAUSESLOT';
 
 /**
- * ## The six lines below all mean one thing: a discontinuity was armed
+ * ## The six lines below all mean one thing: this broadcast lost a segment or declared a break
  *
- * A discontinuity tells a player the media after it is not a continuation of the media before it, so
- * it skips the join instead of stalling on a hole it was told was seamless. Six separate messages
- * report one being armed, and the harness counts all six as one number.
+ * Six separate messages report it and the harness counts all six as one number, `discontinuitiesArmed`
+ * in `e2e/src/harness/logwatch.ts`.
  *
- * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast armed
+ * ⚠️ **Only two of them are a break now.** Owner ruling of 2026-09-06: a lost segment leaves a hole
+ * the playlist lists as `#EXT-X-GAP` entries, so the numbering behind it does not move, and it arms no
+ * `#EXT-X-DISCONTINUITY`. What still does is the origin declaring one and the engine's own counter
+ * restarting. The four loss lines keep the words "marking a discontinuity", which is no longer what
+ * they do, because every reader of them matches on the wording and a stage that has not been
+ * redeployed writes the old text. Read them as "a segment is gone".
+ *
+ * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast produced
  * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
- * six: it passes them, silently, for ever, on a stage arming discontinuities all night. That is the
- * worst failure this repo knows how to produce, and it is why these composers exist rather than a
- * regex written out beside the reader.
+ * six: it passes them, silently, for ever, on a stage losing segments all night. That is the worst
+ * failure this repo knows how to produce, and it is why these composers exist rather than a regex
+ * written out beside the reader.
  */
 
 /**

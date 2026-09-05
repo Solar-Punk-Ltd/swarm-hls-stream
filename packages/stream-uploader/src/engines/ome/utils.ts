@@ -122,8 +122,8 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
     if (!isUsableDuration(duration)) {
       // It would reach `#EXTINF` in the manifest we publish verbatim, which makes that playlist
       // unplayable, and poison the total the VOD catalog entry advertises. Dropping the position
-      // leaves a gap the puller reports as a loss, which marks the next segment as a discontinuity,
-      // so players skip it rather than being told the gap is contiguous. See CON-7.
+      // leaves a hole the puller reports as a loss, and the uploader publishes that sequence as a gap
+      // entry so the media behind it keeps its own numbers. See CON-7.
       skipped.push(seq);
       // The dropped media occupied real time, so what follows it is not a continuation of what came
       // before it. Recording that is what stops the backward walk in `datePrecedingSegments` dating

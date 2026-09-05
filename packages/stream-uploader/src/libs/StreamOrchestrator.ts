@@ -218,7 +218,8 @@ export class StreamOrchestrator {
   /**
    * Per stream, the last engine index accounted for in arrival order: one this stream took, or one a
    * reported loss covered. What the next arrival is measured against, so a skip in the engine's own
-   * numbering becomes a discontinuity instead of a silent hole. See {@link accountForTakenSegment}.
+   * numbering is reported and published as gap entries instead of passing unnoticed. See
+   * {@link accountForTakenSegment}.
    *
    * Absent means nothing has been accounted for yet, and the first arrival then infers nothing: a
    * broadcast opens at whatever number a warm engine's counter is on, so there is no gap to measure.
@@ -844,8 +845,10 @@ export class StreamOrchestrator {
   }
 
   /**
-   * Record an index this stream has just taken, and arm a discontinuity for whatever the engine
-   * skipped to reach it.
+   * Record an index this stream has just taken, and report whatever the engine skipped to reach it.
+   *
+   * Reported rather than marked: the skipped sequences stay empty, and `ManifestManager` lists each of
+   * them as an `#EXT-X-GAP` entry so the media behind the hole keeps its own numbers.
    *
    * ⛔ **The gap nobody reports.** `handleSegmentLoss` covers every loss the uploader is TOLD about,
    * and on the shipped SRS engine it is told about almost none: SRS posts each closed segment to the
@@ -971,8 +974,8 @@ export class StreamOrchestrator {
       return false;
     }
 
-    // Same window and same answer as `handleSegment`. A discontinuity queued behind a resolved
-    // `segmentQueue.onIdle()` marks a manifest that is already committed, and the state it persists
+    // Same window and same answer as `handleSegment`. An announcement queued behind a resolved
+    // `segmentQueue.onIdle()` lands on a manifest that is already committed, and the state it persists
     // on the way through restores a recovery entry the drain has deleted.
     if (this.isDraining(streamId, uploader)) {
       return false;

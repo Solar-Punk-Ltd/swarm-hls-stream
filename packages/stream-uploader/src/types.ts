@@ -346,8 +346,8 @@ export interface HealthSignals {
    * The quietest way a broadcast loses a piece of itself. The bytes are in Swarm and any caller
    * handed the address could fetch them, but a viewer learns of a segment only from a manifest, and
    * the live window slid past these before one naming them was published. So the media is simply
-   * missing from every playlist, with no discontinuity marking the hole and no failed upload to
-   * count. It happens when the window outruns its own publishing, which the manifest retry window
+   * missing from every playlist, with not even a gap entry marking the hole, since their sequences are
+   * filled, and no failed upload to count. It happens when the window outruns its own publishing, which the manifest retry window
    * permits while the segment queue keeps running.
    *
    * ⛔ **Carries no threshold and raises no reason, and that is a decision rather than an

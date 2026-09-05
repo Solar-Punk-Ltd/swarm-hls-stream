@@ -25,8 +25,8 @@ export const MANIFEST_FAILURE_THRESHOLD = 3;
 
 /**
  * One is the threshold because a segment failure is already permanent when it is counted: the retry
- * window is spent, the data is gone and a discontinuity is marked. The count is consecutive, so it
- * clears on the next successful segment rather than latching.
+ * window is spent, the data is gone and its sequence is published as a gap entry. The count is
+ * consecutive, so it clears on the next successful segment rather than latching.
  *
  * This counts uploads that failed, not segments the engine never obtained. Those are reported as an
  * age instead, see `HealthSignals.msSinceSegmentLoss`, because a consecutive counter cannot express
