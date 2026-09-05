@@ -23,7 +23,12 @@ import {
 } from '../../src/harness/browserVerdict.js';
 import { MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/crashArm.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
-import { announcedRungs, parseUploaderLog, timestampedMessages } from '../../src/harness/logwatch.js';
+import {
+  announcedRungs,
+  parseUploaderLog,
+  type TimestampedMessage,
+  timestampedMessages,
+} from '../../src/harness/logwatch.js';
 import { describeMaster, masterRungRefusal, masterRungsOf } from '../../src/harness/masterShape.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { rungArmMinutes } from '../../src/harness/rungArm.js';
@@ -78,8 +83,16 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * That the viewer got a picture and it kept moving. That they were never told the broadcast had
  * ended, because it had not: three rungs published throughout. That every resolution they were
  * served is one the deployment declares. That the byte source they are filed under is the one the
- * client actually used. And that the ladder they were offered lost exactly the drained rung and
- * nothing else, read off the published master, which is where that decision is made.
+ * client actually used. And that the master THIS BROADCAST published lost exactly the drained rung
+ * and nothing else, read off the published master, which is where that decision is made.
+ *
+ * ⛔⛔ **That last one is not a fact about this viewer, and it must not be worded as one.** The
+ * master is read after the player has closed, up to four paid minutes later, and nothing ties the
+ * copy read then to the one the player actually fetched. Waiting for the survivors before opening
+ * the browser would tie them and would also defeat the suite, whose whole point is somebody watching
+ * THROUGH the loss rather than joining after it. So the read establishes what the broadcast
+ * published, the assertion says that, and whether the rewrite happened while this viewer was still
+ * watching is printed as an observation beside their figures.
  *
  * ⛔ **At most one rung is dropped, read where it is decided.** `MAX_RUNGS_DROPPED_AT_ONCE` in the
  * uploader and `MAX_RUNGS_DROPPED_PER_LADDER` in the client are both 1, and
@@ -176,7 +189,12 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
     });
 
     const source = requireByteSource(backend);
+    // ⛔ Bracketed on the DEPLOYMENT's clock, because the only thing it is ever compared against is a
+    // timestamp the uploader wrote. The arm's own report carries no watch window, and a window taken
+    // here would be this machine's clock against the host's.
+    const watchOpenedAt = await host.nowIso();
     const result = await runBrowserArm(host, cfg, { backend: source, watchMinutes: WATCH_MINUTES });
+    const watchClosedAt = await host.nowIso();
 
     console.log(`  watched ${result.watchUrl} for ${result.samples} samples`);
     console.log(`  the viewer passed through: ${result.feedStatesSeen.join(' → ')}`);
@@ -215,6 +233,10 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
     // which is the same question the assertion below asks. A batch that is filling refuses a growing
     // share of segments rather than all of them, so the drained rung goes on landing the occasional
     // one and every one of those resets its lag and postpones the drop. See `waitForSurvivingMaster`.
+    //
+    // ⛔ This is about the BROADCAST and not about the viewer above, and the wait is why. The player
+    // has closed by the time the master is read, so the assertion is worded as what the broadcast
+    // published. Whether the rewrite fell inside their watch is printed below as an observation.
     const survivingRungs = cfg.abrRungs.filter((rung) => rung !== drainedRung);
     const { owner } = await discoverCatalogFeed(host, cfg);
     const ladder = ladderGroupOf(await log());
@@ -231,7 +253,7 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
     assert.equal(
       wrongLadder,
       null,
-      `the ladder this viewer was offered is not the three rungs that kept their postage: ${wrongLadder}`,
+      `the master this broadcast published is not the three rungs that kept their postage: ${wrongLadder}`,
     );
 
     console.log(
@@ -258,8 +280,68 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
             : describeDrainRamp(drainRampOf(stamped, drainedStreamId, refusedAtMs))
         }`,
     );
+
+    // Whether the master lost the rung under this viewer or after they had gone. The assertion above
+    // does not ask, because the read that carries it happens once they have closed.
+    console.log(
+      '  observations, none of them asserted. ' +
+        describeRewriteAgainstWatch(masterRewrittenAtMs(stamped, ladder, survivingRungs.length), {
+          openedAtMs: Date.parse(watchOpenedAt),
+          closedAtMs: Date.parse(watchClosedAt),
+        }),
+    );
   });
 });
+
+/** When this viewer's player was opened and when it closed, on the deployment host's own clock. */
+interface WatchWindow {
+  openedAtMs: number;
+  closedAtMs: number;
+}
+
+/**
+ * When the catalog said this ladder's master had been rewritten, on the uploader's clock, or null.
+ *
+ * ⚠️ An inline string in `StreamCatalog.republishMaster` rather than part of the log contract in
+ * `packages/shared/src/uploaderLog.ts`, so a rewording leaves this unread rather than wrong. It
+ * carries an observation and nothing asserts on it. Scenario L asserts on the same line and says so
+ * in its own `ladderRewrittenPattern`.
+ */
+function masterRewrittenAtMs(stamped: readonly TimestampedMessage[], ladder: string, rungs: number): number | null {
+  const escaped = ladder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rewritten = new RegExp(`Ladder ${escaped} now produces ${rungs} rung\\(s\\), master rewritten`);
+  return stamped.find((line) => rewritten.test(line.message))?.atMs ?? null;
+}
+
+/** Where the master rewrite fell relative to this viewer's watch, or what is missing to say. */
+function describeRewriteAgainstWatch(rewrittenAtMs: number | null, { openedAtMs, closedAtMs }: WatchWindow): string {
+  if (!Number.isFinite(openedAtMs) || !Number.isFinite(closedAtMs)) {
+    return (
+      'the host answered no readable clock either side of the watch, so when this viewer was at the ' +
+      'player is not known here'
+    );
+  }
+
+  const watched = `this viewer watched from ${isoOf(openedAtMs)} to ${isoOf(closedAtMs)}`;
+
+  if (rewrittenAtMs === null) {
+    return (
+      `${watched}, and no line in this window says when the master was rewritten, so whether the ` +
+      'ladder lost the rung while they were still at it is not known here'
+    );
+  }
+  if (rewrittenAtMs < openedAtMs) {
+    return `${watched}, and the master was rewritten at ${isoOf(rewrittenAtMs)}, before they opened the player`;
+  }
+  if (rewrittenAtMs > closedAtMs) {
+    return `${watched}, and the master was rewritten at ${isoOf(rewrittenAtMs)}, after they had left`;
+  }
+  return `${watched}, and the master was rewritten at ${isoOf(rewrittenAtMs)}, while they were watching`;
+}
+
+function isoOf(atMs: number): string {
+  return Number.isFinite(atMs) ? new Date(atMs).toISOString() : 'an unread time';
+}
 
 /**
  * The newest announce for one rung, which is the session this broadcast published on it, or null.
