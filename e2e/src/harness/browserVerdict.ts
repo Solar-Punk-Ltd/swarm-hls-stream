@@ -128,8 +128,16 @@ export function weeb3ArmRefusal(result: BrowserArmResult, { maxSegmentRequests }
  * carried none until 2026-09-04, so in the in-browser profile they passed whatever served them,
  * which is the exact failure `browser/byteSourceArm.ts` exists to prevent one layer down: an unread
  * setting looks precisely like a setting at its default. This is the one statement of it the suites
- * that were missing it now share, and every suite under `suites/viewer/` asserts an arm proof
- * through one of the four.
+ * that were missing it now share.
+ *
+ * ⛔ Every suite under `suites/viewer/` does assert an arm proof, and this is not the only door in.
+ * The three arm modules above wrap {@link weeb3ArmRefusal} for an in-tab arm, V4 arrives through
+ * `vodByteSourceRefusal`, which is this function under a name that says when to call it, and V1
+ * calls {@link weeb3ArmRefusal} itself: it decides the byte source with `requireByteSource`, checks
+ * the switch took inline, and applies the in-tab ceiling only to an in-tab arm. So the list is six
+ * routes rather than four, and `test/browserVerdict.test.ts` holds it against the files, because
+ * nothing under `suites/` runs in continuous integration and this paragraph is otherwise prose next
+ * to code nobody opens.
  *
  * ⭐ **A gateway arm is passed with no ceiling applied**, and that is deliberate rather than an
  * omission. A gateway viewer reads every segment through the gateway by definition, so the in-tab

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import { type BrowserArmResult, parseBrowserArmState } from '../src/harness/browser.js';
@@ -21,6 +24,8 @@ import { armState } from './helpers/browserArmFixtures.js';
  * and gateway gates already use: a boolean would let a suite print "assertion failed" where the
  * harness could have said which of four things went wrong.
  */
+
+const E2E_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const CLEAN = parseBrowserArmState(armState());
 const watched = (overrides: Partial<BrowserArmResult>): BrowserArmResult => ({ ...CLEAN, ...overrides });
@@ -198,6 +203,47 @@ describe('whether an arm was the byte source it is filed as, in either condition
 
     assert.match(String(refusal), /512/);
     assert.match(String(refusal), /9/);
+  });
+
+  /**
+   * ⛔⛔ The claim `byteSourceArmRefusal`'s own docblock makes, held against the suites it is about.
+   *
+   * That every suite under `suites/viewer/` files its verdict through one of the arm refusals here
+   * is the whole reason those two gaps of 2026-09-04 were worth closing, and it was written in prose
+   * next to files nothing in continuous integration ever opens. A twelfth suite added tomorrow with
+   * no arm proof at all would leave the sentence there and untrue.
+   *
+   * ⚠️ Read out of the source. A suite file registers against a deployment at import time, so it
+   * cannot be loaded here, which is the same arrangement `weeb3RequestCeilingAgreement.test.ts` and
+   * `suiteConfigAtModuleScope.test.ts` use for their own structural claims about these files.
+   */
+  const ARM_VERDICTS = [
+    'crashArmRefusal',
+    'qualityArmRefusal',
+    'rungArmRefusal',
+    'byteSourceArmRefusal',
+    'vodByteSourceRefusal',
+    'weeb3ArmRefusal',
+  ];
+
+  it('is one of the verdicts every viewer suite files its arm proof through', () => {
+    const viewerDir = join(E2E_DIR, 'suites', 'viewer');
+    const unproven = readdirSync(viewerDir)
+      .filter((name) => name.endsWith('.test.ts'))
+      .filter((name) => {
+        const source = readFileSync(join(viewerDir, name), 'utf8');
+        return !ARM_VERDICTS.some((verdict) => source.includes(verdict));
+      })
+      .sort();
+
+    assert.deepEqual(
+      unproven,
+      [],
+      `${unproven.join(', ')} names none of ${ARM_VERDICTS.join(', ')}. Either that suite files no arm ` +
+        'proof at all, in which case an in-browser run of it passes whatever served it, or it files ' +
+        'one through a route nothing here knows about, in which case add it to this list and to the ' +
+        'docblock on byteSourceArmRefusal that counts them.',
+    );
   });
 });
 
