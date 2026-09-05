@@ -192,8 +192,8 @@ async function main(): Promise<void> {
     watchUrl = await openViewer(page, clientUrl);
 
     // ⛔ Before the first arm, and the whole sweep runs on one byte source. Booting the in-tab node
-    // costs 4.5 MB of wasm and several seconds of dialling, so a node joining inside an arm would put
-    // the join in that arm's numbers and in no other, which reads as a buffer effect.
+    // costs a few megabytes of wasm and several seconds of dialling, so a node joining inside an arm
+    // would put the join in that arm's numbers and in no other, which reads as a buffer effect.
     byteSourceArm = await openByteSourceArmSession({
       page,
       source: armByteSource,

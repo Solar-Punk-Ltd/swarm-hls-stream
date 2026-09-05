@@ -144,7 +144,7 @@ const FETCH_BACKEND_HANDLE = '__swarmFetchBackendSwitch';
 const HANDLE_TIMEOUT_MS = 30_000;
 const HANDLE_POLL_MS = 250;
 
-/** The wasm is 4.5 MB and the dialling takes several seconds. A host slower than this cannot run one. */
+/** The wasm is megabytes and the dialling takes several seconds. A host slower than this cannot run one. */
 const PREWARM_TIMEOUT_MS = 120_000;
 
 /** A feed head read can take seconds on a busy gateway, and a manifest is one of them. */

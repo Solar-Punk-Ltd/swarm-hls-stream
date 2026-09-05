@@ -12,8 +12,9 @@
  * ⭐ It also boots a real node, and that is the point rather than a bonus. Everything else here can be
  * satisfied by a client that publishes a working switch onto a host where weeb-3 can never reach a
  * peer: the arms would then differ, honestly, in that one of them fetches no video. The join is the
- * single most likely reason a paid sitting comes back empty, it costs about ten seconds and 4.5 MB,
- * and it costs no BZZ, so there is no reason to learn it during a broadcast instead of before one.
+ * single most likely reason a paid sitting comes back empty, it costs about ten seconds and a few
+ * megabytes, and it costs no BZZ, so there is no reason to learn it during a broadcast instead of
+ * before one.
  *
  * ⚠️ A2 measured the join at 9.4-10.5s in a desktop Chrome on a home connection. This runs in the
  * browser image on the deployment host, which is where a sitting would run it.

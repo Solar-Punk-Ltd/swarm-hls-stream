@@ -88,8 +88,8 @@ interface Weeb3ArmExpectation {
   /**
    * The most `/bytes/` requests an in-tab arm may make over the whole run.
    *
-   * An arm legitimately reads through the gateway while its own node boots, which is 4.5 MB of wasm
-   * and a peer dial, so the count is a handful rather than a zero. What it must not be is the
+   * An arm legitimately reads through the gateway while its own node boots, which is a few megabytes
+   * of wasm and a peer dial, so the count is a handful rather than a zero. What it must not be is the
    * hundreds a gateway viewer makes.
    */
   maxSegmentRequests: number;

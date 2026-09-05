@@ -181,10 +181,10 @@ async function main(): Promise<void> {
     recordRequests(page, requests);
     watchUrl = await openViewer(page, clientUrl);
 
-    // ⛔ Between playback and the settle stretch, not after it. The in-tab node is 4.5 MB of wasm and
-    // several seconds of dialling, and a fault injected while it was still joining would be measuring
-    // the join. Both conditions are held the same way, so the settle below is sampled on a player of
-    // the same age either way.
+    // ⛔ Between playback and the settle stretch, not after it. The in-tab node is a few megabytes of
+    // wasm and several seconds of dialling, and a fault injected while it was still joining would be
+    // measuring the join. Both conditions are held the same way, so the settle below is sampled on a
+    // player of the same age either way.
     //
     // ⚠️ Its own settle, BROWSER_BYTE_SOURCE_SETTLE_SECONDS, on top of the pre-fault one below. They
     // are two different windows: this one hides the node's join, that one is the baseline the freeze

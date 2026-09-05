@@ -76,10 +76,10 @@ export async function readByteSource(page: Page): Promise<ByteSourceSetup> {
 /**
  * Boot the in-tab node and reach the network, without switching anything to it yet.
  *
- * ⛔ The join is 4.5 MB of wasm and several seconds of dialling, and A2 measured a first retrieval
- * straight after `ready(1)` at 9,423-10,466ms against 3,185-4,003ms warm. An arm that switched and
- * immediately started counting would be measuring the join, once, at the start of its window, and on
- * a **live** edge that is the difference between joining behind and stalling.
+ * ⛔ The join is a few megabytes of wasm and several seconds of dialling, and A2 measured a first
+ * retrieval straight after `ready(1)` at 9,423-10,466ms against 3,185-4,003ms warm. An arm that
+ * switched and immediately started counting would be measuring the join, once, at the start of its
+ * window, and on a **live** edge that is the difference between joining behind and stalling.
  */
 export async function prewarmByteSource(page: Page): Promise<string | null> {
   return page.evaluate(
@@ -282,11 +282,12 @@ const REAL_CLOCK: ArmClock = {
  * A gateway arm is seeded into localStorage before the page runs, because joining is the expensive
  * part and an arm that switched afterwards would have bought its join from the wrong node.
  *
- * The byte source is the opposite case. Booting the in-tab node is 4.5 MB of wasm and several seconds
- * of dialling, and a seeded weeb-3 arm would make the player's **first** fragment request wait for
- * all of it. On a live edge that arm starts already behind, and hls.js raises its latency target on
- * every stall and never lowers it, so the join would be baked into every number the arm went on to
- * produce. `prewarm` exists precisely so the join happens outside the window that is counted.
+ * The byte source is the opposite case. Booting the in-tab node is a few megabytes of wasm and
+ * several seconds of dialling, and a seeded weeb-3 arm would make the player's **first** fragment
+ * request wait for all of it. On a live edge that arm starts already behind, and hls.js raises its
+ * latency target on every stall and never lowers it, so the join would be baked into every number
+ * the arm went on to produce. `prewarm` exists precisely so the join happens outside the window that
+ * is counted.
  *
  * ## ⭐ Why both arms settle for the same wall clock
  *

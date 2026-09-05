@@ -55,9 +55,9 @@ interface VodArmExpectation {
    * ## Why single digits, and why the same nine a live watch uses
    *
    * A playback arm opens the recording on whatever the build defaults to and only becomes its
-   * condition afterwards, because booting the in-tab node is 4.5 MB of wasm and a peer dial. Every
-   * segment the player pulls during that boot legitimately comes from the gateway, so the honest
-   * figure is a handful and never a zero.
+   * condition afterwards, because booting the in-tab node is a few megabytes of wasm and a peer
+   * dial. Every segment the player pulls during that boot legitimately comes from the gateway, so
+   * the honest figure is a handful and never a zero.
    *
    * ⭐ Measured, both arms of 2026-09-03 on the same 120 s recording: the in-tab arm made **6**
    * gateway segment requests over the whole run against the gateway arm's **61**, which is one per

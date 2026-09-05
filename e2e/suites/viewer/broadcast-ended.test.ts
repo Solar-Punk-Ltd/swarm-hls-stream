@@ -89,9 +89,9 @@ const MIN_TAIL_MS = 180_000;
  * ⭐ Nine, the same ceiling V1 holds a live watch to, because this is the same driver on the same
  * window. `browser:watch` opens the arm between playback starting and the first sample and judges
  * its request log from the end of the settle, exactly as V1's does, so the reads that reach this
- * count are the ones the in-tab node's boot legitimately makes through the gateway while 4.5 MB of
- * wasm loads and a peer is dialled. Measured on that path: a ladder arm made 6 where a gateway
- * viewer made 500, and live in-tab arms have read 3 to 6 across every sitting since.
+ * count are the ones the in-tab node's boot legitimately makes through the gateway while a few
+ * megabytes of wasm load and a peer is dialled. Measured on that path: a ladder arm made 6 where a
+ * gateway viewer made 500, and live in-tab arms have read 3 to 6 across every sitting since.
  *
  * ⛔ Neither of this case's two differences from V1 adds a gateway read, which is why the number is
  * not raised for them. The watch is six minutes rather than four, and the extra two are spent after

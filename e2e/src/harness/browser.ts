@@ -71,10 +71,10 @@ export const DEFAULT_BROWSER_CONTAINER = 'e2e-viewer-browser';
  *
  * Sized against what happens outside the measured window rather than picked. The image start, the
  * catalog wait the client's discovery allows a minute for, the settle a byte-source arm holds before
- * its window opens, and the in-tab node's join: 4.5 MB of wasm and a peer dial that A2 timed at 9.4
- * to 10.5 seconds to a first retrieval. Generous on purpose, because a timeout that fires early kills
- * a paid arm and throws away every sample it had taken, while one that fires late costs only the time
- * a failed arm was going to take anyway.
+ * its window opens, and the in-tab node's join: a few megabytes of wasm and a peer dial that A2 timed
+ * at 9.4 to 10.5 seconds to a first retrieval. Generous on purpose, because a timeout that fires
+ * early kills a paid arm and throws away every sample it had taken, while one that fires late costs
+ * only the time a failed arm was going to take anyway.
  */
 export const BROWSER_ARM_OVERHEAD_MS = 300_000;
 

@@ -600,10 +600,12 @@ Paid crash and buffer-sweep sittings run through their gated wrappers on the dep
 and spend-ceiling gates as every other sitting, one broadcast per fault (or one sized to the whole
 sweep), and an arm that does not name its byte source is refused before anything is published.
 
-The in-tab node needs time to boot: 4.5 MB of wasm and several seconds of dialling. Every driver
-holds it for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (default 60) before opening its window, so the join
-is never inside a counted stretch. `watch.ts` reads that window from `BROWSER_SETTLE_SECONDS`
-instead, because that is the knob the existing corpus was run with.
+The in-tab node needs time to boot: a few megabytes of wasm and several seconds of dialling. The
+payload is 3.87 MB at the pinned `@lat-murmeldjur/weeb_3` 0.0.341001, and it is the one place in this
+repo that quotes a figure, because every other mention would go stale on the next bump. Every driver
+holds the boot for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (default 60) before opening its window, so
+the join is never inside a counted stretch. `watch.ts` reads that window from
+`BROWSER_SETTLE_SECONDS` instead, because that is the knob the existing corpus was run with.
 
 ⛔ **A gateway arm playing a RECORDING is proved from playback start instead**, which only
 `browser:vod` asks for. It still settles for the same wall clock, so both byte sources hold players
