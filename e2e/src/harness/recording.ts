@@ -93,7 +93,7 @@ export function recordingSummary(progress: RecordingProgress, segmentSeconds: nu
       ? ', of a media length this stage does not report'
       : `, ${(progress.perRung * segmentSeconds).toFixed(1)}s of media at ${segmentSeconds}s segments`;
 
-  return `${perRung || 'nothing published yet'}; ${progress.perRung} per rung${media}`;
+  return `${perRung || 'nothing published yet'}. ${progress.perRung} per rung${media}`;
 }
 
 /**
