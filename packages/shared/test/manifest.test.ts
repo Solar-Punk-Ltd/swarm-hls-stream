@@ -95,9 +95,7 @@ describe('parseManifest', () => {
   });
 
   it('does not carry a gap past the entry it belongs to', () => {
-    const parsed = parseManifest(
-      [...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXTINF:4,', 'seg1.ts'].join('\n'),
-    );
+    const parsed = parseManifest([...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXTINF:4,', 'seg1.ts'].join('\n'));
 
     assert.deepEqual(
       parsed.segments.map((s) => s.gap),
@@ -122,9 +120,7 @@ describe('parseManifest', () => {
   });
 
   it('ends the header block, so a tag after a gap is not hoisted above the segments', () => {
-    const parsed = parseManifest(
-      [...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXT-X-TARGETDURATION:9'].join('\n'),
-    );
+    const parsed = parseManifest([...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXT-X-TARGETDURATION:9'].join('\n'));
 
     assert.ok(!parsed.headers.includes('#EXT-X-TARGETDURATION:9'));
     assert.deepEqual(parsed.headers, LIVE.filter(Boolean));

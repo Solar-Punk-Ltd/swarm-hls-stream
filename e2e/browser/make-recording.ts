@@ -220,9 +220,7 @@ async function main(): Promise<void> {
           'hole. The node came back inside the retry window.',
       );
     }
-    console.log(
-      `recording: ${events.discontinuitiesArmed} loss line(s) after ${beforeOutage} segments per rung`,
-    );
+    console.log(`recording: ${events.discontinuitiesArmed} loss line(s) after ${beforeOutage} segments per rung`);
   } finally {
     await publisher.stop();
     if (beeIsDown) {
