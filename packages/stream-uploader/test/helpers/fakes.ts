@@ -274,7 +274,14 @@ export function makeRecoveredState(streamId: string): StreamState {
   };
 }
 
-/** RecoveryStore.listActive returns the slash-sanitized file name, not the real stream id. */
+/**
+ * What `RecoveryStore.listActive` hands back for an entry written before ids were escaped, which is
+ * the flattened file name rather than the id.
+ *
+ * That is the shape an upgrade recovers, and the one the orchestrator has to be able to work from:
+ * it passes the listing straight to `read` and then takes the real id out of `state.streamId`. An
+ * entry the current store wrote lists as the id itself, so a test wanting that case passes the id.
+ */
 export function toRecoveryFileId(streamId: string): string {
   return streamId.replace(/[/\\]/g, '_');
 }

@@ -265,50 +265,160 @@ describe('RecoveryStore', () => {
 
       assert.equal(fs.existsSync(path.join(root, 'escaped.json')), false, 'a stream id climbed out of the state dir');
       assert.equal(fs.existsSync(path.join(path.dirname(root), 'escaped.json')), false);
-      assert.deepEqual(fs.readdirSync(dir), ['.._.._escaped.json']);
+      assert.deepEqual(fs.readdirSync(dir), ['..%2F..%2Fescaped.json']);
     });
 
-    it('flattens every separator in an id, not only the first', () => {
+    it('escapes every separator in an id, not only the first', () => {
       const { store, dir } = storeIn(makeTempRoot(), 'state');
 
       store.save('live/app/stream', makeRecoveredState('live/app/stream'));
 
-      assert.deepEqual(fs.readdirSync(dir), ['live_app_stream.json'], 'a separator survived into the path');
+      assert.deepEqual(fs.readdirSync(dir), ['live%2Fapp%2Fstream.json'], 'a separator survived into the path');
       assert.notEqual(store.load('live/app/stream'), null, 'the id it was saved under no longer loads it');
     });
 
-    it('flattens a windows separator the same way', () => {
+    it('escapes a windows separator the same way', () => {
       const { store, dir } = storeIn(makeTempRoot(), 'state');
 
       store.save('live\\stream', makeRecoveredState('live\\stream'));
 
-      assert.deepEqual(fs.readdirSync(dir), ['live_stream.json']);
+      assert.deepEqual(fs.readdirSync(dir), ['live%5Cstream.json']);
     });
 
     /**
-     * ⚠️ The cost of that flattening, pinned rather than fixed. Sanitizing is not reversible, so a
-     * stream saved as `live/stream` is listed as `live_stream`, and recovery resumes it under an id
-     * that is not the one it was broadcast with. Two distinct ids also collide onto one file. Neither
-     * is reachable today — engine stream keys carry no separator — and both would be silent if that
-     * ever changed, which is the reason to write them down here.
+     * The listing feeds recovery, which reads each name back through this same store, so a name it
+     * cannot reverse is a stream that resumes under an id nobody broadcast with.
      */
-    it('lists a sanitized id, which is not the id the stream was saved under', () => {
+    it('lists the id the stream was saved under, not the name it is filed as', () => {
       const { store } = storeIn(makeTempRoot(), 'state');
 
       store.save('live/stream', makeRecoveredState('live/stream'));
 
-      assert.deepEqual(store.listActive(), ['live_stream']);
+      assert.deepEqual(store.listActive(), ['live/stream']);
       assert.equal(store.load('live/stream')?.streamId, 'live/stream');
     });
 
-    it('collides two ids that differ only by a separator onto one state', () => {
+    /**
+     * ⛔ The whole reason the name is encoded rather than flattened. A stream id is `app/stream` with
+     * `[A-Za-z0-9][A-Za-z0-9._-]*` per segment, and that charset allows `_`, so mapping the separator
+     * onto `_` gave `video/a_b` and `video_a/b` one file name apiece and the same one. Both are ids an
+     * operator may legitimately choose, and the damage was silent in both directions: the second save
+     * destroyed the first stream's state, and removing either finalized broadcast deleted the entry
+     * the other one was still relying on to survive a crash.
+     */
+    it('keeps two ids that flatten alike in two separate states', () => {
       const { store, dir } = storeIn(makeTempRoot(), 'state');
 
-      store.save('live/stream', makeRecoveredState('live/stream'));
-      store.save('live_stream', makeRecoveredState('live_stream'));
+      store.save('video/a_b', makeRecoveredState('video/a_b'));
+      store.save('video_a/b', makeRecoveredState('video_a/b'));
 
+      assert.equal(fs.readdirSync(dir).length, 2, 'two distinct ids shared one state file');
+      assert.equal(store.load('video/a_b')?.streamId, 'video/a_b');
+      assert.equal(store.load('video_a/b')?.streamId, 'video_a/b');
+    });
+
+    it('leaves the other stream alone when one of two ids that flatten alike is removed', () => {
+      const { store } = storeIn(makeTempRoot(), 'state');
+      store.save('video/a_b', makeRecoveredState('video/a_b'));
+      store.save('video_a/b', makeRecoveredState('video_a/b'));
+
+      store.remove('video/a_b');
+
+      assert.equal(store.load('video/a_b'), null, 'the entry that was removed is still there');
+      assert.equal(
+        store.load('video_a/b')?.streamId,
+        'video_a/b',
+        'removing one broadcast deleted the recovery entry of another that is still live',
+      );
+    });
+  });
+
+  /**
+   * Entries written before the naming changed, which are exactly the ones an upgrade meets.
+   *
+   * The store used to file `live/stream` as `live_stream.json`. A deployment upgraded mid-broadcast
+   * boots holding entries under that name, and each one is the only record its broadcast was live. A
+   * store that could only find the new name would list them, fail to read them, and leave every one
+   * of those recordings stranded.
+   */
+  describe('an entry written under the old naming', () => {
+    /**
+     * What `save` produced before the encoding, written straight to disk, and the state it holds.
+     *
+     * Handed back rather than rebuilt by the caller because `makeRecoveredState` stamps `updatedAt`
+     * from the clock, so two calls a millisecond apart are two different states.
+     */
+    function writeLegacyEntry(dir: string, streamId: string): StreamState {
+      const state = makeRecoveredState(streamId);
+      fs.writeFileSync(path.join(dir, `${streamId.replace(/[/\\]/g, '_')}.json`), JSON.stringify(state));
+      return state;
+    }
+
+    it('is still read back under the id it belongs to', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      const state = writeLegacyEntry(dir, 'live/stream');
+
+      assert.equal(store.load('live/stream')?.streamId, 'live/stream');
+      assert.deepEqual(store.read('live/stream'), { kind: RECOVERY_ENTRY_LOADED, state });
+    });
+
+    it('is still quarantined when it cannot be parsed', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.writeFileSync(path.join(dir, 'live_stream.json'), '{"streamId":"live/stream","segm');
+
+      const moved = capture(() => store.quarantine('live/stream'));
+
+      assert.deepEqual(store.listQuarantined(), ['live_stream.json.corrupt'], moved.join(' '));
+      assert.deepEqual(store.listActive(), [], 'a damaged entry the store could not move stays on the recovery path');
+    });
+
+    it('is still removed when its broadcast finalizes', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      writeLegacyEntry(dir, 'live/stream');
+
+      store.remove('live/stream');
+
+      assert.deepEqual(fs.readdirSync(dir), [], 'a finalized broadcast left its old entry to be recovered again');
+    });
+
+    it('is listed under the id it was broadcast with', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      writeLegacyEntry(dir, 'stream-1');
+
+      assert.deepEqual(store.listActive(), ['stream-1']);
+    });
+
+    /**
+     * A name with no escape in it decodes to itself, so the two namings agree for every id that holds
+     * no separator, which is most of them. Only a name that was actually encoded moves.
+     */
+    it('is not disturbed by a decode when it holds nothing to decode', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      writeLegacyEntry(dir, 'stream-1');
+
+      assert.deepEqual(fs.readdirSync(dir), ['stream-1.json']);
+      store.save('stream-1', { ...makeRecoveredState('stream-1'), socIndex: 99 });
+
+      assert.deepEqual(fs.readdirSync(dir), ['stream-1.json'], 'a save under the same id wrote a second file');
+      assert.equal(store.load('stream-1')?.socIndex, 99);
+    });
+
+    /**
+     * ⛔ The upgrade's own hazard, and the reason `save` does not simply ignore the old name. A
+     * recovered stream persists its state every segment, so it writes under the encoded name within
+     * seconds of the boot that found it under the old one. Left there, the old entry is a second
+     * record of one broadcast: the next crash lists both, recovers the same stream twice, and the
+     * second registration orphans the first uploader under the same id.
+     */
+    it('is retired by the first save, so one broadcast never leaves two entries behind', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      writeLegacyEntry(dir, 'live/stream');
+
+      store.save('live/stream', { ...makeRecoveredState('live/stream'), socIndex: 99 });
+
+      assert.deepEqual(store.listActive(), ['live/stream'], 'one broadcast is listed as two streams to recover');
       assert.equal(fs.readdirSync(dir).length, 1);
-      assert.equal(store.load('live/stream')?.streamId, 'live_stream', 'the second save took the first one over');
+      assert.equal(store.load('live/stream')?.socIndex, 99);
     });
   });
 

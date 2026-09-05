@@ -30,6 +30,53 @@ function isQuarantined(fileName: string): boolean {
   return suffixAt > 0 && /^(\.\d+)?$/.test(fileName.slice(suffixAt + QUARANTINE_SUFFIX.length));
 }
 
+/**
+ * The name a stream id is filed under.
+ *
+ * ⛔ Escaped rather than flattened, because flattening is not reversible and two legitimate ids
+ * collided on it. A stream id is `app/stream` with `[A-Za-z0-9][A-Za-z0-9._-]*` per segment (see
+ * `STREAM_ID_SEGMENT`), so `_` is an ordinary character inside a name: mapping the separator onto it
+ * gave `video/a_b` and `video_a/b` the same file. Saving one destroyed the other's state, and
+ * removing either on finalize deleted the entry the other was relying on to survive a crash.
+ *
+ * Inside that charset only `/` moves, to `%2F`, and `%` is outside it, so no id can spell an escape
+ * belonging to another. It is the stronger path guard too: a separator of either kind is escaped
+ * rather than substituted, so nothing can resolve outside the state directory.
+ */
+function entryName(streamId: string): string {
+  return encodeURIComponent(streamId);
+}
+
+/**
+ * The id a file name belongs to.
+ *
+ * A name holding no escape decodes to itself, which is what keeps every entry written under the old
+ * flattening readable: those hold no `%`, so the two namings agree on them.
+ *
+ * A name that is not an escape sequence at all is its own answer rather than an error. The state
+ * directory holds files this store did not write, the catalog feed index among them, and an operator
+ * may leave anything there. `decodeURIComponent` throws on a stray `%`, and the listing that calls
+ * this runs on the boot path, so one such file would otherwise stop the service recovering anything.
+ */
+function idOfEntryName(fileName: string): string {
+  try {
+    return decodeURIComponent(fileName);
+  } catch {
+    return fileName;
+  }
+}
+
+/**
+ * The name `save` wrote before ids were escaped, which is what an upgrade meets on disk.
+ *
+ * A deployment upgraded mid-broadcast boots holding entries under this name, and each one is the
+ * only record that its broadcast was live. Everything that reads or moves an entry looks here when
+ * the escaped name is absent, so none of those recordings is stranded by the change.
+ */
+function legacyEntryName(streamId: string): string {
+  return streamId.replace(/[/\\]/g, '_');
+}
+
 export class RecoveryStore {
   private logger = Logger.getInstance();
 
@@ -45,11 +92,22 @@ export class RecoveryStore {
 
     fs.writeFileSync(tmpPath, JSON.stringify(state));
     fs.renameSync(tmpPath, filePath);
+
+    // ⛔ Only after the escaped name holds the whole state, so an interrupted save cannot end with
+    // neither name holding one. A recovered stream persists every segment, so it writes here within
+    // seconds of the boot that found it under the old name, and leaving that name behind would make
+    // one broadcast two entries: the next crash lists both and recovers the same stream twice, the
+    // second registration orphaning the first uploader under the id they share.
+    const legacyPath = this.getLegacyFilePath(streamId);
+    if (legacyPath !== filePath && fs.existsSync(legacyPath)) {
+      fs.rmSync(legacyPath, { force: true });
+      this.logger.info(`[RecoveryStore] Retired the pre-escaping state file for ${streamId} at ${legacyPath}`);
+    }
   }
 
   /** What is on disk for this stream, keeping "never saved" and "will not parse" apart. */
   public read(streamId: string): RecoveryEntry {
-    const filePath = this.getFilePath(streamId);
+    const filePath = this.findFilePath(streamId);
 
     if (!fs.existsSync(filePath)) {
       return { kind: RECOVERY_ENTRY_MISSING };
@@ -84,7 +142,7 @@ export class RecoveryStore {
    * deletes the evidence that anything was lost.
    */
   public quarantine(streamId: string): string | null {
-    const filePath = this.getFilePath(streamId);
+    const filePath = this.findFilePath(streamId);
     const destination = this.freeQuarantinePath(filePath);
 
     if (destination === null) {
@@ -104,10 +162,20 @@ export class RecoveryStore {
     }
   }
 
+  /**
+   * Forget this stream, under both namings.
+   *
+   * Both, because either may be the one on disk: a broadcast recovered from a pre-escaping entry and
+   * finalized before it ever persisted again is still filed under the old name, and one that has
+   * saved since is filed under the new one. A remove that took only the escaped name would leave the
+   * old entry to be recovered on the next boot and finalized a second time.
+   */
   public remove(streamId: string): void {
-    const filePath = this.getFilePath(streamId);
+    const paths = [this.getFilePath(streamId), this.getLegacyFilePath(streamId)].filter(
+      (filePath, index, all) => all.indexOf(filePath) === index && fs.existsSync(filePath),
+    );
 
-    if (fs.existsSync(filePath)) {
+    for (const filePath of paths) {
       fs.rmSync(filePath, { force: true });
       this.logger.info(`[RecoveryStore] Removed state file for ${streamId}`);
     }
@@ -129,6 +197,13 @@ export class RecoveryStore {
     return fs.readdirSync(this.stateDir).filter(isQuarantined);
   }
 
+  /**
+   * The stream id of every entry there is to recover.
+   *
+   * Ids rather than file names, because recovery hands each one straight back to {@link read} and
+   * then registers the stream under it. While the name was a one-way flattening those two were not
+   * the same string, so a stream saved as `live/stream` came back as `live_stream`.
+   */
   public listActive(): string[] {
     if (!fs.existsSync(this.stateDir)) {
       return [];
@@ -138,7 +213,7 @@ export class RecoveryStore {
     return fs
       .readdirSync(this.stateDir)
       .filter((f) => f.endsWith('.json'))
-      .map((f) => f.replace(/\.json$/, ''));
+      .map((f) => idOfEntryName(f.replace(/\.json$/, '')));
   }
 
   /** The first quarantine name this entry has not already used, or `null` once the ceiling is hit. */
@@ -159,8 +234,27 @@ export class RecoveryStore {
     return null;
   }
 
+  /** Where a save goes, and where everything but an upgrade's first read looks. */
   private getFilePath(streamId: string): string {
-    const safeId = streamId.replace(/[/\\]/g, '_');
-    return path.join(this.stateDir, `${safeId}.json`);
+    return path.join(this.stateDir, `${entryName(streamId)}.json`);
+  }
+
+  private getLegacyFilePath(streamId: string): string {
+    return path.join(this.stateDir, `${legacyEntryName(streamId)}.json`);
+  }
+
+  /**
+   * Where this stream's entry actually is, which is the pre-escaping name only when nothing holds the
+   * escaped one. With neither on disk it answers the escaped path, so a caller asking about a stream
+   * that was never saved is told about the name a save would use.
+   */
+  private findFilePath(streamId: string): string {
+    const filePath = this.getFilePath(streamId);
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+
+    const legacyPath = this.getLegacyFilePath(streamId);
+    return fs.existsSync(legacyPath) ? legacyPath : filePath;
   }
 }

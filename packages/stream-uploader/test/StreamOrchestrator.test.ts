@@ -80,9 +80,11 @@ function makeOrchestrator(recovery: RecoveryStore = makeFakeRecoveryStore(), clo
 }
 
 describe('recovery file id sanitizing', () => {
-  // RecoveryStore names files by a slash-sanitized id, and recoverStreams relies on that to find the
-  // real stream id inside the state. Nothing pinned it: the helper could return its input unchanged and
-  // every other test still passed, because they all sanitize on both sides of the comparison.
+  // The name a pre-escaping RecoveryStore filed a stream under, which is what an upgrade lists and
+  // what `recoverStreams` therefore has to reach the real stream id from: it reads the entry by
+  // whatever the listing said and takes the id out of the state. Nothing pinned it: the helper could
+  // return its input unchanged and every other test still passed, because they all sanitize on both
+  // sides of the comparison.
   it('replaces both path separators so a stream id becomes one file name', () => {
     assert.equal(toRecoveryFileId('live/stream'), 'live_stream');
     assert.equal(toRecoveryFileId('live\\stream'), 'live_stream');
