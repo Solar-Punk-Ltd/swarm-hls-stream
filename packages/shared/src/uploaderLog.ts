@@ -542,6 +542,33 @@ const BEE_ANSWER_SLOT = 'BEEANSWERSLOT';
 const STATUS_SLOT = 464646464646;
 
 /**
+ * The longest of bee's answer this line carries, in characters.
+ *
+ * Bee answers a refused upload in a few words and a JSON envelope is not much longer, so this is a
+ * bound on a remote service's free text rather than a limit anything is expected to reach. A log
+ * line is read in a scrollback and a whole response body would push the words after it off the end.
+ */
+const BEE_ANSWER_LIMIT = 300;
+
+/**
+ * Bee's answer as one line, which is what a line-oriented contract can carry.
+ *
+ * ⛔⛔⛔ **A newline here is the worst failure this file can produce.** The composed line would be
+ * correct and the reader would find nothing, because the words that bound the answer would sit on
+ * the next physical line and the pattern's capture stops at a newline. The drain suite would then
+ * spend its whole four minute wait on a paid broadcast and report three causes that are all wrong:
+ * a stage nobody armed, a broadcast too short to fill the batch, or a deployment that cannot write
+ * the line at all. Bee 2.8.2 answers on one line, so this is the guard and not a bug being fixed.
+ *
+ * ⭐ In the composer rather than in the reader, because the contract is what a deployment writes and
+ * a reader repairing a line it should never have been given is a contract with two definitions.
+ */
+function oneLine(message: string): string {
+  const collapsed = message.replace(/\s+/g, ' ').trim();
+  return collapsed.length > BEE_ANSWER_LIMIT ? `${collapsed.slice(0, BEE_ANSWER_LIMIT)}...` : collapsed;
+}
+
+/**
  * Written when bee refuses a segment upload with a status the retry policy will not retry, which on
  * this deployment means the rung's postage batch has no room left. Once per answer bee gives, per
  * stream, for the life of an uploader process: a filling batch answers the same way for its whole
@@ -570,36 +597,10 @@ const STATUS_SLOT = 464646464646;
  * and the preflight gate then refuses a deployment that writes the line perfectly.
  *
  * @param batch the rung's whole postage batch id, which this shortens to its first characters
+ * @param streamId the rung's own stream id, which is what scopes the line to one quality
  * @param status the HTTP status bee answered the upload with
  * @param message bee's own words for it
  */
-/**
- * The longest of bee's answer this line carries, in characters.
- *
- * Bee answers a refused upload in a few words and a JSON envelope is not much longer, so this is a
- * bound on a remote service's free text rather than a limit anything is expected to reach. A log
- * line is read in a scrollback and a whole response body would push the words after it off the end.
- */
-const BEE_ANSWER_LIMIT = 300;
-
-/**
- * Bee's answer as one line, which is what a line-oriented contract can carry.
- *
- * ⛔⛔⛔ **A newline here is the worst failure this file can produce.** The composed line would be
- * correct and the reader would find nothing, because the words that bound the answer would sit on
- * the next physical line and the pattern's capture stops at a newline. The drain suite would then
- * spend its whole four minute wait on a paid broadcast and report three causes that are all wrong:
- * a stage nobody armed, a broadcast too short to fill the batch, or a deployment that cannot write
- * the line at all. Bee 2.8.2 answers on one line, so this is the guard and not a bug being fixed.
- *
- * ⭐ In the composer rather than in the reader, because the contract is what a deployment writes and
- * a reader repairing a line it should never have been given is a contract with two definitions.
- */
-function oneLine(message: string): string {
-  const collapsed = message.replace(/\s+/g, ' ').trim();
-  return collapsed.length > BEE_ANSWER_LIMIT ? `${collapsed.slice(0, BEE_ANSWER_LIMIT)}...` : collapsed;
-}
-
 export function rungBatchRefused(batch: string, streamId: string, status: number, message: string): string {
   const batchPrefix = batch.slice(0, BATCH_ID_PREFIX_LENGTH);
   return `Postage batch ${batchPrefix} of ${streamId} refused by bee (${status} ${oneLine(
