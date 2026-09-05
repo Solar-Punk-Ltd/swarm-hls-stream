@@ -1,4 +1,4 @@
-import { Bee } from '@ethersphere/bee-js';
+import { Bee, BeeResponseError } from '@ethersphere/bee-js';
 import {
   engineSkippedSegments,
   rungBatchRefused,
@@ -698,6 +698,43 @@ describe('StreamUploader names the postage batch bee refused', () => {
       await drain(uploader);
 
       assert.equal(rungBatchRefusedPattern().exec(refusalLines(lines)[0] ?? '')?.[3], '400');
+    });
+  });
+
+  /**
+   * ⛔⛔⛔ **`error.message` on a bee failure is the HTTP client's sentence, not bee's.** bee-js builds
+   * its `BeeResponseError` with axios's message and puts bee's own answer in `responseBody`, so a line
+   * composed from the message prints "Request failed with status code 402" next to the 402 it
+   * restates, and the one question this line exists to settle, which words bee names a full batch
+   * with, stays exactly as open as it was.
+   *
+   * ⭐ **Every other fixture in this block is a hand-built error carrying one message**, so bee's
+   * answer and the client's sentence are the same string and the call site could go back to reading
+   * the message with the whole package still green. This one throws the class bee-js really throws.
+   */
+  it("carries bee's own words for the refusal rather than the HTTP client's sentence", async () => {
+    await withCapturedLog(async (lines) => {
+      const refusedByBee = () =>
+        new BeeResponseError(
+          'post',
+          '/bytes',
+          'Request failed with status code 402',
+          { code: 402, message: 'batch is overissued' },
+          402,
+          'ERR_BAD_REQUEST',
+        );
+      const uploader = newUploader({ fail: refusedByBee }, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      const refusal = refusalLines(lines)[0] ?? '';
+      assert.ok(refusal.includes('batch is overissued'), `bee's own answer is not in the line: ${refusal}`);
+      assert.equal(
+        refusal.includes('Request failed with status code'),
+        false,
+        `the line restates the status the client saw instead of what bee answered: ${refusal}`,
+      );
     });
   });
 
