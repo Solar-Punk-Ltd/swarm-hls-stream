@@ -240,7 +240,7 @@ describe(
           'so a whole ceiling spent here means the rung is not spending the batch that was armed: read ' +
           "the uploader's /health publishers, and check the arm redeployed the container",
       }).catch(async (error) => {
-        throw new Error(`${(error as Error).message}\n  ${whatWasSeen(await log(), drainedStreamId)}`, {
+        throw new Error(`${(error as Error).message}\n  ${await whatWasSeenOrWhyNot(log, drainedStreamId)}`, {
           cause: error,
         });
       });
@@ -438,6 +438,23 @@ type UploaderEventRefusals = ReturnType<typeof parseUploaderLog>['batchRefusals'
 /** Segment uploads per stream, which is what a post-drain window is measured against. */
 function countsOf(logText: string): ReadonlyMap<string, number> {
   return new Map([...segmentIndicesByStream(logText)].map(([streamId, indices]) => [streamId, indices.length]));
+}
+
+/**
+ * The same reading, or why it could not be taken, for a caller that must not lose what it already has.
+ *
+ * ⛔⛔ The read runs inside the catch of a four minute wait, so an unreachable host or a container
+ * that has gone throws from HERE and the whole rethrow is abandoned: the timeout's own message and
+ * the `cause` it was about to carry both vanish, and the operator is handed an ssh error about a
+ * broadcast they paid four minutes for. Anything this appends has to be optional, so the failure to
+ * append is the sentence instead.
+ */
+async function whatWasSeenOrWhyNot(log: () => Promise<string>, drainedStreamId: string): Promise<string> {
+  try {
+    return whatWasSeen(await log(), drainedStreamId);
+  } catch (error) {
+    return `and the log could not be read to say what was seen instead: ${(error as Error).message}`;
+  }
 }
 
 /**
