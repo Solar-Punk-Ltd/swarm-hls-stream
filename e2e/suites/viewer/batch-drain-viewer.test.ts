@@ -263,7 +263,7 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
         } ` +
         `the drained rung's ${drainedResolution() ?? 'unknown geometry'}. advance ` +
         `${result.advanceRatio.toFixed(3)}, ${result.rebufferCount} rebuffers, ` +
-        `${result.behindLive.medianS?.toFixed(2) ?? '—'}s behind live, ${result.segmentRequests} segment requests`,
+        `${behindLiveOf(result.behindLive.medianS)}, ${result.segmentRequests} segment requests`,
     );
 
     // The same ramp reading scenario L prints, because a player's figures are only readable beside
@@ -364,6 +364,16 @@ function abrOff(enabled: boolean): string | false {
 function drainedResolution(): string | null {
   const rung = cfg.abrLadder.find((entry) => entry.name === drainedRung);
   return rung === undefined ? null : `${rung.width}x${rung.height}`;
+}
+
+/**
+ * How far behind the live edge this viewer sat, or the plain fact that the arm took no such reading.
+ *
+ * A word rather than a dash for the empty case, because a dash in a printed line is a character an
+ * operator has to guess the meaning of, and half of them read it as a value of zero.
+ */
+function behindLiveOf(medianS: number | null): string {
+  return medianS === null ? 'no median behind-live reading' : `${medianS.toFixed(2)}s behind live`;
 }
 
 /** Whether this viewer ever decoded the rung whose batch was drained. Recorded, never asserted. */
