@@ -68,7 +68,7 @@ const BODY_EXCERPT_CHARS = 120;
  * expectation that can never be satisfied would otherwise spend the whole four minute ceiling on a
  * paid broadcast and then time out naming an empty list of rungs.
  */
-export const NOTHING_EXPECTED =
+const NOTHING_EXPECTED =
   'this run expects the master to offer no rungs at all, which is not a question about the master. A ' +
   'ladder always has at least one rung, so an empty expectation is a caller that could not work out ' +
   'which rungs should have survived, and every reading is judged against it.';
@@ -259,7 +259,7 @@ export async function readLadderMaster(host: Host, cfg: E2EConfig, owner: string
 const MASTER_POLL_MS = 3_000;
 
 /** Which ladder to read, which rungs it has to be offering, and how to learn their feed topics. */
-export interface MasterRungsWait {
+interface MasterRungsWait {
   /** The signer's address, as `discoverCatalogFeed` reads it off the catalog line. */
   owner: string;
   /** The ladder group, which is also the master feed's topic. */

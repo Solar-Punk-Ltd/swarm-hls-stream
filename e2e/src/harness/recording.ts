@@ -20,14 +20,14 @@ import { UPLOAD_RETRY_WINDOW_MS } from './crashArm.js';
 import { announcedRungs, segmentIndicesByStream } from './logwatch.js';
 
 /** One rung's progress through a recording. */
-export interface RungSegmentCount {
+interface RungSegmentCount {
   /** The rung as the ladder names it, or the stream id where the log announces no rungs at all. */
   rung: string;
   segments: number;
 }
 
 /** How far a recording has got, per rung and as the one number a target is set against. */
-export interface RecordingProgress {
+interface RecordingProgress {
   /** Every rung the broadcast announced, in announce order, including any that published nothing. */
   rungs: readonly RungSegmentCount[];
   /**
@@ -113,7 +113,7 @@ export const ORPHAN_REAP_MS = 60_000;
 export const DRAIN_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** What a run knows about the stage when it needs to size its finalize wait. */
-export interface VodWaitInputs {
+interface VodWaitInputs {
   /** What the running stage cuts at, or null where this run could not read the engine's config. */
   segmentSeconds: number | null;
   /** The interval the wait samples the log at, since it polls rather than watches. */
