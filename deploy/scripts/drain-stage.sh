@@ -773,7 +773,14 @@ do_arm() {
 
   written="$(publisher_entry write "$BATCH")"
   if [ "$(verdict_of "$written")" != "OK" ]; then
-    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(reason_of "$written")."
+    # ⛔⛔ The record goes back out with it. It is written BEFORE the rewrite so that a rung is never
+    # armed without one, which means a rewrite that fails leaves a record naming a rung the env file
+    # and the container both still point at their own batch. A later arm then refuses as already
+    # armed, and the restore an operator reaches for out of that refusal writes the original over
+    # itself, reports the rung's own batch as spent, dumps a log and redeploys, for a stage nothing
+    # ever changed.
+    forget_original
+    fail "the ${RUNG} entry could not be rewritten, ${ENV_FILE##*/} is as it was and the record of rung ${RUNG} has been cleared, so nothing is armed and the next arm is not refused: $(reason_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS now names $(short_id "$BATCH") for ${RUNG}, and the other rungs are untouched"
 

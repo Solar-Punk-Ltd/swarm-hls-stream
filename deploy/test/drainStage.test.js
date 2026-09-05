@@ -266,6 +266,11 @@ function recordPath(sandbox) {
   return join(sandbox.root, RECORD);
 }
 
+/** The record as text, with a record that is not there reading as one naming no rung at all. */
+function recordText(sandbox) {
+  return existsSync(recordPath(sandbox)) ? readFileSync(recordPath(sandbox), 'utf8') : '';
+}
+
 /** Whether the redeploy of the uploader, and nothing else, reached compose. */
 function redeployedServices(sandbox) {
   return sandbox
@@ -611,6 +616,17 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
     assert.match(run.stderr, /could not be rewritten/);
     assert.deepEqual(halfWrittenEnvFiles(sandbox), [], 'a half-written env file was left beside the real one');
     assert.deepEqual(redeployedServices(sandbox), [], 'a failed rewrite still redeployed the uploader');
+    // ⛔⛔ And the record has to go with it. The record is written BEFORE the rewrite, so a rewrite
+    // that fails leaves a rung the env file and the container both still name their own batch for,
+    // and a record saying that rung is armed. The next arm then refuses as already armed, and the
+    // restore out of that refusal writes the original over itself, calls it spent, dumps a log and
+    // redeploys, all for a stage nothing ever changed.
+    assert.doesNotMatch(
+      recordText(sandbox),
+      new RegExp(`^${RUNG}=`, 'm'),
+      'the record still names a rung that was never armed',
+    );
+    assert.match(run.stderr, /record/, 'the refusal did not say what became of the record it had just written');
   });
 });
 
