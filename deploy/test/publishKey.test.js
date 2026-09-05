@@ -237,13 +237,17 @@ describe('the publish URLs publish-key.sh hands an operator', () => {
  * check, because the check was not the defect: needing it was.
  */
 describe('publish-key.sh where an operator actually runs it', () => {
-  /** A remote target's layout: what deploy.sh ships, and nothing it does not. */
-  function targetTree() {
+  /**
+   * A remote target's layout: what deploy.sh ships, and nothing it does not.
+   *
+   * The copy is recursive because `deploy/scripts` is not flat. Python leaves a `__pycache__` there
+   * the moment anything imports one of its modules from the repository root, and the test below
+   * takes `scriptsDir` to prove this survives one.
+   */
+  function targetTree(scriptsDir = path.join(here, '..', 'scripts')) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-key-target-'));
-    fs.mkdirSync(path.join(root, 'deploy', 'scripts'), { recursive: true });
-    for (const name of fs.readdirSync(path.join(here, '..', 'scripts'))) {
-      fs.copyFileSync(path.join(here, '..', 'scripts', name), path.join(root, 'deploy', 'scripts', name));
-    }
+    fs.mkdirSync(path.join(root, 'deploy'), { recursive: true });
+    fs.cpSync(scriptsDir, path.join(root, 'deploy', 'scripts'), { recursive: true });
     fs.writeFileSync(path.join(root, '.env'), 'API_PORT=3000\n');
     return root;
   }
@@ -271,6 +275,44 @@ describe('publish-key.sh where an operator actually runs it', () => {
    * with no hint of why. Asserted against the parser's own list rather than a copy, so a flag added
    * there without being documented here fails.
    */
+  /**
+   * `targetTree` used to copy `deploy/scripts` one `readdirSync` entry at a time with
+   * `copyFileSync`, which throws on a directory. Importing any of the six python files under that
+   * directory from the repository root makes CPython write `deploy/scripts/__pycache__` next to
+   * them, and on 2026-09-05 that turned this file red with `ENOTSUP: operation not supported on
+   * socket`, an errno naming neither a directory nor python. It read as a defect in
+   * `publish-key.sh` until somebody found the cause.
+   *
+   * ⛔ Against a copy of the directory rather than against the directory itself. `node --test` runs
+   * these files concurrently and `helpers/sandbox.js` walks the real `deploy/scripts` for every
+   * sandbox it makes, so creating and removing a subdirectory in place aborted `profile.test.js`
+   * mid-walk with a SIGABRT out of libc++. Measured 2026-09-05, on the first version of this test.
+   */
+  it('builds a target tree when the scripts directory holds a subdirectory', () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-key-scripts-'));
+    let root;
+    try {
+      fs.cpSync(path.join(here, '..', 'scripts'), source, { recursive: true });
+      fs.mkdirSync(path.join(source, '__pycache__'), { recursive: true });
+      fs.writeFileSync(path.join(source, '__pycache__', 'read_sitting.cpython-311.pyc'), 'probe\n');
+
+      root = targetTree(source);
+      const result = spawnSync('bash', [path.join(root, 'deploy', 'scripts', 'publish-key.sh'), 'video/demo'], {
+        encoding: 'utf-8',
+        timeout: DERIVE_TIMEOUT_MS,
+        env: { ...process.env, PUBLISH_KEY_SECRET: SECRET },
+      });
+
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(result.stdout, new RegExp(GOLDEN[0].key));
+    } finally {
+      fs.rmSync(source, { recursive: true, force: true });
+      if (root) {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('documents every flag it silently consumes', () => {
     const usage = spawnSync('bash', [SCRIPT], { encoding: 'utf-8', timeout: DERIVE_TIMEOUT_MS });
     const lib = fs.readFileSync(LIB, 'utf-8');
