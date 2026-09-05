@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
     --authorise=*) AUTHORISE_BZZ="${1#*=}"; shift ;;
     --authorise) AUTHORISE_BZZ="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) print_comment_header "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

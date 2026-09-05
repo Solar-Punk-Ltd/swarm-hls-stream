@@ -339,6 +339,22 @@ parameter_overrides_text() {
   printf '%s' "$out"
 }
 
+# --- Usage text ---
+
+# Print a script's leading comment header as its `--help`, with the `#` prefix stripped.
+#
+# ⛔ This used to be a hardcoded line range, `sed -n '2,NNp'`, once per script, and a line number is
+# not a thing a comment stays at. It drifted twice. `bee-publishers.sh` ended its help with a stray
+# `set -u`, `spend-ledger.sh` with `set -u` and a blank line, and `drain-stage.sh` spent two days
+# cutting its own last paragraph in half so the help said no batch id is ever printed whole and
+# stopped before saying what it is printed as instead. The header's end is where the comments end,
+# so that is what is read now.
+#
+# @param $1 the script to read, which a caller passes as "${BASH_SOURCE[0]}"
+print_comment_header() {
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$1"
+}
+
 # --- Default ports ---
 readonly DEFAULT_API_PORT=3000
 readonly DEFAULT_BEE_UPLOADER_PORT=1633

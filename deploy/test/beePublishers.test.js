@@ -132,6 +132,15 @@ describe('the BEE_PUBLISHERS generator', () => {
     assert.equal(code, 0);
     assert.match(out, /BEE_PUBLISHERS/);
     assert.match(out, /--write/);
+    // ⛔ The LAST line of the header, not the first line of its last paragraph. Matching the first
+    // one passes while the range cuts that paragraph in half, which is how the help of the script
+    // beside this one printed half a sentence for two days.
+    assert.doesNotMatch(out, /set -u/, 'the help reaches past the header comment into the script');
+    assert.match(
+      out,
+      /selection and refusal paths get verified without a deployment/,
+      'the help stops short of the end of the header',
+    );
   });
 
   /**

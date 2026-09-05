@@ -59,7 +59,7 @@ while [ $# -gt 0 ]; do
     --write) WRITE=1; shift ;;
     --stamps-from=*) STAMPS_FROM="${1#*=}"; shift ;;
     --stamps-from) STAMPS_FROM="$2"; shift 2 ;;
-    -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) print_comment_header "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

@@ -63,6 +63,11 @@ describe('the spend ledger writer', () => {
 
     assert.equal(code, 0);
     assert.match(out, /--authorise/);
+    // ⛔ The LAST line of the header, not the first line of its last paragraph. Matching the first
+    // one passes while the range cuts that paragraph in half, which is how the help of the script
+    // beside this one printed half a sentence for two days.
+    assert.doesNotMatch(out, /set -u/, 'the help reaches past the header comment into the script');
+    assert.match(out, /--authorise=12\.5 --dry-run/, 'the help stops short of the end of the header');
   });
 
   /**

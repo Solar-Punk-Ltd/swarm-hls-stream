@@ -1694,8 +1694,10 @@ describe('drain-stage argument handling', () => {
     assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
     assert.match(run.stdout, /print-buy/);
     assert.match(run.stdout, /e2e-batch-drain-plan/);
-    // The range is a line number, the way `bee-publishers.sh` writes it, so a comment added past the
-    // end of the header silently truncates the help and one added inside it spills code into it.
+    // The help is every leading comment line, found by reading them rather than by a line number.
+    // It was a line number, and a comment added past the end of the header silently truncated it
+    // while one added inside it spilled code into it. Both ends are still asserted, because a
+    // helper that read one line too many or stopped one short would look the same from here.
     //
     // ⛔ The LAST line of the header, not the first line of its last paragraph. Matching the first
     // one passes while the range cuts that paragraph in half, which is how two lines added to the
