@@ -1219,4 +1219,45 @@ describe('StreamCatalog master rewrite retry', () => {
       'a failing writer is asked once per backoff period, not once per delivery',
     );
   });
+
+  it('keeps the newer in-flight mark when a superseded rewrite finishes first', async () => {
+    const { master, deliver } = await announcedLadder();
+    const attemptsBeforeTheDeaths = master.attempts;
+    const releases: Array<() => void> = [];
+    master.hold = () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+
+    // The rewrite for the first death is held open. While it is, the dead rung comes back and a
+    // different rung stops, so a rewrite for a second shape queues behind the first. A second rung
+    // merely dying would not do: past one stopped rung the rule drops none, which is the shape the
+    // announces already advertised.
+    deliver(HEALTHY, ROUNDS_TO_KILL_A_RUNG);
+    await waitFor(() => master.attempts === attemptsBeforeTheDeaths + 1, SETTLE_CEILING_MS);
+    deliver([DYING]);
+    const WITHOUT_720P = [HEALTHY[0], HEALTHY[1], DYING];
+    deliver(WITHOUT_720P, ROUNDS_TO_KILL_A_RUNG);
+
+    releases[0]();
+    await waitFor(() => master.attempts === attemptsBeforeTheDeaths + 2, SETTLE_CEILING_MS);
+
+    // With the second rewrite still open, a delivery in its shape must find it marked in flight.
+    deliver(WITHOUT_720P);
+    master.hold = undefined;
+    releases[1]();
+
+    await waitFor(() => master.accepted.length >= attemptsBeforeTheDeaths + 2, SETTLE_CEILING_MS);
+    await waitAndConfirmNothingHappened(() => master.attempts === attemptsBeforeTheDeaths + 2, 150);
+    assert.deepEqual(
+      master.accepted.slice(-2),
+      [HEALTHY, WITHOUT_720P],
+      'the two transitions were supposed to land as two writes, in order',
+    );
+    assert.equal(
+      master.attempts,
+      attemptsBeforeTheDeaths + 2,
+      'the earlier rewrite finishing cleared the mark of the one still in flight, so a delivery queued a duplicate',
+    );
+  });
 });

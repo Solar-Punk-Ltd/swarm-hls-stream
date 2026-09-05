@@ -213,7 +213,12 @@ export class StreamCatalog {
       this.holdOffRewriting(group);
       this.logger.error(`[StreamCatalog] Could not rewrite the master for ${group} after its rungs changed:`, error);
     } finally {
-      this.rewritingShape.delete(group);
+      // Only this rewrite's own mark. A transition inside the write window starts a rewrite for the
+      // newer shape that overwrites the mark, and clearing that one here let the next delivery queue
+      // the newer shape a second time.
+      if (this.rewritingShape.get(group) === shape) {
+        this.rewritingShape.delete(group);
+      }
     }
   }
 
