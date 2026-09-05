@@ -10,9 +10,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 /**
  * That every single-suite e2e script can actually be run the way an operator runs it.
  *
- * ⛔⛔ `bench-on-host.sh` runs `pnpm ${SCRIPT}` from the repo ROOT, not from `e2e`. Its `case` on the
- * script name only decides whether the preflight prelude is prepended for a `browser:*` driver, and
- * an `e2e:*` script is passed through untouched. So a suite script the e2e package declares and the
+ * ⛔⛔ `bench-on-host.sh` runs `pnpm ${SCRIPT}` from the repo ROOT, not from `e2e`. Its reading of the
+ * manifests at launch only decides whether the preflight prelude is prepended, and a script whose
+ * definition already runs the gates first, every `e2e:*` script among them, is passed through
+ * untouched. So a suite script the e2e package declares and the
  * root cannot reach fails on the host with an empty stdout and a non-zero exit that says nothing
  * about what is wrong, and under `pnpm --silent` it prints nothing at all.
  *
