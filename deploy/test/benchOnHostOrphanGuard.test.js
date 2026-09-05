@@ -61,17 +61,38 @@ function writeExecutable(path, body) {
 }
 
 /**
- * A `docker` that answers `ps` with one running harness container and hands every other call to the
- * ordinary stub, which journals it.
+ * A `docker` that answers `ps` with one harness container in `state` and hands every other call to
+ * the ordinary stub, which journals it.
  *
  * The sandbox's own stub reads compose label filters and nothing else, so the guard's `--filter
  * name=` read comes back empty there. That is the free target every other test in this file sees,
  * and it is why a busy one has to be arranged.
+ *
+ * ⛔ A container that is not running is reported only when the read passes `-a`, which is what docker
+ * itself does. A stub that answered either read the same way would report a guard blind to an exited
+ * container as if it could see one.
  */
-function dockerReportsRunning(sandbox, name) {
+function dockerReportsHarness(sandbox, state) {
   writeExecutable(
     join(sandbox.binDir, 'docker'),
-    `#!/bin/sh\nif [ "$1" = "ps" ]; then echo ${name}; exit 0; fi\nexec node -- "$0.cjs" "$@"\n`,
+    `#!/bin/sh
+if [ "$1" = "ps" ]; then
+  case "${state}:$*" in
+    running:*) echo ${state} ;;
+    *" -a "*) echo ${state} ;;
+  esac
+  exit 0
+fi
+exec node -- "$0.cjs" "$@"
+`,
+  );
+}
+
+/** An `ssh` that cannot reach the target at all, which is what a read of a dead host looks like. */
+function sshCannotReachTarget(sandbox) {
+  writeExecutable(
+    join(sandbox.binDir, 'ssh'),
+    '#!/bin/sh\necho "ssh: connect to host manager-host port 22: Operation timed out" >&2\nexit 255\n',
   );
 }
 
@@ -260,7 +281,7 @@ describe('bench-on-host refuses a target that is already running a harness conta
   it('stops before anything is copied to the host', async () => {
     const sandbox = makeSandbox();
     writeFileSync(join(sandbox.root, SPEND_LEDGER), OWNER_LEDGER);
-    dockerReportsRunning(sandbox, DEFAULT_CONTAINER);
+    dockerReportsHarness(sandbox, 'running');
 
     const run = await runScript(sandbox, 'bench-on-host.sh', ['--script', 'bench:latency']);
 
@@ -278,7 +299,7 @@ describe('bench-on-host refuses a target that is already running a harness conta
    */
   it('refuses --no-setup too, and names the container and the command that stops it', async () => {
     const sandbox = benchSandbox();
-    dockerReportsRunning(sandbox, DEFAULT_CONTAINER);
+    dockerReportsHarness(sandbox, 'running');
 
     const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup']);
 
@@ -300,7 +321,53 @@ describe('bench-on-host refuses a target that is already running a harness conta
     const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup', '--portSlot', '1']);
 
     assert.equal(run.exitCode, 0, `a free target was refused: ${run.stdout}${run.stderr}`);
-    assert.match(sandbox.sshCommands()[0], /docker ps --filter 'name=\^latbench-harness-slot1\$'/);
+    assert.match(sandbox.sshCommands()[0], /docker ps -a --filter 'name=\^latbench-harness-slot1\$'/);
+  });
+
+  /**
+   * ⛔⛔ A container that has exited still holds its name, and docker refuses to create a second one
+   * under it. A guard reading only the running list called that target free, the rsync then replaced
+   * the tree with `--delete`, the image was rebuilt, and the launch died inside `docker run` on a
+   * name clash after all the setup had been paid for.
+   *
+   * Not removed here. Removing a container this script did not create, on a name an operator may be
+   * keeping for its logs, is a destructive act taken on a guess, so the refusal hands over the exact
+   * command instead.
+   */
+  it('finds a container of ours that has exited, and names the removal rather than doing it', async () => {
+    const sandbox = makeSandbox();
+    writeFileSync(join(sandbox.root, SPEND_LEDGER), OWNER_LEDGER);
+    dockerReportsHarness(sandbox, 'exited');
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--script', 'bench:latency']);
+
+    assert.notEqual(run.exitCode, 0, 'a launch went out onto a name docker would have refused');
+    assert.equal(existsSync(join(sandbox.remoteHome, REMOTE_BENCH_DIR)), false, 'the rsync ran before the refusal');
+    assert.match(run.stderr, new RegExp(`${DEFAULT_CONTAINER} is exited on manager-host`));
+    assert.match(run.stderr, new RegExp(`ssh manager-host 'docker rm ${DEFAULT_CONTAINER}'`));
+    assert.deepEqual(
+      sandbox.remoteCalls().filter((call) => call.startsWith('rm ')),
+      [],
+      'the guard removed a container instead of naming it',
+    );
+  });
+
+  /**
+   * ⛔ A read that failed answered nothing, and nothing is not the same as free. The refusal has to
+   * say which read it was, because ssh's own message says only that a host did not answer and leaves
+   * the operator to work out that a guard was what asked.
+   */
+  it('refuses a target it could not read, and says the read is what failed', async () => {
+    const sandbox = makeSandbox();
+    writeFileSync(join(sandbox.root, SPEND_LEDGER), OWNER_LEDGER);
+    sshCannotReachTarget(sandbox);
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--script', 'bench:latency']);
+
+    assert.notEqual(run.exitCode, 0, 'a target that could not be read was treated as free');
+    assert.equal(existsSync(join(sandbox.remoteHome, REMOTE_BENCH_DIR)), false, 'the rsync ran before the refusal');
+    assert.match(run.stderr, new RegExp(`could not be read for ${DEFAULT_CONTAINER}`));
+    assert.match(run.stderr, /cannot be called free/);
   });
 });
 

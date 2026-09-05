@@ -270,15 +270,39 @@ fi
 # container is running from. There is no flag to override this, because an override is a warning.
 #
 # The filter is anchored on the whole name, since `--filter name=` is a substring match by default and
-# slot 7 would otherwise see slot 70's container as its own. An unreachable host stops the run here
-# with ssh's own message, which is the honest answer: a target that cannot be read cannot be called
-# free.
-RUNNING_HARNESS="$(ssh "${SSH_OPTS[@]}" "${TARGET}" "docker ps --filter 'name=^${HARNESS_CONTAINER}$' --format '{{.Names}}'")"
-if [ -n "${RUNNING_HARNESS}" ]; then
-  echo "bench-on-host: ${HARNESS_CONTAINER} is already running on ${TARGET}, and two harness runs on one stage read each other's broadcasts." >&2
-  echo "bench-on-host: stop it with: ssh ${TARGET} 'docker stop ${HARNESS_CONTAINER}'" >&2
+# slot 7 would otherwise see slot 70's container as its own.
+#
+# ⛔ `-a`, because a container that has exited still holds its name and docker refuses to create a
+# second one under it. A read of the running list alone called such a target free, and the launch
+# then died inside `docker run` on a name clash with the rsync and the image build already paid for.
+#
+# ⛔ A read that failed refuses, and says so in its own words. `set -e` already ended the run on a
+# non-zero ssh, but with ssh's message alone, which says a host did not answer and never says a guard
+# was what asked. Stated as a refusal here so that a later edit cannot turn a failed read back into a
+# free target by accident: nothing is not the same answer as no container.
+HARNESS_ON_TARGET=""
+if ! HARNESS_ON_TARGET="$(ssh "${SSH_OPTS[@]}" "${TARGET}" \
+  "docker ps -a --filter 'name=^${HARNESS_CONTAINER}$' --format '{{.State}}'")"; then
+  echo "bench-on-host: ${TARGET} could not be read for ${HARNESS_CONTAINER}, so either the ssh or the docker ps failed and this target cannot be called free." >&2
+  echo "bench-on-host: read it with: ssh ${TARGET} 'docker ps -a --filter name=${HARNESS_CONTAINER}'" >&2
   exit 2
 fi
+
+case "${HARNESS_ON_TARGET}" in
+  '') ;;
+  running | restarting | paused)
+    echo "bench-on-host: ${HARNESS_CONTAINER} is already running on ${TARGET}, and two harness runs on one stage read each other's broadcasts." >&2
+    echo "bench-on-host: stop it with: ssh ${TARGET} 'docker stop ${HARNESS_CONTAINER}'" >&2
+    exit 2
+    ;;
+  # Not removed here. It may be a container an operator is keeping for its logs, and removing one
+  # this launch did not create, on a guess, is destructive. The command is handed over instead.
+  *)
+    echo "bench-on-host: ${HARNESS_CONTAINER} is ${HARNESS_ON_TARGET} on ${TARGET}, and docker refuses a name a container still holds whatever state it is in." >&2
+    echo "bench-on-host: remove it with: ssh ${TARGET} 'docker rm ${HARNESS_CONTAINER}'" >&2
+    exit 2
+    ;;
+esac
 
 # Runs as the invoking user so the installed tree and the written reports do not come back owned by
 # root, and joins the host network so the publisher and the gateway are both reached over loopback.
