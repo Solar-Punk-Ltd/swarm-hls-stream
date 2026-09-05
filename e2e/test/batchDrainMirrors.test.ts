@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -28,14 +27,21 @@ import { rungCountersOf } from '../src/harness/uploaderMetrics.js';
  * saying the service never noticed the rung it had just watched go quiet. A counter renamed leaves
  * `droppedSegmentsRefusal` reading an empty family, which its own refusal correctly reports as a
  * scrape that did not answer. Both are red for the wrong reason, after a paid broadcast.
+ *
+ * ⛔⛔ Every case here loads what the uploader exports and none of them reads its source text. A
+ * regex over a file says the characters are somewhere in it, which a commented-out line satisfies
+ * just as well as a live declaration: with the real constant changed to "unhealthy" and the old line
+ * left above it as a comment, the two health cases here passed. What the uploader answers is the
+ * only thing the drain suites are held to, so it is the only thing worth reading.
  */
 
-function sourceOf(...segments: string[]): string {
-  return readFileSync(join(ROOT_DIR, 'packages', 'stream-uploader', 'src', ...segments), 'utf8');
-}
-
-/** The one thing loaded out of the uploader package, which is a public export of it. */
+/** The two things loaded out of the uploader package, both public exports of it. */
 type RenderMetrics = (snapshot: unknown) => string;
+
+interface HealthVocabulary {
+  HEALTH_DEGRADED?: string;
+  HEALTH_REASON_SEGMENT_UPLOAD_FAILURE?: string;
+}
 
 /**
  * The uploader's own Prometheus renderer, loaded at run time rather than imported.
@@ -48,6 +54,12 @@ async function loadRenderer(): Promise<RenderMetrics> {
   const path = join(ROOT_DIR, 'packages', 'stream-uploader', 'src', 'utils', 'metricsFormat.ts');
   const loaded = (await import(pathToFileURL(path).href)) as { renderPrometheusMetrics: RenderMetrics };
   return loaded.renderPrometheusMetrics;
+}
+
+/** The uploader's own health words, loaded the same way and for the same reasons. */
+async function loadHealthVocabulary(): Promise<HealthVocabulary> {
+  const path = join(ROOT_DIR, 'packages', 'stream-uploader', 'src', 'types.ts');
+  return (await import(pathToFileURL(path).href)) as HealthVocabulary;
 }
 
 /**
@@ -81,20 +93,26 @@ function renderExposition(render: RenderMetrics): string {
 }
 
 describe('the batch-drain suites and the uploader agree about what they read', () => {
-  it("uses the /health reason the uploader's own types declare", () => {
-    assert.match(
-      sourceOf('types.ts'),
-      new RegExp(`HEALTH_REASON_SEGMENT_UPLOAD_FAILURE\\s*=\\s*'${HEALTH_REASON_SEGMENT_UPLOAD_FAILURE}'`),
-      `the uploader no longer declares the reason '${HEALTH_REASON_SEGMENT_UPLOAD_FAILURE}', so the drain ` +
-        'scenario would assert on a word nothing writes and report a service that never noticed the drain',
+  it("uses the /health reason the uploader's own types declare", async () => {
+    const declared = (await loadHealthVocabulary()).HEALTH_REASON_SEGMENT_UPLOAD_FAILURE;
+
+    assert.equal(
+      declared,
+      HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
+      `the uploader declares ${declared ?? 'no HEALTH_REASON_SEGMENT_UPLOAD_FAILURE at all'} where this ` +
+        `harness copies '${HEALTH_REASON_SEGMENT_UPLOAD_FAILURE}', so the drain scenario would assert on ` +
+        'a word nothing writes and report a service that never noticed the drain',
     );
   });
 
-  it('uses the degraded status the uploader answers with', () => {
-    assert.match(
-      sourceOf('types.ts'),
-      new RegExp(`HEALTH_DEGRADED\\s*=\\s*'${HEALTH_STATUS_DEGRADED}'`),
-      `the uploader no longer answers '${HEALTH_STATUS_DEGRADED}' for a degraded service`,
+  it('uses the degraded status the uploader answers with', async () => {
+    const declared = (await loadHealthVocabulary()).HEALTH_DEGRADED;
+
+    assert.equal(
+      declared,
+      HEALTH_STATUS_DEGRADED,
+      `the uploader answers ${declared ?? 'no HEALTH_DEGRADED at all'} for a degraded service where this ` +
+        `harness copies '${HEALTH_STATUS_DEGRADED}'`,
     );
   });
 
