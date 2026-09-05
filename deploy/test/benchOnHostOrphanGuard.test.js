@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import { makeSandbox, removeSandboxes, runScript } from './helpers/sandbox.js';
 
 after(removeSandboxes);
-
-const SCRIPTS = join(resolve(dirname(fileURLToPath(import.meta.url)), '../..'), 'deploy/scripts');
 
 /**
  * That a bench launched on the deployment host leaves nothing running behind it, and that a second
@@ -109,6 +106,15 @@ function sshOnStop(sandbox, body) {
     join(sandbox.binDir, 'ssh'),
     `#!/bin/sh\ncase "$*" in *'docker stop'*) ${body} ;; esac\nexec ${passthrough} "$@"\n`,
   );
+}
+
+/**
+ * An `rsync` that reports success and copies nothing, which is what lets the setup path run in a
+ * sandbox at all. The stand-in remote host is a directory inside the checkout the real sync copies,
+ * and a copy cannot recurse into itself.
+ */
+function rsyncCopiesNothing(sandbox) {
+  writeExecutable(join(sandbox.binDir, 'rsync'), '#!/bin/sh\nexit 0\n');
 }
 
 /** An `ssh` that cannot reach the target at all, which is what a read of a dead host looks like. */
@@ -224,23 +230,28 @@ describe('bench-on-host names its container after the profile and the slot', () 
    * ⛔ Both phases or neither. The install and the run are two containers in one launch, and a name
    * that covered only the second would leave an interrupt during the install with nothing to stop.
    *
-   * Read from the file rather than watched going out, because the sandbox cannot drive the setup
-   * path at all: its stand-in remote host lives inside the checkout the rsync would copy, and the
-   * copy refuses to recurse into itself. So this holds the two phases to the ONE `docker run` string
-   * the script builds, which is what makes the name the same for both by construction.
+   * ⭐ Read off the docker command the far side's stub was handed rather than off this script's own
+   * source, because the source only ever showed that both phases spelled the same variable, and a
+   * variable can be reassigned between them. What stubbing the rsync buys is the setup path itself:
+   * the stand-in remote host lives inside the checkout the real sync would copy, and a copy cannot
+   * recurse into itself, which is why no case here had ever driven the install at all.
    */
-  it('builds one docker run string, so the install and the run cannot differ', () => {
-    const script = readFileSync(join(SCRIPTS, 'bench-on-host.sh'), 'utf8');
+  it('installs under the same name it runs under, so an interrupt during setup has something to stop', async () => {
+    const sandbox = benchSandbox();
+    rsyncCopiesNothing(sandbox);
 
-    const built = script.match(/^DOCKER_RUN="docker run [^"]*/m);
-    assert.ok(built, 'bench-on-host.sh no longer builds a DOCKER_RUN string');
-    assert.match(built[0], /--name \$\{HARNESS_CONTAINER\}/);
-    assert.equal((script.match(/docker run /g) ?? []).length, 1, 'a second docker run could carry another name');
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--script', 'bench:latency']);
 
-    const installPhase = script.match(/^.*pnpm install --frozen-lockfile.*$/m);
-    const runPhase = script.match(/^.*\$\{RUN_ENV\} \$\{IMAGE\} \$\{CONTAINER_CMD\}.*$/m);
-    assert.match(installPhase[0], /\$\{DOCKER_RUN\}/, 'the install stopped using the named container');
-    assert.match(runPhase[0], /\$\{DOCKER_RUN\}/, 'the run stopped using the named container');
+    assert.equal(run.exitCode, 0, `bench-on-host.sh failed: ${run.stdout}${run.stderr}`);
+    const launches = sandbox.remoteCalls().filter((call) => call.startsWith('run '));
+    assert.equal(launches.length, 2, `expected the install and the driver, got: ${launches.join(' | ')}`);
+
+    const install = launches.find((call) => call.endsWith('pnpm install --frozen-lockfile'));
+    assert.ok(install, `no install phase reached docker: ${launches.join(' | ')}`);
+    assert.deepEqual(
+      launches.map((call) => call.match(/--name (\S+)/)?.[1]),
+      [DEFAULT_CONTAINER, DEFAULT_CONTAINER],
+    );
   });
 
   it('puts the slot in the name, so two slots on one host do not collide', async () => {
