@@ -286,6 +286,58 @@ builtins.open = guarded_open
   return directory;
 }
 
+/**
+ * A directory for `PYTHONPATH` whose `sitecustomize.py` records the mode of the rewrite's temporary
+ * copy at the moment content is first written into it, and the journal it records into.
+ *
+ * The mode has to be read at the write and not afterwards, because the question is whether the
+ * secrets ever sat at a mode the env file does not have, and a copy that is chmod-ed once the write
+ * is done ends up looking correct either way.
+ */
+function watchTemporaryMode(sandbox) {
+  const directory = join(sandbox.root, 'python-mode-path');
+  const journal = join(sandbox.root, 'temporary-modes');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(journal, '');
+  writeFileSync(
+    join(directory, 'sitecustomize.py'),
+    `import builtins, os
+
+JOURNAL = ${JSON.stringify(journal)}
+real_open = builtins.open
+
+
+class Watched:
+    def __init__(self, handle, name):
+        self._handle = handle
+        self._name = name
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *info):
+        return self._handle.__exit__(*info)
+
+    def write(self, text):
+        with real_open(JOURNAL, "a") as journal:
+            journal.write(oct(os.stat(self._name).st_mode & 0o777) + "\\n")
+        return self._handle.write(text)
+
+
+def watched_open(file, mode="r", *args, **kwargs):
+    handle = real_open(file, mode, *args, **kwargs)
+    if isinstance(file, str) and "w" in mode and ".drain-stage-" in file:
+        return Watched(handle, file)
+    return handle
+
+
+builtins.open = watched_open
+`,
+  );
+  return { directory, journal };
+}
+
 function recordPath(sandbox) {
   return join(sandbox.root, RECORD);
 }
@@ -651,6 +703,27 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
       'the record still names a rung that was never armed',
     );
     assert.match(run.stderr, /record/, 'the refusal did not say what became of the record it had just written');
+  });
+
+  /**
+   * ⛔ The profile env holds a stamp and a stream key, and the rewrite is written beside it and then
+   * renamed over it. That copy was created under whatever umask the operator happened to have and
+   * given the original file's mode only once the content was already in it, so on a shared host both
+   * secrets were readable by anyone for the length of a write.
+   */
+  it('gives the rewrite’s temporary copy the original’s mode before any content, not after', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    chmodSync(join(sandbox.root, `.env.${PROFILE}`), 0o600);
+    const watched = watchTemporaryMode(sandbox);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], {
+      HOME: sandbox.root,
+      PYTHONPATH: watched.directory,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    const modes = readFileSync(watched.journal, 'utf8').trim().split('\n').filter(Boolean);
+    assert.deepEqual(modes, ['0o600'], 'the temporary copy held the stamp and the stream key at a wider mode');
   });
 });
 

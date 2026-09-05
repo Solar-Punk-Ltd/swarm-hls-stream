@@ -551,12 +551,16 @@ lines[index] = KEY + " ".join(rebuilt)
 # could not be rewritten, which reads as the file being as it was. os.replace is atomic inside one
 # directory, so the file an operator reads is either the old one or the new one.
 temporary = path + ".drain-stage-" + str(os.getpid()) + ".new"
+
+# The mode is put on the copy before a byte of content goes into it, and not after. A rename replaces
+# the file permissions along with the contents, so the copy has to carry the env file mode, and this
+# file holds a stamp and a stream key. Created under the umask and chmod-ed once the write had
+# finished, both of those were readable by anyone on the host for the length of that write.
+mode = os.stat(path).st_mode & 0o7777
 try:
     with open(temporary, "w") as handle:
+        os.chmod(temporary, mode)
         handle.write("\n".join(lines) + "\n")
-    # A rename replaces the file's permissions along with its contents, and this one holds a stamp
-    # and a stream key.
-    os.chmod(temporary, os.stat(path).st_mode & 0o7777)
     os.replace(temporary, path)
 except BaseException:
     if os.path.exists(temporary):
