@@ -149,8 +149,10 @@ describe('a drain script declares the arming to the suite and not only to the ga
 
   it('leaves no other script declaring an arming, so nothing else can reach the drain suites', () => {
     const { e2e, root } = manifests();
+    // A `//` key is a note beside a script and runs nothing, so one that names the declaration to
+    // explain a skip is not a script that arms.
     const others = [...Object.entries(e2e), ...Object.entries(root)].filter(
-      ([name, script]) => !name.includes('batch-drain') && script.includes(DECLARATION),
+      ([name, script]) => !name.startsWith('//') && !name.includes('batch-drain') && script.includes(DECLARATION),
     );
 
     assert.deepEqual(others, [], 'a script that arms without being a drain sitting would run the suites on any stage');
