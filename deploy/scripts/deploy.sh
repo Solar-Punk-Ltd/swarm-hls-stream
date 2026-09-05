@@ -348,6 +348,15 @@ sync_to_remote() {
     rsync -az \
       "$ROOT_DIR/packages/stream-uploader/package.json" \
       "$target:$REMOTE_BASE/packages/stream-uploader/"
+
+    # The shared manifest, for the uploader's install rather than for its sources. pnpm resolves the
+    # `workspace:` link in the uploader manifest against the packages it can see, so a build context
+    # without this file dies with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. A client deploy sends the whole
+    # package below, and this one small file going twice is cheaper than working out which half of a
+    # combined deploy ran first.
+    rsync -az \
+      "$ROOT_DIR/packages/shared/package.json" \
+      "$target:$REMOTE_BASE/packages/shared/"
   fi
 
   # The client image is built INSIDE the container (multi-stage Dockerfile.client),
@@ -362,13 +371,21 @@ sync_to_remote() {
     # bundle, so `Dockerfile.client` COPYs the package twice: its manifest for the install layer, and
     # its sources for the build. Neither is reachable unless it is synced, and the failure is a build
     # that never starts — `failed to compute cache key: "/packages/shared": not found` — rather than
-    # anything the deploy itself reports. The uploader needs no equivalent: `vendor-shared.mjs`
-    # compiles the same package into its `dist/node_modules`, which rides along in the dist sync.
+    # anything the deploy itself reports. The uploader block above sends the manifest for its own
+    # reason and never these sources: the shared code it runs is the copy `vendor-shared.mjs`
+    # compiled into `dist/node_modules`, which rides along in the dist sync.
     rsync -az --delete \
       --exclude 'node_modules' --exclude 'dist' --exclude '.tsbuildinfo' \
       "$ROOT_DIR/packages/shared/" \
       "$target:$REMOTE_BASE/packages/shared/"
+  fi
 
+  # Both images install with `pnpm --frozen-lockfile` off these three, so they go up for either
+  # service and are hoisted out of the two blocks above rather than sent twice by a deploy of both.
+  # The lockfile is the tree the dependency review was run against and the root manifest carries the
+  # `pnpm.overrides` that pin it, so a build context missing them re-resolves and the reviewed
+  # versions never reach the deployment host.
+  if [ "$need_uploader" = "true" ] || [ "$need_client" = "true" ]; then
     rsync -az \
       "$ROOT_DIR/package.json" \
       "$ROOT_DIR/pnpm-lock.yaml" \

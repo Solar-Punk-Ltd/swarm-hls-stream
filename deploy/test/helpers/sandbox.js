@@ -121,14 +121,17 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   const remoteJournal = join(root, 'docker-argv-remote');
   const sshJournal = join(root, 'ssh-argv');
   const gitJournal = join(root, 'git-argv');
+  const pnpmJournal = join(root, 'pnpm-argv');
   writeFileSync(localJournal, '');
   writeFileSync(remoteJournal, '');
   writeFileSync(sshJournal, '');
   writeFileSync(gitJournal, '');
+  writeFileSync(pnpmJournal, '');
   writeFileSync(envFileJournal(localJournal), '');
   writeFileSync(envFileJournal(remoteJournal), '');
 
   writeNodeStub(join(binDir, 'git'), gitStub(gitJournal));
+  writeNodeStub(join(binDir, 'pnpm'), pnpmStub(pnpmJournal));
   writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
   writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, sshJournal));
   writeNodeStub(join(binDir, 'rsync'), rsyncStub(remoteHome));
@@ -153,6 +156,8 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
     sshCommands: () => readLines(sshJournal),
     /** Every `git` invocation, in order, one argv per entry. */
     gitCalls: () => readLines(gitJournal),
+    /** Every `pnpm` invocation, in order, one argv per entry. */
+    pnpmCalls: () => readLines(pnpmJournal),
     /** The contents of every `--env-file` compose was pointed at on this host, concatenated. */
     envFiles: () => readFileSync(envFileJournal(localJournal), 'utf8'),
     /** The same, for the compose call the script ran through `ssh` on the far side. */
@@ -282,6 +287,20 @@ if (rest[0] === 'status') {
 }
 
 process.exit(0);
+`;
+}
+
+/**
+ * Records what a script asked pnpm to do, and does none of it.
+ *
+ * `deploy.sh` runs `pnpm install && pnpm build` in the repository root before every remote uploader
+ * deploy. A sandbox root is an `mkdtemp` holding a handful of seeded files rather than a checkout, so
+ * a real pnpm there resolves a workspace that does not exist, reaches the network for it, and takes
+ * minutes to say so.
+ */
+function pnpmStub(journal) {
+  return `const fs = require('fs');
+fs.appendFileSync(${JSON.stringify(journal)}, process.argv.slice(2).join(' ') + '\\n');
 `;
 }
 

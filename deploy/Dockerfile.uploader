@@ -1,16 +1,51 @@
-FROM node:22-alpine
+# Multi-stage build for the stream uploader.
+# Build context is the monorepo root (see `context: ..` in docker-compose.yml). The root
+# `.dockerignore` excludes every `dist` and then un-ignores this package's, which is the prebuilt
+# JavaScript the runtime stage copies in.
 
+# --- Install stage ------------------------------------------------------
+FROM node:22-alpine AS install
 WORKDIR /app
 
-COPY packages/stream-uploader/package.json .
-COPY packages/stream-uploader/dist/ ./dist/
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
-# `npm pkg delete devDependencies` first, because npm parses the whole manifest before it honours
-# `--omit=dev` and it does not understand pnpm's `workspace:` protocol outside a workspace. The
-# uploader dev-depends on @swarm-hls-stream/shared, so without this line the build dies here with
-# EUNSUPPORTEDPROTOCOL. Deleting the block is semantically free: --omit=dev was going to skip every
-# entry in it anyway, and the one that ships is already compiled into dist/node_modules by
-# scripts/vendor-shared.mjs.
-RUN npm pkg delete devDependencies && npm install --omit=dev
+# The workspace lockfile and the ROOT manifest, not the uploader's alone. `pnpm.overrides` in the
+# root manifest is where a provenance-checked pin lives, and the lockfile is the tree those checks
+# were run against. Installing from one manifest with no lockfile re-resolved every transitive range
+# at build time, so the image shipped whatever the registry offered that day: measured 2026-09-05,
+# the override pinned axios at ^0.33.0, the workspace resolved 0.33.0 and the image ran 0.30.3.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/stream-uploader/package.json packages/stream-uploader/
+# ⛔ Not optional, even though `--prod` below drops the devDependency that names it. pnpm resolves a
+# `workspace:` link against the packages it can see before a filter narrows anything, so without this
+# the install dies with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. Its sources are never needed: the copy that
+# ships is the one `vendor-shared.mjs` compiled into `dist/node_modules`.
+COPY packages/shared/package.json packages/shared/
+
+# Two passes, because only one of them refuses.
+#
+# `install --frozen-lockfile` is the gate. It exits ERR_PNPM_OUTDATED_LOCKFILE when a manifest has
+# drifted from the lockfile, which is what keeps the audited tree the tree that ships. `deploy` does
+# not honour that flag on pnpm 9.12.0: measured against a manifest whose zod range had been moved off
+# the lockfile's, it re-resolved to the drifted version and exited 0, while `install` with the same
+# flag refused. So a deploy alone would reintroduce exactly the defect this file was rewritten for.
+#
+# `deploy` is then what makes the runtime stage one COPY. It writes a self-contained tree at a single
+# path, with no workspace symlinks to keep in step and no pnpm store to carry into the image.
+RUN pnpm install --frozen-lockfile --prod --filter @swarm-hls-stream/stream-uploader \
+ && pnpm --filter @swarm-hls-stream/stream-uploader --prod deploy /runtime
+
+# --- Runtime stage ------------------------------------------------------
+FROM node:22-alpine
+WORKDIR /app
+
+# The manifest as well as the tree. It carries `"type": "module"`, and without it Node decides how to
+# load each file by sniffing its syntax, which is a default rather than a contract.
+COPY --from=install /runtime/ ./
+
+# Last, so editing a source file does not invalidate the install layer. The vendored
+# `@swarm-hls-stream/shared` under `dist/node_modules` imports `@ethersphere/bee-js` and
+# `cafe-utility`, which resolve by walking up into the `node_modules` this stage just copied.
+COPY packages/stream-uploader/dist/ ./dist/
 
 CMD ["node", "dist/index.js"]

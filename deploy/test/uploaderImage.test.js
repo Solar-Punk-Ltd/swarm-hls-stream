@@ -1,46 +1,119 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { describe, it } from 'node:test';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import { ALL_REMOTE, makeSandbox, removeSandboxes, runScriptOk } from './helpers/sandbox.js';
+
+after(removeSandboxes);
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const dockerfile = readFileSync(resolve(ROOT, 'deploy/Dockerfile.uploader'), 'utf8');
 const manifest = JSON.parse(readFileSync(resolve(ROOT, 'packages/stream-uploader/package.json'), 'utf8'));
+const rootManifest = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
+
+/** Where `deploy.sh` puts a deployment on a remote host, as `_lib.sh` hardcodes it. */
+const REMOTE_BASE = 'swarm-hls-stream';
 
 /**
- * The production uploader image against the manifest it installs from.
+ * Every path the image COPYs out of the build context, which is the monorepo root.
+ *
+ * A `--from=` copy is between stages and comes from an earlier layer rather than from the context,
+ * so it is not something a deploy has to ship. The last word of a COPY is the destination.
+ */
+function contextPaths(text) {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('COPY ') && !line.includes('--from='))
+    .flatMap((line) => line.split(/\s+/).slice(1, -1));
+}
+
+/**
+ * The production uploader image against the tree it installs from.
  *
  * Nothing else checks this pair. CI never builds an image, and the uploader's own tests run under
  * tsx against the workspace symlink rather than against the compiled copy that ships, so the first
  * report of a break here is a failed deploy.
  */
 describe('uploader image install (ARCH-1)', () => {
-  const workspaceDeps = Object.entries({ ...manifest.dependencies, ...manifest.devDependencies })
-    .filter(([, range]) => String(range).startsWith('workspace:'))
-    .map(([name]) => name);
+  /**
+   * ⛔ The whole point of the pnpm rewrite of 2026-09-05. The image used to install with
+   * `npm install --omit=dev` from the uploader manifest alone, with no lockfile in the context, so
+   * every transitive range was re-resolved at build time and the reviewed tree never reached
+   * production. Measured that day: the root manifest's `pnpm.overrides` pinned axios to ^0.33.0
+   * after a provenance check, `pnpm why axios` reported 0.33.0, and the built image ran 0.30.3.
+   *
+   * `--frozen-lockfile` is what refuses instead of re-resolving. `pnpm deploy` does NOT honour it
+   * on pnpm 9.12.0, measured against a manifest whose zod range had been moved off the lockfile's:
+   * the deploy re-resolved to the drifted version and exited 0, while `pnpm install` with the same
+   * flag exited ERR_PNPM_OUTDATED_LOCKFILE. So the install is the gate and a deploy alone is not.
+   */
+  it('installs from the workspace lockfile instead of re-resolving every build', () => {
+    const install = dockerfile.match(/^RUN .*pnpm install.*$/m);
 
-  // npm parses the whole manifest before it applies `--omit=dev`, and rejects pnpm's `workspace:`
-  // protocol outright with EUNSUPPORTEDPROTOCOL. Putting the dependency in the dev block does not
-  // help. Measured against npm 10.9.8, which is what node:22-alpine ships.
-  it('strips devDependencies before npm install, while a workspace dependency is declared', () => {
-    if (workspaceDeps.length === 0) {
-      return;
-    }
-
-    const install = dockerfile.match(/^RUN .*npm install.*$/m);
-    assert.ok(install, 'the image no longer installs, so this test is checking the wrong thing');
+    assert.ok(install, 'the image no longer installs with pnpm, so this test is checking the wrong thing');
     assert.match(
       install[0],
-      /npm pkg delete devDependencies\s*&&/,
-      `the manifest declares ${workspaceDeps.join(', ')} as workspace:*, which npm install rejects ` +
-        'with EUNSUPPORTEDPROTOCOL before --omit=dev is ever applied',
+      /--frozen-lockfile/,
+      'without --frozen-lockfile the install resolves its own versions and the audited tree never ships',
     );
   });
 
-  // A workspace dependency that reached `dependencies` could not be stripped by the line above, so
-  // the image would break in a way the check above is not looking at.
+  it('copies the lockfile and the root manifest that carries the overrides', () => {
+    const copied = contextPaths(dockerfile);
+
+    for (const path of ['pnpm-lock.yaml', 'package.json', 'pnpm-workspace.yaml']) {
+      assert.ok(copied.includes(path), `${path} is not in the build context, so the install cannot read it`);
+    }
+  });
+
+  /**
+   * One pnpm, named in one place. Corepack activates whatever this line says, so a Dockerfile
+   * pinning a different version from the root manifest installs with a resolver the workspace was
+   * never checked against.
+   */
+  it('activates the pnpm version the root manifest names', () => {
+    const pinned = rootManifest.packageManager;
+
+    assert.match(pinned, /^pnpm@\d+\.\d+\.\d+$/, `the root manifest no longer pins pnpm: ${pinned}`);
+    assert.ok(
+      dockerfile.includes(`corepack prepare ${pinned} --activate`),
+      `the image must activate ${pinned}, the version the root manifest names`,
+    );
+  });
+
+  /**
+   * ⛔ pnpm resolves a `workspace:` link against the packages it can see BEFORE a filter narrows
+   * anything and before `--prod` drops a dev block, so a workspace dependency whose manifest is
+   * missing from the context kills the build with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND. Measured
+   * 2026-09-05 by building without `packages/shared/package.json`.
+   *
+   * Derived from the manifest and from the packages on disk rather than hardcoded, so a second
+   * workspace dependency has to be copied in too.
+   */
+  it('copies the manifest of every workspace package the uploader declares', () => {
+    const workspaceDeps = Object.entries({ ...manifest.dependencies, ...manifest.devDependencies })
+      .filter(([, range]) => String(range).startsWith('workspace:'))
+      .map(([name]) => name);
+    const copied = contextPaths(dockerfile);
+
+    for (const name of workspaceDeps) {
+      const manifestPath = workspaceManifestPath(name);
+      assert.ok(
+        copied.includes(manifestPath),
+        `${name} is declared as a workspace dependency and ${manifestPath} is not copied, so the install refuses`,
+      );
+    }
+  });
+
+  /**
+   * A workspace dependency in the production block would have to be installed rather than skipped,
+   * and the image carries no sources for it: only the manifests are in the build context. The copy
+   * that ships is the one `vendor-shared.mjs` compiled into `dist/node_modules`.
+   */
   it('keeps every workspace dependency out of the production dependencies block', () => {
     const production = Object.entries(manifest.dependencies ?? {}).filter(([, range]) =>
       String(range).startsWith('workspace:'),
@@ -49,11 +122,11 @@ describe('uploader image install (ARCH-1)', () => {
     assert.deepEqual(
       production.map(([name]) => name),
       [],
-      'a workspace dependency in `dependencies` survives `npm pkg delete devDependencies`',
+      'a workspace dependency in `dependencies` is one the image would have to install and cannot',
     );
   });
 
-  // The vendored copy is what makes the devDependency safe to strip. If the build stopped producing
+  // The vendored copy is what makes the devDependency safe to skip. If the build stopped producing
   // it, the image would install cleanly and then fail at require time instead.
   it('vendors the shared package into dist as part of the build', () => {
     assert.match(
@@ -61,6 +134,93 @@ describe('uploader image install (ARCH-1)', () => {
       /vendor-shared\.mjs/,
       'the build no longer vendors shared, so nothing supplies it at runtime',
     );
+  });
+});
+
+/** The workspace manifest that declares `name`, as a path relative to the monorepo root. */
+function workspaceManifestPath(name) {
+  for (const entry of readdirSync(resolve(ROOT, 'packages'))) {
+    const relative = `packages/${entry}/package.json`;
+    const path = resolve(ROOT, relative);
+    if (existsSync(path) && JSON.parse(readFileSync(path, 'utf8')).name === name) {
+      return relative;
+    }
+  }
+  throw new Error(`no package under packages/ is named ${name}`);
+}
+
+/**
+ * That a remote deploy leaves the far side holding everything the image COPYs.
+ *
+ * The uploader image is built ON the deployment host out of whatever `sync_to_remote` put there. A
+ * path the Dockerfile needs and the sync does not carry fails as `failed to compute cache key:
+ * "/pnpm-lock.yaml": not found`, on a machine nobody is watching, and it reads as a build error
+ * rather than as a missing file. This is the failure the client block already carries a comment
+ * about, and until 2026-09-05 the uploader block shipped only `dist/` and its own manifest.
+ *
+ * Read off the Dockerfile rather than from a list written here, so a COPY added there without a
+ * matching rsync fails instead of shipping.
+ *
+ * ⛔ Observed as the files that landed on the sandbox's stand-in remote host, because the rsync stub
+ * copies for real. A sandbox is an `mkdtemp` and not a checkout, so the workspace files are seeded
+ * into it first: without them the sync has nothing to send and the assertions would be reporting on
+ * the seeding rather than on the script.
+ */
+describe('what a remote deploy leaves in the uploader build context', () => {
+  /**
+   * What a monorepo root holds that a deploy sends for either image, seeded on top of the
+   * Dockerfile's own list so the client half of these tests is asserting the script rather than the
+   * seeding. `Dockerfile.client` reads all three of these too.
+   */
+  const WORKSPACE_FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'packages/shared/package.json'];
+
+  function seedContext(sandbox) {
+    for (const path of new Set([...WORKSPACE_FILES, ...contextPaths(dockerfile)])) {
+      const target = join(sandbox.root, path);
+      mkdirSync(path.endsWith('/') ? target : dirname(target), { recursive: true });
+      const contents = path.endsWith('.json') ? `{"seeded": "${path}"}\n` : `${path}\n`;
+      writeFileSync(path.endsWith('/') ? join(target, 'seeded') : target, contents);
+    }
+  }
+
+  async function deployRemotely(...services) {
+    const sandbox = makeSandbox({ config: ALL_REMOTE, project: 'default' });
+    seedContext(sandbox);
+    await runScriptOk(sandbox, 'deploy.sh', services);
+    return sandbox;
+  }
+
+  function assertContextArrived(sandbox) {
+    for (const path of contextPaths(dockerfile)) {
+      assert.ok(
+        sandbox.remoteHas(join(REMOTE_BASE, path)),
+        `Dockerfile.uploader copies ${path} and no rsync carries it to the deployment host`,
+      );
+    }
+  }
+
+  it('ships every path the uploader image copies', async () => {
+    assertContextArrived(await deployRemotely('stream-uploader'));
+  });
+
+  /**
+   * The root manifests are the client's too, so they are sent once for either service rather than
+   * from inside both blocks. A hoist like that is exactly the kind that survives its own test by
+   * being reachable from one branch only.
+   */
+  it('ships them when the client deploys alongside', async () => {
+    assertContextArrived(await deployRemotely('stream-uploader', 'client'));
+  });
+
+  it('still ships the workspace files a client-only deploy needs', async () => {
+    const sandbox = await deployRemotely('client');
+
+    for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
+      assert.ok(
+        sandbox.remoteHas(join(REMOTE_BASE, path)),
+        `Dockerfile.client installs from ${path} and no rsync carries it to the deployment host`,
+      );
+    }
   });
 });
 
@@ -124,15 +284,15 @@ describe('the vendored shared manifest keeps every advertised entry point', () =
    *
    * `packages/shared` gained its first runtime dependencies in this branch, `@ethersphere/bee-js` and
    * `cafe-utility`, and its first module importing them, which `index.js` re-exports eagerly. The
-   * image installs from the **uploader's** manifest alone: `Dockerfile.uploader` copies only that one
-   * file and runs `npm install --omit=dev`, and nothing ever runs an install inside
-   * `dist/node_modules`. So a package shared imports but the uploader does not declare reaches the
-   * image only if something else happens to pull it in.
+   * image installs from the **uploader's** manifest: nothing ever runs an install inside
+   * `dist/node_modules`, so a package shared imports but the uploader does not declare reaches the
+   * image only if something else happens to put it where Node will look.
    *
-   * `cafe-utility` was exactly that. It resolved because `@ethersphere/bee-js` declares a compatible
-   * range of it and npm hoists flat, which is not a guarantee: the image ships no lockfile, so that
-   * range is re-resolved on every build, and a bee-js release that moved off it would have taken the
-   * uploader down at its first import on the ingest path.
+   * `cafe-utility` was exactly that. Under the npm install this image used to run it resolved by
+   * accident, because `@ethersphere/bee-js` declares a compatible range of it and npm hoists flat.
+   * pnpm does not: the top level of the installed tree holds the uploader's own dependencies and
+   * nothing else, so an undeclared package now fails outright rather than working until a bee-js
+   * release moves off it.
    */
   it('declares in the uploader manifest every package the vendored copy imports', () => {
     for (const [name, range] of Object.entries(sourceManifest.dependencies ?? {})) {
