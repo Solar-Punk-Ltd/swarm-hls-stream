@@ -102,8 +102,10 @@ What the suite asserts, all correctness, no timings:
   step-down is recorded and not asserted, because the fill lands while the player is still settling
   and which rung a player rides at that moment is its own decision. V3 owns that question, with a
   fault whose instant it controls.
-- After restore, the master offers four rungs again. A viewer who watched through the drain is not
-  expected to regain the level, and the suite records that rather than asserting it.
+- After restore, the master offers four rungs again. `pnpm e2e:ladder-restored` is the step: the
+  preflight gates, `abr-ladder` for the publishing half, then `master-offers-every-rung` for the
+  master itself, which is the half the uploader's log cannot show. A viewer who watched through the
+  drain is not expected to regain the level, and the suite records that rather than asserting it.
 
 Durations of the drop, the step-down and the restore are printed as observations, none of them
 asserted.
@@ -143,10 +145,15 @@ The recommendations below are therefore the decisions.
    batch passes the gate on a healthy batch it is not using. **Recommend: yes, it is small and it
    protects every other suite too.**
 5. **Recovery scope.** Assert that the master offers four rungs again after restore. Record, do not
-   assert, that a viewer who was watching keeps three. **Recommend: as written.** ⛔ OUTSTANDING as of
-   2026-09-05: the post-restore step is `e2e:abr-ladder`, which asserts that all four rungs publish,
-   read from the uploader's log, and says in its own docblock that it does not judge the master. So
-   the publishing half is covered and the master half of this decision is not built yet.
+   assert, that a viewer who was watching keeps three. **Recommend: as written.** BUILT 2026-09-05,
+   awaiting a proving sitting. `e2e:abr-ladder` covers the publishing half and says in its own
+   docblock that it does not judge the master, so the master half is a suite of its own:
+   `suites/service/master-offers-every-rung.test.ts` reads the ladder's own master playlist off the
+   gateway and asserts it offers exactly the rungs this broadcast announced. It skips on an armed
+   stage, because there the master is correctly down a rung, and it opens no browser. The
+   post-restore step is now `pnpm e2e:ladder-restored`, which is the preflight gates, the ladder
+   suite and the master suite in that order. The viewer half stays recorded rather than asserted,
+   and it is `suites/viewer/batch-drain-viewer.test.ts`'s reading during the drain itself.
 6. **Where it lives.** Its own scripts, `e2e:batch-drain` for the uploader side and
    `e2e:batch-drain-viewer` for the viewer, each run as a sitting with its own arm and restore around
    it because one small batch serves one suite, and kept out of `e2e:run`, because the ordinary full suite must never depend on a
@@ -194,8 +201,8 @@ overissued`, the master come down to three rungs 37.3 s after the first refusal,
 on the drained rung over about a minute of ramp, near the eighteen the model above expected. The other
 three rungs lost nothing. The restore put the original batch back and the ladder suite passed after it.
 Cost 0.0591 BZZ across the four publishing nodes plus the 0.0383 BZZ batch. The record is
-`docs/bench/one-rung-runs-dry-2026-09-05.md`. V11 on each byte source is still to run, and decision 5
-is still not built.
+`docs/bench/one-rung-runs-dry-2026-09-05.md`. V11 on each byte source is still to run. Decision 5's
+master half was built later the same day and has not been proved on a stage yet.
 
 ## What is built, in order
 
@@ -205,5 +212,10 @@ is still not built.
    sandbox the other scripts use.
 4. The scenario suite and the viewer variant, behind the ten gates, with the new script wired into
    `bench-on-host.sh` like the others.
-5. One proving sitting for scenario L, green on 2026-09-05, then one for V11 on each byte source, each
+5. `suites/service/master-offers-every-rung.test.ts`, decision 5's master half, and
+   `pnpm e2e:ladder-restored`, which is the whole post-restore step in one command: the gates, the
+   ladder suite, then this one. It reads the master a broadcast actually published, which no other
+   suite does outside a drain, and it skips on a stage that is still armed. Built 2026-09-05, not yet
+   run against a deployment.
+6. One proving sitting for scenario L, green on 2026-09-05, then one for V11 on each byte source, each
    with its own arming because a small batch is drained once. Then the coverage map row.
