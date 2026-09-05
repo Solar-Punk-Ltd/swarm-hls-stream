@@ -20,6 +20,17 @@
  * ⚠️ **`stop` rather than `kill` on the bee node**, for the reason `faults.ts` gives: a SIGKILL risks
  * the database of the node holding the postage batch every measurement is paid for with.
  *
+ * ## ⛔⛔ On a split ladder the outage reaches ONE rung, and the run says which
+ *
+ * Since the per-rung split of 2026-08-31 each rung publishes through its own Bee node, and
+ * `bee-uploader` is the LOWEST rung's, because the stream catalog and every ladder's master playlist
+ * go through the longest-lived batch, which is the cheapest rung's. So taking that container away
+ * arms `#EXT-X-DISCONTINUITY` on the bottom rung alone: the other three keep publishing through
+ * their own nodes and their playlists come out unbroken. A player that rides 720p through this
+ * recording therefore crosses nothing, and `events.discontinuitiesArmed` is above zero either way.
+ * The run prints which rung it landed on rather than leaving a reader to infer it, and a playback
+ * run that needs to cross one has to ride that rung.
+ *
  * Usage, from the repo root against a deployed profile:
  *
  *     E2E_PROFILE=latbench E2E_PORT_SLOT=7 pnpm make:recording
@@ -33,7 +44,7 @@ import { containerName, type E2EConfig, loadConfig } from '../src/config.js';
 import { type Host, makeHost, waitForIdle } from '../src/harness/host.js';
 import { announcedLiveStreams, parseUploaderLog } from '../src/harness/logwatch.js';
 import { startPublisher } from '../src/harness/publisher.js';
-import { recordingProgress, recordingSummary, vodFinalizeWaitMs } from '../src/harness/recording.js';
+import { lowestRungOf, recordingProgress, recordingSummary, vodFinalizeWaitMs } from '../src/harness/recording.js';
 import { readStageSegmenting } from '../src/harness/stage.js';
 import { requireStageStamps } from '../src/harness/stageStamps.js';
 import { waitFor } from '../src/harness/wait.js';
@@ -114,6 +125,7 @@ async function main(): Promise<void> {
   const publisher = startPublisher(cfg);
   let beeIsDown = false;
   let beforeOutage = 0;
+  let armedRung: string | null = null;
   try {
     console.log(`recording: publishing ${before} segments per rung before the outage`);
     await waitFor(async () => (await progress()) >= before, {
@@ -125,7 +137,17 @@ async function main(): Promise<void> {
 
     beforeOutage = await progress();
     if (ARM_DISCONTINUITY) {
+      const rungs = recordingProgress(await log()).rungs.map((rung) => rung.rung);
+      armedRung = lowestRungOf(rungs);
       console.log(`recording: taking ${beeUploader} away for ${OUTAGE_MS / 1000}s to arm a discontinuity`);
+      if (armedRung !== null) {
+        console.log(
+          `recording: ${beeUploader} publishes the ${armedRung} rung of ${rungs.length} (${rungs.join(', ')}), ` +
+            "plus the stream catalog and this ladder's master playlist. The other rungs publish through " +
+            `their own nodes and keep going, so the discontinuity is armed on ${armedRung} alone and only a ` +
+            'player riding that rung crosses one',
+        );
+      }
       await host.stop(beeUploader);
       beeIsDown = true;
       await new Promise((resolve) => setTimeout(resolve, OUTAGE_MS));
@@ -238,7 +260,8 @@ async function main(): Promise<void> {
   console.log(`  ${await report()}`);
   console.log(
     ARM_DISCONTINUITY
-      ? `  discontinuity after roughly ${((100 * beforeOutage) / total).toFixed(0)}% of the recording`
+      ? `  discontinuity after roughly ${((100 * beforeOutage) / total).toFixed(0)}% of the recording` +
+          (armedRung === null ? '' : `, on the ${armedRung} rung and no other`)
       : '  no discontinuity',
   );
 
