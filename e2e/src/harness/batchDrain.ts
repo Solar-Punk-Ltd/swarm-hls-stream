@@ -57,6 +57,7 @@
 import { rungBatchRefusedPattern, segmentUploadedPattern, segmentUploadFailedPattern } from '@swarm-hls-stream/shared';
 
 import type { E2EConfig } from '../config.js';
+import type { ViewerExpectation } from '../viewerCoverage.js';
 
 import {
   batchIdPrefix,
@@ -228,6 +229,40 @@ export function drainNotDeclared(env: NodeJS.ProcessEnv = process.env): string |
     );
   }
   return false;
+}
+
+/**
+ * Why a declared drain sitting must not also declare itself browser-less, or null.
+ *
+ * ## ⛔⛔ What the pair does when nothing refuses it
+ *
+ * `viewerGate` turns `E2E_EXPECT_BROWSER=false` into a skip for every viewer suite, and on an
+ * ordinary run that is exactly right: a browser-less sitting is a legitimate thing to run and says
+ * so once. On an armed stage it is not. `pnpm e2e:batch-drain-viewer` would then skip the only file
+ * it runs and exit 0, having opened no player against a rung an operator armed to run dry and paid
+ * to arm, and a skipped suite reports as zero tests rather than as skipped ones. The run summary of
+ * a sitting that watched nothing is character-for-character the summary of one that watched.
+ *
+ * ⭐ The arming is what makes the pair a contradiction, so this answers null on every run that
+ * declared no drain. {@link drainNotDeclared} is what keeps those out, and a refusal here would put
+ * the two drain suites back into every full suite as failures, which is the defect it exists for.
+ */
+export function drainWithoutBrowserRefusal(
+  expectation: ViewerExpectation,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (drainNotDeclared(env) !== false || expectation !== 'none') {
+    return null;
+  }
+
+  return (
+    `${DRAIN_DECLARATION_VAR} says this run is a drain sitting, so a rung has been armed to run its ` +
+    'postage dry on the stage, and E2E_EXPECT_BROWSER=false says no player will watch it. Both ' +
+    'cannot hold. V11 is the viewer half of the drain and has nothing left to read without a ' +
+    'browser, so it would skip, report zero tests and exit 0 on a stage somebody broke on purpose. ' +
+    'Set E2E_EXPECT_BROWSER=true and BROWSER_FETCH_BACKEND for this run, or run pnpm e2e:batch-drain ' +
+    'instead, which is the uploader-side half and needs no browser.'
+  );
 }
 
 /** What one rung's Bee node answered about the batch it is configured to spend. */

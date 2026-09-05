@@ -13,6 +13,7 @@ import {
   drainRampOf,
   drainRung,
   drainRungRefusal,
+  drainWithoutBrowserRefusal,
   DROPPED_SEGMENTS_METRIC,
   droppedSegmentsRefusal,
   firstRefusalAtMs,
@@ -742,6 +743,47 @@ describe('whether this run is a drain sitting at all', () => {
     for (const value of ['', '   ', '0', 'false']) {
       assert.notEqual(drainNotDeclared({ E2E_DRAIN_ARMED: value }), false, `'${value}' let the suites run`);
     }
+  });
+});
+
+/**
+ * ⛔⛔ A drain sitting that also says no browser will watch is two declarations that cannot both hold.
+ *
+ * V11 is the viewer half of the drain, and `viewerGate` turns `E2E_EXPECT_BROWSER=false` into a skip
+ * for every viewer suite, which is right for an ordinary run. On a stage where a rung has been armed
+ * to run dry it is not: `pnpm e2e:batch-drain-viewer` would exit 0 having opened no player, on a
+ * broken stage somebody paid to break, and a skipped suite reports as zero tests rather than as
+ * skipped ones. The arming is the thing that turns the skip into a contradiction, so the answer is
+ * null on every run that armed nothing.
+ */
+describe('a declared drain sitting that also declares no browser', () => {
+  it('refuses the pair, naming both variables and what each of them says', () => {
+    const refusal = drainWithoutBrowserRefusal('none', { E2E_DRAIN_ARMED: '1' });
+
+    assert.ok(refusal, 'a drain sitting with no viewer would have skipped V11 and exited 0');
+    assert.match(refusal, /E2E_DRAIN_ARMED/);
+    assert.match(refusal, /E2E_EXPECT_BROWSER/);
+    assert.match(refusal, /e2e:batch-drain\b/, 'the uploader-side half is the run that needs no browser');
+  });
+
+  it('lets a drain sitting that opens a real player through', () => {
+    assert.equal(drainWithoutBrowserRefusal('browser', { E2E_DRAIN_ARMED: '1' }), null);
+  });
+
+  /**
+   * ⛔ The half that keeps every other sitting green. `test:e2e` globs V11 in and declares no drain,
+   * and that run must skip rather than refuse, which is what `drainNotDeclared` is for.
+   */
+  it('says nothing about a browser-less run that armed no drain', () => {
+    assert.equal(drainWithoutBrowserRefusal('none', {}), null);
+    for (const value of ['', '   ', '0', 'false']) {
+      assert.equal(drainWithoutBrowserRefusal('none', { E2E_DRAIN_ARMED: value }), null, `'${value}' refused`);
+    }
+  });
+
+  /** An undeclared expectation is `viewerCoverageRefusal`'s to stop, and it says more about it. */
+  it('leaves an undeclared viewer expectation to the viewer gate', () => {
+    assert.equal(drainWithoutBrowserRefusal('undeclared', { E2E_DRAIN_ARMED: '1' }), null);
   });
 });
 

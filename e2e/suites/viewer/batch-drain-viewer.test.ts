@@ -10,6 +10,7 @@ import {
   drainNotDeclared,
   drainRampOf,
   drainRung,
+  drainWithoutBrowserRefusal,
   firstRefusalAtMs,
   requireArmedStage,
   waitForSurvivingMaster,
@@ -99,6 +100,11 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * Nothing in CI runs these, and this one is deliberately absent from `test:e2e`, because the ordinary
  * full suite must never depend on a stage somebody broke on purpose. Decision 6 of
  * `docs/e2e-batch-drain-plan.md`.
+ *
+ * ⛔ A run that armed a rung and then declared itself browser-less is REFUSED here rather than
+ * skipped. Every other viewer suite skips on that declaration and is right to, but there is nothing
+ * left for this one to read without a player, and skipping would exit 0 against a stage an operator
+ * paid to break. See `drainWithoutBrowserRefusal`.
  */
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
@@ -118,9 +124,16 @@ const WATCH_MINUTES = rungArmMinutes();
 
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
+// ⛔ Ahead of the gates below, because the pair it refuses is one `viewerGate` would turn into a
+// skip. Once a rung has been armed to run dry there is nothing left for this file to read without a
+// player, and skipping would exit 0 on a stage somebody paid to break.
+const contradiction = drainWithoutBrowserRefusal(cfg.viewerExpectation);
+if (contradiction !== null) {
+  throw new Error(contradiction);
+}
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-// ⛔ First, and before the gate that throws: a full suite globs this file out of suites/viewer and
-// has armed nothing, so it has to skip rather than refuse. See `drainNotDeclared`.
+// ⛔ `drainNotDeclared` first, and before the gate that throws: a full suite globs this file out of
+// suites/viewer and has armed nothing, so it has to skip rather than refuse.
 const skip =
   drainNotDeclared() || viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || abrOff(cfg.abrEnabled);
 // Module scope for the same reason: a run aimed at the coordinator must fail before a broadcast starts.

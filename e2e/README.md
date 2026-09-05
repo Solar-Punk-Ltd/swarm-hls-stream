@@ -255,12 +255,14 @@ the catalog and every master playlist, and draining it would stop the master bei
 four rungs at once. The suites refuse it by name and `docs/e2e-batch-drain-plan.md` files that as a
 known product gap.
 
-Two refusals keep a drain sitting apart from an ordinary one, and they point in opposite directions:
+Three refusals keep a drain sitting apart from an ordinary one, and the first two point in opposite
+directions:
 
-| the run                                | what happens                                                                                                                       |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| a drain script on a stage nobody armed | **refused** in `before()`, before a broadcast starts, naming the batch the rung is actually spending and the command that arms one |
-| any other run, `pnpm e2e:run` included | the two suites **skip**, because only the two drain scripts set `E2E_DRAIN_ARMED`                                                  |
+| the run                                             | what happens                                                                                                                       |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| a drain script on a stage nobody armed              | **refused** in `before()`, before a broadcast starts, naming the batch the rung is actually spending and the command that arms one |
+| any other run, `pnpm e2e:run` included              | the two suites **skip**, because only the two drain scripts set `E2E_DRAIN_ARMED`                                                  |
+| `pnpm e2e:batch-drain-viewer` with no browser asked | **refused** during import, because `E2E_EXPECT_BROWSER=false` on an armed stage leaves V11 nothing to read and it would exit 0     |
 
 The skip is the half that matters for every other sitting: both files sit under `suites/scenarios/`
 and `suites/viewer/`, which `test:e2e` matches by glob, so being absent from its list keeps them out
@@ -274,6 +276,11 @@ batch nobody drained. Every minute of that is a paid broadcast. It also refuses 
 previous run already spent, because a rung armed onto a spent batch is refused on its FIRST upload,
 before all four rungs have published, and the suite would then read a ladder that never had four
 rungs as one that lost a rung.
+
+The third is V11's alone. `E2E_EXPECT_BROWSER=false` declares a run that watches nothing, which every
+viewer suite skips on and is right to. On a stage where a rung has already been armed to run dry that
+declaration leaves V11 with no question left, so it refuses during import rather than skipping. The
+run to make instead is `pnpm e2e:batch-drain`, the uploader-side half, which needs no browser.
 
 ## What it covers
 
