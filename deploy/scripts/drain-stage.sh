@@ -48,10 +48,12 @@
 # `arm` refuses any batch that would not run dry when the sitting expects it to: one the node does not
 # hold, one it will not spend, one deeper than 17, one expiring inside the uploader's own startup
 # floor, and one that already holds chunks. It keeps a copy of the env file at `.bak-<timestamp>` and
-# records the rung's original batch id in `.drain-stage.<profile>.env` beside it.
+# records the rung's original batch id and the one it armed in `.drain-stage.<profile>.env` beside it.
 #
 # `restore` reads that record, writes the original batch back, and removes the record. It refuses when
-# there is nothing recorded rather than guessing which batch the rung used to publish through.
+# there is nothing recorded rather than guessing which batch the rung used to publish through. The
+# armed id is recorded because the first restore leaves the entry naming the original, so a restore
+# run again after a failed redeploy has nowhere else to read the drained batch from.
 #
 # ⛔⛔ `arm` and `restore` both keep the uploader's container log before they redeploy, at
 # `~/drain-<profile>-<rung>-<utc>.uploader.log` on the deployment host, beside the bench checkout, and
@@ -565,7 +567,8 @@ answer("OK", hit[2])
 PY
 }
 
-recorded_original() {
+# The rung's line of the record, as `<original> <armed>`, or nothing when the rung is not in it.
+recorded_line() {
   [ -f "$RECORD_FILE" ] || return 1
   local line
   line="$(grep "^${RUNG}=" "$RECORD_FILE" 2> /dev/null | head -1)"
@@ -573,6 +576,28 @@ recorded_original() {
   printf '%s' "${line#*=}"
 }
 
+recorded_original() {
+  local fields
+  fields="$(recorded_line)" || return 1
+  printf '%s' "${fields%% *}"
+}
+
+# The batch the arm wrote into the entry, which is the only thing that still says which batch drained
+# once the entry has been put back. A record written before this field existed, or written by hand,
+# carries the original alone and answers non-zero here, and the caller falls back to the entry.
+recorded_armed() {
+  local fields
+  fields="$(recorded_line)" || return 1
+  case "$fields" in
+    *' '*) printf '%s' "${fields#* }" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Both batches on one line, `<rung>=<original> <armed>`. The original is what `restore` puts back and
+# the armed one is what it reports as spent, and the second is needed because the first restore leaves
+# the entry naming the original, so a restore run again has nowhere else to read it from.
+#
 # Non-zero when either write failed, which the caller turns into a refusal.
 #
 # ⛔⛔ This script runs `set -u` and not `set -e`, so an unchecked redirection here carried on to the
@@ -580,16 +605,17 @@ recorded_original() {
 # batch it used to publish through, and `restore` then refuses with "nothing is armed" on a stage
 # that is armed, which is the state this file's own header calls worse than a lost log.
 record_original() {
-  local original="$1"
+  local original="$1" armed="$2"
   if [ ! -f "$RECORD_FILE" ]; then
     if ! {
-      echo "# What each rung was publishing through before deploy/scripts/drain-stage.sh armed it."
+      echo "# What each rung was publishing through before deploy/scripts/drain-stage.sh armed it, and"
+      echo "# what it was armed with, as <rung>=<original> <armed>."
       echo "# Read by its restore, and deleted once the last armed rung has been restored."
     } > "$RECORD_FILE"; then
       return 1
     fi
   fi
-  printf '%s=%s\n' "$RUNG" "$original" >> "$RECORD_FILE"
+  printf '%s=%s %s\n' "$RUNG" "$original" "$armed" >> "$RECORD_FILE"
 }
 
 # Non-zero when the record still names the rung, which the caller turns into a refusal.
@@ -856,7 +882,7 @@ do_arm() {
   # leaves a copy and an env file that still names the rung's own batch.
   back_up_env
 
-  if ! record_original "$original"; then
+  if ! record_original "$original" "$BATCH"; then
     fail "could not record the original batch of rung ${RUNG} in ${RECORD_FILE##*/}, so a restore would have nothing to put back, and ${ENV_FILE##*/} has not been rewritten."
   fi
   log_ok "recorded the original $(short_id "$original") in ${RECORD_FILE##*/}"
@@ -904,7 +930,14 @@ do_restore() {
   if [ "$(verdict_of "$written")" != "OK" ]; then
     fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(reason_of "$written")."
   fi
-  spent="$(text_of "$written")"
+  # ⛔ The record before the entry. What the rewrite hands back is the batch the entry held a moment
+  # ago, which is the armed one the first time and the ORIGINAL every time after, because the first
+  # restore already put it back. A restore run again after a failed redeploy therefore reported the
+  # rung's own batch as the one that drained, which is the line an operator reads to decide the drain
+  # happened at all. The entry is still the answer for a record that predates the armed field.
+  if ! spent="$(recorded_armed)"; then
+    spent="$(text_of "$written")"
+  fi
   log_ok "BEE_PUBLISHERS names $(short_id "$original") for ${RUNG} again, and $(short_id "$spent") is spent"
 
   # ⛔ Before the redeploy. This is the log of the process that spent the drained batch, which is the

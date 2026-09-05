@@ -1313,6 +1313,19 @@ describe('drain-stage says which batch is where when the redeploy fails', () => 
     chmodSync(join(sandbox.binDir, 'docker'), 0o755);
   }
 
+  /** The same, failing only the FIRST `up`, so the re-run of the same subcommand can complete. */
+  function failsFirstRedeploy(sandbox) {
+    const marker = join(sandbox.root, 'redeploy-already-failed');
+    writeFileSync(
+      join(sandbox.binDir, 'docker'),
+      '#!/bin/sh\nnode -- "$0.cjs" "$@" || exit $?\nfor arg in "$@"; do\n' +
+        `  if [ "$arg" = "up" ] && [ ! -f ${JSON.stringify(marker)} ]; then\n` +
+        `    : > ${JSON.stringify(marker)}\n` +
+        '    exit 3\n  fi\ndone\n',
+    );
+    chmodSync(join(sandbox.binDir, 'docker'), 0o755);
+  }
+
   const SMALL = SMALL_BATCH.slice(0, 8);
   const ORIGINAL_RUNG = ORIGINAL[RUNG].slice(0, 8);
 
@@ -1366,6 +1379,33 @@ describe('drain-stage says which batch is where when the redeploy fails', () => 
     assert.notEqual(run.exitCode, 0, 'a redeploy that failed reported a restored stage');
     assert.equal(existsSync(recordPath(sandbox)), true, 'a restore that could not redeploy deleted its own record');
     assert.match(readFileSync(recordPath(sandbox), 'utf8'), new RegExp(`${RUNG}=${ORIGINAL[RUNG]}`));
+  });
+
+  /**
+   * ⛔⛔ AND THE RE-RUN NAMED THE WRONG BATCH AS SPENT. The batch a restore reports as drained is the
+   * one the entry held before the rewrite, which is right the first time and wrong every time after:
+   * the first restore already put the original back, so a re-run finds the entry naming the rung's
+   * own batch and reports that as the one that drained. That line is what an operator reads to decide
+   * the drain happened at all, and it named the one batch that certainly did not run dry.
+   */
+  it('names the batch that was armed when a restore is run again after a failed redeploy', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    const armed = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+    assert.equal(armed.exitCode, 0, `arm failed: ${armed.stdout}${armed.stderr}`);
+    failsFirstRedeploy(sandbox);
+
+    const failed = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+    assert.notEqual(failed.exitCode, 0, 'the restore whose redeploy was supposed to fail succeeded');
+
+    const again = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.equal(again.exitCode, 0, `the second restore failed: ${again.stdout}${again.stderr}`);
+    assert.match(again.stdout, new RegExp(`${SMALL}… is spent`), 'the armed batch was not named as the spent one');
+    assert.doesNotMatch(
+      again.stdout,
+      new RegExp(`${ORIGINAL_RUNG}… is spent`),
+      'the rung’s own batch was reported as the one that drained',
+    );
   });
 });
 
