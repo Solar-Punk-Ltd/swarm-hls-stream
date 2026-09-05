@@ -80,7 +80,20 @@ readonly PLUR_PER_BZZ=10000000000000000
 # The floor the uploader's own PostageGate applies at startup (STAMP_MIN_TTL_HOURS), plus an hour,
 # because the arm and the sitting are not the same minute. A batch under the floor arms cleanly and
 # then stops the container from starting at all.
-MIN_TTL_HOURS="${STAMP_MIN_TTL_HOURS:-24}"
+#
+# ⛔⛔⛔ READ FROM THE ENV FILE, never from this shell. The uploader takes its environment from
+# `.env.<profile>` and never from the terminal this runs in, so an export here moved the floor in this
+# script and nowhere else, and the check stopped being a check of what the container will do. That is
+# the same shape as the fragment length that dated the stage wrong on 2026-09-04, when every reading
+# of the ladder was taken against a value nothing had deployed.
+#
+# The shell value is captured here rather than read later, because `load_env` copies the file's value
+# into this shell as a default and the two are indistinguishable once it has run. It is unset for the
+# same reason: the file has to win, and `load_env_file` skips a key this shell already declares.
+readonly DEFAULT_MIN_TTL_HOURS=24
+MIN_TTL_HOURS="$DEFAULT_MIN_TTL_HOURS"
+MIN_TTL_HOURS_IN_SHELL="${STAMP_MIN_TTL_HOURS:-}"
+unset STAMP_MIN_TTL_HOURS
 readonly ARM_TTL_MARGIN_HOURS=1
 
 readonly SUBCOMMANDS="print-buy, arm, restore and status"
@@ -172,6 +185,14 @@ require_config
 require_env
 load_env
 apply_port_slot
+
+# Now that the env file has been read, the floor is whatever the container will see. A value left in
+# this shell as well is refused rather than quietly ignored, because an operator who exported it did
+# it to change something and has to be told it changes nothing.
+MIN_TTL_HOURS="${STAMP_MIN_TTL_HOURS:-$DEFAULT_MIN_TTL_HOURS}"
+if [ -n "$MIN_TTL_HOURS_IN_SHELL" ] && [ "$MIN_TTL_HOURS_IN_SHELL" != "$MIN_TTL_HOURS" ]; then
+  refuse "STAMP_MIN_TTL_HOURS is ${MIN_TTL_HOURS_IN_SHELL} in this shell and ${MIN_TTL_HOURS} for the uploader, which reads ${ENV_FILE##*/} and never this shell, so the floor this run would apply is not the floor the container will apply. Set it in ${ENV_FILE##*/} and redeploy, or unset it here."
+fi
 
 # ⛔ The same hardcoded map `bee-publishers.sh` carries, and for the same reason: the deploy has
 # exactly these services, so a rung not named here has no node to publish through. Same order,

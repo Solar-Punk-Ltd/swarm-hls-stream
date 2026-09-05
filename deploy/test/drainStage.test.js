@@ -895,6 +895,62 @@ describe('drain-stage says so when it cannot clear its own record', () => {
 });
 
 /**
+ * ⛔⛔⛔ THE CONTAINER NEVER SEES THE OPERATOR'S SHELL. The TTL floor this script applies has to be the
+ * floor the uploader's own `PostageGate` will apply, and the uploader reads its environment from
+ * `.env.<profile>`. Taking `STAMP_MIN_TTL_HOURS` off the shell meant an export in one terminal moved
+ * the floor here and nowhere else, so a batch could be refused that the container would accept, or
+ * armed that it would refuse at startup and never come up on.
+ *
+ * This is the shape that dated the stage wrong on 2026-09-04, when the fragment length lived in a
+ * shell export and every reading of the ladder was taken against a value nothing had deployed.
+ */
+describe('drain-stage takes its TTL floor from the file the container reads', () => {
+  /** 40 hours clears the default floor of 25 and misses the 49 the env file below asks for. */
+  const FORTY_HOURS = { ...ARMABLE, batchTTL: 40 * 3600 };
+
+  it('applies the floor the env file names, rather than its own default', async () => {
+    const sandbox = localSandbox({ extra: 'STAMP_MIN_TTL_HOURS=48\n', readings: { stamps: [FORTY_HOURS] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a batch the container will refuse at startup was armed');
+    assert.match(run.stderr, /40\.0h/);
+    assert.match(run.stderr, /49\.0h/, 'the floor came from this script’s default rather than from the env file');
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG]);
+  });
+
+  it('refuses when a shell value disagrees with the env file, naming both', async () => {
+    const sandbox = remoteSandbox({ extra: 'STAMP_MIN_TTL_HOURS=48\n', readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['status'], { STAMP_MIN_TTL_HOURS: '24' });
+
+    assert.notEqual(run.exitCode, 0, 'a shell value the container never sees was allowed to set the floor');
+    assert.match(run.stderr, /STAMP_MIN_TTL_HOURS/);
+    assert.match(run.stderr, /24/, 'the refusal did not name the value in this shell');
+    assert.match(run.stderr, /48/, 'the refusal did not name the value the container will read');
+  });
+
+  /** ⛔ And a shell value with nothing in the file, which is exactly the export nobody deployed. */
+  it('refuses a shell value the env file says nothing about', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['status'], { STAMP_MIN_TTL_HOURS: '48' });
+
+    assert.notEqual(run.exitCode, 0, 'a shell export the container never sees was allowed to set the floor');
+    assert.match(run.stderr, /48/, 'the refusal did not name the value in this shell');
+    assert.match(run.stderr, /24/, 'the refusal did not name the floor the container will actually apply');
+  });
+
+  it('says nothing when the shell and the env file agree', async () => {
+    const sandbox = remoteSandbox({ extra: 'STAMP_MIN_TTL_HOURS=48\n', readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['status'], { STAMP_MIN_TTL_HOURS: '48' });
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+  });
+});
+
+/**
  * ⛔⛔⛔ The evidence of a drain sitting is the uploader's own log, and a redeploy destroys it.
  *
  * On 2026-09-04 the first live drain refused the armed rung four times in about fifty seconds, and
