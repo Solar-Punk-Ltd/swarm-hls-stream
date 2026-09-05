@@ -33,9 +33,11 @@
 # prints the command that stops what is running.
 #
 # A trap on INT, TERM and EXIT stops the container if this script is interrupted while a launch is in
-# flight. It is best effort: a Ctrl-C occasionally kills the shell before its own handler runs, which
-# is measured beside `stop_harness_container` below. The read above is what catches whatever it
-# misses, on the next launch.
+# flight, and the stop goes out when the signal lands rather than when the run would have ended
+# anyway, because the ssh carrying the run is a background child this waits on. It is best effort: a
+# Ctrl-C occasionally kills the shell before its own handler runs, which is measured beside
+# `stop_harness_container` below. The read above is what catches whatever it misses, on the next
+# launch.
 #
 # ⛔ THIS SYNCS THE HARNESS. IT DOES NOT REDEPLOY THE STACK. The stream-uploader ships as a prebuilt
 # `dist/` through `deploy/scripts/deploy.sh`, so a run launched from here measures THIS checkout's
@@ -274,10 +276,20 @@ trap 'stop_harness_container; exit 143' TERM
 #
 # ⛔ The one orphan this cannot see is a connection that drops mid-run, where ssh returns and the
 # container lives on. The busy-target guard above is what catches that, on the next launch.
+#
+# ⛔⛔ THE SSH IS A BACKGROUND CHILD AND THIS WAITS ON IT, which is the whole reason the handler runs
+# when the signal lands. Bash holds a trap until the foreground command it is running returns, and
+# that command was this ssh, carrying the entire broadcast. So a kill of a thirty-minute run stopped
+# nothing for thirty minutes: the container went on publishing, `--rm` took it when the run ended by
+# itself, and the handler then issued a stop against a name that was already gone and told the
+# operator the stop had failed. `wait` is interruptible where a foreground command is not.
+#
+# `-n` because a background ssh must not read the terminal's stdin, which would stop it on SIGTTIN.
 run_harness_container() {
   local rc=0
   HARNESS_CONTAINER_IN_FLIGHT=1
-  ssh "${SSH_OPTS[@]}" "${TARGET}" "$1" || rc=$?
+  ssh "${SSH_OPTS[@]}" -n "${TARGET}" "$1" &
+  wait $! || rc=$?
   HARNESS_CONTAINER_IN_FLIGHT=0
   return "${rc}"
 }

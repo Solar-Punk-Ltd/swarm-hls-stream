@@ -49,6 +49,17 @@ const POLL_MS = 20;
 const SHORT_STOP_DEADLINE_SECONDS = '1';
 const STOP_HANGS_SECONDS = 30;
 
+/**
+ * A container hold far longer than the run this file gives a prompt stop, so a handler that waits
+ * for the run's own ssh cannot pass as one that acted on the signal. Twenty times the deadline, so
+ * there is no reading between the two.
+ */
+const LONG_RUN_SECONDS = 60;
+const PROMPT_STOP_DEADLINE_MS = 3_000;
+
+/** How long the last lines are given to reach the pipes after the script has already exited. */
+const OUTPUT_FLUSH_MS = 250;
+
 /** 128 plus the signal number, which is what a shell reports for a run a signal ended. */
 const EXIT_ON_INT = 130;
 const EXIT_ON_TERM = 143;
@@ -129,14 +140,22 @@ function sshCannotReachTarget(sandbox) {
  * A `docker` whose `run` blocks after journalling itself, which is the window an operator kills the
  * local script in. `stopExitCode` is what its `stop` answers, so the failed-stop path is this same
  * stub with one number changed.
+ *
+ * ⛔ A stop that succeeds ends the blocked run, the way stopping a real container makes its
+ * `docker run` return. Without that the run outlives the script, keeps the pipes this file reads
+ * open, and a case about promptness could not tell a stop that landed from one that never did.
  */
-function dockerRunBlocks(sandbox, { marker, stopExitCode }) {
+function dockerRunBlocks(sandbox, { marker, stopExitCode, holdsSeconds }) {
+  const containerPid = join(sandbox.root, 'container-pid');
   writeExecutable(
     join(sandbox.binDir, 'docker'),
     `#!/bin/sh
 node -- "$0.cjs" "$@" || exit $?
-if [ "$1" = "run" ]; then : > ${marker}; exec sleep ${CONTAINER_HOLDS_SECONDS}; fi
-if [ "$1" = "stop" ]; then exit ${stopExitCode}; fi
+if [ "$1" = "run" ]; then echo $$ > ${containerPid}; : > ${marker}; exec sleep ${holdsSeconds}; fi
+if [ "$1" = "stop" ]; then
+  [ ${stopExitCode} -eq 0 ] && [ -f ${containerPid} ] && kill "$(cat ${containerPid})" 2> /dev/null
+  exit ${stopExitCode}
+fi
 exit 0
 `,
   );
@@ -159,8 +178,7 @@ async function waitForFile(path) {
 
 /**
  * Signals the script itself once the stubbed container is up, which is `kill <pid>` from another
- * terminal. Bash holds the signal until the foreground command returns, so the handler runs when
- * the run's ssh comes back and while the container is still marked in flight.
+ * terminal.
  *
  * ⛔ Deliberately NOT a signal to the whole process group, which is what a terminal's Ctrl-C sends.
  * That reaches the same handler, but measured with /bin/bash over 60 attempts per arm it does not
@@ -171,9 +189,19 @@ async function waitForFile(path) {
  *
  * The process group is still its own, so the cleanup below can take the stubbed container with it.
  */
-async function interruptedRun(sandbox, args, { signal = 'SIGINT', stopExitCode = 0, env = {} } = {}) {
+async function interruptedRun(
+  sandbox,
+  args,
+  {
+    signal = 'SIGINT',
+    stopExitCode = 0,
+    env = {},
+    holdsSeconds = CONTAINER_HOLDS_SECONDS,
+    deadlineMs = INTERRUPT_DEADLINE_MS,
+  } = {},
+) {
   const marker = join(sandbox.root, 'container-started');
-  dockerRunBlocks(sandbox, { marker, stopExitCode });
+  dockerRunBlocks(sandbox, { marker, stopExitCode, holdsSeconds });
 
   const child = spawn('bash', [sandbox.scriptPath('bench-on-host.sh'), ...args], {
     detached: true,
@@ -188,17 +216,21 @@ async function interruptedRun(sandbox, args, { signal = 'SIGINT', stopExitCode =
   child.stderr.on('data', (chunk) => {
     stderr += chunk;
   });
-  const closed = new Promise((resolve) => child.on('close', (code) => resolve(code)));
+  // Read off `exit` rather than `close`, because a stub the script abandoned keeps holding these
+  // pipes and `close` would then time the abandonment rather than the script.
+  const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+  const closed = new Promise((resolve) => child.on('close', () => resolve()));
 
   try {
     await waitForFile(marker);
     process.kill(child.pid, signal);
     const exitCode = await Promise.race([
-      closed,
-      sleep(INTERRUPT_DEADLINE_MS).then(() => {
-        throw new Error(`the script did not exit after ${signal}: ${stdout}${stderr}`);
+      exited,
+      sleep(deadlineMs).then(() => {
+        throw new Error(`the script did not exit within ${deadlineMs}ms of ${signal}: ${stdout}${stderr}`);
       }),
     ]);
+    await Promise.race([closed, sleep(OUTPUT_FLUSH_MS)]);
     return { stdout, stderr, exitCode };
   } finally {
     try {
@@ -455,6 +487,31 @@ describe('bench-on-host stops the remote container when it is interrupted', () =
 
     assert.deepEqual(stopCalls(sandbox), [`stop ${DEFAULT_CONTAINER}`]);
     assert.equal(run.exitCode, EXIT_ON_TERM);
+  });
+
+  /**
+   * ⛔⛔ AT THE SIGNAL, NOT AT THE END OF THE RUN. Bash holds a trap until the foreground command it
+   * is running returns, and that command was the ssh carrying the whole broadcast. So a kill of a
+   * thirty-minute run stopped nothing for thirty minutes: `--rm` took the container when the run
+   * ended on its own, the handler then went out against a name that was already gone, and the
+   * operator was told the stop had failed on a container nobody needed stopping. Everything the
+   * kill was for, the postage and the stage, was spent in between.
+   *
+   * A hold twenty times the deadline, so this says which of the two happened and cannot say
+   * anything in between.
+   */
+  it('stops the container at the signal rather than when the run would have ended anyway', async () => {
+    const sandbox = benchSandbox();
+
+    const run = await interruptedRun(sandbox, ['--no-setup'], {
+      signal: 'SIGTERM',
+      holdsSeconds: LONG_RUN_SECONDS,
+      deadlineMs: PROMPT_STOP_DEADLINE_MS,
+    });
+
+    assert.deepEqual(stopCalls(sandbox), [`stop ${DEFAULT_CONTAINER}`]);
+    assert.equal(run.exitCode, EXIT_ON_TERM);
+    assert.doesNotMatch(run.stderr, /may still be running/, 'the stop went out after the container had gone');
   });
 
   /**
