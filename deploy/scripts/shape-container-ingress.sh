@@ -187,7 +187,7 @@ resolve_iface() {
 # entry chunk with the base prefix (`/assets/index-HASH.js`) and so does the wasm URL, while a chunk
 # names the siblings it dynamically imports RELATIVELY (`./weeb_3-HASH.js`), because they sit in the
 # same directory it does. A crawl that read only the prefixed form would stop one hop short of the
-# 4.5 MB wasm, which is the only thing on this client big enough to measure a rate over.
+# wasm, which is the only thing on this client big enough to measure a rate over.
 #
 # ⛔ `|| true` on each grep. A body that mentions no asset is ordinary, grep says so with exit 1, and
 # under `pipefail` that would abort the crawl at the first stylesheet.
@@ -211,7 +211,7 @@ content_length_of() {
 }
 
 # Breadth first from the page, reading only what can name another asset. The largest thing found is
-# what the rate is measured over, which on this client is weeb-3's 4.5 MB wasm.
+# what the rate is measured over, which on this client is weeb-3's wasm, a few megabytes of it.
 PROBE_PATH=""
 PROBE_BYTES=0
 LARGEST_SEEN=""

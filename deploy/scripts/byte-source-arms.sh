@@ -68,9 +68,9 @@ ARM_PLAN="${ARM_PLAN:-}"
 ARM_GAP_S="${ARM_GAP_S:-20}"
 # ⛔⛔ HIGHER THAN THE GATEWAY SITTING'S 90, AND THE DIFFERENCE IS NOT PADDING. Every arm here also
 # waits out `BROWSER_SETTLE_SECONDS` before its window opens, and a weeb-3 arm spends part of that
-# booting a node: 4.5 MB of wasm and a peer dial that A2 timed at 9.4-10.5s. An overhead budgeted for
-# the gateway sitting would run the broadcast out before the last arms, which is how a paid sitting
-# comes back short of the replicates it was booked for.
+# booting a node: a few megabytes of wasm and a peer dial that A2 timed at 9.4-10.5s. An overhead
+# budgeted for the gateway sitting would run the broadcast out before the last arms, which is how a
+# paid sitting comes back short of the replicates it was booked for.
 ARM_OVERHEAD_S="${ARM_OVERHEAD_S:-170}"
 # How long the broadcast leads the first arm and outlives the last.
 PUBLISHER_LEAD_S="${PUBLISHER_LEAD_S:-60}"
@@ -96,9 +96,9 @@ TARGET_LATENCY_S="${TARGET_LATENCY_S:-2}"
 # manifest. It bounds the cost of going fully gateway-less rather than isolating either one.
 ARM_PAIR="${ARM_PAIR:-byte-source}"
 
-# A native arm downloads 4.5 MB of wasm and dials its own peers before it can show a frame, and A2
-# timed a first retrieval right after `ready(1)` at 9.4 to 10.5 seconds. Its own boot budget, so
-# raising it does not lengthen a hybrid arm that does not need it.
+# A native arm downloads a few megabytes of wasm and dials its own peers before it can show a frame,
+# and A2 timed a first retrieval right after `ready(1)` at 9.4 to 10.5 seconds. Its own boot budget,
+# so raising it does not lengthen a hybrid arm that does not need it.
 NATIVE_BOOT_S="${NATIVE_BOOT_S:-180}"
 
 SIZE="${SIZE:-1280x720}"
