@@ -41,8 +41,9 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 # Pinned to the version the repository is developed against rather than whatever corepack resolves
 # to. pnpm 11 stopped reading `pnpm.overrides` from package.json, so it reads this workspace's
 # overrides as absent, decides they no longer match the lockfile, and refuses a frozen install
-# outright. Pinning here rather than adding `packageManager` to the root manifest, because the image
-# exists only to run the bench and should not change what anyone else's install resolves.
+# outright. The root manifest carries the same version in `packageManager` since 2026-09-05, which is
+# what corepack shells and the CI action read, and this line keeps the image at it for the reason
+# below rather than trusting that field to be honoured inside the container.
 #
 # Installed with npm rather than activated with corepack, because corepack resolves against `$HOME`
 # and the container runs as the invoking user with `HOME=/tmp`, so a version activated at build time
