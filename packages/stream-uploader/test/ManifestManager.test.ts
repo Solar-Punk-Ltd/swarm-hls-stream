@@ -10,6 +10,7 @@ import { BroadcastAnchor } from '../src/types.js';
 import { TEST_ANCHOR } from './helpers/fakes.js';
 
 const DISCONTINUITY_TAG = '#EXT-X-DISCONTINUITY';
+const GAP_TAG = '#EXT-X-GAP';
 const PROGRAM_DATE_TIME_TAG = '#EXT-X-PROGRAM-DATE-TIME';
 
 /** The wall clock {@link TEST_ANCHOR} puts on the segment at this playlist sequence. */
@@ -106,6 +107,24 @@ function withSegments(count: number, duration: number): ManifestManager {
   const manager = new ManifestManager(TEST_ANCHOR);
   for (let i = 0; i < count; i++) {
     manager.addSegment(i, duration, ref(i));
+  }
+  return manager;
+}
+
+/**
+ * A broadcast that lost `missing` consecutive segments in the middle of itself.
+ *
+ * The engine's index carries on across the hole, which is what a real loss looks like from here:
+ * nothing was told to the manager about the missing indexes, they simply never arrived.
+ */
+function withHole(before: number, missing: number, after: number, duration = 2): ManifestManager {
+  const manager = new ManifestManager(TEST_ANCHOR);
+  for (let i = 0; i < before; i++) {
+    manager.addSegment(i, duration, ref(i));
+  }
+  for (let i = 0; i < after; i++) {
+    const index = before + missing + i;
+    manager.addSegment(index, duration, ref(index));
   }
   return manager;
 }
@@ -450,9 +469,14 @@ describe('the dating a broadcast re-anchors to when the engine restarts inside i
       { ...TEST_ANCHOR, epochs: [{ fromSequence: 3, atMs: RESTARTED_AT_MS }] },
       pinnedDating(RESTARTED_AT_MS),
     );
+    // Consecutive, because that is what a recovery entry holds. A restart resumes the numbering at
+    // one past the highest already published, so a re-anchoring never skips a sequence, and a list
+    // that skipped one would be a lost segment rather than a restart.
     restored.restoreState(
       [
         { index: 0, duration: 2, ref: 'ref-0', sequence: 0 },
+        { index: 1, duration: 2, ref: 'ref-1', sequence: 1 },
+        { index: 2, duration: 2, ref: 'ref-2', sequence: 2 },
         { index: 0, duration: 2, ref: 'after-restart-0', sequence: 3, discontinuity: true },
       ],
       ['#EXTM3U', '#EXT-X-VERSION:3'],
@@ -462,6 +486,8 @@ describe('the dating a broadcast re-anchors to when the engine restarts inside i
 
     assert.deepEqual(programDateTimesOf(restored.buildLiveManifest()), [
       TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs + 2 * STEP_MS,
       RESTARTED_AT_MS,
       RESTARTED_AT_MS + STEP_MS,
     ]);
@@ -566,6 +592,160 @@ describe('ManifestManager discontinuity handling', () => {
 
     assert.equal(countOccurrences(manager.buildVODManifest(), DISCONTINUITY_TAG), 0);
     assert.equal(countOccurrences(manager.buildLiveManifest(), DISCONTINUITY_TAG), 0);
+  });
+});
+
+/**
+ * A segment the broadcast lost, said out loud instead of left out.
+ *
+ * ⛔ HLS numbers the entries a playlist lists consecutively from `#EXT-X-MEDIA-SEQUENCE`, so leaving
+ * the hole out renumbers every segment behind it. The rungs of one ladder derive their sequences from
+ * one shared anchor precisely so segment N means the same instant on all four, and a rung that lost
+ * one segment would be a segment out of step with its siblings until the window slid past the hole.
+ */
+describe('a hole in the sequences is published as gap entries', () => {
+  it('names the missing sequence before the segment that follows it', () => {
+    const manifest = withHole(2, 1, 1).buildLiveManifest();
+
+    assert.ok(
+      manifest.includes(`${GAP_TAG}\n${pdtLineAt(2)}\n#EXTINF:2,\ngap-2\n${pdtLineAt(3)}\n#EXTINF:2,\n${ref(3)}`),
+      manifest,
+    );
+  });
+
+  it('emits one entry per missing sequence, in order', () => {
+    const manifest = withHole(2, 3, 1).buildLiveManifest();
+
+    assert.equal(countOccurrences(manifest, GAP_TAG), 3);
+    assert.deepEqual(segmentUris(manifest), [ref(0), ref(1), 'gap-2', 'gap-3', 'gap-4', ref(5)]);
+  });
+
+  it('leaves an unbroken run of sequences alone', () => {
+    assert.equal(countOccurrences(withSegments(5, 2).buildLiveManifest(), GAP_TAG), 0);
+    assert.equal(countOccurrences(withSegments(5, 2).buildVODManifest(), GAP_TAG), 0);
+  });
+
+  /**
+   * The uploader's own e2e harness, the client's in-tab byte source and the bench all decide whether
+   * a playlist line is fetchable by looking at its shape. A gap URI that matched would be handed to
+   * a node as a chunk address.
+   */
+  it('gives a gap a URI no reader can mistake for a Swarm reference', () => {
+    const uris = segmentUris(withHole(1, 2, 1).buildLiveManifest());
+    const gaps = uris.filter((uri) => uri.startsWith('gap-'));
+
+    assert.equal(gaps.length, 2);
+    for (const uri of gaps) {
+      assert.ok(!/^(?:[0-9a-f]{64}|[0-9a-f]{128})$/i.test(uri), `${uri} reads as a Swarm reference`);
+    }
+    assert.equal(new Set(gaps).size, gaps.length, 'two holes sharing a URI would be one entry to the client');
+  });
+
+  it('writes the same URI for the same hole every time the playlist is rebuilt', () => {
+    const manager = withHole(2, 2, 1);
+
+    assert.deepEqual(segmentUris(manager.buildLiveManifest()), segmentUris(manager.buildLiveManifest()));
+  });
+
+  /**
+   * The whole point of the entries. A player numbers what it is given, so the segment after a hole
+   * has to sit at its own sequence's position in the list.
+   */
+  it('leaves the segment behind a hole at the position its sequence names', () => {
+    const uris = segmentUris(withHole(2, 3, 2).buildVODManifest());
+
+    assert.equal(mediaSequenceOf(withHole(2, 3, 2).buildVODManifest()), 0);
+    assert.equal(uris.indexOf(ref(5)), 5);
+    assert.equal(uris.indexOf(ref(6)), 6);
+  });
+
+  it('steps a gap by the declared fragment length rather than by a measured duration', () => {
+    const manifest = withHole(1, 1, 1, 1.75).buildLiveManifest();
+    const gapExtinf = manifest.split('\n')[manifest.split('\n').indexOf(GAP_TAG) + 2];
+
+    assert.equal(gapExtinf, '#EXTINF:2,');
+    assert.deepEqual(
+      programDateTimesOf(manifest),
+      [0, 1, 2].map((sequence) => TEST_ANCHOR.startedAtMs + sequence * TEST_ANCHOR.fragmentSeconds * 1000),
+    );
+  });
+
+  it('says a hole in the recording as well as in the live window', () => {
+    assert.equal(countOccurrences(withHole(2, 2, 2).buildVODManifest(), GAP_TAG), 2);
+  });
+
+  it('says a hole without claiming the media after it is a fresh encode', () => {
+    const manager = withHole(2, 2, 2);
+
+    assert.equal(countOccurrences(manager.buildLiveManifest(), DISCONTINUITY_TAG), 0);
+    assert.equal(countOccurrences(manager.buildVODManifest(), DISCONTINUITY_TAG), 0);
+  });
+
+  /**
+   * A restored session's sequences come off disk already carrying the hole, so nothing has to be
+   * inferred: the same walk over the held segments finds it.
+   */
+  it('publishes a hole a restored session carries, on the numbering it was restored with', () => {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    manager.restoreState(
+      [
+        { index: 11, duration: 2, ref: ref(11), sequence: 4 },
+        { index: 14, duration: 2, ref: ref(14), sequence: 7 },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+
+    const manifest = manager.buildLiveManifest();
+
+    assert.equal(mediaSequenceOf(manifest), 4);
+    assert.deepEqual(segmentUris(manifest), [ref(11), 'gap-5', 'gap-6', ref(14)]);
+  });
+});
+
+describe('the live window budgets its gap entries alongside its segments', () => {
+  /**
+   * The hole is small enough that the window can afford to name it, which is the case worth
+   * budgeting: gap lines that were not counted would push the published manifest past one chunk and
+   * turn one round trip per publish into three. See {@link LIVE_WINDOW_MAX_BYTES}.
+   */
+  it('still fits in one single-owner chunk when it is naming a hole', () => {
+    const manifest = withHole(60, 5, 25).buildLiveManifest();
+
+    assert.ok(countOccurrences(manifest, GAP_TAG) > 0, 'the window has to reach the hole for this to prove anything');
+    assert.ok(
+      Buffer.byteLength(manifest, 'utf-8') <= LIVE_WINDOW_MAX_BYTES,
+      `a ${Buffer.byteLength(manifest, 'utf-8')} byte manifest costs three round trips per publish instead of one`,
+    );
+  });
+
+  it('drops held segments from the front to pay for the gaps', () => {
+    const withoutHole = segmentUris(withSegments(90, 2).buildLiveManifest()).length;
+    const held = segmentUris(withHole(60, 5, 25).buildLiveManifest()).filter((uri) => !uri.startsWith('gap-'));
+
+    assert.ok(held.length < withoutHole, `held ${held.length} segments against ${withoutHole} on a clean broadcast`);
+    assert.equal(held[held.length - 1], ref(89));
+  });
+
+  /**
+   * A hole wider than the whole budget cannot be named at all, so the window stops at it rather than
+   * shrinking to the one segment the floor guarantees. Nothing is lost by that: the media before the
+   * hole is behind the window, and a viewer joining now is handed the media that is actually there.
+   */
+  it('stops the window at a hole whose entries could never fit', () => {
+    const manifest = withHole(60, 40, 15).buildLiveManifest();
+
+    assert.equal(countOccurrences(manifest, GAP_TAG), 0);
+    assert.equal(segmentUris(manifest)[0], ref(100));
+    assert.equal(mediaSequenceOf(manifest), 100);
+  });
+
+  it('never opens a window on a gap entry, so the media sequence is always a real segment', () => {
+    for (const missing of [1, 5, 40]) {
+      const manifest = withHole(60, missing, 25).buildLiveManifest();
+
+      assert.ok(!segmentUris(manifest)[0].startsWith('gap-'), `a ${missing} wide hole opened the window`);
+      assert.ok(!segmentUris(manifest).at(-1)!.startsWith('gap-'), `a ${missing} wide hole ended the playlist`);
+    }
   });
 });
 

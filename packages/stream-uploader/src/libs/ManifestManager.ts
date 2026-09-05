@@ -4,6 +4,7 @@ import { BroadcastAnchor, SegmentEntry } from '../types.js';
 import {
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
+  HLS_GAP,
   HLS_M3U,
   HLS_MEDIA_SEQUENCE,
   HLS_PLAYLIST_TYPE_VOD,
@@ -75,6 +76,22 @@ function sequenceOf(seg: SegmentEntry): number {
 }
 
 /**
+ * What a gap entry names, since RFC 8216bis requires a URI on every entry a playlist lists.
+ *
+ * The name has three jobs and this form does all of them. It has to be unique per hole, because the
+ * client keys the segments it holds on the URI and two holes sharing one would collapse into a
+ * single entry. It has to be identical every time the same hole is written out again, because that
+ * same keying is what stops a re-poll appending the entry a second time. And it must not read as a
+ * Swarm reference to anything downstream: a reference is 64 or 128 hex characters, and every reader
+ * in this repository that turns a playlist line into a chunk address checks that shape, so a name
+ * carrying a `gap-` prefix and a decimal sequence is refused by looking at it rather than by a
+ * request that 404s.
+ */
+function gapUri(sequence: number): string {
+  return `gap-${sequence}`;
+}
+
+/**
  * Builds the playlists a broadcast publishes, naming every segment by its bare Swarm reference.
  *
  * ## ⛔⛔ A segment line names no gateway, and that is the product decision
@@ -123,6 +140,39 @@ function sequenceOf(seg: SegmentEntry): number {
  * engine came back at, so the media after the gap carries the time it really happened. That
  * re-anchoring is minted once for the whole ladder, which is what keeps the rungs agreeing across
  * it. See {@link BroadcastEpoch} and `broadcastDating.ts`.
+ *
+ * ## A segment that was lost is said out loud, as a gap entry
+ *
+ * **Owner ruling of 2026-09-06, "Option A, say the gap".** A segment the engine closed while nothing
+ * took it leaves a hole in the sequences this manager holds: a failed upload, a loss the engine
+ * reported, or a loss inferred from the index that followed an uploader crash. HLS numbers the
+ * entries a playlist lists consecutively from `#EXT-X-MEDIA-SEQUENCE`, so a playlist that simply left
+ * the hole out would number every entry behind it one lower than its own sequence, and would number
+ * them one higher again the moment the window slid past the hole. Two things break there. The
+ * published rolling playlist renumbers media a viewer is already holding, and a viewer joining a rung
+ * that lost a segment is one segment out of step with its siblings, which is the exact disagreement
+ * the shared anchor exists to prevent.
+ *
+ * So every missing sequence between two held segments is listed, as `#EXT-X-GAP` plus the same
+ * derived stamp, declared fragment length and a URI that every other entry carries. RFC 8216bis
+ * §4.4.4.7 defines the tag as "the segment URI to which it applies does not contain media data and
+ * SHOULD NOT be loaded by clients", and §6.3.3 tells a client to skip such an entry rather than fetch
+ * it. hls.js 1.6.15, the version this project pins, reads it into `frag.gap` and skips the fragment.
+ *
+ * ⛔ **A gap entry never starts a window and never ends a playlist.** The window is a slice of the
+ * segments actually held, so `#EXT-X-MEDIA-SEQUENCE` is always a held segment's own sequence, and a
+ * hole that falls before the window's first held segment is behind the window and is not emitted at
+ * all. The gaps are only ever between two entries that are both there.
+ *
+ * ⚠️ **A hole is NOT a discontinuity.** A lost segment does not restart the encoder's clock, so the
+ * media after the hole is a continuation and its date carries on stepping by one fragment per
+ * sequence. `#EXT-X-DISCONTINUITY` is left for the two things that really are a break: the origin
+ * declaring one, and the engine's counter restarting, which re-anchors the dating here.
+ *
+ * ⭐ **`#EXT-X-VERSION` stays at 3.** RFC 8216bis §8 lists no minimum protocol version for
+ * `#EXT-X-GAP`: its bullets run from version 2 through 12 and none of them names the tag. Version 3
+ * is what floating-point `#EXTINF` durations require, which is what these playlists already carry,
+ * so nothing about the gap entries moves it.
  *
  * @see BroadcastAnchor for why the date-time is derived rather than observed per segment.
  */
@@ -336,7 +386,7 @@ export class ManifestManager {
     const mediaSequence = windowSegments.length > 0 ? sequenceOf(windowSegments[0]) : 0;
 
     this.sequenceHasBeenPublished = true;
-    return [...this.liveHeaderLines(mediaSequence), ...windowSegments.flatMap((seg) => this.segmentLines(seg))];
+    return [...this.liveHeaderLines(mediaSequence), ...this.timelineLines(windowSegments)];
   }
 
   public buildVODManifest(): string {
@@ -355,7 +405,7 @@ export class ManifestManager {
       // parsing error rather than as a change of resource.
       `${HLS_MEDIA_SEQUENCE}:${sequenceOf(this.segments[0])}`,
       '',
-      ...this.segments.flatMap((seg) => this.segmentLines(seg)),
+      ...this.timelineLines(this.segments),
       HLS_ENDLIST,
     ]);
   }
@@ -444,6 +494,13 @@ export class ManifestManager {
    * reference, so no live sequence can reach that state: {@link restoreState} can, because it takes
    * its headers from a recovered manifest, and a header long enough to spend the budget leaves every
    * segment overrunning what is left.
+   *
+   * ⛔ Extending the window over a hole costs the hole's gap entries as well as the segment on the
+   * far side of it, and both are charged here. Uncounted, a broadcast that lost a run of segments
+   * would publish a window over one chunk and pay three round trips per segment for as long as the
+   * hole stayed inside it. A hole too wide to afford simply stops the window: the media before it is
+   * older than what a joining viewer needs, and the floor of one held segment is never reached by
+   * this, since a window of one segment has no pair to hold a hole between.
    */
   private liveWindowLength(): number {
     // Reserved against the largest media sequence there could be, whose own digits are part of the
@@ -457,7 +514,11 @@ export class ManifestManager {
     let spent = 0;
     let length = 0;
     for (let i = this.segments.length - 1; i >= 0; i--) {
+      const successor = this.segments[i + 1];
       spent += manifestBytes(this.segmentLines(this.segments[i]));
+      if (successor !== undefined) {
+        spent += manifestBytes(this.gapLines(this.segments[i], successor));
+      }
       if (spent > budget && length > 0) {
         break;
       }
@@ -483,6 +544,41 @@ export class ManifestManager {
   private segmentLines(seg: SegmentEntry): string[] {
     const discontinuity = seg.discontinuity ? [HLS_DISCONTINUITY] : [];
     return [...discontinuity, buildProgramDateTime(this.dateOf(sequenceOf(seg))), buildExtinf(seg.duration), seg.ref];
+  }
+
+  /**
+   * Held segments with every sequence missing between two of them listed as a gap entry.
+   *
+   * Written by both the live window and the recording, over whatever slice of the held segments each
+   * of them names, so a hole reads the same in the playlist a viewer is following and in the one they
+   * are handed afterwards.
+   */
+  private timelineLines(held: readonly SegmentEntry[]): string[] {
+    return held.flatMap((seg, position) =>
+      position === 0 ? this.segmentLines(seg) : [...this.gapLines(held[position - 1], seg), ...this.segmentLines(seg)],
+    );
+  }
+
+  /**
+   * One entry per sequence the broadcast lost between these two held segments, in order, and nothing
+   * at all where they are consecutive.
+   *
+   * The duration is the fragment length the deployment declared and never a measurement, for the same
+   * reason {@link dateOf} is derived: nothing was observed here, the media is gone. Taking the
+   * neighbouring segment's own `#EXTINF` would put one rung's encoder rounding on a hole the whole
+   * ladder lost, and the four rungs would then disagree about where the media after it starts.
+   */
+  private gapLines(from: SegmentEntry, to: SegmentEntry): string[] {
+    const lines: string[] = [];
+    for (let sequence = sequenceOf(from) + 1; sequence < sequenceOf(to); sequence++) {
+      lines.push(
+        HLS_GAP,
+        buildProgramDateTime(this.dateOf(sequence)),
+        buildExtinf(this.anchor.fragmentSeconds),
+        gapUri(sequence),
+      );
+    }
+    return lines;
   }
 
   /**
