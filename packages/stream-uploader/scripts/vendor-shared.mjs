@@ -1,18 +1,17 @@
 /**
  * Compile `@swarm-hls-stream/shared` into the uploader's own `dist/node_modules`.
  *
- * The production image copies `packages/stream-uploader/dist/` and then runs `npm install
- * --omit=dev` against the uploader's package.json alone, so a workspace dependency has nowhere to
- * come from: npm does not understand `workspace:*` and the shared package is not published. Node's
- * module resolution walks up from the importing file, so a copy under `dist/node_modules` is found
- * from `dist/index.js` and from `dist/utils/env.js` alike, and it rides into the image inside the
- * `dist/` copy that is already there.
+ * The production image copies `packages/stream-uploader/dist/` and installs from the manifests
+ * alone, so the shared package's sources are never in it and a workspace link has nothing to point
+ * at. Node's module resolution walks up from the importing file, so a copy under `dist/node_modules`
+ * is found from `dist/index.js` and from `dist/utils/env.js` alike, and it rides into the image
+ * inside the `dist/` copy that is already there.
  *
  * Shared is therefore a devDependency of the uploader, because by then it is vendored rather than
- * resolved. **That is not enough on its own.** `--omit=dev` does not save the build: npm parses the
- * whole manifest before it applies the flag and rejects the `workspace:` protocol outright with
- * EUNSUPPORTEDPROTOCOL, dev block or not. `Dockerfile.uploader` deletes `devDependencies` before
- * installing for exactly that reason, and `deploy/test/uploaderImage.test.js` holds the two together.
+ * resolved, and the image's `pnpm install --prod` skips the whole dev block. `deploy/Dockerfile.uploader`
+ * still has to copy `packages/shared/package.json` into its build context, because pnpm resolves a
+ * `workspace:` link before a filter narrows anything, and `deploy/test/uploaderImage.test.js` holds
+ * the two together.
  *
  * The alternative was bundling, which is rejected for one specific reason: `src/utils/env.ts`
  * resolves the repository root by walking four levels up from its own compiled location, so
