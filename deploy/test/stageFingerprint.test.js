@@ -515,6 +515,63 @@ describe('stage-fingerprint refuses when it learned nothing', () => {
   });
 });
 
+/**
+ * ⛔⛔⛔ AN INTERPRETER TOO OLD FOR THIS FILE HAS TO SAY SO, not die inside it. `directive` is
+ * annotated `-> float | None`, python evaluates that when the module loads, and python 3.9 cannot
+ * form it: it raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` before
+ * argparse has seen a flag. On 2026-09-05 a Mac whose `python3` was Apple's 3.9.6 turned 49 deploy
+ * tests red with that traceback, and it read as load rather than as the wrong python.
+ *
+ * The version is faked rather than an old interpreter installed, because the point is what the guard
+ * does with a reading, and `sys.version_info` is an ordinary attribute the module then reads.
+ */
+describe('stage-fingerprint refuses an interpreter it cannot run on', () => {
+  const JUDGE = join(SCRIPTS, 'stage-fingerprint.py');
+
+  /** ⛔ 4, so a caller can tell this from the matches (0), refused (1), usage (2) and not-ready (3). */
+  const EXIT_PYTHON_TOO_OLD = 4;
+
+  /** The real python, running the real file, with only the version it reports replaced. */
+  async function underPython(versionTuple) {
+    const program = [
+      'import runpy, sys',
+      `sys.version_info = ${versionTuple}`,
+      `sys.argv = [${JSON.stringify(JUDGE)}, '--help']`,
+      "runpy.run_path(sys.argv[0], run_name='__main__')",
+    ].join('\n');
+    return run('python3', ['-c', program])
+      .then((ok) => ({ code: 0, ...ok }))
+      .catch((error) => ({ code: error.code, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }));
+  }
+
+  it('names the interpreter, the version it found and the version it needs', async () => {
+    const { code, stderr } = await underPython("(3, 9, 6, 'final', 0)");
+
+    assert.equal(code, EXIT_PYTHON_TOO_OLD, `python 3.9 was not refused: ${stderr}`);
+    assert.match(stderr, /python/i);
+    assert.match(stderr, /3\.9/, 'the refusal did not name the version it found');
+    assert.match(stderr, /3\.10/, 'the refusal did not name the version it needs');
+    assert.match(stderr, /PATH/, 'the refusal did not say what to do about it');
+  });
+
+  it('refuses in words rather than dying on the annotation it cannot form', async () => {
+    const { stderr } = await underPython("(3, 9, 6, 'final', 0)");
+
+    // Both halves. Without the first, a run that refused nothing at all also carries no traceback
+    // and passes, which is exactly the state this test was written against.
+    assert.match(stderr, /REFUSING/, 'nothing refused, so there was no sentence to read');
+    assert.doesNotMatch(stderr, /unsupported operand/, 'the traceback reached the operator');
+    assert.doesNotMatch(stderr, /Traceback/, 'the traceback reached the operator');
+  });
+
+  /** ⛔ The control. A guard that refused every version would pass both assertions above. */
+  it('runs on the floor itself', async () => {
+    const { code, stderr } = await underPython("(3, 10, 0, 'final', 0)");
+
+    assert.equal(code, 0, `python 3.10 was refused: ${stderr}`);
+  });
+});
+
 describe('byte-source-arms consults the gate before it spends a broadcast', () => {
   const driver = readFileSync(DRIVER, 'utf8');
 

@@ -59,6 +59,40 @@ EXIT_USAGE = 2
 # only impatient, which is the safe direction for the mistake to fall.
 EXIT_NOT_READY = 3
 
+# ⭐ The interpreter running this is too old for the file, which is not a verdict about any stage at
+# all. Separated from {@link EXIT_USAGE} so a caller can tell a machine that needs a different python
+# from an operator who typed the wrong flag.
+EXIT_PYTHON_TOO_OLD = 4
+
+# ⛔⛔⛔ NOT A STYLE PREFERENCE. `directive` below is annotated `-> float | None`, python evaluates an
+# annotation when the module loads, and python 3.9 cannot form that one: it raises
+# `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` before argparse has seen a
+# single flag. On 2026-09-05 a Mac whose `python3` was Apple's 3.9.6 turned 49 deploy tests red with
+# that traceback, and it read as load until somebody found the cause. A gate that dies is worse than
+# one that refuses, because a traceback is read as a broken gate rather than as a wrong interpreter.
+#
+# 3.10 rather than the newest, because it is the oldest this file actually needs: the bench container
+# has 3.11 and the manager host 3.10.12, so nothing that has to run this is below it.
+#
+# ⛔ This block runs on the interpreter it is refusing, so it stays inside python 3.8 syntax. No
+# walrus, and no `|` of its own.
+MINIMUM_PYTHON = (3, 10)
+
+if sys.version_info < MINIMUM_PYTHON:
+    _found = ".".join(str(part) for part in sys.version_info[:3])
+    _needed = ".".join(str(part) for part in MINIMUM_PYTHON)
+    sys.stderr.write(
+        "stage-fingerprint: REFUSING, {executable} is python {found} and this file needs "
+        "{needed} or later.\n"
+        "  It carries a `float | None` annotation that python evaluates at import, which {found} "
+        "cannot form, so the alternative to this sentence is a TypeError traceback that reads as a "
+        "broken gate rather than as the wrong interpreter.\n"
+        "  Put a python3 of {needed} or later first on PATH and run it again.\n".format(
+            executable=sys.executable, found=_found, needed=_needed
+        )
+    )
+    sys.exit(EXIT_PYTHON_TOO_OLD)
+
 
 class AmbiguousDirective(Exception):
     """Raised when one config gives a directive more than one value. See {@link directive}."""
