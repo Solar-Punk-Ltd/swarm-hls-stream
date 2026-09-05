@@ -9,9 +9,11 @@ import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist';
 const M3U = '#EXTM3U';
 const EXTINF_2S = '#EXTINF:2,';
 const DISCONTINUITY = '#EXT-X-DISCONTINUITY';
+const GAP = '#EXT-X-GAP';
 const PROGRAM_DATE_TIME = '#EXT-X-PROGRAM-DATE-TIME';
 const PDT_0 = `${PROGRAM_DATE_TIME}:2026-09-01T12:00:00.000Z`;
 const PDT_1 = `${PROGRAM_DATE_TIME}:2026-09-01T12:00:02.000Z`;
+const PDT_2 = `${PROGRAM_DATE_TIME}:2026-09-01T12:00:04.000Z`;
 
 describe('parseManifest discontinuity handling', () => {
   it('attaches the discontinuity flag to the segment following the tag', () => {
@@ -226,6 +228,94 @@ describe('ManifestStateManager serialize', () => {
       out2.includes(`${DISCONTINUITY}\n${EXTINF_2S}\nseg1.ts`),
       'Poll 2: seg1 should STILL have discontinuity (dedup preserved the old flag)',
     );
+  });
+});
+
+/**
+ * A hole in the publisher's timeline, as it reaches the viewer.
+ *
+ * The uploader lists every sequence it lost as an `#EXT-X-GAP` entry so the numbering behind the hole
+ * never moves. A viewer that dropped the tag while keeping the entry would hand hls.js a media
+ * segment whose URI names nothing, and hls.js would try to fetch it. `frag.gap` is what makes it skip
+ * one instead, and it comes from the tag.
+ */
+describe('a gap entry as a viewer rebuilds it', () => {
+  const TOPIC = 'gap-entries';
+  const manager = ManifestStateManager.getInstance();
+  const GATEWAY = 'http://127.0.0.1:1633/bytes';
+  const REF_0 = '0'.repeat(63) + '0';
+  const REF_2 = '0'.repeat(63) + '2';
+
+  const withHole = [M3U, PDT_0, EXTINF_2S, REF_0, GAP, PDT_1, EXTINF_2S, 'gap-1', PDT_2, EXTINF_2S, REF_2].join('\n');
+
+  beforeEach(() => {
+    manager.clear(TOPIC);
+  });
+
+  function hold(manifest: string): void {
+    const parsed = parseManifest(manifest);
+    manager.updateManifest(TOPIC, parsed.headers, parsed.segments, parsed.isFinalized);
+  }
+
+  it('writes the tag back before the entry it belongs to', () => {
+    hold(withHole);
+
+    const out = manager.serialize(TOPIC, '');
+
+    assert.ok(out.includes(`${GAP}\n${PDT_1}\n${EXTINF_2S}\ngap-1`), `the gap lost its tag, got:\n${out}`);
+    assert.equal(out.split(GAP).length - 1, 1, `one tag per gap entry, got:\n${out}`);
+  });
+
+  /**
+   * ⛔ Untouched, unlike a segment reference. Every media line is re-hosted against this viewer's own
+   * gateway, and a gap URI put through that would become `<gateway>/gap-1`, which reads as an address
+   * on a real host. hls.js never loads a gap fragment, so nothing fetches either form, but the
+   * unprefixed one cannot be mistaken for media by anything that reads the playlist afterwards.
+   */
+  it('leaves a gap URI alone while re-hosting the media around it', () => {
+    hold(withHole);
+
+    const out = manager.serialize(TOPIC, GATEWAY);
+
+    assert.ok(out.includes(`${EXTINF_2S}\ngap-1`), `a gap URI must not be re-hosted, got:\n${out}`);
+    assert.ok(out.includes(`${EXTINF_2S}\n${GATEWAY}/${REF_0}`), `the media around it must be, got:\n${out}`);
+  });
+
+  it('keeps the media on the numbers it was published with', () => {
+    hold(withHole);
+
+    const entries = manager
+      .serialize(TOPIC, '')
+      .split('\n')
+      .filter((line) => line && !line.startsWith('#'));
+
+    assert.deepEqual(entries, [REF_0, 'gap-1', REF_2]);
+  });
+
+  /**
+   * A live viewer re-reads a window it already holds on nearly every poll, and keeps what it has by
+   * URI. A gap URI is unique to its own sequence and identical every time the publisher writes that
+   * hole out again, so the entry is appended once and never doubles.
+   */
+  it('appends a gap entry once however often the window is re-polled', () => {
+    hold(withHole);
+    hold(withHole);
+
+    const out = manager.serialize(TOPIC, '');
+
+    assert.equal(out.split('gap-1').length - 1, 1, `the gap doubled on a re-poll, got:\n${out}`);
+  });
+
+  it('finds the overlap when the last entry a viewer holds is a gap', () => {
+    hold([M3U, PDT_0, EXTINF_2S, REF_0, GAP, PDT_1, EXTINF_2S, 'gap-1'].join('\n'));
+    hold([M3U, GAP, PDT_1, EXTINF_2S, 'gap-1', PDT_2, EXTINF_2S, REF_2, '#EXT-X-ENDLIST'].join('\n'));
+
+    const entries = manager
+      .serialize(TOPIC, '')
+      .split('\n')
+      .filter((line) => line && !line.startsWith('#'));
+
+    assert.deepEqual(entries, [REF_0, 'gap-1', REF_2]);
   });
 });
 

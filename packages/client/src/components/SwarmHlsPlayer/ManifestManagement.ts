@@ -4,6 +4,7 @@ import {
   feedSlotPath,
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
+  HLS_GAP,
   HLS_PLAYLIST_TYPE,
   HLS_PLAYLIST_TYPE_EVENT,
   nextFeedRequest,
@@ -216,6 +217,10 @@ export class ManifestStateManager {
    * The overlap is found by segment address rather than by position, because the two lists start in
    * different places: a finished playlist that shares no segment with this one is a different
    * playlist of the same broadcast, and is ignored rather than concatenated onto the end.
+   *
+   * A gap entry works as an overlap point like any other. The publisher names each hole `gap-` and
+   * its own sequence, so the address is unique to that hole and identical in every playlist naming
+   * it, which is what both this and the URI keying in {@link updateManifest} rely on.
    */
   private appendAfterLastHeld(state: TopicState, segments: Segment[]): void {
     const lastHeld = state.segments[state.segments.length - 1]?.uri;
@@ -255,6 +260,15 @@ export class ManifestStateManager {
       if (seg.discontinuity) {
         lines.push(HLS_DISCONTINUITY);
       }
+      // Written back or hls.js loads the entry. The publisher lists a sequence it lost as an entry
+      // rather than leaving it out, so the numbering behind the hole never moves, and this tag is the
+      // only thing saying the entry names no media. Without it hls.js builds an ordinary fragment,
+      // fetches a URI that resolves to nothing, and the viewer meets a load error where the publisher
+      // had already said there was nothing to load. With it, `frag.gap` is set and the fragment is
+      // skipped.
+      if (seg.gap) {
+        lines.push(HLS_GAP);
+      }
       // Passed through exactly as the publisher wrote it, never recomputed. It is the publisher's
       // one statement of when this media happened, derived there from a single anchor the whole
       // ladder shares, and a viewer rebuilding it from its own arrival times would hand hls.js four
@@ -264,7 +278,7 @@ export class ManifestStateManager {
         lines.push(seg.programDateTime);
       }
       lines.push(seg.extinf);
-      lines.push(this.buildUri(seg.uri, bytesUrl));
+      lines.push(seg.gap ? seg.uri : this.buildUri(seg.uri, bytesUrl));
     }
 
     if (state.isFinalized) {
@@ -333,6 +347,10 @@ export class ManifestStateManager {
    *
    * ⚠️ It is also why those recordings still fetch from the publisher's gateway no matter what their
    * viewer configured. That cannot be repaired from this side: the address is in the published bytes.
+   *
+   * ⛔ A gap entry never reaches here. Its URI names nothing fetchable, so re-hosting it would put a
+   * real host in front of a token that stands for missing media, and every later reader would have to
+   * strip the host back off to see what it was. {@link serialize} passes it through instead.
    */
   private buildUri(uri: string, bytesUrl: string): string {
     if (!bytesUrl || uri.startsWith('http://') || uri.startsWith('https://') || uri.startsWith('/bytes/')) {
