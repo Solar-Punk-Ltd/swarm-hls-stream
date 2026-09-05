@@ -1,4 +1,5 @@
 import { BeeResponseError } from '@ethersphere/bee-js';
+import { BEE_ANSWER_LIMIT } from '@swarm-hls-stream/shared';
 
 import { Logger } from '../libs/Logger.js';
 
@@ -73,11 +74,25 @@ function extractHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
-/** The longest of a response body this reads, so a whole page cannot become a log line. */
-const BEE_ANSWER_LIMIT = 200;
+/** What a cut answer ends with, so a reader can tell one from an answer bee ended there itself. */
+const ANSWER_CUT_MARKER = '...';
 
 /**
- * Bee's own words for a failure, rather than the HTTP client's.
+ * Bee's words cut to what a log line carries, marked where they were cut.
+ *
+ * ⛔ **The bound belongs to the line and is declared with it**, in `rungBatchRefused`'s own package,
+ * and this is the only place that applies it. There were two constants named `BEE_ANSWER_LIMIT` until
+ * 2026-09-05, 200 here and 300 in the composer, and this one ran first: the composer's bound never
+ * fired, the marker never reached a line, and an answer that had been cut read as bee's whole answer.
+ * Which words bee names a full postage batch with is the one thing the answer is carried for, so a
+ * cut that says nothing about itself is the worst shape available.
+ */
+function withinAnswerLimit(answer: string): string {
+  return answer.length > BEE_ANSWER_LIMIT ? `${answer.slice(0, BEE_ANSWER_LIMIT)}${ANSWER_CUT_MARKER}` : answer;
+}
+
+/**
+ * Bee's own words for a failure, rather than the HTTP client's, bounded by {@link BEE_ANSWER_LIMIT}.
  *
  * ⛔⛔⛔ **`error.message` on a bee failure is axios's sentence, not bee's.** bee-js builds its
  * `BeeResponseError` with the client's message and puts the response body in a separate field
@@ -87,24 +102,32 @@ const BEE_ANSWER_LIMIT = 200;
  * in this repo, and a sitting that reports the client's words leaves that question exactly as open as
  * it found it.
  *
- * Bee answers a refusal as JSON with its own `message`, so that is preferred, then a body that is
- * already a string, then the client's sentence as the last resort. Never throws: every caller is
- * reporting some other failure and a throw here would replace it.
+ * Never throws: every caller is reporting some other failure and a throw here would replace it.
  */
 export function beeAnswer(error: unknown): string {
+  return withinAnswerLimit(unboundedBeeAnswer(error));
+}
+
+/**
+ * Bee's answer at whatever length it arrived.
+ *
+ * Bee answers a refusal as JSON with its own `message`, so that is preferred, then a body that is
+ * already a string, then the client's sentence as the last resort.
+ */
+function unboundedBeeAnswer(error: unknown): string {
   const body = error instanceof BeeResponseError ? error.responseBody : undefined;
 
   if (typeof body === 'string' && body.trim() !== '') {
-    return body.slice(0, BEE_ANSWER_LIMIT);
+    return body;
   }
 
   if (typeof body === 'object' && body !== null) {
     const { message } = body as { message?: unknown };
     if (typeof message === 'string' && message.trim() !== '') {
-      return message.slice(0, BEE_ANSWER_LIMIT);
+      return message;
     }
     try {
-      return JSON.stringify(body).slice(0, BEE_ANSWER_LIMIT);
+      return JSON.stringify(body);
     } catch {
       return getErrorMessage(error);
     }

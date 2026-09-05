@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   addingStreamToList,
   addingStreamToListPattern,
+  BEE_ANSWER_LIMIT,
   catalogStateLost,
   catalogStateLostPattern,
   datingReanchored,
@@ -649,6 +650,24 @@ describe('the message for a postage batch bee refused', () => {
     const wordy = 'batch 1a2b: not usable, insufficient balance for depth 17.';
 
     assert.equal(rungBatchRefusedPattern().exec(rungBatchRefused(BATCH, STREAM, 402, wordy))?.[4], wordy);
+  });
+
+  /**
+   * ⛔⛔ **The bound on bee's words is declared here and applied once, by whoever reads them.** Until
+   * 2026-09-05 two constants named `BEE_ANSWER_LIMIT` cut this text, 200 in the uploader's `beeAnswer`
+   * and 300 in this composer, and the smaller one ran first: the composer's cut never fired, the "..."
+   * that says a cut happened never reached a line, and an answer that had been shortened read as
+   * bee's whole answer. A second cut here would silently shorten a line the caller had already bounded
+   * and marked, so the composer collapses the answer onto one line and leaves the length to the cap it
+   * exports.
+   */
+  it("carries a long answer whole, because the cap is applied where bee's words are read", () => {
+    const wordy = 'w'.repeat(BEE_ANSWER_LIMIT * 2);
+
+    const line = rungBatchRefused(BATCH, STREAM, 402, wordy);
+
+    assert.ok(line.includes(wordy), 'the composer shortened an answer its caller had already bounded');
+    assert.equal(rungBatchRefusedPattern().exec(line)?.[4], wordy);
   });
 
   it('reads a message the error carried nothing for as empty rather than failing to match', () => {

@@ -542,13 +542,20 @@ const BEE_ANSWER_SLOT = 'BEEANSWERSLOT';
 const STATUS_SLOT = 464646464646;
 
 /**
- * The longest of bee's answer this line carries, in characters.
+ * The longest of bee's answer a refusal line carries, in characters.
  *
  * Bee answers a refused upload in a few words and a JSON envelope is not much longer, so this is a
  * bound on a remote service's free text rather than a limit anything is expected to reach. A log
  * line is read in a scrollback and a whole response body would push the words after it off the end.
+ *
+ * ⛔⛔ **Declared here, applied once, by whoever turns a bee failure into these words.** That is
+ * `beeAnswer` in the uploader, which also marks the cut it makes. Until 2026-09-05 there were two
+ * constants of this name, 200 in `beeAnswer` and 300 here, and the smaller one ran first: this bound
+ * never fired, the marker that says an answer was shortened never reached a line, and a cut answer
+ * read as bee's whole answer. A second cut in the composer would take a caller's marked cut and
+ * silently shorten it again, so the composer only puts the answer on one line.
  */
-const BEE_ANSWER_LIMIT = 300;
+export const BEE_ANSWER_LIMIT = 300;
 
 /**
  * Bee's answer as one line, which is what a line-oriented contract can carry.
@@ -562,10 +569,12 @@ const BEE_ANSWER_LIMIT = 300;
  *
  * ⭐ In the composer rather than in the reader, because the contract is what a deployment writes and
  * a reader repairing a line it should never have been given is a contract with two definitions.
+ *
+ * ⚠️ Shape only, never length. {@link BEE_ANSWER_LIMIT} is the bound and the caller that reads bee's
+ * words applies it, so cutting again here would take a marked cut and quietly shorten it.
  */
 function oneLine(message: string): string {
-  const collapsed = message.replace(/\s+/g, ' ').trim();
-  return collapsed.length > BEE_ANSWER_LIMIT ? `${collapsed.slice(0, BEE_ANSWER_LIMIT)}...` : collapsed;
+  return message.replace(/\s+/g, ' ').trim();
 }
 
 /**

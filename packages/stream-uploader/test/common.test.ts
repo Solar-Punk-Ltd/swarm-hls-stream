@@ -1,4 +1,5 @@
 import { BeeResponseError } from '@ethersphere/bee-js';
+import { BEE_ANSWER_LIMIT } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -117,6 +118,35 @@ describe('nonRetryableStatus', () => {
     const refused = new BeeResponseError('post', '/bytes', 'socket hang up', undefined, undefined, 'ECONNRESET');
 
     assert.equal(beeAnswer(refused), 'socket hang up');
+  });
+
+  /**
+   * ⛔⛔ **One cap, and a cut a reader can see.** Until 2026-09-05 two constants named
+   * `BEE_ANSWER_LIMIT` bounded this text, 200 here and 300 in the shared composer, and the smaller one
+   * ran first: the composer's bound never fired, the "..." that says an answer was shortened never
+   * reached a log line, and an answer that had been cut read as bee's whole answer. The line's own
+   * package declares the bound now and this is the only place that applies it.
+   */
+  it("cuts an answer past the line's declared bound and marks the cut", () => {
+    const wordy = 'w'.repeat(BEE_ANSWER_LIMIT + 50);
+    const refused = new BeeResponseError('post', '/bytes', 'Request failed', wordy, 402, 'E');
+
+    assert.equal(beeAnswer(refused), `${'w'.repeat(BEE_ANSWER_LIMIT)}...`);
+  });
+
+  /** The same bound on the JSON envelope bee actually answers with, and not only on a plain-text body. */
+  it("cuts bee's own message in a JSON body at the same bound", () => {
+    const wordy = 'w'.repeat(BEE_ANSWER_LIMIT + 50);
+    const refused = new BeeResponseError('post', '/bytes', 'Request failed', { code: 402, message: wordy }, 402, 'E');
+
+    assert.equal(beeAnswer(refused), `${'w'.repeat(BEE_ANSWER_LIMIT)}...`);
+  });
+
+  it('leaves an answer inside the bound exactly as bee sent it, with nothing marking a cut', () => {
+    const whole = 'w'.repeat(BEE_ANSWER_LIMIT);
+    const refused = new BeeResponseError('post', '/bytes', 'Request failed', whole, 402, 'E');
+
+    assert.equal(beeAnswer(refused), whole);
   });
 
   it('reads an ordinary error the way everything else here does', () => {
