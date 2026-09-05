@@ -589,12 +589,19 @@ describe('the message for a postage batch bee refused', () => {
    * ⛔ The one assertion on the words themselves. Everything else here reads the composer against its
    * own derived pattern, which agrees with itself however the line is worded, so a reword that broke
    * an operator's grep would pass every other test in this block.
+   *
+   * ⛔⛔ **The tail says what the first live drain measured, not what this line first claimed.** It
+   * used to read "the rung publishes nothing until the batch is replaced", and on 2026-09-04 bee
+   * refused one rung's batch four times in about fifty seconds with segments landing in between. A
+   * chunk is refused only once its own bucket is full, so the rung goes thin and then quiet rather
+   * than stopping at the first refusal, and an operator who read the old tail would have gone looking
+   * for a dead encoder while the rung was still delivering.
    */
   it('composes the line an operator greps for, word for word', () => {
     assert.equal(
       rungBatchRefused(BATCH, STREAM, 402, REFUSAL),
-      'Postage batch ba7c4de1 of live/stream_1080p refused by bee (402 batch is not usable), the rung publishes ' +
-        'nothing until the batch is replaced',
+      'Postage batch ba7c4de1 of live/stream_1080p refused by bee (402 batch is not usable), the rung thins out ' +
+        'as the batch fills and this is the first refusal bee answered with this status',
     );
   });
 

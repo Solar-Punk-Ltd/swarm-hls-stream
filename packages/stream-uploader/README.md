@@ -360,8 +360,8 @@ only the first to the breakdown. Difference two scrapes to get a rate. Each rung
 against the uploads on the same label. Each rung publishes through its own bee with its own prepaid
 postage batch, so a batch that runs out stops that rung and leaves the other three publishing: one
 rung's drops climbing while its uploads slow down is that batch, and the uploader writes one
-`Postage batch <id> of <stream> refused by bee (<status> <message>), the rung publishes nothing until
-the batch is replaced` line at error level naming it. Once per stream per process, and never re-armed
+`Postage batch <id> of <stream> refused by bee (<status> <message>), the rung thins out as the batch
+fills and this is the first refusal bee answered with this status` line at error level naming it. Once per stream per process, and never re-armed
 by a segment that lands, because a batch that is filling refuses a growing share of segments rather
 than all of them: measured live on 2026-09-04, four refusals in about fifty seconds with segments
 landing in between. Which batch a rung spends is read once at start, so only a redeploy replaces it

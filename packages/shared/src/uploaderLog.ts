@@ -605,7 +605,7 @@ export function rungBatchRefused(batch: string, streamId: string, status: number
   const batchPrefix = batch.slice(0, BATCH_ID_PREFIX_LENGTH);
   return `Postage batch ${batchPrefix} of ${streamId} refused by bee (${status} ${oneLine(
     message,
-  )}), the rung publishes nothing until the batch is replaced`;
+  )}), the rung thins out as the batch fills and this is the first refusal bee answered with this status`;
 }
 
 /**
