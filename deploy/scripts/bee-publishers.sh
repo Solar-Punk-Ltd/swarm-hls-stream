@@ -121,6 +121,14 @@ fi
 # whole measurement arm has already been lost to that confusion, six reds that all read as product
 # faults. ssh exits 255 for connection and authentication failures and passes the remote command's
 # status through otherwise, so the two are separable and are separated here.
+#
+# ⛔⛔⛔ AND A NODE THAT ANSWERS AN ERROR IS NEITHER OF THOSE. Bee reports a failure as an ordinary
+# JSON body carrying `code` and `message` and no list at all, over an HTTP status nothing here used to
+# ask for, so an erroring node was refused for holding no batch and the printed fix was to go and buy
+# one on it. `--write-out` puts the status on its own last line after the body, the way `health.sh`
+# reads one, which is how a single request answers both questions.
+readonly HTTP_CODE_SUFFIX='\n%{http_code}'
+
 read_stamps() {
   local port="$1"
   if [ -n "$STAMPS_FROM" ]; then
@@ -128,11 +136,43 @@ read_stamps() {
     return 0
   fi
   if [ "$TARGET" = "localhost" ]; then
-    curl -s --max-time 10 "http://127.0.0.1:${port}/stamps" 2>/dev/null
+    curl -s -w "$HTTP_CODE_SUFFIX" --max-time 10 "http://127.0.0.1:${port}/stamps" 2>/dev/null
     return $?
   fi
-  ssh -o ConnectTimeout=10 "$TARGET" "curl -s --max-time 10 'http://127.0.0.1:${port}/stamps'" 2>/dev/null
+  ssh -o ConnectTimeout=10 "$TARGET" "curl -s -w '${HTTP_CODE_SUFFIX}' --max-time 10 'http://127.0.0.1:${port}/stamps'" 2>/dev/null
   return $?
+}
+
+# The status curl appended, and the body without it. A rehearsal off `--stamps-from` carries no such
+# line and neither does a read curl cut short, so anything whose last line is not three digits is
+# taken as all body and no status, which the guards below then read as unknown.
+STAMPS_BODY=""
+STAMPS_HTTP_CODE=""
+split_stamps_answer() {
+  local raw="$1" last="${1##*$'\n'}"
+  if [ "$raw" != "$last" ] && [[ "$last" =~ ^[0-9]{3}$ ]]; then
+    STAMPS_HTTP_CODE="$last"
+    STAMPS_BODY="${raw%$'\n'*}"
+    return 0
+  fi
+  STAMPS_HTTP_CODE=""
+  STAMPS_BODY="$raw"
+}
+
+# What the node called the failure, for a refusal that carries its words rather than only its number.
+node_error_words() {
+  printf '%s' "$1" | python3 -c '
+import json, sys
+
+try:
+    body = json.load(sys.stdin)
+except ValueError:
+    body = None
+if isinstance(body, dict):
+    said = [str(body[key]) for key in ("code", "message") if key in body]
+    if said:
+        print(" and said " + ": ".join(said), end="")
+'
 }
 
 SSH_TRANSPORT_FAILED=255
@@ -156,7 +196,7 @@ for pair in "${RUNG_PORT_VARS[@]}"; do
     exit 1
   fi
 
-  stamps="$(read_stamps "$port")"
+  answer="$(read_stamps "$port")"
   # shellcheck disable=SC2181
   if [ "$?" = "${SSH_TRANSPORT_FAILED}" ] && [ "$TARGET" != "localhost" ] && [ -z "$STAMPS_FROM" ]; then
     echo "bee-publishers: REFUSING, could not reach ${TARGET} over ssh."
@@ -166,6 +206,23 @@ for pair in "${RUNG_PORT_VARS[@]}"; do
     echo "    ssh-add -l && ssh ${TARGET} true"
     exit 1
   fi
+
+  split_stamps_answer "$answer"
+  stamps="$STAMPS_BODY"
+
+  # Before the empty-body guard, because a node that answers an error with no body at all is still a
+  # node that answered. 000 is what curl reports when there was no HTTP response to read a status
+  # from, which is the silent node the next guard names.
+  case "$STAMPS_HTTP_CODE" in
+    '' | 000 | 2??) ;;
+    *)
+      echo "bee-publishers: REFUSING, the ${rung} node on :${port} answered ${STAMPS_HTTP_CODE} to /stamps$(node_error_words "$stamps")."
+      echo "  A node that answers an error is not a node holding no batch, so this says nothing about"
+      echo "  what ${rung} holds and buying it another batch would be acting on the wrong reason."
+      exit 1
+      ;;
+  esac
+
   if [ -z "$stamps" ]; then
     echo "bee-publishers: REFUSING, the ${rung} node on :${port} did not answer /stamps."
     echo "  A node that cannot say what it holds is not a node with a usable batch."
@@ -186,11 +243,21 @@ port = os.environ["PORT"]
 min_ttl_s = float(os.environ["MIN_TTL_HOURS"]) * 3600.0
 max_util = float(os.environ["MAX_UTILIZATION"])
 
+# ⛔ A bee error envelope is valid JSON with a code and a message and no list at all, so reading a
+# missing list as an empty one turns a node that could not answer into a node holding no batch, and
+# the refusal then tells an operator to buy one on it.
 try:
-    stamps = json.load(sys.stdin).get("stamps") or []
-except (ValueError, AttributeError) as error:
+    body = json.load(sys.stdin)
+except ValueError as error:
     print(f"REFUSE\tthe {rung} node on :{port} answered /stamps with something unreadable ({error})")
     sys.exit(0)
+
+if not isinstance(body, dict) or not isinstance(body.get("stamps"), list):
+    print(f"REFUSE\tthe {rung} node on :{port} answered /stamps with no list of stamps in it, which is "
+          f"the shape of a bee error envelope, so what that node holds is unknown rather than nothing")
+    sys.exit(0)
+
+stamps = body["stamps"]
 
 def why_not(batch):
     """Every reason a batch cannot carry a broadcast, so a refusal lists them all at once."""

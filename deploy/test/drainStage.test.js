@@ -122,10 +122,22 @@ function curlUrls(sandbox) {
  * these fixtures and passed, and by this script's own docblock the batch would then arm cleanly and
  * refuse at the first upload, which the drain suite would then report as a product finding.
  *
+ * ⛔ It honours `--write-out` the way curl does, because that is how the script reads an HTTP status
+ * at all: the format string is appended to the body, so the answer arrives as the body, a newline and
+ * three digits. A stub that ignored it would leave every reading looking like a 200 and the whole
+ * error-envelope family of tests below could not fail.
+ *
  * Written as a shell wrapper around a `.cjs`, the pattern the sandbox helper documents: an
  * extensionless node stub under a `"type": "module"` package would fail to load.
+ *
+ * @param {object} readings
+ * @param {object} [readings.chainstate] Fields to override on the `/chainstate` answer.
+ * @param {object[]} [readings.stamps] The batches `/stamps` lists, when the body is the ordinary one.
+ * @param {number} [readings.port] The one node this stub answers for.
+ * @param {number} [readings.status] The HTTP status it reports through `--write-out`.
+ * @param {string} [readings.stampsBody] A literal `/stamps` body, for the answers that are not a list.
  */
-function stubCurl(sandbox, { chainstate = {}, stamps = [], port = RUNG_PORT } = {}) {
+function stubCurl(sandbox, { chainstate = {}, stamps = [], port = RUNG_PORT, status = 200, stampsBody } = {}) {
   const body = {
     chainstate: {
       chainTip: 1,
@@ -135,7 +147,7 @@ function stubCurl(sandbox, { chainstate = {}, stamps = [], port = RUNG_PORT } = 
       minimumValidityBlocks: MINIMUM_VALIDITY_BLOCKS,
       ...chainstate,
     },
-    stamps: { stamps },
+    stamps: stampsBody ?? JSON.stringify({ stamps }),
   };
   const journal = join(sandbox.root, CURL_JOURNAL);
   // Created here rather than on the first call, so a test that makes the sandbox root unwritable is
@@ -145,10 +157,21 @@ function stubCurl(sandbox, { chainstate = {}, stamps = [], port = RUNG_PORT } = 
   writeFileSync(
     `${path}.cjs`,
     `const fs = require('fs');
-const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+const argv = process.argv.slice(2);
+const url = argv.find((a) => a.startsWith('http')) || '';
 fs.appendFileSync(${JSON.stringify(journal)}, url + '\\n');
 const answers = ${JSON.stringify(body)};
 const own = ${JSON.stringify(`http://127.0.0.1:${port}`)};
+
+// curl expands its own escapes in a --write-out format and appends the result to the body.
+function writeOut() {
+  const at = argv.indexOf('-w');
+  if (at === -1 || at + 1 >= argv.length) return;
+  process.stdout.write(argv[at + 1].replace(/\\\\n/g, '\\n').replace('%{http_code}', ${JSON.stringify(
+    String(status),
+  )}));
+}
+
 if (!url.startsWith(own + '/')) {
   process.stderr.write('curl stub answers ' + own + ' alone, and was asked for ' + url + '\\n');
   process.exit(7);
@@ -156,11 +179,12 @@ if (!url.startsWith(own + '/')) {
 if (url.endsWith('/chainstate')) {
   process.stdout.write(JSON.stringify(answers.chainstate));
 } else if (url.endsWith('/stamps')) {
-  process.stdout.write(JSON.stringify(answers.stamps));
+  process.stdout.write(answers.stamps);
 } else {
   process.stderr.write('curl stub was asked for ' + url + '\\n');
   process.exit(7);
 }
+writeOut();
 `,
   );
   writeFileSync(path, '#!/bin/sh\nexec node -- "$0.cjs" "$@"\n');
@@ -1001,6 +1025,82 @@ describe('drain-stage tells a read that failed from a node that answered', () =>
     assert.match(run.stderr, /ssh-add -l/, 'the refusal did not say how to check the usual cause');
     assert.doesNotMatch(run.stderr, /did not answer/, 'an unreachable host was reported as a silent node');
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten on a read that failed');
+  });
+});
+
+/**
+ * ⛔⛔⛔ A NODE THAT ANSWERS AN ERROR IS NOT A NODE THAT HOLDS NOTHING, and the two used to arrive as
+ * the same reading. Bee answers a failure with an ordinary JSON body carrying `code` and `message`
+ * and no `stamps` list at all, the read asked for no HTTP status, and the parser read a missing list
+ * as an empty one. So `status` printed that the batch "is not on the node, which lists nothing at
+ * all" and exited zero, on the one subcommand an operator runs to decide whether a stage is safe to
+ * publish against, and `arm` refused blaming a missing batch on a node that had said nothing about
+ * batches. A body that is not JSON at all came out the same way, because that branch answered with
+ * the verdict `status` treats as a legitimate reading.
+ */
+describe('drain-stage tells a node that answered an error from a node holding nothing', () => {
+  const NOT_READY = JSON.stringify({ code: 503, message: 'batchstore is not ready' });
+
+  it('refuses on a status when the node answered an error, rather than calling the stage readable', async () => {
+    const sandbox = remoteSandbox({ readings: { status: 503, stampsBody: NOT_READY } });
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.notEqual(run.exitCode, 0, 'a node answering 503 was reported as a stage that could be read');
+    assert.match(run.stderr, /answered 503/);
+    assert.match(run.stderr, /batchstore is not ready/, 'the node’s own words were dropped from the refusal');
+    assert.doesNotMatch(run.stdout, /lists nothing at all/, 'an erroring node was reported as holding no batches');
+  });
+
+  it('names the erroring node on an arm, rather than blaming a batch it never asked about', async () => {
+    const sandbox = remoteSandbox({ readings: { status: 503, stampsBody: NOT_READY } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a rung was armed against a node that answered an error');
+    assert.match(run.stderr, new RegExp(`1080p node on :${RUNG_PORT}`));
+    assert.match(run.stderr, /answered 503/);
+    assert.doesNotMatch(run.stderr, /is not on the 1080p node/, 'an erroring node was blamed on a missing batch');
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten off an erroring node');
+  });
+
+  /** A half-started bee answers the port before it answers the API, and what comes back is not JSON. */
+  it('refuses a body that is not JSON at all, rather than reporting it as a reading', async () => {
+    const sandbox = remoteSandbox({ readings: { stampsBody: '<html>502 Bad Gateway</html>' } });
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.notEqual(run.exitCode, 0, 'a status that could not read the node at all reported success');
+    assert.match(run.stderr, /unreadable/);
+  });
+
+  /**
+   * ⛔ And the 200 that carries an envelope anyway, which is the case an HTTP status cannot catch. A
+   * body with no `stamps` list in it says nothing about what the node holds, and reading it as an
+   * empty list is the difference between "there are no batches" and "we do not know".
+   */
+  it('refuses a 200 whose body carries no list of stamps, rather than reading it as an empty node', async () => {
+    const sandbox = remoteSandbox({ readings: { stampsBody: JSON.stringify({ code: 404, message: 'not found' }) } });
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.notEqual(run.exitCode, 0, 'a body with no list of stamps was read as a node holding none');
+    assert.doesNotMatch(run.stdout, /lists nothing at all/, 'an unreadable body was reported as an empty node');
+    assert.match(run.stderr, /no list of stamps/);
+  });
+
+  /** ⛔ And the ordinary answer still reads, with the status line curl appends kept out of the body. */
+  it('reads a 200 that lists the batch, which is what the node answers when it is well', async () => {
+    const sandbox = remoteSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /\/stamps: .*depth 17/);
+    assert.doesNotMatch(run.stdout, /unreadable/, 'the status line curl appends was parsed as part of the body');
   });
 });
 

@@ -227,19 +227,59 @@ RECORD_FILE="$ROOT_DIR/.drain-stage.$PROFILE.env"
 # confusion. ssh exits 255 for connection and authentication failures and passes the remote command's
 # status through otherwise, so the two are separable and are separated here.
 #
+# ⛔⛔⛔ AND A NODE THAT ANSWERS AN ERROR IS NEITHER OF THOSE. Bee reports a failure as an ordinary
+# JSON body carrying `code` and `message` and no list at all, over an HTTP status nothing here used
+# to ask for. So a 503 from a bee whose batch store was not ready parsed cleanly, the missing list
+# read as an empty one, and `status` printed that the batch "is not on the node, which lists nothing
+# at all" and exited zero. `--write-out` puts the status on its own last line after the body, which
+# is the only way one request answers both questions, and `health.sh` reads it the same way.
+#
 # The answer lands in globals rather than on stdout, because a command substitution takes the
 # substitution's own status and would hide the one this has to read.
+readonly HTTP_CODE_SUFFIX='\n%{http_code}'
 NODE_BODY=""
 NODE_STATUS=0
+NODE_HTTP_CODE=""
 read_node() {
-  local path="$1"
+  local path="$1" answer
   if [ "$TARGET" = "$TARGET_LOCAL" ]; then
-    NODE_BODY="$(curl -s --max-time 10 "http://127.0.0.1:${PORT}${path}" 2>/dev/null)"
+    answer="$(curl -s -w "$HTTP_CODE_SUFFIX" --max-time 10 "http://127.0.0.1:${PORT}${path}" 2>/dev/null)"
     NODE_STATUS=$?
+  else
+    answer="$(ssh -o ConnectTimeout=10 "$TARGET" "curl -s -w '${HTTP_CODE_SUFFIX}' --max-time 10 'http://127.0.0.1:${PORT}${path}'" 2>/dev/null)"
+    NODE_STATUS=$?
+  fi
+  split_node_answer "$answer"
+}
+
+# The status curl appended, and the body without it. A read curl cut short carries no such line, and
+# neither does a body that arrived before curl gave up, so anything whose last line is not three
+# digits is taken as all body and no status, which the guards below then read as unknown.
+split_node_answer() {
+  local raw="$1" last="${1##*$'\n'}"
+  if [ "$raw" != "$last" ] && [[ "$last" =~ ^[0-9]{3}$ ]]; then
+    NODE_HTTP_CODE="$last"
+    NODE_BODY="${raw%$'\n'*}"
     return 0
   fi
-  NODE_BODY="$(ssh -o ConnectTimeout=10 "$TARGET" "curl -s --max-time 10 'http://127.0.0.1:${PORT}${path}'" 2>/dev/null)"
-  NODE_STATUS=$?
+  NODE_HTTP_CODE=""
+  NODE_BODY="$raw"
+}
+
+# What the node called the failure, for a refusal that carries its words rather than only its number.
+node_error_words() {
+  printf '%s' "$NODE_BODY" | python3 -c '
+import json, sys
+
+try:
+    body = json.load(sys.stdin)
+except ValueError:
+    body = None
+if isinstance(body, dict):
+    said = [str(body[key]) for key in ("code", "message") if key in body]
+    if said:
+        print(" and said " + ": ".join(said), end="")
+'
 }
 
 require_node_answer() {
@@ -247,6 +287,15 @@ require_node_answer() {
   if [ "$NODE_STATUS" = "$SSH_TRANSPORT_FAILED" ] && [ "$TARGET" != "$TARGET_LOCAL" ]; then
     refuse "could not reach ${TARGET} over ssh, which is the transport and not the node, so this says nothing about what ${RUNG} holds, and on this machine it is usually the 1Password SSH agent listing keys and refusing to sign (check with: ssh-add -l && ssh ${TARGET} true)."
   fi
+  # Before the empty-body guard, because a node that answers an error with no body at all is still a
+  # node that answered. 000 is what curl reports when there was no HTTP response to read a status
+  # from, which is the silent node the next guard names.
+  case "$NODE_HTTP_CODE" in
+    '' | 000 | 2??) ;;
+    *)
+      refuse "the ${RUNG} node on :${PORT} answered ${NODE_HTTP_CODE} to ${path}$(node_error_words), so this says nothing about what ${RUNG} holds and a node answering an error is not a node holding nothing."
+      ;;
+  esac
   if [ -z "$NODE_BODY" ]; then
     refuse "the ${RUNG} node on :${PORT} did not answer ${path}, and a node that cannot answer is not a node anything can be armed on."
   fi
@@ -325,11 +374,23 @@ def refuse(text):
     answer("REFUSE" if mode == "check" else "ABSENT", text)
 
 
+# ⛔⛔⛔ REFUSE IN BOTH MODES, never ABSENT. An unreadable body is not a reading, and status treats
+# ABSENT as one and exits zero on it. A bee error envelope is valid JSON with a code and a message
+# and no list at all, so reading a missing list as an empty one turned a node that could not answer
+# into a node that answered "no batches".
 try:
-    stamps = json.load(sys.stdin).get("stamps") or []
-except (ValueError, AttributeError) as error:
-    answer("ABSENT", f"the {rung} node on :{port} answered /stamps with something unreadable ({error})")
+    body = json.load(sys.stdin)
+except ValueError as error:
+    answer("REFUSE", f"the {rung} node on :{port} answered /stamps with something unreadable ({error})")
 
+if not isinstance(body, dict) or not isinstance(body.get("stamps"), list):
+    answer(
+        "REFUSE",
+        f"the {rung} node on :{port} answered /stamps with no list of stamps in it, which is the shape "
+        f"of a bee error envelope, so what that node holds is unknown rather than nothing",
+    )
+
+stamps = body["stamps"]
 batch = next((b for b in stamps if str(b.get("batchID", "")) == batch_id), None)
 if batch is None:
     listed = ", ".join(str(b.get("batchID", ""))[:8] + chr(8230) for b in stamps) or "nothing at all"
