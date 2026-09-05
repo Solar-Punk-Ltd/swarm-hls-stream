@@ -454,7 +454,17 @@ interface SurvivingMasterWait {
    * topic on a master that is perfectly correct.
    */
   readTopics: () => Promise<ReadonlyMap<string, string>>;
+  /** Injected so a test drives the polling window instead of spending it, as `pollConfiguredStamp` takes one. */
+  clock?: { now: () => number; wait: (ms: number) => Promise<void> };
 }
+
+/**
+ * How long between polls of the master.
+ *
+ * Bee's feed lookup is the slow part of each poll and the master is rewritten on a segment boundary,
+ * so anything tighter re-reads a feed that cannot have moved.
+ */
+const SURVIVING_MASTER_POLL_MS = 3_000;
 
 /**
  * Wait until one ladder's master offers exactly the rungs that kept their postage, and hand it back.
@@ -477,7 +487,7 @@ interface SurvivingMasterWait {
 export async function waitForSurvivingMaster(
   host: Host,
   cfg: E2EConfig,
-  { owner, ladder, survivingRungs, readTopics }: SurvivingMasterWait,
+  { owner, ladder, survivingRungs, readTopics, clock }: SurvivingMasterWait,
 ): Promise<string> {
   // ⛔ Before the polling and not inside it. The predicate below can never be satisfied by an empty
   // expectation, so the run would spend the whole ceiling on a paid broadcast and then time out
@@ -500,7 +510,8 @@ export async function waitForSurvivingMaster(
     },
     {
       timeoutMs: DEAD_RUNG_MASTER_WAIT_MS,
-      intervalMs: 3_000,
+      intervalMs: SURVIVING_MASTER_POLL_MS,
+      clock,
       label:
         `the master of ladder ${ladder} offers exactly ${survivingRungs.join(', ')}, the rungs that ` +
         'kept their postage. A filling batch still lands a segment now and then, and every one of ' +

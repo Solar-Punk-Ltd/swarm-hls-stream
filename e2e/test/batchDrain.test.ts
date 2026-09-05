@@ -863,12 +863,34 @@ describe('what a surviving-master wait reports when it never sees one', () => {
     };
   }
 
-  const waitOn = (body: string, completePolls: number) =>
+  /**
+   * A clock each case drives, so the wait's poll interval is arithmetic rather than three seconds of
+   * a unit run. `waited` is what the wait actually asked to sleep, which is the one thing an instant
+   * on its own cannot show.
+   */
+  function fakeClock(): { now: () => number; wait: (ms: number) => Promise<void>; waited: number[] } {
+    let atMs = 0;
+    const waited: number[] = [];
+    return {
+      now: () => atMs,
+      wait: async (ms: number) => {
+        waited.push(ms);
+        atMs += ms;
+      },
+      waited,
+    };
+  }
+
+  /** What `waitForSurvivingMaster` declares between polls, held here so a change to it is visible. */
+  const POLL_INTERVAL_MS = 3_000;
+
+  const waitOn = (body: string, completePolls: number, clock = fakeClock()) =>
     waitForSurvivingMaster(gatewayAnswering(body), cfg, {
       owner: OWNER,
       ladder: LADDER,
       survivingRungs: SURVIVORS,
       readTopics: topicsFor(completePolls),
+      clock,
     });
 
   it('returns the body it waited on once the master is down to the survivors', async () => {
@@ -880,12 +902,19 @@ describe('what a surviving-master wait reports when it never sees one', () => {
 
   /** ⛔ The finding: which rungs the master actually held, beside the ones that were wanted. */
   it('says what the master last offered, and carries what ended the wait', async () => {
-    await assert.rejects(waitOn(master(FULL_LADDER), 1), (error: Error) => {
+    const clock = fakeClock();
+
+    await assert.rejects(waitOn(master(FULL_LADDER), 1, clock), (error: Error) => {
       assert.match(error.message, new RegExp(GAVE_UP));
       assert.match(error.message, /the master last held: the master offers 4 rung\(s\): 360p, 480p, 720p, 1080p/);
       assert.ok(error.cause instanceof Error, 'the rethrow has to carry what it was rethrown from');
       return true;
     });
+    assert.deepEqual(
+      clock.waited,
+      [POLL_INTERVAL_MS],
+      'the wait did not poll on the clock it was handed, so this case spends real seconds of a free run',
+    );
   });
 
   /**
