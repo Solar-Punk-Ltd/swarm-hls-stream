@@ -219,8 +219,7 @@ const DRAIN_DECLARATION_VAR = 'E2E_DRAIN_ARMED';
  * `e2e:batch-drain-viewer` set it and nothing else does.
  */
 export function drainNotDeclared(env: NodeJS.ProcessEnv = process.env): string | false {
-  const declared = (env[DRAIN_DECLARATION_VAR] ?? '').trim();
-  if (declared === '' || declared === '0' || declared === 'false') {
+  if (!drainDeclaredIn(env)) {
     return (
       `this run did not declare ${DRAIN_DECLARATION_VAR}, so no rung was armed to run dry and there ` +
       'is nothing here to read. A drain sitting is deploy/scripts/drain-stage.sh arm, then pnpm ' +
@@ -228,6 +227,39 @@ export function drainNotDeclared(env: NodeJS.ProcessEnv = process.env): string |
     );
   }
   return false;
+}
+
+/**
+ * Why this run is not pointed at a restored stage, or `false` when it is one.
+ *
+ * ## ⛔⛔ The same variable read the other way, for the suites that run AFTER the restore
+ *
+ * A restore puts the original batch back and redeploys, so from that point the stage is an ordinary
+ * one and the question is whether the master offers all four rungs again. An operator running the
+ * post-restore step in the shell they armed in still carries `E2E_DRAIN_ARMED`, and on a stage that
+ * is still armed the master is legitimately down to three rungs, because that is the feature the
+ * drain suites exist to prove. A post-restore suite run there goes red naming that feature, which
+ * sends a reader to the one part of the stack that was working.
+ *
+ * ⭐ A skip rather than a failure, the shape {@link drainNotDeclared} gives the other direction.
+ * Neither is a verdict about the deployment. Both are a run pointed at the wrong stage, and the two
+ * partition every value the variable can hold, so one setting never skips both families at once.
+ */
+export function drainStillDeclared(env: NodeJS.ProcessEnv = process.env): string | false {
+  if (drainDeclaredIn(env)) {
+    return (
+      `this run declares ${DRAIN_DECLARATION_VAR}, so it is pointed at a stage somebody armed to run ` +
+      'dry and the master is correctly down a rung there. Run deploy/scripts/drain-stage.sh restore ' +
+      'first, then this from a shell that does not carry the declaration.'
+    );
+  }
+  return false;
+}
+
+/** Blank, zero and false are no declaration, the way every other knob in this harness reads one. */
+function drainDeclaredIn(env: NodeJS.ProcessEnv): boolean {
+  const declared = (env[DRAIN_DECLARATION_VAR] ?? '').trim();
+  return declared !== '' && declared !== '0' && declared !== 'false';
 }
 
 /**

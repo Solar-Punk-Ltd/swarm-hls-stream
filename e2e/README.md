@@ -238,8 +238,12 @@ deploy/scripts/drain-stage.sh --profile=<p> --portSlot=<n> --rung=1080p arm --ba
 pnpm e2e:batch-drain                # scenario L, the uploader side
 pnpm e2e:batch-drain-viewer         # V11, a viewer watching the same fault
 deploy/scripts/drain-stage.sh --profile=<p> --portSlot=<n> --rung=1080p restore
-pnpm e2e:abr-ladder                 # proves all four rungs publish again after the restore
+pnpm e2e:ladder-restored            # all four rungs publish again AND the master offers all four
 ```
+
+⛔ **Run the last step from a shell that does not carry `E2E_DRAIN_ARMED`.** On an armed stage the
+master is correctly down a rung, so `master-offers-every-rung` skips rather than reporting the
+feature the drain suites exist to prove as a failure.
 
 ⛔ **The agent never buys anything.** Step 1 prints a command and stops. The owner runs it from their
 own shell, and the id it returns is what step 2 takes.
@@ -324,13 +328,14 @@ Fault scenarios:
 
 Service coverage, no faults:
 
-| file                              | proves                                                                    |
-| --------------------------------- | ------------------------------------------------------------------------- |
-| `service/happy-path`              | gapless segments and an advancing manifest, no discontinuity              |
-| `service/health-endpoint`         | `/health` across live → idle                                              |
-| `service/catalog-via-gateway`     | player-visible: a `live` entry through the bee-gateway, flipping to `vod` |
-| `service/multi-stream-concurrent` | two concurrent streams, distinct topics, each finalizing to its own VOD   |
-| `service/abr-ladder`              | every configured rung publishes, under one ladder, gapless                |
+| file                               | proves                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| `service/happy-path`               | gapless segments and an advancing manifest, no discontinuity              |
+| `service/health-endpoint`          | `/health` across live → idle                                              |
+| `service/catalog-via-gateway`      | player-visible: a `live` entry through the bee-gateway, flipping to `vod` |
+| `service/multi-stream-concurrent`  | two concurrent streams, distinct topics, each finalizing to its own VOD   |
+| `service/abr-ladder`               | every configured rung publishes, under one ladder, gapless                |
+| `service/master-offers-every-rung` | the ladder's master offers every rung the broadcast announced             |
 
 Viewer coverage, in a real browser. These are the only suites here that open a player, so they are
 the only ones that can say what a viewer got rather than what one could have fetched. They need the

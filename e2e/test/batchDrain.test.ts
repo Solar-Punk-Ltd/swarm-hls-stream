@@ -13,6 +13,7 @@ import {
   drainRampOf,
   drainRung,
   drainRungRefusal,
+  drainStillDeclared,
   drainWithoutBrowserRefusal,
   DROPPED_SEGMENTS_METRIC,
   droppedSegmentsRefusal,
@@ -760,6 +761,53 @@ describe('whether this run is a drain sitting at all', () => {
   it('reads an empty, zero or false declaration as no declaration', () => {
     for (const value of ['', '   ', '0', 'false']) {
       assert.notEqual(drainNotDeclared({ E2E_DRAIN_ARMED: value }), false, `'${value}' let the suites run`);
+    }
+  });
+});
+
+/**
+ * ⛔⛔ The same variable read the other way round, for the suites that run AFTER the restore.
+ *
+ * A restore puts the original batch back and redeploys, so from then on the stage is an ordinary
+ * one and the question is whether all four rungs are offered again. An operator running that in the
+ * shell they armed in still carries `E2E_DRAIN_ARMED`, and on a stage that is still armed the master
+ * is legitimately down to three rungs. The post-restore suite would then go red on the product doing
+ * exactly the right thing, which is the worst kind of red: it names the feature the drain suites
+ * exist to prove and blames it.
+ *
+ * ⭐ A skip and not a failure, the same shape `drainNotDeclared` gives the other direction. Neither
+ * is a verdict about the deployment, both are a run pointed at the wrong stage.
+ */
+describe('whether this run is pointed at a stage somebody armed', () => {
+  it('skips a post-restore suite whose shell still declares the arming', () => {
+    const reason = drainStillDeclared({ E2E_DRAIN_ARMED: '1' });
+
+    assert.notEqual(reason, false, 'an armed stage would have been read as a restored one');
+    assert.match(String(reason), /E2E_DRAIN_ARMED/);
+    assert.match(String(reason), /drain-stage\.sh restore/);
+  });
+
+  it('runs where nothing declared an arming, which is every ordinary stage', () => {
+    assert.equal(drainStillDeclared({}), false);
+  });
+
+  /** Blank, zero and false are no declaration here too, or the two gates disagree about one variable. */
+  it('reads an empty, zero or false declaration as no arming, exactly as the other gate does', () => {
+    for (const value of ['', '   ', '0', 'false']) {
+      assert.equal(drainStillDeclared({ E2E_DRAIN_ARMED: value }), false, `'${value}' was read as an armed stage`);
+    }
+  });
+
+  /** ⛔ The pair has to partition every value, or one setting makes both suites skip and nothing runs. */
+  it('is the exact opposite of the gate the drain suites use, on every value either sees', () => {
+    for (const value of [undefined, '', '   ', '0', 'false', '1', 'true', 'yes']) {
+      const env = value === undefined ? {} : { E2E_DRAIN_ARMED: value };
+
+      assert.notEqual(
+        drainNotDeclared(env) === false,
+        drainStillDeclared(env) === false,
+        `'${value}' either runs both families of suite or neither`,
+      );
     }
   });
 });

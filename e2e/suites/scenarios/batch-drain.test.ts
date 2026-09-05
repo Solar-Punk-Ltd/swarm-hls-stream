@@ -100,8 +100,9 @@ import { waitFor } from '../../src/harness/wait.js';
  *
  * ⛔ Nothing about a viewer. `suites/viewer/batch-drain-viewer.test.ts` opens a real player against
  * the same fault. Nothing about what happens after the restore either: this suite's own broadcast
- * ends with the batch spent, and the four rungs coming back is what `pnpm e2e:abr-ladder` reads on
- * the run after `restore`.
+ * ends with the batch spent, and the four rungs coming back is what `pnpm e2e:ladder-restored` reads
+ * on the run after `restore`: `abr-ladder` for the rungs publishing again, then
+ * `master-offers-every-rung` for the master offering all four, which the uploader log cannot show.
  *
  * ⛔ Requires a deployed profile, funded stamps and an ARMED stage, unlike every other suite here.
  * Nothing in CI runs these, and this one is deliberately absent from `test:e2e`, because the
