@@ -6,8 +6,18 @@ import { fileURLToPath } from 'node:url';
 
 const E2E_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** The four directories the README documents, each as its own table. */
-const FAMILIES = ['preflight', 'scenarios', 'service', 'viewer'] as const;
+/**
+ * Every directory under `suites/`, each of which the README documents as its own table.
+ *
+ * ⛔ Read off the disk rather than listed here. A hand-kept list of four was itself a list next to
+ * code that had moved: `suites/smoke/` was outside it and therefore unchecked in both directions,
+ * which is the exact hole this file exists to close. A fifth directory added tomorrow is documented
+ * or it is red, and neither needs anybody to remember this line.
+ */
+const FAMILIES = readdirSync(join(E2E_DIR, 'suites'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
 
 /**
  * That the README's tables name every suite this package holds, and name nothing else.
@@ -27,6 +37,11 @@ const FAMILIES = ['preflight', 'scenarios', 'service', 'viewer'] as const;
  */
 describe('the README names every suite, and every suite has a README row', () => {
   const readme = readFileSync(join(E2E_DIR, 'README.md'), 'utf8');
+
+  /** ⛔ A listing that came back empty would pass every case below without reading a thing. */
+  it('found the suite directories to check at all', () => {
+    assert.ok(FAMILIES.length > 0, 'no directory under e2e/suites/, so nothing below asserted anything');
+  });
 
   function filesIn(family: string): string[] {
     return readdirSync(join(E2E_DIR, 'suites', family))

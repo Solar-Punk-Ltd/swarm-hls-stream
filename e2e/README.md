@@ -284,6 +284,12 @@ run to make instead is `pnpm e2e:batch-drain`, the uploader-side half, which nee
 
 ## What it covers
 
+Read-only smoke, the run an operator makes first. No faults, no broadcast, no postage:
+
+| file           | proves                                                                                                                                                                                                                                                                                                |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `smoke/attach` | the harness reaches the deployed profile at all: ssh answers, the uploader is healthy, every publisher node holds the batch it is configured with and prints its TTL and fill, the ingest container is up, and the deployment runs at a log level these suites can read. Run it with `pnpm e2e:smoke` |
+
 Preflight:
 
 | file                           | proves                                                                                                                                                                                  |
