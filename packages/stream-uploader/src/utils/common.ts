@@ -202,10 +202,14 @@ export async function retryUntilDeadlineAsync<T>(
       if (error instanceof RetryDeadlineError || !isRetryableError(error) || Date.now() >= deadline) {
         throw error;
       }
-      const sleepMs = Math.min(
-        jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs)),
-        deadline - Date.now(),
-      );
+      // A backoff that reaches the deadline is the end, not a shorter sleep. Now that an attempt is
+      // bounded by what is left of the deadline, one started at the deadline has nothing left, so it
+      // would send a request only to abandon it unread, and for an upload that is postage spent on a
+      // segment this call then reports as lost. The failure bee gave is the one worth reporting.
+      const sleepMs = jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs));
+      if (sleepMs >= deadline - Date.now()) {
+        throw error;
+      }
       const message = getErrorMessage(error);
       logger.info(`Retrying in ~${Math.round(sleepMs)}ms (attempt ${attempt + 1}). Error: ${message}`);
       await sleep(sleepMs);

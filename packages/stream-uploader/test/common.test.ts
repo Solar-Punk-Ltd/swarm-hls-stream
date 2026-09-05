@@ -280,6 +280,37 @@ describe('retryUntilDeadlineAsync', () => {
  * because this bounds it. It bounded retries, and retries and calls are the same thing only while
  * every call ends.
  */
+describe('retryUntilDeadlineAsync when the deadline falls inside a backoff', () => {
+  /** Shorter than the first backoff below, so the sleep after the first failure reaches the deadline. */
+  const DEADLINE_MS = 60;
+  const BASE_DELAY_MS = 200;
+  const CAP_DELAY_MS = 200;
+
+  it('starts no attempt it has no time left to wait for, and reports the failure bee gave', async () => {
+    let calls = 0;
+    const transient = new Error('connect ECONNREFUSED');
+
+    await assert.rejects(
+      retryUntilDeadlineAsync(
+        async () => {
+          calls++;
+          throw transient;
+        },
+        DEADLINE_MS,
+        BASE_DELAY_MS,
+        CAP_DELAY_MS,
+      ),
+      (error: unknown) => error === transient,
+    );
+
+    assert.equal(
+      calls,
+      1,
+      'an attempt was started with no time left, so its request went out only to be abandoned unread',
+    );
+  });
+});
+
 describe('retryUntilDeadlineAsync when an attempt does not end', () => {
   /** Short, so a case costs a fraction of a second, and well clear of a scheduling hiccup. */
   const DEADLINE_MS = 150;
