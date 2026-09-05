@@ -44,7 +44,7 @@ registerCrashHandlers(logger);
  */
 function buildPublishers(): BeePublisherPool {
   if (config.publishers.length === 0) {
-    return BeePublisherPool.single(config.beeUrl, config.stamp);
+    return BeePublisherPool.single(config.beeUrl, config.stamp, config.beeRequestTimeoutMs);
   }
 
   if (!config.abr) {
@@ -54,6 +54,7 @@ function buildPublishers(): BeePublisherPool {
   return BeePublisherPool.perRung(
     config.publishers,
     config.abr.ladder.rungs().map((rung) => rung.name),
+    config.beeRequestTimeoutMs,
   );
 }
 

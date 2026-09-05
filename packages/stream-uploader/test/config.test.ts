@@ -43,6 +43,13 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
   { name: 'SEGMENT_STALL_MS', field: 'segmentStallMs', sample: '4321', fallback: 30000, refused: ['0'] },
   { name: 'ORPHAN_REAP_MS', field: 'orphanReapMs', sample: '9876', fallback: 60000, refused: ['0'] },
   { name: 'SEGMENT_DEDUP_WINDOW', field: 'segmentDedupWindow', sample: '55', fallback: 10000, refused: ['0'] },
+  {
+    name: 'BEE_REQUEST_TIMEOUT_MS',
+    field: 'beeRequestTimeoutMs',
+    sample: '2500',
+    fallback: 4000,
+    refused: ['0', '-1'],
+  },
   { name: 'ENGINE', field: 'engine', sample: 'ome', fallback: '', refused: [] },
   {
     name: 'CHEQUEBOOK_MIN_BZZ',
@@ -158,6 +165,55 @@ describe('the environment contract', () => {
 
     it('reads a blank setting as an absent one, not as a floor of zero', async () => {
       assert.equal(await floor(''), 0.5);
+    });
+  });
+
+  /**
+   * ⛔ **The default is derived from the windows it has to fit inside, and nothing else keeps the two
+   * in step.** Every bee call the uploader makes is wrapped in `retryUntilDeadlineAsync`, so a
+   * per-request timeout longer than half its window buys one attempt where the window was written to
+   * pay for several. Lowering any of those windows without lowering this leaves the retry with
+   * nowhere to retry, silently, and the symptom is a rung that gives up on the first slow answer.
+   *
+   * The windows are read out of the sources that declare them rather than restated here, because a
+   * number copied into a test is the thing that goes stale.
+   */
+  describe('the bee request timeout', () => {
+    const WINDOW_SOURCES = [
+      'packages/stream-uploader/src/libs/StreamUploader.ts',
+      'packages/stream-uploader/src/libs/StreamCatalog.ts',
+      'packages/stream-uploader/src/libs/MasterFeedWriter.ts',
+    ];
+
+    /** `backoffDelayMs(0)` with the shipped base, before jitter takes it down to somewhere in [175, 350). */
+    const FIRST_BACKOFF_MS = 350;
+
+    const windows = WINDOW_SOURCES.flatMap((source) => {
+      const text = readFileSync(resolve(REPO_ROOT, source), 'utf8');
+      return [...text.matchAll(/^const ([A-Z0-9_]+WINDOW_MS) = ([\d_]+);$/gm)].map((match) => ({
+        name: match[1],
+        ms: Number(match[2].replace(/_/g, '')),
+      }));
+    });
+
+    it('finds the retry windows it is derived from, so an empty match cannot pass silently', () => {
+      assert.ok(
+        windows.length >= 5,
+        `only found ${windows.length} retry window(s), so the pattern has stopped matching: ${WINDOW_SOURCES.join(
+          ', ',
+        )}`,
+      );
+    });
+
+    it('leaves room for two whole attempts inside the shortest of them', async () => {
+      const shortest = windows.reduce((lowest, window) => (window.ms < lowest.ms ? window : lowest));
+      const { beeRequestTimeoutMs } = await loadConfig(requiredEnv());
+
+      assert.ok(
+        2 * beeRequestTimeoutMs + FIRST_BACKOFF_MS <= shortest.ms,
+        `a ${beeRequestTimeoutMs}ms request timeout leaves ${shortest.name} (${shortest.ms}ms) room for one ` +
+          'attempt, not the two its backoff was written for',
+      );
     });
   });
 

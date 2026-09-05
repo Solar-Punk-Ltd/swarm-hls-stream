@@ -66,6 +66,26 @@ const MIN_HLS_FRAGMENT_SECONDS = 0.01;
 const MAX_HLS_FRAGMENT_SECONDS = 3600;
 
 /**
+ * How long the uploader waits for one HTTP request to a Bee node before it gives up on that request.
+ *
+ * ⛔⛔⛔ **There was no such bound, and a node that answered nothing held a queue for ever.** Every
+ * pooled client was built as `new Bee(url)` with no options, and bee-js hands axios
+ * `timeout: options?.timeout ?? 0`, which axios reads as no timeout at all. A node that accepted the
+ * connection and then went silent therefore never failed: the upload queue runs at concurrency 1, so
+ * one such call stopped that rung, and the same call on the coordinator stopped the catalog for every
+ * stream on the stage.
+ *
+ * **The default is derived, not chosen.** Every bee call the service makes sits inside
+ * `retryUntilDeadlineAsync`, and the shortest window any of them gets is 10s: `CATALOG_RETRY_WINDOW_MS`
+ * in `StreamCatalog.ts` and `MASTER_RETRY_WINDOW_MS` in `MasterFeedWriter.ts`, against 15s for the
+ * three in `StreamUploader.ts`. The first backoff is 350ms before jitter halves it, so two whole
+ * attempts fit inside 10s for any timeout up to 4825ms. 4s is that with room left over, and it keeps a
+ * retry worth having: shorten a window below 8.35s and this becomes the wrong number, which is why
+ * `test/config.test.ts` reads those windows out of the files that declare them and re-derives it.
+ */
+const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
+
+/**
  * The ABR ladder, or null when the engine is producing a single rendition.
  *
  * Parsed eagerly and allowed to throw: a malformed ABR_LADDER means the uploader would group
@@ -100,6 +120,7 @@ export const config = {
   beeUrl: required('BEE_URL'),
   stamp: required('STAMP'),
   publishers: readPublisherSpecs(),
+  beeRequestTimeoutMs: optionalInt('BEE_REQUEST_TIMEOUT_MS', DEFAULT_BEE_REQUEST_TIMEOUT_MS, { min: 1 }),
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
     max: MAX_CHEQUEBOOK_MIN_BZZ,

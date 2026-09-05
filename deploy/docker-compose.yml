@@ -186,6 +186,11 @@ services:
       BEE_URL: ${BEE_URL:-http://bee-uploader:1633}
       STAMP: ${STAMP}
       BEE_PUBLISHERS: ${BEE_PUBLISHERS:-}
+      # Per-request deadline on every call to a bee above. Without one, a node that accepts the
+      # connection and then answers nothing holds the rung's upload queue open for ever, because
+      # bee-js reads an unset timeout as no timeout. See BEE_REQUEST_TIMEOUT_MS in config.ts for
+      # where the 4000 comes from.
+      BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}

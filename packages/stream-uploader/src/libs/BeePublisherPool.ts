@@ -56,13 +56,18 @@ export class BeePublisherPool {
    * This is every deployment that has not been split per rung yet, and it is also the only shape a
    * single-rendition deployment can have — with the ladder off there are no rungs to split by.
    */
-  public static single(url: string, stamp: string): BeePublisherPool {
+  public static single(url: string, stamp: string, requestTimeoutMs: number): BeePublisherPool {
     // The same eager validation parseEntry applies to each split node, so a truncated STAMP or a
     // non-http BEE_URL refuses to start here too rather than failing on the first paid write.
     assertBatchId('STAMP', stamp);
     assertHttpUrl('BEE_URL', url);
 
-    const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url, stamp, bee: new Bee(url) };
+    const publisher: BeePublisher = {
+      rung: SINGLE_PUBLISHER,
+      url,
+      stamp,
+      bee: boundedBee(url, requestTimeoutMs),
+    };
     return new BeePublisherPool([publisher], new Map([[SINGLE_PUBLISHER, publisher]]));
   }
 
@@ -78,9 +83,12 @@ export class BeePublisherPool {
    * ladder does not have is a typo that would otherwise sit unused until someone wondered why a
    * rung was missing.
    */
-  public static perRung(specs: PublisherSpec[], rungOrder: string[]): BeePublisherPool {
+  public static perRung(specs: PublisherSpec[], rungOrder: string[], requestTimeoutMs: number): BeePublisherPool {
     const byRung = new Map<string, BeePublisher>(
-      specs.map((spec) => [spec.rung, { rung: spec.rung, url: spec.url, stamp: spec.stamp, bee: new Bee(spec.url) }]),
+      specs.map((spec) => [
+        spec.rung,
+        { rung: spec.rung, url: spec.url, stamp: spec.stamp, bee: boundedBee(spec.url, requestTimeoutMs) },
+      ]),
     );
 
     const missing = rungOrder.filter((rung) => !byRung.has(rung));
@@ -181,6 +189,20 @@ export interface PublisherRoute {
   readonly url: string;
   /** Enough of the batch id to tell two apart, and never the whole one. */
   readonly batch: string;
+}
+
+/**
+ * Every Bee client this pool hands out, and the one place a request deadline is put on one.
+ *
+ * ⛔ **A client built with no options waits for ever.** bee-js passes axios
+ * `timeout: options?.timeout ?? 0`, and axios reads 0 as no timeout, so a node that accepts the
+ * connection and then answers nothing never fails the call that reached it. That is not one slow
+ * request: a rung's uploads run at concurrency 1, so it is the rung stopped, and on the coordinator it
+ * is the catalog stopped for every stream on the stage. The window comes from `BEE_REQUEST_TIMEOUT_MS`,
+ * whose default is derived from the retry windows that wrap these calls.
+ */
+function boundedBee(url: string, requestTimeoutMs: number): Bee {
+  return new Bee(url, { timeout: requestTimeoutMs });
 }
 
 /**
