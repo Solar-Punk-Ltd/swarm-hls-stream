@@ -156,7 +156,7 @@ while [ $# -gt 0 ]; do
     --batch) value_of --batch $#; BATCH="$2"; shift 2 ;;
     --days=*) DAYS="${1#*=}"; DAYS_GIVEN=1; shift ;;
     --days) value_of --days $#; DAYS="$2"; DAYS_GIVEN=1; shift 2 ;;
-    -h|--help) sed -n '2,66p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,68p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) usage_error "$1 is not a flag this script has, and its subcommands are ${SUBCOMMANDS}." ;;
     *)
       if [ -n "$SUBCOMMAND" ]; then

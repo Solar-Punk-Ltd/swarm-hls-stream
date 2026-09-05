@@ -1696,8 +1696,17 @@ describe('drain-stage argument handling', () => {
     assert.match(run.stdout, /e2e-batch-drain-plan/);
     // The range is a line number, the way `bee-publishers.sh` writes it, so a comment added past the
     // end of the header silently truncates the help and one added inside it spills code into it.
+    //
+    // ⛔ The LAST line of the header, not the first line of its last paragraph. Matching the first
+    // one passes while the range cuts that paragraph in half, which is how two lines added to the
+    // header went unnoticed: the help still said "No batch id is ever printed whole" and stopped
+    // before saying what it is printed as instead.
     assert.doesNotMatch(run.stdout, /set -u/, 'the help range now reaches past the header comment');
-    assert.match(run.stdout, /No batch id is ever printed whole/, 'the help range stops short of the header');
+    assert.match(
+      run.stdout,
+      /a wallet private key to anything reading either/,
+      'the help range stops short of the header',
+    );
   });
 
   /**
