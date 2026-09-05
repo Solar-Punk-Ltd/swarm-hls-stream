@@ -1,10 +1,42 @@
-/** The part of weeb-3's `Weeb3No103` this client uses. Narrowed deliberately, see the class below. */
-export interface Weeb3Node {
+import type { Weeb3No103 } from '@lat-murmeldjur/weeb_3';
+
+/**
+ * The same members, with every method restated as a function-typed property.
+ *
+ * TypeScript compares method parameters bivariantly however strict the project is, and it decides
+ * that from the target's own declaration, so nothing compared against a class's methods is compared
+ * strictly. Rebuilt as plain function types the signatures lose that origin, which is the only reason
+ * the interface below can refuse a parameter we declare narrower than the one weeb-3 accepts.
+ */
+type WithoutMethodBivariance<T> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => R : T[K];
+};
+
+/**
+ * The part of weeb-3's `Weeb3No103` this client uses. Narrowed deliberately, see the class below.
+ *
+ * ⛔ **The `extends` is the drift gate, not decoration.** Three signatures copied out of a package we
+ * pin are three signatures that go stale silently. Restating them over the package's own class turns
+ * a bump that renames one of them, drops one, or changes what one takes or returns into a compile
+ * error that names the member, and a key the class no longer has fails on the `Pick` itself.
+ *
+ * The opposite mistake, a member invented here that weeb-3 never had, is caught where the real module
+ * is loaded. See {@link Weeb3Module}, and read its note before reaching for a cast there.
+ */
+export interface Weeb3Node extends WithoutMethodBivariance<Pick<Weeb3No103, 'start' | 'ready' | 'retrieveBytes'>> {
   start(options?: unknown): void;
   ready(minConnections: number, timeoutMs: number): Promise<boolean>;
   retrieveBytes(address: string): Promise<Uint8Array>;
 }
 
+/**
+ * As much of the package's module surface as this client touches.
+ *
+ * ⛔ **Nothing here is checked unless {@link importWeeb3} stays uncast.** That assignment is the only
+ * place the real module meets this shape. It read `as unknown as Promise<Weeb3Module>` until
+ * 2026-09-05, and under that cast a made-up method was added to {@link Weeb3Node} on 2026-09-02 and
+ * `pnpm typecheck` passed with no output at all.
+ */
 export interface Weeb3Module {
   /** wasm-bindgen's initialiser. The package's own README calls it once before anything else. */
   default: () => Promise<unknown>;
@@ -55,8 +87,12 @@ function pageBaseUrl(): string {
  * static import would put all of it in the entry chunk of every viewer, including the overwhelming
  * majority who fetch through a gateway and never call this. As an `import()` inside a lazily reached
  * method it is a separate chunk that is only ever fetched by a build that selected this backend.
+ *
+ * ⛔⛔ **Uncast on purpose, and it needs no cast.** The package's declarations satisfy
+ * {@link Weeb3Module} as written, so this one assignment is what holds every member we named against
+ * the release we pin. A cast here, of any shape, switches the whole comparison off.
  */
-const importWeeb3: Weeb3ModuleLoader = () => import('@lat-murmeldjur/weeb_3') as unknown as Promise<Weeb3Module>;
+const importWeeb3: Weeb3ModuleLoader = () => import('@lat-murmeldjur/weeb_3');
 
 /**
  * A Swarm node running in this tab, serving segment bytes to our player.
