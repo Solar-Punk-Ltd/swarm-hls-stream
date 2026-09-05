@@ -154,6 +154,13 @@ describe(
      * the reading. Every other fault suite here drops segments on rungs this one calls survivors, and
      * a sitting that ran L after them on the same uploader process would otherwise read their losses
      * as tonight's.
+     *
+     * ⛔⛔ Scraped AFTER `waitForIdle`, never before it, and that order is the whole point of the
+     * baseline. An earlier stream still finalising is exactly when a survivor rung drops a segment,
+     * and every drop that lands between the scrape and the stage going idle sits inside the window
+     * this run is judged on. `droppedSegmentsRefusal` then reads a survivor that lost segments while
+     * one rung was drained, which is the split failing to isolate anything, and reports somebody
+     * else's tail as this broadcast's.
      */
     let droppedBefore: ReadonlyMap<string, number>;
 
@@ -169,8 +176,10 @@ describe(
       );
 
       processBefore = await readUploaderProcess(host, uploader);
-      droppedBefore = await scrapeDropped(host, uploader);
       await waitForIdle(host, cfg);
+      // ⛔ After the stage is idle, so a previous stream's tail is behind the baseline rather than
+      // inside this run's window. See `droppedBefore`.
+      droppedBefore = await scrapeDropped(host, uploader);
       startedAt = await host.nowIso();
       publisher = startPublisher(cfg);
     });
