@@ -31,7 +31,7 @@ ENV VITE_READER_BEE_URL=$VITE_READER_BEE_URL \
     VITE_EXPOSE_PLAYER=$VITE_EXPOSE_PLAYER \
     VITE_BROWSER_FETCH_BACKEND=$VITE_BROWSER_FETCH_BACKEND
 
-RUN corepack enable && corepack prepare pnpm@9 --activate
+RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 # Workspace lockfile + just the package manifests first, for layer caching. The trailing "..." in
 # the filter below means "and its workspace dependencies", so the shared manifest has to be here
