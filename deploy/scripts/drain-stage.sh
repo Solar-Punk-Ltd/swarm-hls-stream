@@ -571,23 +571,31 @@ record_original() {
   printf '%s=%s\n' "$RUNG" "$original" >> "$RECORD_FILE"
 }
 
+# Non-zero when the record still names the rung, which the caller turns into a refusal.
+#
 # ⛔ Checked like the two writes of an arm, though this one fails in the safe direction: the record
 # survives, the stage is genuinely restored, and the only cost is that a later arm refuses with
 # "already armed" until the file is cleared. Said out loud rather than left silent, because an
 # operator who reads "removed the record" and then cannot arm has no way to connect the two.
+#
+# ⛔⛔ Both paths answered 0 whether they worked or not, and every caller printed its own success line
+# underneath, so the failure arrived as a `!` warning followed by a `✓` about the same file and an
+# exit of zero. A warning a script contradicts one line later is a warning nobody acts on.
 forget_original() {
   local kept
   kept="$(grep -v "^${RUNG}=" "$RECORD_FILE")"
   if printf '%s\n' "$kept" | grep -qE '^[0-9a-zA-Z]+='; then
     if ! printf '%s\n' "$kept" > "$RECORD_FILE"; then
-      log_warn "could not rewrite ${RECORD_FILE} without rung ${RUNG}, so the stage is restored and that record still names it, and a later arm of this rung refuses until the line is removed by hand."
-      return 0
+      log_warn "could not rewrite ${RECORD_FILE} without rung ${RUNG}, so that record still names it, and a later arm of this rung refuses until the line is removed by hand."
+      return 1
     fi
     return 0
   fi
   if ! rm -f "$RECORD_FILE"; then
-    log_warn "could not remove ${RECORD_FILE}, so the stage is restored and a later arm of this rung refuses until that file is removed by hand."
+    log_warn "could not remove ${RECORD_FILE}, so that record still names rung ${RUNG}, and a later arm of this rung refuses until the file is removed by hand."
+    return 1
   fi
+  return 0
 }
 
 # Assigned before use rather than in the `local`, because `local X=$(...)` takes the exit status of
@@ -801,7 +809,7 @@ do_arm() {
     usage_error "--batch must be 64 hex characters, and this run passed ${#BATCH}."
   fi
 
-  local original entry reading written
+  local original entry reading written record_now
   if original="$(recorded_original)"; then
     refuse "rung ${RUNG} is already armed, its original batch $(short_id "$original") is recorded in ${RECORD_FILE##*/}, and the way out is restore rather than a second arm."
   fi
@@ -840,8 +848,11 @@ do_arm() {
     # armed, and the restore an operator reaches for out of that refusal writes the original over
     # itself, reports the rung's own batch as spent, dumps a log and redeploys, for a stage nothing
     # ever changed.
-    forget_original
-    fail "the ${RUNG} entry could not be rewritten, ${ENV_FILE##*/} is as it was and the record of rung ${RUNG} has been cleared, so nothing is armed and the next arm is not refused: $(reason_of "$written")."
+    record_now="and the record of rung ${RUNG} has been cleared, so nothing is armed and the next arm is not refused"
+    if ! forget_original; then
+      record_now="but ${RECORD_FILE##*/} still names rung ${RUNG}, so the next arm of it refuses as already armed until that line is removed by hand"
+    fi
+    fail "the ${RUNG} entry could not be rewritten, ${ENV_FILE##*/} is as it was ${record_now}: $(reason_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS now names $(short_id "$BATCH") for ${RUNG}, and the other rungs are untouched"
 
@@ -884,7 +895,13 @@ do_restore() {
   # first meant a restore that could not bring the container up deleted the only note of which batch
   # the rung had been publishing through, and running the same restore again refused with nothing
   # armed. Running it again is now the whole recovery.
-  forget_original
+  #
+  # ⛔ A refusal rather than a warning, and the last step rather than a rollback: the env file and the
+  # container are both genuinely back by this point, so there is nothing to undo and the one thing
+  # left wrong is a file that will refuse the next arm of this rung.
+  if ! forget_original; then
+    fail "${ENV_FILE##*/} and the uploader are both restored, but ${RECORD_FILE##*/} still names rung ${RUNG}, so the next arm of it refuses as already armed, and the fix is to remove that line from the record by hand."
+  fi
   log_ok "removed the record for ${RUNG} from ${RECORD_FILE##*/}"
   echo ""
 }

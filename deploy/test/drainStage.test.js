@@ -818,6 +818,83 @@ describe('drain-stage restore puts the stage back', () => {
 });
 
 /**
+ * ⛔⛔ A `✓ removed the record` ON A RECORD NOTHING REMOVED. Both ways of clearing the record answered
+ * 0 whether they worked or not, and the line under them was printed either way, so a record that
+ * could not be cleared produced a `!` warning followed immediately by a `✓` about the same file and
+ * an exit of zero. The stage really is restored in that state, which is why it was written to carry
+ * on, but the next `arm` of that rung then refuses as already armed and sends the operator into a
+ * second restore that has nothing left to do.
+ */
+describe('drain-stage says so when it cannot clear its own record', () => {
+  /** A `rm` that cannot remove the record and hands everything else to the real one. */
+  function unremovableRecord(sandbox) {
+    writeFileSync(
+      join(sandbox.binDir, 'rm'),
+      '#!/bin/sh\nfor arg in "$@"; do\n  case "$arg" in\n    *.drain-stage.*) exit 1 ;;\n  esac\ndone\nexec /bin/rm "$@"\n',
+    );
+    chmodSync(join(sandbox.binDir, 'rm'), 0o755);
+  }
+
+  function armedSandbox({ record }) {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), record);
+    return sandbox;
+  }
+
+  /** A record another rung is in as well, so clearing this one is a rewrite rather than a removal. */
+  it('refuses when the record cannot be rewritten without the rung, rather than reporting it removed', async () => {
+    const sandbox = armedSandbox({ record: `${RUNG}=${ORIGINAL[RUNG]}\n720p=${ORIGINAL['720p']}\n` });
+    chmodSync(recordPath(sandbox), 0o444);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a record that could not be cleared was reported as cleared');
+    assert.doesNotMatch(run.stdout, /✓.*removed the record/, 'a ✓ was printed about a record nothing removed');
+    assert.match(run.stdout, /could not rewrite/, 'nothing said which of the two writes failed');
+    assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
+    // ⛔ And it says so about a stage that IS back, which is the whole reason this is not a rollback.
+    assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
+    assert.deepEqual(redeployedServices(sandbox), ['stream-uploader'], 'the restore did not redeploy');
+  });
+
+  /** A record this rung is alone in, so clearing it is a removal rather than a rewrite. */
+  it('refuses when the record cannot be removed, rather than reporting it removed', async () => {
+    const sandbox = armedSandbox({ record: `${RUNG}=${ORIGINAL[RUNG]}\n` });
+    unremovableRecord(sandbox);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a record that could not be removed was reported as removed');
+    assert.doesNotMatch(run.stdout, /✓.*removed the record/, 'a ✓ was printed about a record nothing removed');
+    assert.match(run.stdout, /could not remove/);
+    assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
+    assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
+  });
+
+  /**
+   * ⛔ And the arm's own sentence, which says the record was cleared. A rewrite that fails clears the
+   * record it wrote a moment earlier, so an arm that cannot do that has to say the opposite rather
+   * than the same fixed sentence.
+   */
+  it('does not claim an arm cleared a record it could not clear', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    unremovableRecord(sandbox);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], {
+      HOME: sandbox.root,
+      PYTHONPATH: failingEnvWrite(sandbox),
+    });
+
+    assert.notEqual(run.exitCode, 0, 'a rewrite that could not finish reported an armed rung');
+    assert.doesNotMatch(run.stderr, /has been cleared/, 'a record nothing cleared was reported as cleared');
+    assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
+  });
+});
+
+/**
  * ⛔⛔⛔ The evidence of a drain sitting is the uploader's own log, and a redeploy destroys it.
  *
  * On 2026-09-04 the first live drain refused the armed rung four times in about fifty seconds, and
