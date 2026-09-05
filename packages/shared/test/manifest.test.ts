@@ -85,6 +85,51 @@ describe('parseManifest', () => {
     );
   });
 
+  it('attaches a gap to the entry that follows it, not the one before', () => {
+    const parsed = parseManifest([...LIVE, '#EXTINF:4,', 'seg0.ts', '#EXT-X-GAP', '#EXTINF:4,', 'gap-1'].join('\n'));
+
+    assert.deepEqual(
+      parsed.segments.map((s) => s.gap),
+      [false, true],
+    );
+  });
+
+  it('does not carry a gap past the entry it belongs to', () => {
+    const parsed = parseManifest(
+      [...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXTINF:4,', 'seg1.ts'].join('\n'),
+    );
+
+    assert.deepEqual(
+      parsed.segments.map((s) => s.gap),
+      [true, false],
+    );
+  });
+
+  // A hole is said with a gap entry rather than with a break, so the two are independent: a gap
+  // entry carries no discontinuity, and a real break after one is still the break it was.
+  it('keeps a gap apart from a discontinuity', () => {
+    const parsed = parseManifest(
+      [...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXT-X-DISCONTINUITY', '#EXTINF:4,', 'seg1.ts'].join('\n'),
+    );
+
+    assert.deepEqual(
+      parsed.segments.map((s) => [s.gap, s.discontinuity]),
+      [
+        [true, false],
+        [false, true],
+      ],
+    );
+  });
+
+  it('ends the header block, so a tag after a gap is not hoisted above the segments', () => {
+    const parsed = parseManifest(
+      [...LIVE, '#EXT-X-GAP', '#EXTINF:4,', 'gap-0', '#EXT-X-TARGETDURATION:9'].join('\n'),
+    );
+
+    assert.ok(!parsed.headers.includes('#EXT-X-TARGETDURATION:9'));
+    assert.deepEqual(parsed.headers, LIVE.filter(Boolean));
+  });
+
   it('reports ENDLIST as finalized', () => {
     const parsed = parseManifest([...LIVE, '#EXTINF:4,', 'seg0.ts', '#EXT-X-ENDLIST'].join('\n'));
 
@@ -164,6 +209,7 @@ describe('parseManifest', () => {
       extinf: '#EXTINF:4,',
       uri: 'seg1.ts',
       discontinuity: true,
+      gap: false,
       programDateTime: PDT_1,
     });
   });

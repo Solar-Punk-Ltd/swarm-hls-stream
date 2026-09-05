@@ -1,4 +1,4 @@
-import { HLS_DISCONTINUITY, HLS_ENDLIST, HLS_EXTINF, HLS_PROGRAM_DATE_TIME } from './hlsTags.js';
+import { HLS_DISCONTINUITY, HLS_ENDLIST, HLS_EXTINF, HLS_GAP, HLS_PROGRAM_DATE_TIME } from './hlsTags.js';
 
 /**
  * One media segment as it survives a manifest round trip.
@@ -11,6 +11,15 @@ export interface Segment {
   extinf: string;
   uri: string;
   discontinuity?: boolean;
+  /**
+   * Whether this entry stands in for media the broadcast lost, so its `uri` names nothing fetchable.
+   *
+   * An entry rather than an absence, because HLS numbers the segments it lists consecutively from
+   * `#EXT-X-MEDIA-SEQUENCE`: a playlist that simply omitted the lost media would renumber everything
+   * behind the hole, and the rungs of one ladder would stop agreeing about the same instant. See
+   * `ManifestManager.gapLines` in the uploader, which writes these.
+   */
+  gap?: boolean;
   /**
    * The `#EXT-X-PROGRAM-DATE-TIME` line that preceded this segment, absent on a playlist that
    * carries none. Recordings published before the uploader started stamping them are the case.
@@ -100,7 +109,7 @@ export function programDateTimeMs(line: string): number | null {
  * the header block for the same reason a discontinuity does. Left in the header branch, the first
  * segment's stamp would be captured as a header the client then repeats above every later segment,
  * and every other stamp would be dropped on the floor, silently, because a line that is neither a
- * header nor a segment has nowhere else to go.
+ * header nor a segment has nowhere else to go. `#EXT-X-GAP` is read on exactly the same terms.
  *
  * **This reads the playlists this project produces, not RFC 8216 in general**, and the difference is
  * worth stating because the function now lives in a shared package where it looks more general than
@@ -118,6 +127,7 @@ export function parseManifest(text: string): ParsedManifest {
   let isFinalized = false;
   let headersDone = false;
   let pendingDiscontinuity = false;
+  let pendingGap = false;
   let pendingProgramDateTime: string | undefined;
 
   for (let i = 0; i < lines.length; i++) {
@@ -131,6 +141,12 @@ export function parseManifest(text: string): ParsedManifest {
     if (line === HLS_DISCONTINUITY) {
       headersDone = true;
       pendingDiscontinuity = true;
+      continue;
+    }
+
+    if (line === HLS_GAP) {
+      headersDone = true;
+      pendingGap = true;
       continue;
     }
 
@@ -148,11 +164,13 @@ export function parseManifest(text: string): ParsedManifest {
           extinf: line,
           uri,
           discontinuity: pendingDiscontinuity,
+          gap: pendingGap,
           ...(pendingProgramDateTime === undefined ? {} : { programDateTime: pendingProgramDateTime }),
         });
         i++;
       }
       pendingDiscontinuity = false;
+      pendingGap = false;
       pendingProgramDateTime = undefined;
       continue;
     }

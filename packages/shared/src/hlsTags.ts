@@ -14,6 +14,13 @@ export const HLS_EXTINF = '#EXTINF';
 export const HLS_STREAM_INF = '#EXT-X-STREAM-INF';
 export const HLS_INDEPENDENT_SEGMENTS = '#EXT-X-INDEPENDENT-SEGMENTS';
 export const HLS_DISCONTINUITY = '#EXT-X-DISCONTINUITY';
+/**
+ * Says the entry after it names no media, so a client skips it instead of trying to fetch it.
+ *
+ * RFC 8216bis §4.4.4.7. It is how a playlist admits a hole in its own timeline without claiming the
+ * media after the hole is a fresh encode, which is what `#EXT-X-DISCONTINUITY` would claim.
+ */
+export const HLS_GAP = '#EXT-X-GAP';
 export const HLS_ENDLIST = '#EXT-X-ENDLIST';
 
 /**
