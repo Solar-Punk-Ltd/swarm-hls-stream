@@ -7,6 +7,7 @@ import { type Host, makeHost, uploaderHealth, waitForIdle } from '../../src/harn
 import {
   announcedSessionTopics,
   maxSegmentIndexByStream,
+  parseUploaderLog,
   segmentIndicesByStream,
   streamsUploadingBelow,
   vodFinalizeCountFor,
@@ -263,10 +264,6 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
         'across the recovery branch does to a counter that restarted',
     });
 
-    const afterTheReconnect = await sinceReconnect();
-    const restartedCounters = streamsUploadingBelow(afterTheReconnect, maximumsBefore);
-    const indicesAfter = segmentIndicesByStream(afterTheReconnect);
-
     // ⛔ Read before the live watch below, not after it. The live window is byte bounded, so a break
     // ninety seconds old has slid out of the playlist and this would refuse a correct product for a
     // tag that aged out. See the docblock.
@@ -302,12 +299,26 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
     }
 
     assert.equal(verdict.refusal, null, verdict.refusal ?? '');
+
+    // ⛔ A hole and a break are different statements, and only one of them belongs to a reconnect.
+    // The counter restarting is a break, which the wait above required. It must not ALSO read as
+    // media the broadcast lost: the recovery branch forgets the accounting index precisely so the
+    // first arrival of the new session measures itself against nothing.
+    //
+    // ⚠️ The message carries what the uploader itself said it lost in the same window, because a
+    // reader has to tell the fabricated hole apart from an honest one. A bee node that restarted
+    // with everything else re-syncs its postage batch for tens of seconds, and a segment it refuses
+    // in that window is a real loss with real gap entries, and nothing to do with this scenario.
+    const losses = parseUploaderLog(await log());
     assert.equal(
       verdict.gapsSeen,
       0,
-      `${verdict.gapsSeen} gap entries across the rungs, and this broadcast lost nothing. The recovery branch ` +
-        'forgets the accounting index precisely so the counter restarting is not measured as a run of missing ' +
-        'segments, and a hole here is that inference coming back',
+      `${verdict.gapsSeen} gap entries across the rungs. The uploader reported ` +
+        `${losses.inferredSegmentGaps} inferred skips and ${losses.discontinuitySegments.length} failed uploads ` +
+        'in the same window. Zero of both beside gap entries is the counter restart being measured as a run of ' +
+        'missing segments, which is the inference the recovery branch drops the accounting index to avoid. ' +
+        'Anything else is media this broadcast really lost, most likely to a publisher node still re-syncing ' +
+        'its batch after the restart, and it is not a fault in the path this scenario tests',
     );
 
     // The entry was written before the restart, so this waits for the gateway to serve it again
@@ -372,6 +383,13 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
       'this broadcast was finalized to VOD while its broadcaster was publishing to it, so the reconnect ' +
         'started a second thing rather than continuing the recovered one',
     );
+
+    // Re-read here rather than reused from the wait above, so the ranges below say what each stream
+    // has run to and not only where it reopened. The window opens at the same instant either way, so
+    // the first index each stream shows is the same number.
+    const afterTheReconnect = await sinceReconnect();
+    const restartedCounters = streamsUploadingBelow(afterTheReconnect, maximumsBefore);
+    const indicesAfter = segmentIndicesByStream(afterTheReconnect);
 
     // ⭐ Whether this run was in a position to prove anything about finding 1. The bug swallows the
     // opening only where the reconnected counter reopens inside the range the recovered session had
