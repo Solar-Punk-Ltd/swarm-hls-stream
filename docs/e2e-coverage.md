@@ -227,22 +227,24 @@ prints as 50% full, which is the arithmetic being honest rather than a batch hal
 | weeb3 actually served the bytes (arm proof)                                                              | every one of the eleven in-browser viewer tests refuses an arm that is not the condition it is filed as, eight through `weeb3ArmRefusal` directly and V4, V5 and V11 through `byteSourceArmRefusal`, which applies the whole-run ceiling of nine gateway reads to an in-tab arm and no ceiling to a gateway one. V4 and V5 proven live 2026-09-04, six reads each                                                                                                                                                                                                                                                                                 | in every in-browser sitting                         |
 | Playlist timeline: sequence 0, a date-time on every entry, and every hole said with gap entries          | asserted live by seven suites since 2026-09-03, green 2026-09-06 in both byte sources at `2935091` and 2026-09-04 at `bc9df49`. Since the owner's ruling of 2026-09-06 a segment the broadcast lost is published as an `#EXT-X-GAP` entry rather than left out, so the numbering behind a hole never moves, and the count is read per rung and printed beside the discontinuities. Proven live 2026-09-06 at `2935091` in both byte sources: after the uploader hard crash of scenario F every rung said its hole with 2 to 4 gap entries and 0 discontinuities, media sequence 0 held, and V7 and V9 played through such holes in a real browser | in every full sitting                               |
 | One rung's postage batch runs dry, the broadcast survives                                                | scenario L green live 2026-09-05 at `cb333ca`: the 1080p batch filled after 15.7 s of broadcast, bee answered `402 batch is overissued`, the master came down to three rungs 37.3 s after the first refusal, and the other three rungs lost nothing. The record is `docs/bench/one-rung-runs-dry-2026-09-05.md`. V11 green live 2026-09-06 at `2935091` on both byte sources, one arming each: the viewer decoded 720p and never the drained 1080p, advance 1.000 and 1.003, no rebuffer, and the master was rewritten while they watched. The record is `docs/bench/viewer-through-a-drained-rung-2026-09-06.md`                                 | one arming per V11 sitting, a batch drains once     |
+| A publisher that reconnects while the uploader is recovering continues the same stream                   | M, built 2026-09-07, not yet run live                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | in every full sitting                               |
 
 ### Reading the letters
 
 The single letters are the scenario labels the suite files carry in their own docblocks.
 
-| Letter | File                                                   |
-| ------ | ------------------------------------------------------ |
-| A      | `e2e/suites/scenarios/bee-outage-short.test.ts`        |
-| B      | `e2e/suites/scenarios/bee-outage-long.test.ts`         |
-| F      | `e2e/suites/scenarios/uploader-crash-recovery.test.ts` |
-| G      | `e2e/suites/scenarios/gateway-outage-viewer.test.ts`   |
-| H      | `e2e/suites/scenarios/finalize-crash.test.ts`          |
-| I      | `e2e/suites/scenarios/whole-stack-restart.test.ts`     |
-| J      | `e2e/suites/scenarios/recovery-entry-corrupt.test.ts`  |
-| K      | `e2e/suites/scenarios/reconnect-during-drain.test.ts`  |
-| L      | `e2e/suites/scenarios/batch-drain.test.ts`             |
+| Letter | File                                                         |
+| ------ | ------------------------------------------------------------ |
+| A      | `e2e/suites/scenarios/bee-outage-short.test.ts`              |
+| B      | `e2e/suites/scenarios/bee-outage-long.test.ts`               |
+| F      | `e2e/suites/scenarios/uploader-crash-recovery.test.ts`       |
+| G      | `e2e/suites/scenarios/gateway-outage-viewer.test.ts`         |
+| H      | `e2e/suites/scenarios/finalize-crash.test.ts`                |
+| I      | `e2e/suites/scenarios/whole-stack-restart.test.ts`           |
+| J      | `e2e/suites/scenarios/recovery-entry-corrupt.test.ts`        |
+| K      | `e2e/suites/scenarios/reconnect-during-drain.test.ts`        |
+| L      | `e2e/suites/scenarios/batch-drain.test.ts`                   |
+| M      | `e2e/suites/scenarios/whole-stack-restart-reconnect.test.ts` |
 
 ### Reading the V numbers
 
@@ -327,21 +329,22 @@ this broadcast's first segment, and a date derived from one anchor the whole lad
 suite has to read the playlist.
 
 `e2e/src/harness/manifestContractLive.ts` is what reads it, and
-`e2e/test/manifestContractLive.test.ts` covers everything in it but the feed read. Seven live suites
+`e2e/test/manifestContractLive.test.ts` covers everything in it but the feed read. Eight live suites
 call it:
 
-| Suite                                       | What only this one can see                                                                      | Sequence 0 |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- |
-| `service/happy-path`                        | the baseline, on a broadcast with no fault in it                                                | asserted   |
-| `service/abr-ladder`                        | all four rungs deriving both numbers from one anchor, which is what a level switch lands on     | asserted   |
-| H `finalize-crash`, I `whole-stack-restart` | the recording's own numbering, which no catalog entry speaks for                                | asserted   |
-| E `engine-restart`, `abr-engine-restart`    | the resumed session dating its media off its own anchor rather than the dead session's          | when shown |
-| F `uploader-crash-recovery`                 | the recovered session still writing the playlist a viewer holds, on sequences restored off disk | no         |
+| Suite                                       | What only this one can see                                                                       | Sequence 0 |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------- |
+| `service/happy-path`                        | the baseline, on a broadcast with no fault in it                                                 | asserted   |
+| `service/abr-ladder`                        | all four rungs deriving both numbers from one anchor, which is what a level switch lands on      | asserted   |
+| H `finalize-crash`, I `whole-stack-restart` | the recording's own numbering, which no catalog entry speaks for                                 | asserted   |
+| E `engine-restart`, `abr-engine-restart`    | the resumed session dating its media off its own anchor rather than the dead session's           | when shown |
+| F `uploader-crash-recovery`                 | the recovered session still writing the playlist a viewer holds, on sequences restored off disk  | no         |
+| M `whole-stack-restart-reconnect`           | the break a reconnected session earns, and the hole a forgotten accounting index must not invent | no         |
 
 Each one prints one line per rung: whether the feed answered a live playlist or a recording, how many
 media segments it names, how many gap entries and how many discontinuities it declares, the sequence
 it declares and the span of dates it holds. A refusal names the rung, the entry and the date it
-objected to. Everything but the sequence is asserted in all seven: a wall clock on every entry,
+objected to. Everything but the sequence is asserted in all eight: a wall clock on every entry,
 strictly rising, stepping by a whole number of fragments, nothing wider without an
 `#EXT-X-DISCONTINUITY`, and no date before this project existed. `service/happy-path` and
 `service/abr-ladder` also assert zero gap entries, which is the published half of the zero they
@@ -384,10 +387,18 @@ count exact and the sequence is asserted. **Nothing about that can red a correct
 varies what is covered, and it is recorded here rather than dressed up: separating the two sessions
 needs the session-end lines, and that was not built.
 
-**`no`** is F. Its final read comes after the recovery timeout and the gateway catalog's own lag, by
-which point the live window holds only post-recovery media and the playlist genuinely no longer starts
-at the broadcast's first segment. F is there for the dates and the gaps, which is where a recovered
-session's restored numbering shows.
+**`no`** is F and M. F's final read comes after the recovery timeout and the gateway catalog's own lag,
+by which point the live window holds only post-recovery media and the playlist genuinely no longer
+starts at the broadcast's first segment. F is there for the dates and the gaps, which is where a
+recovered session's restored numbering shows.
+
+M's warm-up is 40 segments per rung against a window of about 31, so the window has certainly slid
+before it reads at all, and the sequence assertion is structurally out of reach. M is there for the
+break and for the absence of a hole, which are the two published facts about a reconnected session's
+join: the counter restarted, so `placeInBroadcast` re-anchors forwards and marks it, and the
+accounting index the recovery branch forgets is what keeps that restart from being measured as a run
+of missing segments. Read early on purpose, before M's own 90 second live watch, because a break 90
+seconds old has aged out of the window.
 
 Since 2026-09-03 F reads the timeline **twice**, and the first read is the one the scenario is about.
 As soon as segments resume it waits for the uploader to report the hole the engine never posted, then

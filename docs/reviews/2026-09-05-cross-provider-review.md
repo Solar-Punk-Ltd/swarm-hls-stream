@@ -25,7 +25,9 @@ while the drain plan recorded scenario L green on 2026-09-05. Correct, and fixed
   absent: it starts one publisher with no reconnect, so no `on_publish` ever follows the restart, and
   after the restart it asserts a VOD landed, nothing stays active and the recovery directory is empty,
   never that the new session's segments were published. A live proof of finding 1 needs a publisher
-  that reconnects after the stack comes back.
+  that reconnects after the stack comes back. That publisher is scenario M since 2026-09-07, built
+  beside I rather than folded into it, because what I asserts after the restart is the opposite
+  outcome: one VOD and nothing left active. Not yet run live.
 - `republishIfLadderShapeChanged` compares the liveness shape, rungs that have delivered, while the
   master is written from the announced renditions minus dead ones. During warmup the two differ and
   converge once every rung has delivered, which is the only regime the rung-death correction runs in.
@@ -171,6 +173,12 @@ uploader's request timeout, the recovery fixes and the deploy image met cleanly.
    discontinuity lands on that rung alone. Arming every rung means stopping all four publisher nodes
    at once, four crash domains and four chequebooks. Recommendation: leave it, the run now says which
    rung it armed, and a playback run that must cross a discontinuity rides that rung.
+   **The live proof of finding 1 that this review left open is built**, on 2026-09-07, as scenario M,
+   `e2e/suites/scenarios/whole-stack-restart-reconnect.test.ts`. It restarts every container the way
+   scenario I does and then brings the broadcaster back inside the recovery window, which is the
+   trigger I lacks, and asserts the restarted engine counter is taken rather than swallowed as
+   duplicates. **It has not been run live.** `pnpm e2e:reconnect-after-reboot` runs the gates and it
+   alone, and it also joins every full sitting through the `suites/scenarios/` glob.
 4. **The request timeout's default.** 4 s rests on the retry arithmetic, not on a measured upload
    distribution, because nothing on the stage records one. Recommendation: deploy it as is, and have
    the first sitting after the deploy read the uploader log for `timeout of` lines before trusting it.
@@ -216,3 +224,8 @@ The plan the day followed, as written the evening before:
 
 3. A live proof of finding 1 needs a publisher that reconnects after a whole-stack restart, which no
    scenario has today. Filed here, not built. Still the one open item of this review.
+
+**Item 3 of that plan was built on 2026-09-07** as scenario M,
+`e2e/suites/scenarios/whole-stack-restart-reconnect.test.ts`, with two log readers of its own in
+`e2e/src/harness/logwatch.ts`. It has not been run live, so finding 1 is still unproven on a stage,
+and the scenario that would prove it now exists. See item 3 of "What the owner decides" above.
