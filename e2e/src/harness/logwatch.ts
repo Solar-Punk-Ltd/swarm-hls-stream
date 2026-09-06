@@ -640,6 +640,53 @@ export function segmentIndicesByStream(text: string): Map<string, number[]> {
   return byStream;
 }
 
+/**
+ * The highest engine index each stream uploaded in this window, keyed by stream id.
+ *
+ * Per stream for the reason {@link segmentIndicesByStream} gives: four rungs are four independent
+ * counters and a merged maximum is one rung's number standing in for all of them.
+ *
+ * ⛔ A stream that uploaded nothing is ABSENT rather than zero. `Math.max` of no arguments is
+ * `-Infinity`, and a caller weighing an index against that reads every upload as below it.
+ */
+export function maxSegmentIndexByStream(text: string): ReadonlyMap<string, number> {
+  const highest = new Map<string, number>();
+  for (const upload of segmentUploads(text)) {
+    const reached = highest.get(upload.streamId);
+    if (reached === undefined || upload.index > reached) {
+      highest.set(upload.streamId, upload.index);
+    }
+  }
+  return highest;
+}
+
+/**
+ * Streams that uploaded a segment in this window at an index BELOW the maximum they had reached in
+ * an earlier one, deduplicated and in first-upload order.
+ *
+ * ⭐ What reads an engine counter restarting and the uploader taking the restarted numbers. Both
+ * shipped engines number segments per session and a whole-stack restart restarts the engine itself,
+ * so a session that reconnects afterwards opens far below where the session before it had run to.
+ * A duplicate filter carried across that reconnect answers every one of those indexes without
+ * uploading anything, so the streams named here would be named by nothing at all. See finding 1 of
+ * `docs/reviews/2026-09-05-cross-provider-review.md` and the recovery branch of
+ * `StreamOrchestrator.startStream`.
+ *
+ * ⛔ A stream with no earlier maximum is not answered. Absent means nothing is known about where its
+ * counter was, so every index it publishes is below nothing, and counting it would let a rung that
+ * first appeared after the restart satisfy a caller asking about one that survived it.
+ */
+export function streamsUploadingBelow(text: string, previousMaximums: ReadonlyMap<string, number>): string[] {
+  const restarted = new Set<string>();
+  for (const upload of segmentUploads(text)) {
+    const reached = previousMaximums.get(upload.streamId);
+    if (reached !== undefined && upload.index < reached) {
+      restarted.add(upload.streamId);
+    }
+  }
+  return [...restarted];
+}
+
 /** One rung-announce line: the only place a session's topic is visible next to its ladder. */
 export interface AnnouncedRung {
   streamId: string;
