@@ -14,10 +14,12 @@ import {
   announcedVodFinalizeCount,
   ladderRungs,
   lastUploadedSegmentRefByRung,
+  maxSegmentIndexByStream,
   publishedRenditions,
   segmentIndicesByStream,
   segmentUploads,
   sessionEnds,
+  streamsUploadingBelow,
   vodFinalizeCount,
   vodFinalizeCountFor,
 } from '../src/harness/logwatch.js';
@@ -365,5 +367,112 @@ describe('lastUploadedSegmentRefByRung', () => {
       .join('\n');
 
     assert.deepEqual([...lastUploadedSegmentRefByRung(log).keys()], ['720p']);
+  });
+});
+
+/**
+ * ⛔⛔ The pair scenario M reads a restarted engine counter with, and why they are per stream.
+ *
+ * A whole-stack restart takes the engine with it, so the session that reconnects afterwards numbers
+ * its segments from near zero while the recovered session's own numbering is wherever it had run to.
+ * The uploader taking those low numbers is the whole of what finding 1 of the 2026-09-05
+ * cross-provider review is about, and the merged view cannot say it: four rungs are four independent
+ * counters, so one rung's maximum standing in for all of them is a number about a different rung.
+ */
+describe('maxSegmentIndexByStream', () => {
+  it('takes the highest index each stream reached, not the last one it logged', () => {
+    const log = [
+      segmentUploaded('live/stream_720p', 35, 'r'),
+      segmentUploaded('live/stream_720p', 37, 'r'),
+      segmentUploaded('live/stream_720p', 36, 'r'),
+      segmentUploaded('live/stream_360p', 41, 'r'),
+    ]
+      .map(textLine)
+      .join('\n');
+
+    const highest = maxSegmentIndexByStream(log);
+
+    assert.equal(highest.get('live/stream_720p'), 37);
+    assert.equal(highest.get('live/stream_360p'), 41);
+  });
+
+  /**
+   * ⛔ Absent rather than zero. `Math.max` of no arguments is `-Infinity`, and a caller comparing an
+   * index against that reads every upload in the world as below it.
+   */
+  it('leaves out a stream that uploaded nothing, rather than answering a number for it', () => {
+    const log = textLine(rungAnnounced('live/stream_1080p', '1080p', LADDER, 'topic-1080p'));
+
+    assert.deepEqual([...maxSegmentIndexByStream(log).keys()], []);
+  });
+
+  it('reads the JSON format too, since a deployment chooses which one it writes', () => {
+    const log = jsonLine(segmentUploaded('live/stream_480p', 12, 'ref-12'));
+
+    assert.equal(maxSegmentIndexByStream(log).get('live/stream_480p'), 12);
+  });
+});
+
+describe('streamsUploadingBelow', () => {
+  const beforeTheRestart = new Map([
+    ['live/stream_720p', 40],
+    ['live/stream_360p', 40],
+  ]);
+
+  it('names the stream whose counter restarted and whose low numbers were taken', () => {
+    const log = [segmentUploaded('live/stream_720p', 1, 'r'), segmentUploaded('live/stream_720p', 2, 'r')]
+      .map(textLine)
+      .join('\n');
+
+    assert.deepEqual(streamsUploadingBelow(log, beforeTheRestart), ['live/stream_720p']);
+  });
+
+  /**
+   * ⛔ The failure this reader exists to catch. A duplicate filter carried across the reconnect
+   * answers every index the old session already held without uploading anything, so the first upload
+   * is the one past the old maximum and nothing below it is ever logged.
+   */
+  it('names nobody when the new session was only heard from above the old maximum', () => {
+    const log = [segmentUploaded('live/stream_720p', 41, 'r'), segmentUploaded('live/stream_720p', 42, 'r')]
+      .map(textLine)
+      .join('\n');
+
+    assert.deepEqual(streamsUploadingBelow(log, beforeTheRestart), []);
+  });
+
+  /** The maximum itself is not below itself, and a replay of it would be the duplicate case. */
+  it('does not count an upload at exactly the old maximum', () => {
+    const log = textLine(segmentUploaded('live/stream_720p', 40, 'r'));
+
+    assert.deepEqual(streamsUploadingBelow(log, beforeTheRestart), []);
+  });
+
+  /**
+   * ⛔ A stream with no earlier maximum is not answered here. Nothing is known about where its
+   * counter was, so every index it publishes is below nothing, and counting it would let a rung that
+   * first appeared after the restart satisfy a caller asking about one that survived it.
+   */
+  it('ignores a stream the earlier window never saw', () => {
+    const log = textLine(segmentUploaded('live/stream_1080p', 1, 'r'));
+
+    assert.deepEqual(streamsUploadingBelow(log, beforeTheRestart), []);
+  });
+
+  it('names each stream once however many low segments it uploaded, in first-upload order', () => {
+    const log = [
+      segmentUploaded('live/stream_360p', 1, 'r'),
+      segmentUploaded('live/stream_720p', 1, 'r'),
+      segmentUploaded('live/stream_360p', 2, 'r'),
+    ]
+      .map(textLine)
+      .join('\n');
+
+    assert.deepEqual(streamsUploadingBelow(log, beforeTheRestart), ['live/stream_360p', 'live/stream_720p']);
+  });
+
+  it('reads the JSON format too, since a deployment chooses which one it writes', () => {
+    const log = jsonLine(segmentUploaded('live/stream_360p', 3, 'r'));
+
+    assert.deepEqual(streamsUploadingBelow(log, beforeTheRestart), ['live/stream_360p']);
   });
 });
