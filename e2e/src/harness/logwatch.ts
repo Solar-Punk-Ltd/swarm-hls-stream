@@ -666,11 +666,18 @@ export function maxSegmentIndexByStream(text: string): ReadonlyMap<string, numbe
  *
  * ⭐ What reads an engine counter restarting and the uploader taking the restarted numbers. Both
  * shipped engines number segments per session and a whole-stack restart restarts the engine itself,
- * so a session that reconnects afterwards opens far below where the session before it had run to.
- * A duplicate filter carried across that reconnect answers every one of those indexes without
- * uploading anything, so the streams named here would be named by nothing at all. See finding 1 of
- * `docs/reviews/2026-09-05-cross-provider-review.md` and the recovery branch of
+ * so a session that reconnects afterwards opens far below where the session before it had run to. A
+ * duplicate filter carried across that reconnect answers every one of those indexes without
+ * uploading anything, so this reader comes back empty however healthy the engine was. See finding 1
+ * of `docs/reviews/2026-09-05-cross-provider-review.md` and the recovery branch of
  * `StreamOrchestrator.startStream`.
+ *
+ * ⚠️ **An answer here is evidence and an empty one is not, so read it as the first and never as a
+ * proof of the second.** The filter can only swallow indexes it holds, so a session that ran 850 to
+ * 890 and a counter reopening at 0 never collide, and every index is taken whether the filter was
+ * reset or not. A caller using this to say something about that reset has to know whether the two
+ * ranges overlapped, which {@link maxSegmentIndexByStream} and the first index of the later window
+ * answer together.
  *
  * ⛔ A stream with no earlier maximum is not answered. Absent means nothing is known about where its
  * counter was, so every index it publishes is below nothing, and counting it would let a rung that
