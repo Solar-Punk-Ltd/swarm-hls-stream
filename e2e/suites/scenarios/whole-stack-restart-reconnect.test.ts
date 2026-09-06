@@ -117,7 +117,7 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * script change, and `pnpm e2e:reconnect-after-reboot` runs the gates and this suite alone.
  */
 
-/** See the warm-up section of the file docblock: eighty seconds of broadcast, per rung. */
+/** Per rung, and forty to eighty seconds of broadcast depending on the length the stage cuts. See the docblock. */
 const WARMUP_SEGMENTS = 40;
 const WARMUP_WAIT_MS = 300_000;
 const REBOOT_WAIT_MS = 180_000;
