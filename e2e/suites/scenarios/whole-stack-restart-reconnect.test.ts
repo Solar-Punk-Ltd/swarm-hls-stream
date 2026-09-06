@@ -51,33 +51,48 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  *
  * ## Why the warm-up is 40 segments and not the four scenario I uses
  *
- * The swallowed window is as wide as the overlap between the restored filter and the restarted
- * counter, and the restarted counter opens near zero, so with the bug in place it lasts about as
- * long as the session before the restart ran. Four segments would put the whole swallow inside eight
- * seconds of broadcast, which a wait polling every three seconds could ride straight through and
- * call recovered. Forty segments is eighty seconds of broadcast at the two second fragments this
- * stage cuts, which is longer than the 60 second recovery timer this scenario has to outlast and far
- * longer than any wait below. Counted per rung and never on the merged view, for the reason
- * `service/abr-ladder` records: four rungs are four independent counters, and one fast rung can
- * satisfy a merged target on its own.
+ * The swallow is as wide as the overlap between the restored filter and the restarted counter, so
+ * with the bug in place it costs about as much media as the session before the restart had produced.
+ * Forty segments is eighty seconds of broadcast where this stage cuts two second fragments and forty
+ * where it cuts one, which is a stretch of missing media nobody could read as a hiccup, against the
+ * eight seconds four segments would have made it.
+ *
+ * ⭐ **What makes the first assertion refuse under the bug is not the width, and it is worth being
+ * exact about that.** With the filter carried across, the first index the uploader ever logs an
+ * upload for is one past the maximum the recovered session reached, so nothing below that maximum
+ * appears at all and the wait times out however wide the warm-up was. The width decides how loud the
+ * failure is and, more usefully, how likely the two counters are to overlap in the first place: a
+ * wider pre-restart range is a wider target for a counter reopening near zero to land inside.
+ *
+ * Counted per rung and never on the merged view, for the reason `service/abr-ladder` records: four
+ * rungs are four independent counters, and one fast rung can satisfy a merged target on its own.
  *
  * ⚠️ **Whether the bug could have bitten this particular run is printed, not assumed.** The overlap
  * is the whole mechanism, and a session that opened on a warm engine at index 850 and a restarted
- * counter opening at 0 do not overlap at all. SRS's counter goes back to zero only when the source is
- * reaped, so where the broadcast before this one left it decides the regime. The run says which
- * regime it was in beside the assertions rather than claiming a proof it was not in a position to
- * make.
+ * counter opening at 0 do not overlap at all: every index of the reconnected session is one the
+ * filter never held, so it is taken whether the branch resets the filter or not. SRS's counter goes
+ * back to zero only when the source is reaped, so where the broadcast before this one left it decides
+ * the regime. The run says which regime it was in beside the assertions rather than claiming a proof
+ * it was not in a position to make.
  *
  * ## What is asserted
  *
  * - **The restarted counter is taken.** Some stream that existed before the restart uploads, after
  *   the reconnect, at an engine index BELOW the maximum it had reached. That upload is the one the
- *   old duplicate filter swallowed, and it is the direct evidence the branch resets the filter.
+ *   old duplicate filter swallowed, and it is the only one of these four that tells the fixed
+ *   uploader from the one the review read.
  * - **The broadcast is still one live broadcast.** No VOD flip is announced for the topics this
  *   broadcast opened on, and `/health` keeps reporting a live stream, across 90 seconds from the
  *   reconnect, which is the 60 second recovery timer plus margin. The recovered session keeps the
  *   topic the recovery entry carried, so these are the same topics throughout and a flip on one of
  *   them would mean the reconnect ended the broadcast instead of continuing it.
+ *
+ *   ⛔ **This one is not the bug's signature and must not be read as one.** With the filter carried
+ *   across, the swallowed indexes still arrive, so `streamIngestAt` keeps moving and the stall reaper
+ *   never fires, and the recovery timer was cancelled by the reconnect itself. Nothing finalizes. The
+ *   bug's whole visible effect is the missing media, which is the bullet above. This bullet is here
+ *   because a reconnect ending the broadcast rather than continuing it is the other way the scenario
+ *   can fail, and no existing suite would catch it.
  * - **A viewer is still offered a live stream.** The catalog entry carrying one of those topics is
  *   polled across the same window and must not turn `vod`.
  * - **The playlists are sound across the join.** `checkPublishedTimeline` refuses nothing, at least
