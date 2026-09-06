@@ -203,8 +203,12 @@ overissued`, the master come down to three rungs 37.3 s after the first refusal,
 on the drained rung over about a minute of ramp, near the eighteen the model above expected. The other
 three rungs lost nothing. The restore put the original batch back and the ladder suite passed after it.
 Cost 0.0591 BZZ across the four publishing nodes plus the 0.0383 BZZ batch. The record is
-`docs/bench/one-rung-runs-dry-2026-09-05.md`. V11 on each byte source is still to run. Decision 5's
-master half was built later the same day and has not been proved on a stage yet.
+`docs/bench/one-rung-runs-dry-2026-09-05.md`. V11 ran green on both byte sources on 2026-09-06 at
+`2935091`, one arming each: the viewer decoded 720p and never the drained 1080p, advanced at 1.000
+and 1.003 of real time with no rebuffer, and the master was rewritten while they watched. The record is
+`docs/bench/viewer-through-a-drained-rung-2026-09-06.md`. Decision 5's master half ran green after
+every restore that day: the master named all four rungs 8.5 s, 12.8 s and 12.7 s after the last of them
+announced.
 
 ## What is built, in order
 
@@ -217,7 +221,9 @@ master half was built later the same day and has not been proved on a stage yet.
 5. `suites/service/master-offers-every-rung.test.ts`, decision 5's master half, and
    `pnpm e2e:ladder-restored`, which is the whole post-restore step in one command: the gates, the
    ladder suite, then this one. It reads the master a broadcast actually published, which no other
-   suite does outside a drain, and it skips on a stage that is still armed. Built 2026-09-05, not yet
-   run against a deployment.
+   suite does outside a drain, and it skips on a stage that is still armed. Built 2026-09-05, green
+   against the redeployed stage three times on 2026-09-06, once after the redeploy and once after each
+   V11 restore.
 6. One proving sitting for scenario L, green on 2026-09-05, then one for V11 on each byte source, each
-   with its own arming because a small batch is drained once. Then the coverage map row.
+   with its own arming because a small batch is drained once, both green on 2026-09-06. The coverage
+   map row says so.
