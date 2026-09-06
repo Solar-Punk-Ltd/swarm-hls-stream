@@ -91,8 +91,15 @@ the viewer writes the tag back in
 `packages/client/src/components/SwarmHlsPlayer/ManifestManagement.ts`. On the harness side
 `e2e/src/harness/manifestContract.ts` now names gap entries in the failure a silent hole produces, and
 `e2e/src/harness/manifestContractLive.ts` counts them per rung beside the discontinuities. RFC 8216bis
-§8 asks for no minimum protocol version for the tag, so the playlists stay at `#EXT-X-VERSION:3`. Not
-yet run live.
+§8 asks for no minimum protocol version for the tag, so the playlists stay at `#EXT-X-VERSION:3`.
+
+**Proven live 2026-09-06 at `2935091`, on both byte sources.** After the uploader hard crash of scenario
+F every rung said its hole with gap entries and declared no break: 2, 3, 3 and 2 gap entries across the
+four rungs on the in-tab sitting, 3, 4, 3 and 3 on the gateway sitting and 2, 2, 1 and 2 on its rerun, 0
+discontinuities every time, `#EXT-X-MEDIA-SEQUENCE:0` held. V7, a viewer watching when the uploader is
+killed, and V9, a viewer playing through the hole a writer outage tears, were green in a real browser on
+both byte sources, so hls.js 1.6.15 skips the entries at the live edge as the specification says it
+should. The full suite was green on both byte sources the same day, 29 scenarios and 37 cases each.
 
 ## Four older suggestions, still relevant, folded in
 
@@ -155,8 +162,8 @@ uploader's request timeout, the recovery fixes and the deploy image met cleanly.
 ## What the owner decides
 
 1. **Finding 5. Ruled on 2026-09-06: option A**, say the gap with `#EXT-X-GAP` entries. Built on
-   `wt/gap-entries`, see the end of the finding 5 section above for where it landed. Not yet run
-   live.
+   `wt/gap-entries`, merged as `2935091`, proven live the same day on both byte sources, see the end of
+   the finding 5 section above.
 2. **`__pycache__/` in `.gitignore`.** One line. Recommendation: add it, since importing any of the
    six python scripts from the repository root creates the directory and it showed as untracked on
    2026-09-05.
@@ -167,10 +174,31 @@ uploader's request timeout, the recovery fixes and the deploy image met cleanly.
 4. **The request timeout's default.** 4 s rests on the retry arithmetic, not on a measured upload
    distribution, because nothing on the stage records one. Recommendation: deploy it as is, and have
    the first sitting after the deploy read the uploader log for `timeout of` lines before trusting it.
+   **Read 2026-09-06.** The uploader log of the two morning suites, preserved by the drain arm's
+   before-arm dump, holds 37 `timeout of 4000ms exceeded` retry lines and 10 dropped uploads, and the
+   log of the evening rerun holds 17 and 6. Every one of them sits inside a bee fault window: scenario
+   B stopping every publisher node, V8 pausing the writer, V9 stopping it. No timeout and no dropped
+   upload on any clean broadcast, in three full sittings. The default stands.
 
-## What runs next, and what it costs
+## What ran on 2026-09-06, and what it cost
 
-The proving sittings, in this order, each on a stage redeployed from this branch:
+The stage was redeployed from `2935091` at 00:09Z to 00:12Z (uploader and client, every bee node and SRS
+keeping their uptime, gateway peers 134, the 360p rung moved to a batch at 15.6% by
+`bee-publishers.sh --write` first). Then, against the 10 BZZ ledger the owner authorised at 00:15Z:
+
+| sitting                                                       | when             | verdict                                                  | broadcast cost |
+| ------------------------------------------------------------- | ---------------- | -------------------------------------------------------- | -------------- |
+| `pnpm e2e:ladder-restored`, the gates, the ladder, the master | 00:12Z to 00:14Z | green, master named 4 rungs after 8.5 s                  | in the total   |
+| full suite, in-tab byte source                                | 00:14Z to 01:15Z | green, 29 scenarios, 37 cases                            | 1.91 BZZ       |
+| full suite, gateway byte source                               | 01:45Z to 02:45Z | 19 of 29 read green, the rest lost when the laptop slept | in the total   |
+| V11, in-tab byte source, arm, suite, restore, ladder-restored | 14:56Z to 15:06Z | green, all four stages                                   | 0.18 BZZ       |
+| V11, gateway byte source, the same four stages                | 15:07Z to 15:18Z | green, all four stages                                   | 0.24 BZZ       |
+| full suite, gateway byte source, rerun                        | 15:19Z to 16:19Z | green, 29 scenarios, 37 cases                            | 2.43 BZZ       |
+
+7.25 BZZ of the 10 BZZ left the five chequebooks over the day, plus two depth 17 drain batches at
+0.0384 BZZ each. The V11 record is `docs/bench/viewer-through-a-drained-rung-2026-09-06.md`.
+
+The plan the day followed, as written the evening before:
 
 1. `pnpm e2e:ladder-restored` once on the redeployed stage, which is decision 5's suite meeting a
    deployment for the first time. One ordinary broadcast, no arming.
@@ -187,4 +215,4 @@ The proving sittings, in this order, each on a stage redeployed from this branch
    profile, `drain-stage.sh ... restore`, and `pnpm e2e:ladder-restored` to close it.
 
 3. A live proof of finding 1 needs a publisher that reconnects after a whole-stack restart, which no
-   scenario has today. Filed here, not built.
+   scenario has today. Filed here, not built. Still the one open item of this review.
