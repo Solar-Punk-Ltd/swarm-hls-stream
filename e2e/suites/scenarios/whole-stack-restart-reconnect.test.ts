@@ -176,8 +176,11 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
 
     await waitFor(
       async () => {
-        const perStream = [...segmentIndicesByStream(await log()).values()];
-        return perStream.length >= expectedStreams && perStream.every((ix) => ix.length >= WARMUP_SEGMENTS);
+        const uploadedPerStream = [...segmentIndicesByStream(await log()).values()];
+        return (
+          uploadedPerStream.length >= expectedStreams &&
+          uploadedPerStream.every((indices) => indices.length >= WARMUP_SEGMENTS)
+        );
       },
       {
         timeoutMs: WARMUP_WAIT_MS,
@@ -338,6 +341,7 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
     const catalogStatesSeen = new Set<string>();
     let lowestActiveStreams: number | null = null;
     let healthReadsThatThrew = 0;
+    let catalogReadsThatFoundUs = 0;
     for (;;) {
       try {
         const health = await uploaderHealth(host, cfg);
@@ -349,6 +353,7 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
       for (const entry of await safeCatalog()) {
         if (entryCarriesTopic(entry, ourTopics)) {
           catalogStatesSeen.add(entry.state);
+          catalogReadsThatFoundUs++;
         }
       }
       if (Date.now() >= watchUntilMs) {
@@ -367,6 +372,10 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
       `the uploader reported ${lowestActiveStreams} active streams inside the ${STAYS_LIVE_MS / 1000}s after the ` +
         'reconnect, so the broadcast the reconnect was supposed to continue stopped being live',
     );
+    // ⛔ How many reads found the entry is an observation and not an assertion, on purpose. The wait
+    // above already showed the catalog serving it, so a read failing inside the watch is a gateway
+    // that went cold again rather than a broadcast that left the catalog, and refusing on it would
+    // red a correct product for the transport.
     assert.ok(
       !catalogStatesSeen.has('vod'),
       `the catalog entry carrying this broadcast's topic turned vod inside the ${STAYS_LIVE_MS / 1000}s after ` +
@@ -413,9 +422,10 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
     console.log(
       `  observations, none of them asserted. ${reopenedInsideTheOldRange.length} of ${maximumsBefore.size} ` +
         'streams reopened at or below the index the recovered session had reached, which is the only regime ' +
-        'finding 1 could bite in. The uploader reported ' +
-        `${[...statusesSeen].join(', ') || 'nothing'} across the ${STAYS_LIVE_MS / 1000}s watch, and ` +
-        `${healthReadsThatThrew} of its reads threw`,
+        'finding 1 could bite in. Across the ' +
+        `${STAYS_LIVE_MS / 1000}s watch the uploader reported ${[...statusesSeen].join(', ') || 'nothing'}, ` +
+        `${healthReadsThatThrew} of its reads threw, and ${catalogReadsThatFoundUs} catalog reads found this ` +
+        `broadcast holding ${[...catalogStatesSeen].join(', ') || 'nothing'}`,
     );
   });
 });
