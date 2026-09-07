@@ -103,6 +103,11 @@ runs on your file exactly what it runs on the template:
   generated transcode block and the rung vhost go. Drop them and the entrypoint warns and inserts
   nothing, which is right only if you wrote the ladder into the file yourself
 
+A path that names no file on the machine that runs compose is refused, not fallen back from. Docker
+mounts a missing host path as an empty directory, so the entrypoint finds a directory where the file
+should be, exits with a line naming the variable to fix, and the engine does not start on the
+template while the variable says otherwise.
+
 Start from a copy of the template and edit from there. A file that does not parse takes the engine
 down on its next start, so check it first. SRS has a test mode that names the offending line. It
 checks values as well as syntax, so a file that still carries the tokens is refused at the first of
