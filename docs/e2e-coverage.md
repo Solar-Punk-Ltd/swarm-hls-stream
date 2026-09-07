@@ -231,12 +231,14 @@ prints as 50% full, which is the arithmetic being honest rather than a batch hal
 
 ### Reading the letters
 
-The single letters are the scenario labels the suite files carry in their own docblocks.
+The single letters are the scenario labels the suite files carry in their own docblocks. There is no C: the letters were handed out as the scenarios were written and that one was never used.
 
 | Letter | File                                                   |
 | ------ | ------------------------------------------------------ |
 | A      | `e2e/suites/scenarios/bee-outage-short.test.ts`        |
 | B      | `e2e/suites/scenarios/bee-outage-long.test.ts`         |
+| D      | `e2e/suites/scenarios/publish-stop-to-vod.test.ts`     |
+| E      | `e2e/suites/scenarios/engine-restart.test.ts`          |
 | F      | `e2e/suites/scenarios/uploader-crash-recovery.test.ts` |
 | G      | `e2e/suites/scenarios/gateway-outage-viewer.test.ts`   |
 | H      | `e2e/suites/scenarios/finalize-crash.test.ts`          |

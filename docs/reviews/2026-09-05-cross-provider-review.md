@@ -27,7 +27,8 @@ while the drain plan recorded scenario L green on 2026-09-05. Correct, and fixed
   never that the new session's segments were published. A live proof of finding 1 needs a publisher
   that reconnects after the stack comes back. That publisher is scenario M since 2026-09-07, built
   beside I rather than folded into it, because what I asserts after the restart is the opposite
-  outcome: one VOD and nothing left active. Not yet run live.
+  outcome: one VOD and nothing left active. Proven live 2026-09-07 at `1a0575c`, see item 3 of "What
+  the owner decides".
 - `republishIfLadderShapeChanged` compares the liveness shape, rungs that have delivered, while the
   master is written from the announced renditions minus dead ones. During warmup the two differ and
   converge once every rung has delivered, which is the only regime the rung-death correction runs in.
