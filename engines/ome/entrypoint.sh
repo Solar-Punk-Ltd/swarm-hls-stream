@@ -4,6 +4,11 @@ set -e
 CONF_DIR=/opt/ovenmediaengine/bin/origin_conf
 CONF="$CONF_DIR/Server.xml"
 TEMPLATE=/opt/ovenmediaengine/conf-template/Server.xml.template
+# A config file of the operator's own, mounted here by deploy/docker-compose.ome-conf.yml when
+# OME_CONF_FILE is set. It goes through every substitution below exactly as the template does: a
+# *_PLACEHOLDER token it keeps is filled, one it dropped is simply not there. See engines/README.md,
+# "Your own config file".
+CUSTOM=/opt/ovenmediaengine/conf-template/Server.xml.custom
 
 # Substituting an empty secret would render an empty SecretKey element and leave OME either refusing the
 # config or signing admission requests with an empty key, which the uploader rejects. Both surface as
@@ -14,7 +19,15 @@ if [ -z "${OME_ADMISSION_SECRET:-}" ]; then
 fi
 
 mkdir -p "$CONF_DIR"
-cp "$TEMPLATE" "$CONF"
+# --- config source ---
+if [ -f "$CUSTOM" ]; then
+  cp "$CUSTOM" "$CONF"
+  CONF_SOURCE="the custom config file"
+else
+  cp "$TEMPLATE" "$CONF"
+  CONF_SOURCE="the template"
+fi
+# --- end config source ---
 
 
 # Refuse rather than splice. These values land inside a `sed` s/// expression, where a `/` aborts
@@ -53,6 +66,6 @@ sed -i "s|OME_ADMISSION_SECRET_PLACEHOLDER|${OME_ADMISSION_SECRET:-}|g" "$CONF"
 sed -i "s/OME_SRT_PORT_PLACEHOLDER/${OME_SRT_PORT:-10080}/g" "$CONF"
 sed -i "s/OME_HLS_PORT_PLACEHOLDER/${OME_HLS_PORT:-8081}/g" "$CONF"
 
-echo "Server.xml generated from template"
+echo "Server.xml generated from $CONF_SOURCE"
 
 exec /opt/ovenmediaengine/bin/OvenMediaEngine -c "$CONF_DIR"

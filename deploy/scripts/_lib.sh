@@ -566,7 +566,8 @@ build_profile_flags() {
   echo "$flags"
 }
 
-# Build compose file flags (-f). Adds overrides when COMPOSE_NETWORK=host or NAT addrs are set.
+# Build compose file flags (-f). Adds overrides when COMPOSE_NETWORK=host or NAT addrs are set, and
+# one per engine that is to run on a config file of the operator's own.
 build_compose_files() {
   local base="$1"
   local flags="-f $base/docker-compose.yml"
@@ -575,6 +576,15 @@ build_compose_files() {
   fi
   if [ -n "${BEE_UPLOADER_NAT_ADDR:-}" ] || [ -n "${BEE_GATEWAY_NAT_ADDR:-}" ]; then
     flags="$flags -f $base/docker-compose.nat.yml"
+  fi
+  # A config file of the operator's own, mounted where the engine's entrypoint looks for one. The
+  # file is on the machine that runs compose, which for a remote target means the far side. See
+  # engines/README.md, "Your own config file".
+  if [ -n "${SRS_CONF_FILE:-}" ]; then
+    flags="$flags -f $base/docker-compose.srs-conf.yml"
+  fi
+  if [ -n "${OME_CONF_FILE:-}" ]; then
+    flags="$flags -f $base/docker-compose.ome-conf.yml"
   fi
   echo "$flags"
 }

@@ -2,7 +2,22 @@
 set -e
 
 CONF=/usr/local/srs/conf/srs.conf
-cp /usr/local/srs/conf/srs.conf.template "$CONF"
+TEMPLATE=/usr/local/srs/conf/srs.conf.template
+# A config file of the operator's own, mounted here by deploy/docker-compose.srs-conf.yml when
+# SRS_CONF_FILE is set. It goes through every substitution below exactly as the template does: a
+# *_PLACEHOLDER token it keeps is filled, one it dropped is simply not there. See engines/README.md,
+# "Your own config file".
+CUSTOM=/usr/local/srs/conf/srs.conf.custom
+
+# --- config source ---
+if [ -f "$CUSTOM" ]; then
+  cp "$CUSTOM" "$CONF"
+  CONF_SOURCE="the custom config file"
+else
+  cp "$TEMPLATE" "$CONF"
+  CONF_SOURCE="the template"
+fi
+# --- end config source ---
 
 # Substitute passphrase or remove SRT encryption lines if empty
 if [ -n "$SRT_PASSPHRASE" ]; then
@@ -300,6 +315,13 @@ vhost ${ABR_VHOST} {
 }
 EOF
 
+  # A custom file that dropped the two placeholders gets no ladder from here. That is right only for
+  # an operator who wrote the transcode block and the rung vhost by hand, so it is said out loud
+  # rather than left to be found from four missing rungs.
+  if ! grep -q 'TRANSCODE_PLACEHOLDER' "$CONF" || ! grep -q 'ABR_VHOST_PLACEHOLDER' "$CONF"; then
+    echo "warning: $CONF_SOURCE has no TRANSCODE_PLACEHOLDER or ABR_VHOST_PLACEHOLDER line, so the ladder's transcode block and rung vhost were not inserted. Put the lines back, or carry the ladder in the file yourself." >&2
+  fi
+
   sed -i "s/INGEST_HLS_PLACEHOLDER/off/" "$CONF"
   sed -i -e "/TRANSCODE_PLACEHOLDER/r $TRANSCODE_FRAGMENT" -e "/TRANSCODE_PLACEHOLDER/d" "$CONF"
   sed -i -e "/ABR_VHOST_PLACEHOLDER/r $ABR_VHOST_FRAGMENT" -e "/ABR_VHOST_PLACEHOLDER/d" "$CONF"
@@ -353,6 +375,6 @@ mkdir -p ./objs/nginx/html/video
 mkdir -p ./objs/nginx/html/audio
 chmod 777 ./objs/nginx/html ./objs/nginx/html/video ./objs/nginx/html/audio
 
-echo "srs.conf generated from template"
+echo "srs.conf generated from $CONF_SOURCE"
 
 exec ./objs/srs -c conf/srs.conf

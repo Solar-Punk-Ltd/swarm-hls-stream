@@ -1,0 +1,13 @@
+# Override: run SRS on a config file of the operator's own instead of engines/srs/srs.conf.template.
+# Activated by the deploy scripts when SRS_CONF_FILE is set in .env or .env.<profile>: the path of a
+# file on the machine that runs compose, mounted read-only where the entrypoint looks for it.
+#
+# The entrypoint runs the same substitutions on this file as on the template, so every *_PLACEHOLDER
+# token the file keeps is still filled from the environment (the passphrase, the ports, the webhook
+# token, HLS_FRAGMENT and the rest) and none of them has to be written into it. See engines/README.md,
+# "Your own config file".
+
+services:
+  srs:
+    volumes:
+      - ${SRS_CONF_FILE}:/usr/local/srs/conf/srs.conf.custom:ro

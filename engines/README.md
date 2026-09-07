@@ -81,6 +81,41 @@ Audio is muxed into each rung rather than split into an `EXT-X-MEDIA` rendition 
 `ABR_ACODEC=copy` the four copies are bit-identical and cost no CPU. Splitting it is the right
 production answer and is left as a TODO.
 
+## Your own config file
+
+Everything an engine can do beyond the knobs above is a matter of editing its config file, and both
+engines are configured by file alone. SRS reads `srs.conf`, and
+[full.conf](https://github.com/ossrs/srs/blob/develop/trunk/conf/full.conf) is the annotated
+reference for every directive. OvenMediaEngine reads `Server.xml`, documented in its
+[configuration guide](https://airensoft.gitbook.io/ovenmediaengine/configuration). Neither engine has
+a configuration web page, and neither API writes configuration.
+
+Set `SRS_CONF_FILE` or `OME_CONF_FILE` in `.env` (or `.env.<profile>`) to the path of a file on the
+machine that runs compose, and the deploy mounts it read-only where the engine's entrypoint looks
+(`deploy/docker-compose.srs-conf.yml`, `deploy/docker-compose.ome-conf.yml`). The entrypoint then
+runs on your file exactly what it runs on the template:
+
+- every `*_PLACEHOLDER` token you keep is filled from the environment, so the passphrase, the ports,
+  the webhook token, `HLS_FRAGMENT`, `HLS_WINDOW` and the rest still come from the env knobs and
+  never have to be written into the file
+- a token you drop is gone, and the env knob behind it stops applying to that deployment
+- with the ABR ladder on, `TRANSCODE_PLACEHOLDER` and `ABR_VHOST_PLACEHOLDER` mark where the
+  generated transcode block and the rung vhost go. Drop them and the entrypoint warns and inserts
+  nothing, which is right only if you wrote the ladder into the file yourself
+
+Start from a copy of the template and edit from there. A file that does not parse takes the engine
+down on its next start, so check it first. SRS has a test mode that names the offending line:
+
+```bash
+docker run --rm -v "$PWD/my-srs.conf:/check/srs.conf:ro" ossrs/srs:6 ./objs/srs -t -c /check/srs.conf
+```
+
+OvenMediaEngine has no test mode; its log names the element it refused.
+
+The file is read when the container starts, so a change needs the engine recreated
+(`deploy.sh --profile <p> srs`), and a template change upstream does not reach a deployment that
+runs on a file of its own.
+
 ## Generic API
 
 The stream-uploader also exposes a generic API that works without any engine plugin:

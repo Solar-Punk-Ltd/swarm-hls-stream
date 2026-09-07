@@ -1,0 +1,14 @@
+# Override: run OvenMediaEngine on a config file of the operator's own instead of
+# engines/ome/Server.xml.template. Activated by the deploy scripts when OME_CONF_FILE is set in .env
+# or .env.<profile>: the path of a file on the machine that runs compose, mounted read-only where
+# the entrypoint looks for it.
+#
+# The entrypoint runs the same substitutions on this file as on the template, so every *_PLACEHOLDER
+# token the file keeps is still filled from the environment (the admission secret, the ports, the
+# segment knobs) and none of them has to be written into it. See engines/README.md, "Your own config
+# file".
+
+services:
+  ome:
+    volumes:
+      - ${OME_CONF_FILE}:/opt/ovenmediaengine/conf-template/Server.xml.custom:ro

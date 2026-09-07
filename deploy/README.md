@@ -360,6 +360,7 @@ Safe to run — skips bee node init if already initialized, `docker compose up` 
 - Cross-target URLs are resolved automatically (e.g. `BEE_URL=http://<remote-ip>:1633` when bee is on a different host)
 - Remote deploy: rsync files + start Docker Compose via SSH
 - `COMPOSE_NETWORK=host` activates `docker-compose.host.yml` override for host network mode
+- `SRS_CONF_FILE` or `OME_CONF_FILE` activates `docker-compose.srs-conf.yml` or `docker-compose.ome-conf.yml`, which runs the engine on a config file of your own (see `engines/README.md`)
 
 ## Architecture
 
