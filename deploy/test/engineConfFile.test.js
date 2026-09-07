@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -64,8 +64,12 @@ function mountTargetOf(override) {
  * The lines between the config source markers, run on their own with the three paths pointed at a
  * scratch directory. The rest of the script substitutes and then execs the engine, which is what the
  * other entrypoint tests replay line by line, and neither half proves the copy at the top.
+ *
+ * `custom` is the mounted file's contents and `null` is no mount at all. `directory` stands for what
+ * Docker leaves at the mount target when the host path names nothing: an empty directory, measured
+ * 2026-09-07 with `docker run -v <missing path>:<target>:ro`.
  */
-function chooseConfigSource(entrypoint, { custom }) {
+function chooseConfigSource(entrypoint, { custom = null, directory = false }) {
   const script = readFileSync(join(ROOT, entrypoint), 'utf8');
   const block = /# --- config source ---\n([\s\S]*?)# --- end config source ---/.exec(script);
   assert.ok(block, `${entrypoint} lost its config source markers`);
@@ -73,11 +77,13 @@ function chooseConfigSource(entrypoint, { custom }) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-conf-'));
   dirs.push(dir);
   writeFileSync(join(dir, 'template'), 'from the template\n');
-  if (custom) {
+  if (directory) {
+    mkdirSync(join(dir, 'custom'));
+  } else if (custom !== null) {
     writeFileSync(join(dir, 'custom'), custom);
   }
 
-  const out = execFileSync(
+  const run = spawnSync(
     'bash',
     [
       '-c',
@@ -92,7 +98,13 @@ function chooseConfigSource(entrypoint, { custom }) {
     ],
     { encoding: 'utf8' },
   );
-  return { conf: readFileSync(join(dir, 'conf'), 'utf8'), source: out };
+  const confPath = join(dir, 'conf');
+  return {
+    exitCode: run.status,
+    stderr: run.stderr,
+    conf: existsSync(confPath) ? readFileSync(confPath, 'utf8') : null,
+    source: run.stdout,
+  };
 }
 
 describe('build_compose_files and the engine config overrides', () => {
@@ -138,17 +150,37 @@ describe('the mount lands where the entrypoint looks', () => {
 describe('the entrypoint copies the custom file when it is there', () => {
   for (const engine of ENGINES) {
     it(`${engine.name} runs on the custom file`, () => {
-      const { conf, source } = chooseConfigSource(engine.entrypoint, { custom: 'mine\n' });
+      const { exitCode, stderr, conf, source } = chooseConfigSource(engine.entrypoint, { custom: 'mine\n' });
 
+      assert.equal(exitCode, 0, stderr);
       assert.equal(conf, 'mine\n');
       assert.match(source, /custom/);
     });
 
     it(`${engine.name} runs on the template without one`, () => {
-      const { conf, source } = chooseConfigSource(engine.entrypoint, { custom: null });
+      const { exitCode, stderr, conf, source } = chooseConfigSource(engine.entrypoint, { custom: null });
 
+      assert.equal(exitCode, 0, stderr);
       assert.equal(conf, 'from the template\n');
       assert.match(source, /template/);
+    });
+  }
+});
+
+/**
+ * A variable set to a path that is not on the machine that runs compose is the one mistake this
+ * feature invites, and Docker turns it into an empty directory at the mount target rather than an
+ * error. An entrypoint that only asks "is there a file" then runs on the template, logs that it did,
+ * and the deployment looks exactly like one that honoured the file.
+ */
+describe('the entrypoint refuses a directory where the custom file should be', () => {
+  for (const engine of ENGINES) {
+    it(`${engine.name} exits and names the variable to fix`, () => {
+      const { exitCode, stderr, conf } = chooseConfigSource(engine.entrypoint, { directory: true });
+
+      assert.equal(exitCode, 1, `the entrypoint went on with a directory at the mount: ${stderr}`);
+      assert.match(stderr, new RegExp(engine.variable), 'the refusal has to name the variable to fix');
+      assert.equal(conf, null, 'nothing may be copied into place before the refusal');
     });
   }
 });
