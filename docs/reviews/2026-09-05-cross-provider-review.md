@@ -181,9 +181,14 @@ uploader's request timeout, the recovery fixes and the deploy image met cleanly.
    scenario I does, and its first live run showed why that cannot reach the branch: a graceful stop
    finalizes the broadcast to VOD inside docker's grace, `Received SIGTERM` at 02:18:29.9Z and
    `finalized to VOD` at 02:18:34.7Z on 2026-09-07, so the container that comes back holds no recovery
-   entry and the reconnect opens a fresh broadcast. **It has not been run live in its final form.**
-   `pnpm e2e:reconnect-into-recovery` runs the gates and it alone, and it also joins every full sitting
-   through the `suites/scenarios/` glob.
+   entry and the reconnect opens a fresh broadcast. **Proven live 2026-09-07 at `1a0575c`**: the
+   uploader answered 4 s after the kill and the broadcaster reconnected 10 s after that, all four rungs
+   had run indexes 0 to 40 and reopened at 0 to 43, so every reconnected counter landed inside the
+   recovered range, which is the only regime the old filter could swallow in, and every one uploaded
+   below its previous maximum. Each rung's playlist carried one `#EXT-X-DISCONTINUITY` at the join and
+   no gap entry, media sequence held, and the broadcast stayed live across the 90 s watch with the
+   catalog reading live six times of six. `pnpm e2e:reconnect-into-recovery` runs the gates and it
+   alone, and it also joins every full sitting through the `suites/scenarios/` glob.
 4. **The request timeout's default.** 4 s rests on the retry arithmetic, not on a measured upload
    distribution, because nothing on the stage records one. Recommendation: deploy it as is, and have
    the first sitting after the deploy read the uploader log for `timeout of` lines before trusting it.
@@ -227,13 +232,14 @@ The plan the day followed, as written the evening before:
    the sitting through `bench-on-host.sh --script e2e:batch-drain-viewer` with the byte source's
    profile, `drain-stage.sh ... restore`, and `pnpm e2e:ladder-restored` to close it.
 
-3. A live proof of finding 1 needs a publisher that reconnects after a whole-stack restart, which no
-   scenario has today. Filed here, not built. Still the one open item of this review.
+3. A live proof of finding 1 needs a publisher that reconnects into a recovering uploader. Built on
+   2026-09-07 as scenario M and proven live the same day, see item 3 of "What the owner decides". This
+   review has no open item left.
 
 **Item 3 of that plan was built on 2026-09-07** as scenario M,
 `e2e/suites/scenarios/reconnect-into-recovery.test.ts`, with two log readers of its own in
-`e2e/src/harness/logwatch.ts`. Its final form has not been run live, so finding 1 is still unproven on
-a stage, and the scenario that would prove it now exists. See item 3 of "What the owner decides" above.
+`e2e/src/harness/logwatch.ts`, and proven live the same day at `1a0575c`, which closes finding 1 on a
+stage. See item 3 of "What the owner decides" above for the reading.
 
 A finding the first live run left behind: a graceful stop of the uploader finalizes every live stream
 to VOD before the process exits, so scenario I, whose docblock describes a recovery entry restored
