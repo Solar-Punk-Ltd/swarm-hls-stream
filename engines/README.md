@@ -120,7 +120,7 @@ entrypoint fills its tokens from the environment. Measured 2026-09-07 on `ossrs/
 copy of the template is refused at line 57, the filled copy passes, and a misspelt `hls_window` in
 the filled copy is named.
 
-OvenMediaEngine has no test mode; its log names the element it refused.
+OvenMediaEngine has no test mode. Its log names the element it refused.
 
 The file is read when the container starts, so a change needs the engine recreated
 (`deploy.sh --profile <p> srs`), and a template change upstream does not reach a deployment that
