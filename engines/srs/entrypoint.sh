@@ -10,6 +10,13 @@ TEMPLATE=/usr/local/srs/conf/srs.conf.template
 CUSTOM=/usr/local/srs/conf/srs.conf.custom
 
 # --- config source ---
+# Docker mounts a host path that names nothing as an empty directory, so a directory here is a
+# SRS_CONF_FILE that is wrong on the machine that runs compose. Running on the template instead would
+# look exactly like the file being honoured, from outside and in this log.
+if [ -d "$CUSTOM" ]; then
+  echo "error: $CUSTOM is a directory, which is what docker mounts when SRS_CONF_FILE names a path that is not a file on the machine that runs compose. Fix the path, or unset it to run on the template." >&2
+  exit 1
+fi
 if [ -f "$CUSTOM" ]; then
   cp "$CUSTOM" "$CONF"
   CONF_SOURCE="the custom config file"
