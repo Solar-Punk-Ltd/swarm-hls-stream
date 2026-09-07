@@ -298,11 +298,15 @@ sync_to_remote() {
   # Ensure remote directory structure exists
   ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/engines/ome $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/packages/shared $REMOTE_BASE/nodes"
 
-  # Always sync compose, Dockerfiles, nginx template, scripts
+  # Always sync compose and every override build_compose_files can add, Dockerfiles, nginx template,
+  # scripts. The far side's compose call names the overrides, so one missing here fails only the
+  # deployments that set the variable activating it, which is how the two engine ones were missed.
   rsync -az --delete \
     "$DEPLOY_DIR/docker-compose.yml" \
     "$DEPLOY_DIR/docker-compose.host.yml" \
     "$DEPLOY_DIR/docker-compose.nat.yml" \
+    "$DEPLOY_DIR/docker-compose.srs-conf.yml" \
+    "$DEPLOY_DIR/docker-compose.ome-conf.yml" \
     "$DEPLOY_DIR/Dockerfile.uploader" \
     "$DEPLOY_DIR/Dockerfile.client" \
     "$DEPLOY_DIR/client-nginx.conf.template" \
