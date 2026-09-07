@@ -174,11 +174,16 @@ uploader's request timeout, the recovery fixes and the deploy image met cleanly.
    at once, four crash domains and four chequebooks. Recommendation: leave it, the run now says which
    rung it armed, and a playback run that must cross a discontinuity rides that rung.
    **The live proof of finding 1 that this review left open is built**, on 2026-09-07, as scenario M,
-   `e2e/suites/scenarios/whole-stack-restart-reconnect.test.ts`. It restarts every container the way
-   scenario I does and then brings the broadcaster back inside the recovery window, which is the
-   trigger I lacks, and asserts the restarted engine counter is taken rather than swallowed as
-   duplicates. **It has not been run live.** `pnpm e2e:reconnect-after-reboot` runs the gates and it
-   alone, and it also joins every full sitting through the `suites/scenarios/` glob.
+   `e2e/suites/scenarios/reconnect-into-recovery.test.ts`. It kills the uploader the way scenario F
+   does and restarts the engine at the same moment, then brings the broadcaster back inside the
+   recovery window, which is the trigger I lacks, and asserts the restarted engine counter is taken
+   rather than swallowed as duplicates. Its first draft restarted every container gracefully the way
+   scenario I does, and its first live run showed why that cannot reach the branch: a graceful stop
+   finalizes the broadcast to VOD inside docker's grace, `Received SIGTERM` at 02:18:29.9Z and
+   `finalized to VOD` at 02:18:34.7Z on 2026-09-07, so the container that comes back holds no recovery
+   entry and the reconnect opens a fresh broadcast. **It has not been run live in its final form.**
+   `pnpm e2e:reconnect-into-recovery` runs the gates and it alone, and it also joins every full sitting
+   through the `suites/scenarios/` glob.
 4. **The request timeout's default.** 4 s rests on the retry arithmetic, not on a measured upload
    distribution, because nothing on the stage records one. Recommendation: deploy it as is, and have
    the first sitting after the deploy read the uploader log for `timeout of` lines before trusting it.
@@ -226,6 +231,13 @@ The plan the day followed, as written the evening before:
    scenario has today. Filed here, not built. Still the one open item of this review.
 
 **Item 3 of that plan was built on 2026-09-07** as scenario M,
-`e2e/suites/scenarios/whole-stack-restart-reconnect.test.ts`, with two log readers of its own in
-`e2e/src/harness/logwatch.ts`. It has not been run live, so finding 1 is still unproven on a stage,
-and the scenario that would prove it now exists. See item 3 of "What the owner decides" above.
+`e2e/suites/scenarios/reconnect-into-recovery.test.ts`, with two log readers of its own in
+`e2e/src/harness/logwatch.ts`. Its final form has not been run live, so finding 1 is still unproven on
+a stage, and the scenario that would prove it now exists. See item 3 of "What the owner decides" above.
+
+A finding the first live run left behind: a graceful stop of the uploader finalizes every live stream
+to VOD before the process exits, so scenario I, whose docblock describes a recovery entry restored
+after a reboot and a 60 second timer racing a cold bee node, exercises that race only when the finalize
+does not complete inside docker's stop grace. On 2026-09-07 it completed in five seconds and I passes
+by the graceful finalize alone. The scenario is still a correct reading of a reboot, but its docblock
+claims a mechanism the run does not walk. Left for the owner to rule on.

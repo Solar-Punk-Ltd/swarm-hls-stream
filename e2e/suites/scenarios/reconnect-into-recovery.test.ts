@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
-import { containerName, type E2EConfig, loadConfig, type ServiceName, SERVICES } from '../../src/config.js';
+import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { type Host, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   maxSegmentIndexByStream,
@@ -20,7 +20,7 @@ import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog 
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
- * Scenario M — the whole stack restarts under a live broadcast and the broadcaster comes back to it.
+ * Scenario M — the uploader dies while its engine restarts, and the broadcaster comes back to it.
  *
  * ## The bug this exists to prove fixed
  *
@@ -33,21 +33,42 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  *
  * Before `2d86b84` that branch cancelled the timer and returned with the restored filter still in
  * place, and the new session does not carry the old numbering on. Both shipped engines number
- * segments per session and a whole-stack restart restarts the engine itself, so the arrivals after
+ * segments per session and the engine restarts beside the kill, so the arrivals after
  * the reconnect open near zero. Every one of them that the restored filter already held was answered
  * `accepted` without being uploaded, the engine therefore never retried, and the accounting index
  * sitting above the new counter meant no loss was inferred either. **The new session's opening was
  * simply gone**, out of the playlist a viewer was reading, with nothing in the log calling it an
  * error. The fix starts the filter fresh in that branch and forgets the accounting index.
  *
+ * ## Why the uploader is killed and not restarted, and why the engine is restarted beside it
+ *
+ * Reaching the branch needs two things at once: an uploader that boots holding a recovery entry, and
+ * an engine whose counter has gone back to zero so the reconnected session's indexes land inside the
+ * range the entry carries.
+ *
+ * ⛔ **A `docker restart` of the uploader gives neither the first.** It delivers SIGTERM, and the
+ * uploader's graceful shutdown stops every live stream, which finalizes each one to VOD and removes
+ * its recovery entry, all inside docker's ten second grace. Measured on the live stage on 2026-09-07:
+ * `Received SIGTERM` at 02:18:29.9Z, `finalized to VOD` at 02:18:34.7Z, and the container that came
+ * back logged no `Recovering` line at all. The publisher that then reconnected opened a fresh
+ * broadcast on fresh topics, numbered from zero with no break, which is the correct outcome of a
+ * graceful stop and says nothing about finding 1. The first live run of this suite, written with a
+ * whole-stack `docker restart`, went red on exactly that. So the uploader is killed, SIGKILL through
+ * `host.kill`, the way `uploader-crash-recovery` (F) does it, which leaves the recovery entry on disk,
+ * and it is started again by hand because `docker kill` does not trip the restart policy on this
+ * stage.
+ *
+ * The engine is restarted at the same moment, SIGTERM through `host.restart`, because a reconnect
+ * into a warm engine continues its numbering and the two ranges never overlap. The bee nodes stay up:
+ * they have no part in finding 1, and a SIGKILL to a node risks its database.
+ *
  * ## Why scenario I cannot see it
  *
- * `whole-stack-restart.test.ts` restarts the same containers, and its publisher never comes back. No
- * `on_publish` follows the restart, so the recovery branch is never entered, and what I then asserts
- * is the opposite outcome: the interrupted broadcast finalized into one VOD with no recovery entry
- * left behind. The review recorded it as green with the bug in the code for exactly that reason. The
- * two are complementary rather than duplicates. I is a broadcaster who never comes back and M is one
- * who does, and only the second reaches the branch.
+ * `whole-stack-restart.test.ts` restarts every container gracefully and its publisher never comes
+ * back. The graceful stop finalizes the broadcast before the containers are even down, no
+ * `on_publish` follows, and the recovery branch is never entered. What I asserts is the opposite
+ * outcome, one VOD and no recovery entry left behind, which is right for a broadcaster who never
+ * returns. The two are complementary rather than duplicates: only M reaches the branch.
  *
  * ## Why the warm-up is 40 segments and not the four scenario I uses
  *
@@ -114,13 +135,14 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  *
  * ⛔ Requires a deployed profile and a funded stamp. It buys one broadcast of roughly five minutes.
  * The full suite runs `suites/scenarios/*.test.ts` by glob, so this joins every full sitting with no
- * script change, and `pnpm e2e:reconnect-after-reboot` runs the gates and this suite alone.
+ * script change, and `pnpm e2e:reconnect-into-recovery` runs the gates and this suite alone.
  */
 
 /** Per rung, and forty to eighty seconds of broadcast depending on the length the stage cuts. See the docblock. */
 const WARMUP_SEGMENTS = 40;
 const WARMUP_WAIT_MS = 300_000;
-const REBOOT_WAIT_MS = 180_000;
+/** The kill, the engine restart and the uploader coming back up, which is seconds with the bee nodes untouched. */
+const RESTART_WAIT_MS = 180_000;
 /**
  * How late the reconnect may be and still land inside the recovery window.
  *
@@ -139,18 +161,6 @@ const STAYS_LIVE_MS = 90_000;
 const LIVE_WATCH_INTERVAL_MS = 5_000;
 const MIN_STAMP_TTL_S = 600;
 
-/** Only the services this profile is actually running: `ome` is absent whenever the engine is SRS. */
-async function runningContainers(host: Host, cfg: E2EConfig): Promise<string[]> {
-  const names = Object.values(SERVICES).map((service: ServiceName) => containerName(cfg, service));
-  const running: string[] = [];
-  for (const name of names) {
-    if (await host.isRunning(name)) {
-      running.push(name);
-    }
-  }
-  return running;
-}
-
 /** `35..74`, or the word for a stream the window holds no upload for. */
 function describeRange(indices: readonly number[] | undefined): string {
   if (indices === undefined || indices.length === 0) {
@@ -161,10 +171,11 @@ function describeRange(indices: readonly number[] | undefined): string {
 
 const cfg = loadConfig();
 
-describe('M — whole-stack restart, then the broadcaster reconnects: the recovered stream continues', () => {
+describe('M — the uploader dies while its engine restarts, then the broadcaster reconnects: the recovered stream continues', () => {
   const host = makeHost(cfg);
   const engine = getEngine(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
+  const mediaContainer = engine.mediaContainer(cfg);
   /** Every rung of the ladder, or the one stream a single-rendition deployment publishes. */
   const expectedStreams = cfg.abrEnabled ? cfg.abrRungs.length : 1;
   let publisher: Publisher;
@@ -180,9 +191,13 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
   });
 
   after(async () => {
-    // Nothing else to put back. Every container was restarted rather than stopped, so the stage is
-    // whole, and the broadcast finalizes on its own once the broadcaster is gone.
+    // The uploader was started again inside the test and the engine was restarted rather than
+    // stopped, so the stage is whole, and the broadcast finalizes on its own once the broadcaster is
+    // gone. Started once more here only if the kill was the last thing that happened to it.
     await publisher?.stop();
+    if (!(await host.isRunning(uploader))) {
+      await host.start(uploader).catch(() => undefined);
+    }
   });
 
   it('takes the reconnected session at its restarted counter and keeps the broadcast live', async () => {
@@ -217,15 +232,23 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
     const entriesBefore = await recoveryEntryIds(host, cfg);
     assert.ok(
       entriesBefore.length > 0,
-      'a live broadcast must have a recovery entry, or the restart leaves nothing for a reconnect to rejoin',
+      'a live broadcast must have a recovery entry, or the kill leaves nothing for a reconnect to rejoin',
     );
 
-    // One `docker restart` for every container at once, exactly as scenario I does it and for the
-    // same reason: staggering them would hand the uploader a bee node that is already up.
-    const containers = await runningContainers(host, cfg);
-    console.log(`  M: restarting ${containers.length} containers together: ${containers.join(', ')}`);
+    // The fault, both halves at once: SIGKILL to the uploader so its recovery entry stays on disk, and
+    // a graceful restart of the engine so its counter goes back to zero. See the docblock for why a
+    // graceful stop of the uploader would leave nothing to recover.
+    console.log(`  M: killing ${uploader} and restarting ${mediaContainer} together`);
     const restartedAtMs = Date.now();
-    await host.run(`docker restart ${containers.join(' ')}`, REBOOT_WAIT_MS);
+    await Promise.all([host.kill(uploader), host.restart(mediaContainer)]);
+    await waitFor(async () => !(await host.isRunning(uploader)), {
+      timeoutMs: RESTART_WAIT_MS,
+      intervalMs: 1_000,
+      label: 'the uploader container is fully stopped after the kill',
+    });
+    // `docker kill` does not trip the restart policy on this stage, so the uploader is started by hand,
+    // exactly as scenario F does it. Its boot is what restores the stream and arms the recovery timer.
+    await host.start(uploader);
 
     await waitFor(
       async () => {
@@ -236,9 +259,9 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
         }
       },
       {
-        timeoutMs: REBOOT_WAIT_MS,
+        timeoutMs: RESTART_WAIT_MS,
         intervalMs: 3_000,
-        label: 'the uploader answers again after the whole-stack restart',
+        label: 'the uploader answers again after the kill',
       },
     );
     const answeredAtMs = Date.now();
@@ -256,8 +279,8 @@ describe('M — whole-stack restart, then the broadcaster reconnects: the recove
     const reconnectLagMs = reconnectedAtMs - answeredAtMs;
 
     console.log(
-      `  M: the uploader answered ${((answeredAtMs - restartedAtMs) / 1000).toFixed(1)}s after the restart ` +
-        `began, and the broadcaster reconnected ${(reconnectLagMs / 1000).toFixed(1)}s after that`,
+      `  M: the uploader answered ${((answeredAtMs - restartedAtMs) / 1000).toFixed(1)}s after the kill, and the ` +
+        `broadcaster reconnected ${(reconnectLagMs / 1000).toFixed(1)}s after that`,
     );
     assert.ok(
       reconnectLagMs <= RECONNECT_DEADLINE_MS,

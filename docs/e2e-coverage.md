@@ -233,18 +233,18 @@ prints as 50% full, which is the arithmetic being honest rather than a batch hal
 
 The single letters are the scenario labels the suite files carry in their own docblocks.
 
-| Letter | File                                                         |
-| ------ | ------------------------------------------------------------ |
-| A      | `e2e/suites/scenarios/bee-outage-short.test.ts`              |
-| B      | `e2e/suites/scenarios/bee-outage-long.test.ts`               |
-| F      | `e2e/suites/scenarios/uploader-crash-recovery.test.ts`       |
-| G      | `e2e/suites/scenarios/gateway-outage-viewer.test.ts`         |
-| H      | `e2e/suites/scenarios/finalize-crash.test.ts`                |
-| I      | `e2e/suites/scenarios/whole-stack-restart.test.ts`           |
-| J      | `e2e/suites/scenarios/recovery-entry-corrupt.test.ts`        |
-| K      | `e2e/suites/scenarios/reconnect-during-drain.test.ts`        |
-| L      | `e2e/suites/scenarios/batch-drain.test.ts`                   |
-| M      | `e2e/suites/scenarios/whole-stack-restart-reconnect.test.ts` |
+| Letter | File                                                   |
+| ------ | ------------------------------------------------------ |
+| A      | `e2e/suites/scenarios/bee-outage-short.test.ts`        |
+| B      | `e2e/suites/scenarios/bee-outage-long.test.ts`         |
+| F      | `e2e/suites/scenarios/uploader-crash-recovery.test.ts` |
+| G      | `e2e/suites/scenarios/gateway-outage-viewer.test.ts`   |
+| H      | `e2e/suites/scenarios/finalize-crash.test.ts`          |
+| I      | `e2e/suites/scenarios/whole-stack-restart.test.ts`     |
+| J      | `e2e/suites/scenarios/recovery-entry-corrupt.test.ts`  |
+| K      | `e2e/suites/scenarios/reconnect-during-drain.test.ts`  |
+| L      | `e2e/suites/scenarios/batch-drain.test.ts`             |
+| M      | `e2e/suites/scenarios/reconnect-into-recovery.test.ts` |
 
 ### Reading the V numbers
 
@@ -339,7 +339,7 @@ call it:
 | H `finalize-crash`, I `whole-stack-restart` | the recording's own numbering, which no catalog entry speaks for                                 | asserted   |
 | E `engine-restart`, `abr-engine-restart`    | the resumed session dating its media off its own anchor rather than the dead session's           | when shown |
 | F `uploader-crash-recovery`                 | the recovered session still writing the playlist a viewer holds, on sequences restored off disk  | no         |
-| M `whole-stack-restart-reconnect`           | the break a reconnected session earns, and the hole a forgotten accounting index must not invent | no         |
+| M `reconnect-into-recovery`                 | the break a reconnected session earns, and the hole a forgotten accounting index must not invent | no         |
 
 Each one prints one line per rung: whether the feed answered a live playlist or a recording, how many
 media segments it names, how many gap entries and how many discontinuities it declares, the sequence
