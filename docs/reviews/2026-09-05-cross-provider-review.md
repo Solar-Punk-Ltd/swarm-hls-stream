@@ -246,4 +246,7 @@ to VOD before the process exits, so scenario I, whose docblock describes a recov
 after a reboot and a 60 second timer racing a cold bee node, exercises that race only when the finalize
 does not complete inside docker's stop grace. On 2026-09-07 it completed in five seconds and I passes
 by the graceful finalize alone. The scenario is still a correct reading of a reboot, but its docblock
-claims a mechanism the run does not walk. Left for the owner to rule on.
+claimed a mechanism the run does not walk. Ruled 2026-09-07, "go as recommended": the scenario stays
+and its docblock now names both paths, the shutdown finalize and the recovery timer, and says the run
+does not read which one it took. `reconnect-into-recovery` (M) is the scenario that reaches the
+recovery branch on purpose.
