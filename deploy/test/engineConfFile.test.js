@@ -105,7 +105,10 @@ describe('build_compose_files and the engine config overrides', () => {
 
       assert.equal(without.exitCode, 0, without.stderr);
       assert.equal(withFile.exitCode, 0, withFile.stderr);
-      assert.ok(!without.stdout.includes(engine.override), `the override was added with no file set: ${without.stdout}`);
+      assert.ok(
+        !without.stdout.includes(engine.override),
+        `the override was added with no file set: ${without.stdout}`,
+      );
       assert.ok(withFile.stdout.includes(`-f /d/${engine.override}`), `the override was not added: ${withFile.stdout}`);
       assert.ok(withFile.stdout.startsWith('-f /d/docker-compose.yml'), 'the base file has to come first');
     });
