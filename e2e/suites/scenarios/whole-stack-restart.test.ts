@@ -17,17 +17,35 @@ import { waitFor } from '../../src/harness/wait.js';
  * ## Why this is not six one-container scenarios
  *
  * Every fault this suite injects today takes one service away while the rest of the deployment stays
- * healthy, and the uploader's recovery path quietly depends on that. When it reboots holding a
- * recovery entry it restores the stream and arms a 60 second timer, and when the timer fires it
- * finalizes: it builds a VOD manifest, **uploads it through bee-uploader**, and writes the catalog.
+ * healthy. A reboot takes them all at once, and the one recording it must leave behind can come out
+ * of two different paths, which is what this scenario asserts across without saying which one ran.
  *
- * In every existing scenario bee-uploader has been up for days by then. In a host reboot it is
- * starting from cold at the same moment, and a bee node needs tens of seconds before it will accept
- * an upload. So the recovery deadline and the storage dependency race, and nothing has ever run them
- * against each other.
+ * **The graceful path.** `docker restart` delivers SIGTERM, and the uploader's shutdown stops every
+ * live stream before the process exits: each one is finalized to VOD, uploaded through its bee node
+ * and written to the catalog, and its recovery entry is removed, all inside docker's stop grace. This
+ * is what happened on the live stage on 2026-09-07: `Received SIGTERM` at 02:18:29.9Z, `finalized to
+ * VOD` at 02:18:34.7Z, and the container that came back logged no recovery at all. It works because
+ * the containers are restarted in sequence and the bee nodes are still up while the uploader is
+ * finalizing.
  *
- * ⭐ The failure this would produce is the expensive kind: the broadcast is over, the recording is the
- * only thing left of it, and it is lost at the exact moment the operator believes the restart worked.
+ * **The recovery path.** If the finalize cannot complete before the grace runs out, or a bee node is
+ * already gone when the uploader reaches for it, the recovery entry survives on disk. The uploader
+ * then boots holding it, restores the stream, arms a 60 second timer, and when the timer fires it
+ * finalizes through a bee node that was itself starting from cold and needs tens of seconds before it
+ * accepts an upload. That is the race this scenario was first written about, and nothing else in the
+ * suite runs it.
+ *
+ * ⛔ **Which path a given run took is not asserted and not read here.** Both end in the same
+ * recording, and the assertions below hold for either. On the stage as deployed the graceful path is
+ * the usual one, so a green here is evidence about the shutdown finalize far more often than about
+ * the recovery timer. A scenario that has to reach the recovery branch cannot use a graceful stop at
+ * all, which is why `reconnect-into-recovery` (M) kills the uploader with SIGKILL the way
+ * `uploader-crash-recovery` (F) does. Owner ruling of 2026-09-07: the scenario stays as it is and
+ * this docblock says what it proves.
+ *
+ * ⭐ The failure either path would produce is the expensive kind: the broadcast is over, the
+ * recording is the only thing left of it, and it is lost at the exact moment the operator believes
+ * the restart worked.
  *
  * ## What is asserted
  *
@@ -36,9 +54,9 @@ import { waitFor } from '../../src/harness/wait.js';
  * and no recovery entry left behind to be re-finalized on the next boot.
  *
  * ⭐ And the recording has to be a playable one, which the catalog cannot say. Its playlists are read
- * and held to the manifest contract, because the finalize that wrote them built its manifest from
- * state restored off disk and pushed it through a bee node starting from cold. See
- * `src/harness/manifestContractLive.ts`.
+ * and held to the manifest contract, because the finalize that wrote them ran either under a shutdown
+ * with the process about to exit, or from state restored off disk through a bee node starting from
+ * cold, and neither is the ordinary end of a broadcast. See `src/harness/manifestContractLive.ts`.
  */
 
 const WARMUP_SEGMENTS = 4;
@@ -126,12 +144,12 @@ describe('I — whole-stack restart: the recording survives a host reboot', () =
     );
 
     // The engine took the publisher's connection with it, so nothing resumes. What has to happen is
-    // that the restored stream is finalized, and it has to happen through a bee node that was itself
-    // restarting when the recovery timer started counting.
+    // that the broadcast is finalized exactly once, by the shutdown before the process went down or by
+    // the recovery timer after it came back. See the docblock: which of the two ran is not read here.
     await waitFor(async () => vodCommits(await log()) >= 1, {
       timeoutMs: RECOVERY_WAIT_MS,
       intervalMs: 3_000,
-      label: 'the recovered stream is finalized after the restart, through a bee node that restarted too',
+      label: 'the interrupted broadcast is finalized, by the shutdown or by the recovery timer',
     });
 
     await waitFor(async () => (await uploaderHealth(host, cfg)).activeStreams === 0, {
@@ -154,8 +172,8 @@ describe('I — whole-stack restart: the recording survives a host reboot', () =
     });
 
     // ⛔ The catalog naming a recording and the recording being playable are different facts, and this
-    // scenario is the one where they can come apart: the recovered finalize built its VOD manifest
-    // from state restored off disk, through a bee node that was itself starting from cold. So the
+    // scenario is the one where they can come apart: the finalize that wrote it ran either under a
+    // shutdown or from state restored off disk through a bee node starting from cold. So the
     // playlists are read and held to the contract. A recording names every segment of its broadcast,
     // so its media sequence must be 0 however far the engine's own counter had run.
     const verdict = await checkPublishedTimeline(host, cfg, {
