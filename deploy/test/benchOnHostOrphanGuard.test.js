@@ -38,24 +38,53 @@ const DEFAULT_CONTAINER = 'latbench-harness-slot7';
  * in flight, short enough that the handler, which waits for that ssh, does not hold up the suite.
  */
 const CONTAINER_HOLDS_SECONDS = 3;
-const INTERRUPT_DEADLINE_MS = 20_000;
+
+/**
+ * How long the script is given to exit once it has been signalled, which is the property under test:
+ * the trap runs one ssh carrying one `docker stop`, and the script returns.
+ *
+ * ⛔ Sized for the load this file actually runs under, not for an idle machine. `pnpm test` in this
+ * package runs its 52 files eleven at a time, every one of them spawning shell scripts and stub
+ * processes, and a stub chain that takes a quarter of a second alone takes many seconds there. The
+ * hanging-stop case below keeps its stub hanging well past this number, so the cap it proves is still
+ * the script's own and never this deadline. See {@link CONTAINER_START_DEADLINE_MS} for the reading.
+ */
+const INTERRUPT_DEADLINE_MS = 60_000;
+
+/**
+ * How long the stubbed chain is given to reach `docker run` in the first place, which is a setup wait
+ * and not the property. Nothing about the interrupt handler is read until the marker exists.
+ *
+ * ⛔⛔ Its own budget because it used to borrow {@link INTERRUPT_DEADLINE_MS}, then 20 s, and that
+ * number was about a different thing. Measured 2026-09-07 under this package's own `pnpm test`, no
+ * other load on the machine: the two interrupted cases that reached their marker did so 2.7 s and
+ * 17.6 s after the launch, and the other four never did inside 20 s and failed as "the stubbed
+ * container never started". Alone, the same file passes 19 of 19 in seconds, and it had passed the
+ * full verify the day before, so the whole difference is how many test files were spawning at once.
+ * The chain is the script's own start, its manifest read, the busy-target read and the launch, four
+ * process trees each with a Node start in it, and under eleven concurrent files each of those waits
+ * its turn. A wait longer than this means the chain is genuinely stuck, and the message still says so.
+ */
+const CONTAINER_START_DEADLINE_MS = 180_000;
 const POLL_MS = 20;
 
 /**
  * The cap the script puts on the stop, shortened from its default of 20s so a stop that never
- * answers can be read without sitting out the real one. The stub below then hangs well past it, so
- * the arm either gives up on its own or the deadline above ends the test.
+ * answers can be read without sitting out the real one. The stub below then hangs well past the
+ * interrupt deadline, so the arm either gives up on its own or the deadline above ends the test, and
+ * a script that sat out the whole hang could never pass as one that gave up.
  */
 const SHORT_STOP_DEADLINE_SECONDS = '1';
-const STOP_HANGS_SECONDS = 30;
+const STOP_HANGS_SECONDS = 120;
 
 /**
  * A container hold far longer than the run this file gives a prompt stop, so a handler that waits
- * for the run's own ssh cannot pass as one that acted on the signal. Twenty times the deadline, so
- * there is no reading between the two.
+ * for the run's own ssh cannot pass as one that acted on the signal. Eight times the deadline, so
+ * there is no reading between the two, and the deadline itself is sized for the load described at
+ * {@link INTERRUPT_DEADLINE_MS} rather than for an idle machine.
  */
-const LONG_RUN_SECONDS = 60;
-const PROMPT_STOP_DEADLINE_MS = 3_000;
+const LONG_RUN_SECONDS = 240;
+const PROMPT_STOP_DEADLINE_MS = 30_000;
 
 /** How long the last lines are given to reach the pipes after the script has already exited. */
 const OUTPUT_FLUSH_MS = 250;
@@ -166,7 +195,7 @@ function sleep(ms) {
 }
 
 async function waitForFile(path) {
-  const until = Date.now() + INTERRUPT_DEADLINE_MS;
+  const until = Date.now() + CONTAINER_START_DEADLINE_MS;
   while (Date.now() < until) {
     if (existsSync(path)) {
       return;
@@ -222,7 +251,11 @@ async function interruptedRun(
   const closed = new Promise((resolve) => child.on('close', () => resolve()));
 
   try {
+    const launchedAtMs = Date.now();
     await waitForFile(marker);
+    // An observation, never asserted: how long the stubbed chain took to reach `docker run`, which is
+    // the number the setup budget above has to cover under the load of a full test run.
+    console.log(`  the stubbed container started ${Date.now() - launchedAtMs}ms after the launch`);
     process.kill(child.pid, signal);
     const exitCode = await Promise.race([
       exited,
@@ -497,7 +530,7 @@ describe('bench-on-host stops the remote container when it is interrupted', () =
    * operator was told the stop had failed on a container nobody needed stopping. Everything the
    * kill was for, the postage and the stage, was spent in between.
    *
-   * A hold twenty times the deadline, so this says which of the two happened and cannot say
+   * A hold eight times the deadline, so this says which of the two happened and cannot say
    * anything in between.
    */
   it('stops the container at the signal rather than when the run would have ended anyway', async () => {
