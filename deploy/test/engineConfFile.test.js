@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { makeSandbox, removeSandboxes, sourceLib } from './helpers/sandbox.js';
+import { ALL_REMOTE, makeSandbox, removeSandboxes, runScriptOk, sourceLib } from './helpers/sandbox.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -146,6 +146,54 @@ describe('the entrypoint copies the custom file when it is there', () => {
 
       assert.equal(conf, 'from the template\n');
       assert.match(source, /template/);
+    });
+  }
+});
+
+describe('a remote deploy ships the override it names', () => {
+  /**
+   * The sandbox copies `docker-compose.yml` alone and the stubbed `rsync` skips a source that is not
+   * there, so without this seed an override the sync forgot would look exactly like one that was
+   * never named.
+   */
+  function seedComposeFiles(sandbox) {
+    const deployDir = join(ROOT, 'deploy');
+    for (const file of readdirSync(deployDir).filter((name) => /^docker-compose.*\.yml$/.test(name))) {
+      cpSync(join(deployDir, file), join(sandbox.root, 'deploy', file));
+    }
+  }
+
+  /** The `-f` values of the compose call the far side ran, a `~` it kept resolved as the stub's HOME. */
+  function remoteComposeFiles(sandbox) {
+    const compose = sandbox.remoteCalls().find((call) => call.startsWith('compose ') && call.includes(' up '));
+    assert.ok(compose, `no compose call reached the remote host:\n${sandbox.remoteCalls().join('\n')}`);
+    const argv = compose.split(' ');
+    return argv
+      .flatMap((word, index) => (word === '-f' ? [argv[index + 1]] : []))
+      .map((path) => (path.startsWith('~/') ? join(sandbox.remoteHome, path.slice(2)) : path));
+  }
+
+  for (const engine of ENGINES) {
+    it(`for ${engine.name}`, async () => {
+      const sandbox = makeSandbox({
+        config: ALL_REMOTE,
+        envFiles: { '.env': `STAMP=stamp\nSTREAM_KEY=key\n${engine.variable}=/srv/my.conf\n` },
+      });
+      seedComposeFiles(sandbox);
+
+      await runScriptOk(sandbox, 'deploy.sh', [engine.name]);
+
+      const files = remoteComposeFiles(sandbox);
+      assert.ok(
+        files.some((path) => basename(path) === engine.override),
+        `the far side's compose call does not name ${engine.override}: ${files.join(' ')}`,
+      );
+      for (const path of files) {
+        assert.ok(
+          existsSync(path),
+          `${basename(path)} is named by the far side's compose call and no rsync carries it to the deployment host`,
+        );
+      }
     });
   }
 });
