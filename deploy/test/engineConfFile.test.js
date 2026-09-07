@@ -73,7 +73,9 @@ function chooseConfigSource(entrypoint, { custom }) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-conf-'));
   dirs.push(dir);
   writeFileSync(join(dir, 'template'), 'from the template\n');
-  if (custom) writeFileSync(join(dir, 'custom'), custom);
+  if (custom) {
+    writeFileSync(join(dir, 'custom'), custom);
+  }
 
   const out = execFileSync(
     'bash',
