@@ -104,11 +104,21 @@ runs on your file exactly what it runs on the template:
   nothing, which is right only if you wrote the ladder into the file yourself
 
 Start from a copy of the template and edit from there. A file that does not parse takes the engine
-down on its next start, so check it first. SRS has a test mode that names the offending line:
+down on its next start, so check it first. SRS has a test mode that names the offending line. It
+checks values as well as syntax, so a file that still carries the tokens is refused at the first of
+them, which on a copy of the template is the bare `TRANSCODE_PLACEHOLDER` at line 57, and a mistake
+of yours further down is never reached. Fill the tokens with a stand-in and drop the two bare lines
+first:
 
 ```bash
-docker run --rm -v "$PWD/my-srs.conf:/check/srs.conf:ro" ossrs/srs:6 ./objs/srs -t -c /check/srs.conf
+sed -E '/^(TRANSCODE|ABR_VHOST)_PLACEHOLDER$/d; s/[A-Z_]+_PLACEHOLDER/1/g' my-srs.conf > my-srs.check.conf
+docker run --rm -v "$PWD/my-srs.check.conf:/check/srs.conf:ro" ossrs/srs:6 ./objs/srs -t -c /check/srs.conf
 ```
+
+The copy that passes is not the file you deploy. The deploy mounts `my-srs.conf` itself, and the
+entrypoint fills its tokens from the environment. Measured 2026-09-07 on `ossrs/srs:6` at 6.0.184: a
+copy of the template is refused at line 57, the filled copy passes, and a misspelt `hls_window` in
+the filled copy is named.
 
 OvenMediaEngine has no test mode; its log names the element it refused.
 
