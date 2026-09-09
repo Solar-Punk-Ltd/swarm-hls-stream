@@ -19,7 +19,7 @@ usage() {
   echo "  --yes             Skip the interactive confirmation prompt"
   echo ""
   echo "Examples:"
-  echo "  clean.sh                                 Stop and remove all containers"
+  echo "  clean.sh                                 Stop and remove all containers and the images built for them"
   echo "  clean.sh bee-uploader                    Stop and remove only bee-uploader"
   echo "  clean.sh --volumes                       Remove containers + volumes"
   echo "  clean.sh --all                           Remove containers + volumes + remote files"
@@ -118,16 +118,21 @@ sweep_container_ids() {
 # service list and honour it. `down` is reserved for the unfiltered case, where removing the project's
 # networks and orphans is the actual request. `--remove-orphans` goes with it for the same reason:
 # an orphan belongs to the project, not to any named service.
+#
+# `--rmi local` goes with it too. The built services carry no `image:` name, so Compose tags each
+# build `<project>-<service>`, and `local` removes exactly those, the images built for this project,
+# and nothing pulled by name. Bee, SRS and OME stay for every other deployment on the host, and the
+# removed deployment leaves no tag of its own behind.
 compose_teardown_flags() {
   if [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
     echo "rm --stop --force ${FILTER_SERVICES[*]}"
     return
   fi
   if [ "$REMOVE_VOLUMES" = "true" ]; then
-    echo "down -v --remove-orphans"
+    echo "down -v --rmi local --remove-orphans"
     return
   fi
-  echo "down --remove-orphans"
+  echo "down --rmi local --remove-orphans"
 }
 
 # The services a sweep must stay inside, empty when the operator named none and the whole project is
