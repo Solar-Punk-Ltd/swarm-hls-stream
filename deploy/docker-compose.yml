@@ -170,7 +170,10 @@ services:
   # --- Stream Uploader ---
 
   stream-uploader:
-    image: stream-uploader
+    # No image name on purpose. Compose then calls the build
+    # <project>-stream-uploader, and each deployment is its own project, so
+    # two deployments on one host never write the same tag. The manager
+    # reads this absence to know the version deploys safely beside another.
     build:
       context: ..
       dockerfile: deploy/Dockerfile.uploader
@@ -268,7 +271,7 @@ services:
   # --- React Client (viewer) ---
 
   client:
-    image: stream-client
+    # No image name on purpose, for the same reason as stream-uploader.
     build:
       context: ..
       dockerfile: deploy/Dockerfile.client
