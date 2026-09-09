@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+import { makeSandbox, removeSandboxes } from './helpers/sandbox.js';
+
+const execFileAsync = promisify(execFile);
 
 const DEPLOY_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -39,4 +45,44 @@ describe('the images this repo builds are named after the deployment', () => {
       assert.ok(!keys.includes('image'), `${service} names an image, so every deployment on the host shares that one tag`);
     });
   }
+});
+
+after(removeSandboxes);
+
+/** Runs the real `clean.sh` against the sandbox's stubbed docker, the way clean.test.js does. */
+async function runClean(sandbox, args) {
+  await execFileAsync('bash', [sandbox.scriptPath('clean.sh'), '--yes', ...args], {
+    env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+  });
+  return sandbox.calls().filter((call) => call.startsWith('compose '));
+}
+
+describe('clean.sh removes the images a whole-project clean built', () => {
+  // With the images named after the project, a removed deployment would leave
+  // `<project>-stream-uploader` and `<project>-client` behind on the host, one pair per deployment
+  // that ever existed there. `--rmi local` removes exactly the images Compose built for the project
+  // and nothing pulled by name, so bee, SRS and OME stay shared and the deployment's own tags go.
+  it('asks compose down to remove the images it built for the project', async () => {
+    const calls = await runClean(makeSandbox(), []);
+
+    const down = calls.find((call) => call.includes(' down'));
+    assert.ok(down, `no compose down was issued: ${calls.join(' | ')}`);
+    assert.match(down, /--rmi local/, 'the images built for this project were left behind');
+  });
+
+  it('removes them when the volumes go as well', async () => {
+    const calls = await runClean(makeSandbox(), ['--volumes']);
+
+    const down = calls.find((call) => call.includes(' down'));
+    assert.ok(down, `no compose down was issued: ${calls.join(' | ')}`);
+    assert.match(down, /--rmi local/);
+    assert.match(down, /(^|\s)-v(\s|$)/, 'the volumes the operator asked to remove stayed');
+  });
+
+  it('touches no image when one service is named, because that path never reaches down', async () => {
+    const calls = await runClean(makeSandbox(), ['srs']);
+
+    assert.ok(calls.length > 0, 'no compose call at all was issued');
+    for (const call of calls) assert.doesNotMatch(call, /--rmi/, `a service clean removed images: ${call}`);
+  });
 });
