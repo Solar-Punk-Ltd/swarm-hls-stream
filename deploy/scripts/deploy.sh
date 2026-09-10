@@ -628,12 +628,30 @@ if [ "$has_any" = "false" ]; then
   exit 0
 fi
 
-# Build once before deploying (only if uploader is being deployed)
+# Build once before deploying (only if uploader is being deployed).
+#
+# A remote target forces a rebuild so a hand-run deploy always ships a fresh
+# dist/ — but only where there is a toolchain to do it with. Under
+# streaming-infra-manager this script runs inside the manager's api container,
+# which has no pnpm and a checkout with no node_modules: the manager's own
+# deploy builds packages/*/dist on the operator's machine and rsyncs the result.
+# Dockerfile.uploader copies dist/ and npm-installs runtime deps on the target,
+# so a remote deploy needs a dist/, not a toolchain. Without pnpm, deploy the
+# dist/ that is there; fail with a pointer when there is neither, instead of
+# `pnpm: command not found` from the middle of a build function.
 if [ "$has_uploader" = "true" ]; then
-  if [ "$has_remote" = "true" ]; then
-    build_force
+  if command -v pnpm >/dev/null 2>&1; then
+    if [ "$has_remote" = "true" ]; then
+      build_force
+    else
+      build_if_needed
+    fi
+  elif [ -d "$ROOT_DIR/packages/stream-uploader/dist" ]; then
+    log_info "pnpm not available; deploying the pre-built packages/stream-uploader/dist"
   else
-    build_if_needed
+    log_error "packages/stream-uploader/dist is missing and pnpm is not available to build it."
+    log_error "Build on a machine with pnpm (pnpm install && pnpm build) and ship dist/, or install pnpm here."
+    exit 1
   fi
 fi
 
