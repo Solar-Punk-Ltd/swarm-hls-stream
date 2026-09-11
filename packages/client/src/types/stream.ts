@@ -7,6 +7,7 @@ export {
   type MediaType,
   type Rendition,
   STREAM_STATUS_LIVE,
+  STREAM_STATUS_SCHEDULED,
   STREAM_STATUS_VOD,
 } from '@swarm-hls-stream/shared';
 
@@ -31,4 +32,20 @@ export interface Stream {
   /** Ladder identity; present only on streams the encoder produced more than one rendition of. */
   group?: string;
   renditions?: Rendition[];
+  /**
+   * A Swarm reference to a still image for this stream, served at `{gateway}/bzz/{thumbnail}/`.
+   *
+   * ⭐ Optional, and empty string means the same as absent. The uploader has never written this and
+   * the admin layer only started to, so the field is missing on every entry published before that
+   * and on every entry a broadcaster never gave an image for. A card treats it as a hint it may
+   * have, never as one it can rely on.
+   */
+  thumbnail?: string;
+  description?: string;
+  tags?: string[];
+  /**
+   * When an announced broadcast is meant to begin. Only the admin layer writes it, and it is
+   * explicitly `null` on an entry that has no time fixed yet, which is why null is in the type.
+   */
+  scheduledStartTime?: string | null;
 }
