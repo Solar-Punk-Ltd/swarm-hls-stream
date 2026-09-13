@@ -314,6 +314,8 @@ The API server starts on port 3000 (default).
 | `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                  |
 | `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                           |
 | `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                        |
+| `ADMIN_API_URL`        | _(empty)_ | Admin service base URL. Set, it turns on admin mode. See below                                                       |
+| `ADMIN_API_TOKEN`      | _(empty)_ | Bearer token for the admin's internal routes, minimum 32 characters. Required when `ADMIN_API_URL` is set            |
 | `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event             |
 | `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                           |
 
@@ -597,6 +599,127 @@ the encoded form.
 
 Rotating `PUBLISH_KEY_SECRET` invalidates every key at once. There is no per-stream revocation, which
 is the price of deriving keys instead of storing them.
+
+## Admin mode
+
+Setting `ADMIN_API_URL` — and nothing else — turns admin mode on. Leave it empty and nothing about
+this service changes.
+
+With it set, a stream must be **declared in the admin before anything may publish to it**. The admin
+mints the feed topic and the publish key; this service stops deciding either:
+
+| Without `ADMIN_API_URL`                            | With it                                                                     |
+| -------------------------------------------------- | --------------------------------------------------------------------------- |
+| Any publisher with the right derived key may start | Only an ingest id the admin has declared, presenting that declaration's key |
+| The session mints a random feed topic              | The session publishes on the declared topic, resuming from its feed head    |
+| This service writes the Swarm stream catalog       | It writes none, and reports `live` then `vod` to the admin instead          |
+| `PUBLISH_KEY_SECRET` authenticates publishers      | `PUBLISH_KEY_SECRET` is ignored                                             |
+
+A publish is refused when the ingest `app/stream` is not declared, when the admin cannot be reached,
+when the presented `key=` is not the declaration's, or when the ingest `app` and the declared media
+type disagree. Each refusal says which it was in the log. `ABR_ENABLED` together with admin mode
+refuses to start: admin mode gives a broadcast one topic, and a ladder needs one feed per rung plus a
+master the admin knows nothing about.
+
+| Variable          | Description                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `ADMIN_API_URL`   | Base URL of the admin service. Empty (the default) is the standalone deployment    |
+| `ADMIN_API_TOKEN` | Bearer token for the admin's internal routes. Required when the URL is set, min 32 |
+
+### Local loop with the admin API
+
+SRS in Docker, the uploader from source on the host. Run the admin API separately on `:9877`.
+
+**1. SRS.** From `engines/srs`, with `.env` beside the compose file:
+
+```bash
+cd engines/srs
+cp .env.sample .env
+```
+
+```ini
+# engines/srs/.env — the values the local overlay needs
+SRS_WEBHOOK_TOKEN=<same value the uploader gets>   # openssl rand -hex 32
+SRT_PASSPHRASE=<10-79 chars, or empty for no SRT encryption>
+SRS_ADAPTER_HOST=host.docker.internal              # the uploader is on the host, not in the network
+SRS_ADAPTER_PORT=3000                              # must equal the uploader's API_PORT
+SRS_RTMP_PORT=1935
+SRS_SRT_PORT=10080
+SRS_HTTP_PORT=8080
+SRS_HTTP_API_PORT=1985
+```
+
+```bash
+# The `local` overlay is the one for a uploader running natively: it points SRS's webhooks at
+# host.docker.internal. `srs:host` puts the container on the host network instead, and the base file
+# alone leaves the webhooks pointing at a `stream-uploader` container that is not running.
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+# or, from the monorepo root:  pnpm srs:local
+docker compose logs -f
+```
+
+Published ports: `1935` RTMP, `10080/udp` SRT, `8080` HLS, `1985` SRS HTTP API. Each is published on
+the same number it binds inside the container, so changing one in `.env` moves both sides together.
+
+**2. The uploader**, from the monorepo root, with the root `.env` carrying:
+
+```ini
+BEE_URL=http://localhost:1633
+STAMP=<batch id, pnpm stamp:setup>
+STREAM_KEY=<32-byte hex private key>
+STREAM_LIST_TOPIC=swarm-stream
+API_AUTH_TOKEN=<min 32 chars>
+STATE_DIR=./state
+ENGINE=srs
+API_PORT=3000
+ADMIN_API_URL=http://localhost:9877
+ADMIN_API_TOKEN=<min 32 chars, the admin's internal token>
+```
+
+`SRS_WEBHOOK_TOKEN` is read from `engines/srs/.env`, which the uploader loads because `ENGINE=srs`.
+It has to be the same value on both sides.
+
+```bash
+pnpm install
+pnpm --filter @swarm-hls-stream/stream-uploader build
+pnpm --filter @swarm-hls-stream/stream-uploader start
+```
+
+The boot log says which mode it came up in: `[Admin] Admin mode against <url>` or `[Admin]
+ADMIN_API_URL is not set, running standalone`.
+
+**3. Declare the stream in the admin**, then push to the ingest id it filed the draft under. web2-admin
+uses the stream's topic (a UUID) as `<stream>` and shows the finished URLs and key on the stream's
+details page; `<app>` is `video` or `audio` and has to match the declaration's media type.
+
+```bash
+ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine \
+  -c:v libx264 -preset veryfast -g 60 -keyint_min 60 -c:a aac \
+  -f flv "rtmp://localhost:1935/video/<stream>?key=<publishKey>"
+```
+
+SRT instead of RTMP, same key, inside the `r=` value:
+
+```bash
+ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine \
+  -c:v libx264 -preset veryfast -g 60 -keyint_min 60 -c:a aac \
+  -f mpegts "srt://localhost:10080?streamid=#!::r=video/<stream>?key=<publishKey>,m=publish"
+```
+
+The same push from OBS (Settings → Stream, Service: **Custom...**):
+
+| Field      | Value                         |
+| ---------- | ----------------------------- |
+| Server     | `rtmp://localhost:1935/video` |
+| Stream Key | `<stream>?key=<publishKey>`   |
+
+In Settings → Output, set Keyframe Interval to 2s (OBS's `0` lets the encoder choose, and the
+segment length is `ceil(HLS_FRAGMENT / GOP) * GOP`, so an unknown GOP is an unknown segment length).
+For SRT, Server is `srt://localhost:10080?streamid=#!::r=video/<stream>?key=<publishKey>,m=publish`
+and Stream Key is left empty.
+
+A refused publish is refused by SRS itself, so the encoder reports the connection as rejected. The
+reason is in the uploader's log, never in the reply.
 
 ## Testing with FFmpeg
 

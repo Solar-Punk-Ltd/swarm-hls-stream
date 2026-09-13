@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { AbrLadder } from '../libs/AbrLadder.js';
+import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
@@ -14,7 +15,8 @@ import { isUsableStreamId } from '../utils/streamId.js';
 import { redactUrlSecrets } from '../utils/urlSecrets.js';
 
 import { assertUsableWebhookToken, hasValidWebhookToken } from './srs/webhookToken.js';
-import { EnginePlugin } from './types.js';
+import { ADMIN_PUBLISH_ALLOWED, isAuthRefusal, resolveAdminPublish } from './adminGate.js';
+import { EngineFactoryDeps, EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
 
@@ -32,8 +34,17 @@ export interface SrsEngineOptions {
    * deployment and its broadcasters, who have to be issued keys before any of them can publish, so
    * defaulting it on would take every existing broadcaster off the air the moment the service was
    * upgraded.
+   *
+   * ⚠️ Ignored entirely when `adminApi` is set. See {@link SrsEngineOptions.adminApi}.
    */
   publishKeySecret?: string;
+  /**
+   * The admin service, when `ADMIN_API_URL` is set. Present, it **replaces** `publishKeySecret`
+   * rather than adding to it: a publish is resolved against a stream the admin has declared and
+   * authenticated with the key that declaration carries, so there is no local secret to derive from
+   * and nothing for a deployment to configure per broadcaster. See `engines/adminGate.ts`.
+   */
+  adminApi?: AdminApiClient;
 }
 
 // SRS webhook response codes
@@ -117,11 +128,16 @@ function publisherAddress(payload: SrsStreamPayload): string | null {
   return typeof payload?.ip === 'string' && payload.ip.length > 0 ? payload.ip : null;
 }
 
-export function createSrsEngineFromEnv(): EnginePlugin {
+export function createSrsEngineFromEnv(deps: EngineFactoryDeps = {}): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
   const webhookToken = required('SRS_WEBHOOK_TOKEN');
   const publishKeySecret = optional('PUBLISH_KEY_SECRET', '');
-  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret, abr: config.abr ?? undefined });
+  const engine = createSrsEngine(mediaPath, {
+    webhookToken,
+    publishKeySecret,
+    abr: config.abr ?? undefined,
+    adminApi: deps.adminApi,
+  });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
   // engine and then threw for a token that was merely too short.
@@ -156,8 +172,20 @@ function createWebhookGate(webhookToken: string): RequestHandler {
 
 export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
   const webhookToken = options.webhookToken ?? '';
-  const publishKeySecret = options.publishKeySecret ?? '';
-  if (publishKeySecret) {
+  const adminApi = options.adminApi;
+  // Blanked rather than read alongside, so no later change can accidentally consult both. The two
+  // modes answer the same question — is this publisher the owner of this stream — from two different
+  // sources of truth, and a deployment in which they disagree has no right answer.
+  const publishKeySecret = adminApi ? '' : options.publishKeySecret ?? '';
+  if (adminApi) {
+    // The one boot line that says which mode this engine is in. Loud rather than debug: an operator
+    // reading a refusal has to be able to tell "no declaration for this ingest id" from "wrong
+    // derived key" without reading the source, and this is the line that tells them which gate ran.
+    logger.info(
+      `[SRS] Admin mode: every publish is resolved against ${adminApi.describe()} and authenticated with the ` +
+        'key that declaration carries. PUBLISH_KEY_SECRET is ignored.',
+    );
+  } else if (publishKeySecret) {
     assertUsablePublishKeySecret(publishKeySecret);
   } else {
     // Not an error, but it is the one control that separates a broadcaster from anyone who knows the
@@ -205,7 +233,11 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
       router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
-        handleStreams(req, res, streamOrchestrator, publishKeySecret, abr, authenticatedBases);
+        // `void` rather than awaited, because express does not await a handler and a returned
+        // rejection would be an unhandled one. Nothing is lost: `handleStreams` has its own catch
+        // around everything, and outside admin mode it reaches no `await` before it answers, so a
+        // deployment that has not opted in still responds in the same synchronous turn it always did.
+        void handleStreams(req, res, streamOrchestrator, { publishKeySecret, adminApi }, abr, authenticatedBases);
       });
 
       router.post('/hls', (req: Request, res: Response) => {
@@ -311,14 +343,29 @@ function stopStreamQuietly(streamOrchestrator: StreamOrchestrator, streamId: str
   });
 }
 
-function handleStreams(
+/**
+ * What a publish has to prove, in whichever of the two mutually exclusive ways this deployment uses.
+ *
+ * Both fields together rather than one parameter each, because they are one decision: exactly one of
+ * them is ever set, `createSrsEngine` is where that is enforced, and a signature that takes them
+ * separately invites a later call site to pass both.
+ */
+interface SrsPublishGate {
+  /** Derived-key mode. Empty means publishers are not authenticated, which is the default. */
+  publishKeySecret: string;
+  /** Admin mode. Set, the secret above is empty and every publish is resolved against a declaration. */
+  adminApi?: AdminApiClient;
+}
+
+async function handleStreams(
   req: Request,
   res: Response,
   streamOrchestrator: StreamOrchestrator,
-  publishKeySecret: string,
+  gate: SrsPublishGate,
   abr?: AbrGuard,
   authenticatedBases: Set<string> = new Set(),
-): void {
+): Promise<void> {
+  const { publishKeySecret, adminApi } = gate;
   // Read before the try, so the catch below can tell a publish from anything else. A handler error on
   // a publish has to refuse when a secret is configured, and the action is the only thing that says
   // which kind of webhook was being handled.
@@ -367,6 +414,13 @@ function handleStreams(
       // `single` or `source`: authenticated by the broadcaster's own key, which SRS repeats on the
       // unpublish. Extracted before anything is answered, so a `param` that cannot be parsed reaches
       // the catch below with the response still unsent. See SEC-29.
+      //
+      // ⚠️ In admin mode `publishKeySecret` is blank, so this check is off and an unpublish is
+      // gated only by the webhook token — exactly as it is for every deployment that never set
+      // PUBLISH_KEY_SECRET. Deliberate rather than overlooked: the expected key lives in the
+      // declaration, so proving one here would mean a second lookup on the stop path, with an admin
+      // outage then able to keep a finished broadcast from finalizing. The caller still has to hold
+      // the webhook token, which is a service-to-service secret SRS is configured with.
       const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromParam(payload.param));
 
       // SRS reads any non-zero answer as a failure to retry, and an unpublish is not a request that
@@ -397,6 +451,44 @@ function handleStreams(
 
     if (payload.action !== SRS_ACTION_PUBLISH) {
       srsResponse(res, SRS_ACCEPT);
+      return;
+    }
+
+    if (adminApi) {
+      // Every branch below this one is about the ladder, and admin mode refuses to start with
+      // `ABR_ENABLED` (see `readAdminConfig`), so `role.kind` here is always `single`. The check is
+      // placed above them rather than inside the `single` path anyway, so that turning the ladder on
+      // later cannot silently route an admin-mode publish through a rung rule that knows nothing
+      // about declarations.
+      const mediatype = resolveMediaType(payload.app);
+      const verdict = await resolveAdminPublish(
+        adminApi,
+        '[SRS]',
+        streamId,
+        mediatype,
+        publishKeyFromParam(payload.param),
+      );
+
+      if (verdict.kind !== ADMIN_PUBLISH_ALLOWED) {
+        if (isAuthRefusal(verdict.kind)) {
+          // Reported rather than observed: SRS_REJECT rides inside a 200, so the status-code observer
+          // never sees it. See OBS-15.
+          streamOrchestrator.recordAuthRejection();
+        }
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+
+      logger.info(`[SRS] Stream published: ${streamId} (${mediatype})`);
+      const admitted = streamOrchestrator.startStream(
+        streamId,
+        mediatype,
+        // Proven by the declaration's own key, so the takeover rules in `reasonToRefuseTakeover`
+        // apply exactly as they do for a derived key. See SEC-26 and SEC-28.
+        { address: publisherAddress(payload), isAuthenticated: true },
+        verdict.session,
+      );
+      srsResponse(res, admitted ? SRS_ACCEPT : SRS_REJECT);
       return;
     }
 
@@ -479,8 +571,10 @@ function handleStreams(
     // catch already honours `failOpen` and defaults to refusing, so this is the asymmetric half.
     //
     // Only when a secret is configured: without one nothing is authenticated anyway, and refusing
-    // here would change the behaviour of a deployment that never opted in.
-    if (publishKeySecret && action === SRS_ACTION_PUBLISH) {
+    // here would change the behaviour of a deployment that never opted in. Admin mode counts as
+    // configured — it is the *only* thing standing between a publisher and a declared stream there,
+    // and `publishKeySecret` is blanked in that mode, so reading it alone would fail this open.
+    if ((publishKeySecret || adminApi) && action === SRS_ACTION_PUBLISH) {
       srsResponse(res, SRS_REJECT);
       return;
     }

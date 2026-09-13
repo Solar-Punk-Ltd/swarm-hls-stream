@@ -1,4 +1,5 @@
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../libs/AbrLadder.js';
+import { assertUsableAdminApiToken } from '../libs/AdminApiClient.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 
 import { optional, optionalBool, optionalInt, optionalNumber, required } from './env.js';
@@ -116,6 +117,44 @@ function readPublisherSpecs(): PublisherSpec[] {
   return parsePublisherSpecs(optional('BEE_PUBLISHERS', ''));
 }
 
+/** Where the admin service lives, or null for the standalone deployment this service has always been. */
+export interface AdminConfig {
+  apiUrl: string;
+  apiToken: string;
+}
+
+/**
+ * Admin mode, which `ADMIN_API_URL` alone turns on.
+ *
+ * One variable decides it, and everything else admin mode needs is then `required` rather than
+ * optional, so a half-configured admin deployment refuses to start instead of silently running as a
+ * standalone one. The token is not optional-with-a-warning for the same reason `API_AUTH_TOKEN` is
+ * not: it is the only thing between the admin's internal routes and anyone who can reach them.
+ *
+ * ⛔ The ladder is refused here rather than ignored. Admin mode gives a broadcast one topic, minted
+ * by the admin, and a ladder needs one feed per rung plus a master feed that the admin knows nothing
+ * about; the two designs disagree about what a stream *is*. Running them together would produce a
+ * stage that looks configured for ABR and publishes a single rendition, which is the shape of
+ * failure this repository keeps paying for. Refusing at boot costs a restart.
+ */
+function readAdminConfig(): AdminConfig | null {
+  const apiUrl = optional('ADMIN_API_URL', '');
+  if (!apiUrl) {
+    return null;
+  }
+
+  if (optionalBool('ABR_ENABLED', false)) {
+    throw new Error(
+      'ADMIN_API_URL and ABR_ENABLED are both set. Admin mode publishes one feed per stream, on the topic ' +
+        'the admin minted, and has no master playlist to put a ladder in. Turn one of them off.',
+    );
+  }
+
+  const apiToken = required('ADMIN_API_TOKEN');
+  assertUsableAdminApiToken(apiToken);
+  return { apiUrl, apiToken };
+}
+
 export const config = {
   beeUrl: required('BEE_URL'),
   stamp: required('STAMP'),
@@ -180,4 +219,9 @@ export const config = {
   segmentRedundancy: optionalInt('SEGMENT_REDUNDANCY', 1, { min: 0 }),
   engine: optional('ENGINE', ''),
   abr: readAbrConfig(),
+  /**
+   * The admin service, or null for the standalone deployment. Everything admin mode changes hangs
+   * off this one value being non-null. See {@link readAdminConfig}.
+   */
+  admin: readAdminConfig(),
 };

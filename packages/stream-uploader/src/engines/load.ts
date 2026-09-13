@@ -2,16 +2,22 @@ import { Logger } from '../libs/Logger.js';
 import { loadEngineEnv } from '../utils/env.js';
 
 import { engineRegistry } from './registry.js';
-import { EnginePlugin } from './types.js';
+import { EngineFactoryDeps, EnginePlugin } from './types.js';
 
 /** The engine name that means "generic API only" on purpose, as against one that is misspelled. */
 export const ENGINE_NONE = 'none';
 
 /** Injected so a test can choose an engine set without the real ones reading the real environment. */
 export interface EngineLoaderDeps {
-  registry: Record<string, () => EnginePlugin>;
+  registry: Record<string, (deps: EngineFactoryDeps) => EnginePlugin>;
   loadEnv: (engine: string) => void;
   logger: Pick<Logger, 'warn'>;
+  /**
+   * Handed to whichever engine is built. Not read here: this loader decides *which* engine runs and
+   * nothing about what it needs, so the admin client passes straight through. See
+   * {@link EngineFactoryDeps}.
+   */
+  adminApi: EngineFactoryDeps['adminApi'];
 }
 
 /**
@@ -27,14 +33,14 @@ export interface EngineLoaderDeps {
  * `none` and an empty name are configurations rather than mistakes, so they are silent.
  */
 export function loadEngines(engine: string, deps: Partial<EngineLoaderDeps> = {}): EnginePlugin[] {
-  const { registry = engineRegistry, loadEnv = loadEngineEnv, logger = Logger.getInstance() } = deps;
+  const { registry = engineRegistry, loadEnv = loadEngineEnv, logger = Logger.getInstance(), adminApi } = deps;
 
   const createEngine = registry[engine];
   if (createEngine) {
     // Before constructing, because the engine reads its own settings out of the environment as it is
     // built, and a plugin built against an unloaded environment gets the defaults in silence.
     loadEnv(engine);
-    return [createEngine()];
+    return [createEngine({ adminApi })];
   }
 
   if (engine && engine !== ENGINE_NONE) {

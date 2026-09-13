@@ -7,6 +7,7 @@ import {
 import crypto from 'crypto';
 
 import {
+  AdminSession,
   ANONYMOUS_CLAIMANT,
   BroadcastAnchor,
   BroadcastEpoch,
@@ -41,6 +42,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { AbrLadder } from './AbrLadder.js';
+import { AdminApiClient } from './AdminApiClient.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
@@ -117,6 +119,12 @@ export interface StreamOrchestratorConfig {
    * in memory only and a crash costs the broadcast its identity. See {@link LadderGroupStore}.
    */
   ladderGroupStore?: LadderGroupStore;
+  /**
+   * The admin service, when `ADMIN_API_URL` is set. Its presence is what puts this orchestrator in
+   * admin mode: a stream must then arrive with the declaration an engine resolved for it, and each
+   * uploader reports state to the admin instead of writing the Swarm stream catalog.
+   */
+  adminApi?: AdminApiClient;
 }
 
 /**
@@ -318,8 +326,28 @@ export class StreamOrchestrator {
    * @param claimant who is announcing, so a takeover of a live id can be judged. Defaults to naming
    * nobody, which fails open: an engine that does not pass one loses SEC-26's protection rather than
    * refusing its broadcasters.
+   * @param admin the declaration this ingest session resolved to, in admin mode. Required there and
+   * meaningless without it — see the refusal at the top of the body.
    */
-  public startStream(streamId: string, mediatype: MediaType, claimant: StreamClaimant = ANONYMOUS_CLAIMANT): boolean {
+  public startStream(
+    streamId: string,
+    mediatype: MediaType,
+    claimant: StreamClaimant = ANONYMOUS_CLAIMANT,
+    admin?: AdminSession,
+  ): boolean {
+    // ⛔ In admin mode there is no such thing as a stream nobody declared. The engines always resolve
+    // one before they announce, so the caller this refuses is the generic `POST /stream/start`, which
+    // has no way to: it would mint a random topic and publish a broadcast the admin never learns
+    // about, and — because the uploader writes no catalog entry in admin mode — one that no viewer
+    // could find either. The route answers 409 and points at this log line.
+    if (this.config.adminApi && !admin) {
+      this.logger.warn(
+        `[StreamOrchestrator] Refused an announce for ${streamId}: this service is in admin mode, so a stream ` +
+          'has to be declared through the admin API before anything may publish to it',
+      );
+      return false;
+    }
+
     // If recovering, cancel the recovery timeout and resume
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
@@ -391,12 +419,12 @@ export class StreamOrchestrator {
       stale.retire();
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
-      this.spawnUploader(streamId, mediatype, claimant);
+      this.spawnUploader(streamId, mediatype, claimant, admin);
       void this.finalizeRetiredSession(streamId, stale);
       return true;
     }
 
-    this.spawnUploader(streamId, mediatype, claimant);
+    this.spawnUploader(streamId, mediatype, claimant, admin);
     return true;
   }
 
@@ -599,7 +627,7 @@ export class StreamOrchestrator {
    * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
    * and a uuid.
    */
-  private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant): void {
+  private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant, admin?: AdminSession): void {
     // Resolved before the uploader is built: the rungs of one ladder publish within milliseconds of
     // each other, and a group id assigned later would let two of them create two groups for one source.
     const match = this.config.ladder?.match(streamId) ?? null;
@@ -609,7 +637,15 @@ export class StreamOrchestrator {
     // tidier to read, but a rung that stops and restarts while its siblings keep the ladder alive
     // would be handed the topic it just finished writing and, with no state to resume from, would
     // start overwriting it at SOC index 0. What has to be stable across a ladder is the group.
-    const streamTopic = crypto.randomUUID();
+    //
+    // ⛔ **Admin mode is the exception, and it owes exactly the debt that comment describes.** There
+    // the topic belongs to the declaration: the admin mints it when the stream is created and hands
+    // it to viewers before anything has ever published on it, so a second session under one
+    // declaration is precisely the case of "handed the topic it just finished writing". What makes
+    // that safe is that such a session no longer starts with no state to resume from — the uploader
+    // reads the feed head before its first SOC write and continues above it. See
+    // `StreamUploader.resumeAdminFeedIndex`, which is the whole of the answer.
+    const streamTopic = admin?.topic ?? crypto.randomUUID();
 
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
     // same way only because they all read this one instant, and a rung admitted a moment later
@@ -652,6 +688,7 @@ export class StreamOrchestrator {
       anchor,
       dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
       metrics: this.metrics,
+      admin: this.adminReportingFor(admin?.id),
     });
 
     this.activeStreams.set(streamId, uploader);
@@ -667,6 +704,21 @@ export class StreamOrchestrator {
     }
     this.armStallReaper(streamId);
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
+  }
+
+  /**
+   * What an uploader needs to report its state, or undefined when there is nothing to report to.
+   *
+   * Both halves have to be present. The client is the service-level half, from `ADMIN_API_URL`; the
+   * id is the per-stream half, from a resolved declaration or from a recovery entry that persisted
+   * it. A stream with one and not the other is a broadcast nobody can be told about, and leaving the
+   * uploader with `admin` undefined there is deliberate: it then takes the standalone path, which at
+   * least writes a catalog entry a viewer could find, rather than reporting nowhere and listing
+   * nowhere. The refusal in `startStream` is what keeps that from happening on the live path.
+   */
+  private adminReportingFor(adminStreamId: string | undefined): { client: AdminApiClient; id: string } | undefined {
+    const client = this.config.adminApi;
+    return client && adminStreamId ? { client, id: adminStreamId } : undefined;
   }
 
   /**
@@ -1228,6 +1280,10 @@ export class StreamOrchestrator {
         anchor: state.anchor,
       },
       metrics: this.metrics,
+      // From the entry rather than from a fresh lookup: nothing re-announces a recovered stream, so
+      // this is the only surviving record of which declaration it belongs to. Absent on an entry
+      // written before admin mode, and on every entry written outside it.
+      admin: this.adminReportingFor(state.adminStreamId),
     });
 
     this.activeStreams.set(streamId, uploader);
