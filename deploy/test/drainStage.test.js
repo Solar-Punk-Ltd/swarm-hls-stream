@@ -1750,3 +1750,101 @@ describe('drain-stage argument handling', () => {
     execFileSync('bash', ['-n', join(SCRIPTS, SCRIPT)], { stdio: 'pipe' });
   });
 });
+
+/**
+ * ⛔ Depth 17 is a test affordance rather than a size. It is the only depth a short broadcast can
+ * fill, which is what a drain sitting needs and what starves a rung that is meant to stream:
+ * `docs/e2e-batch-drain-plan.md` measures the whole batch gone in about 20 seconds of 1080p. Arming
+ * anything roomier was refused outright, so the one rig that wires a batch into a rung could not be
+ * pointed at a sustained run at all, and a cross-provider review ran into exactly that on
+ * 2026-09-15.
+ *
+ * The depth is now the run's to name, and 17 stays the default, because a drain sitting that quietly
+ * armed a batch it cannot fill would report a rung that never ran dry and read as the product
+ * surviving.
+ */
+describe('drain-stage arms the depth the run asks for, and 17 is only the default', () => {
+  const ROOMY_DEPTH = 20;
+  const ROOMY = { ...ARMABLE, depth: ROOMY_DEPTH };
+
+  it('arms a batch at the depth the run named', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.equal(publishersOf(sandbox)[RUNG], SMALL_BATCH, 'the rung was not pointed at the armed batch');
+  });
+
+  it('says a batch a broadcast cannot fill will not drain, rather than arming it silently', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.match(`${run.stdout}${run.stderr}`, /never ran dry/);
+  });
+
+  it('says nothing about draining when the depth is the drain depth', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /never ran dry/);
+  });
+
+  it('refuses a batch that is not the depth the run named, naming both', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth-17 batch was armed for a run that asked for depth 20');
+    assert.match(run.stderr, new RegExp(`depth ${DEPTH}`));
+    assert.match(run.stderr, new RegExp(String(ROOMY_DEPTH)));
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten anyway');
+  });
+
+  it('prices the purchase at the depth the run named', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', `--depth=${ROOMY_DEPTH}`]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${ROOMY_DEPTH}`));
+  });
+
+  it('refuses a depth below the smallest batch bee sells', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${DEPTH - 1}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth no node will sell was accepted');
+    assert.match(run.stderr, /--depth/);
+    assert.match(run.stderr, new RegExp(String(DEPTH)));
+  });
+
+  it('refuses a depth past anything this stack buys, which is a typo rather than an ask', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth=200']);
+
+    assert.notEqual(run.exitCode, 0, 'a depth of 200 was priced');
+    assert.match(run.stderr, /--depth/);
+  });
+
+  it('refuses --depth on a subcommand that neither buys nor arms', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['status', `--depth=${ROOMY_DEPTH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth was accepted on status');
+    assert.match(run.stderr, /--depth/);
+  });
+});

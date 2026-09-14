@@ -37,8 +37,8 @@
 # shell, and the broadcast that follows is launched through `bench-on-host.sh`, behind that gate.
 #
 # Usage:
-#   deploy/scripts/drain-stage.sh --profile=latbench --portSlot=7 --rung=1080p print-buy [--days=2]
-#   deploy/scripts/drain-stage.sh --profile=latbench --portSlot=7 --rung=1080p arm --batch=<64 hex>
+#   deploy/scripts/drain-stage.sh --profile=latbench --portSlot=7 --rung=1080p print-buy [--days=2] [--depth=17]
+#   deploy/scripts/drain-stage.sh --profile=latbench --portSlot=7 --rung=1080p arm --batch=<64 hex> [--depth=17]
 #   deploy/scripts/drain-stage.sh --profile=latbench --portSlot=7 --rung=1080p restore
 #   deploy/scripts/drain-stage.sh --profile=latbench --portSlot=7 --rung=1080p status
 #
@@ -72,10 +72,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 . "$SCRIPT_DIR/_lib.sh"
 
-# The smallest depth Bee accepts, and the only one this script arms. A batch has 2^16 buckets and
+# The smallest depth Bee accepts, and the depth a drain sitting needs. A batch has 2^16 buckets and
 # needs at least two chunks in each, which is where both numbers come from.
-readonly ARM_DEPTH=17
+#
+# ⚠️ It is the DEFAULT depth rather than the only one. A batch this small is what a short broadcast
+# can fill, which is the whole point of a drain and the whole problem of a sustained run:
+# `docs/e2e-batch-drain-plan.md` measures it gone in about 20 seconds of 1080p. So a run may name its
+# own depth, and one that is not this depth is warned about rather than refused, because a sitting
+# that quietly armed a batch it cannot fill would report a rung that never ran dry and read as the
+# product surviving.
+readonly DRAIN_DEPTH=17
 readonly BUCKET_DEPTH=16
+# A guard against a slipped digit rather than a limit Bee imposes. What a batch costs doubles with
+# every level, so a number past this buys more than anything here would spend by hand.
+readonly MAX_ARM_DEPTH=32
+ARM_DEPTH="$DRAIN_DEPTH"
+DEPTH_GIVEN=0
 readonly CHUNK_BYTES=4096
 readonly PLUR_PER_BZZ=10000000000000000
 
@@ -156,6 +168,8 @@ while [ $# -gt 0 ]; do
     --batch) value_of --batch $#; BATCH="$2"; shift 2 ;;
     --days=*) DAYS="${1#*=}"; DAYS_GIVEN=1; shift ;;
     --days) value_of --days $#; DAYS="$2"; DAYS_GIVEN=1; shift 2 ;;
+    --depth=*) ARM_DEPTH="${1#*=}"; DEPTH_GIVEN=1; shift ;;
+    --depth) value_of --depth $#; ARM_DEPTH="$2"; DEPTH_GIVEN=1; shift 2 ;;
     -h|--help) print_comment_header "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) usage_error "$1 is not a flag this script has, and its subcommands are ${SUBCOMMANDS}." ;;
     *)
@@ -179,6 +193,21 @@ if [ "$SUBCOMMAND" != "arm" ] && [ -n "$BATCH" ]; then
 fi
 if [ "$SUBCOMMAND" != "print-buy" ] && [ "$DAYS_GIVEN" = "1" ]; then
   usage_error "--days belongs to print-buy alone, and this run passed it to ${SUBCOMMAND}."
+fi
+if [ "$DEPTH_GIVEN" = "1" ] && [ "$SUBCOMMAND" != "print-buy" ] && [ "$SUBCOMMAND" != "arm" ]; then
+  usage_error "--depth belongs to print-buy and arm, the two that price a batch and adopt one, and this run passed it to ${SUBCOMMAND}."
+fi
+case "$ARM_DEPTH" in
+  '' | *[!0-9]*) usage_error "--depth takes a whole number of levels, and this run passed ${ARM_DEPTH}." ;;
+esac
+if [ "$ARM_DEPTH" -lt "$DRAIN_DEPTH" ]; then
+  usage_error "--depth ${ARM_DEPTH} is under ${DRAIN_DEPTH}, the smallest batch bee sells, so there is no such batch to price or to arm."
+fi
+if [ "$ARM_DEPTH" -gt "$MAX_ARM_DEPTH" ]; then
+  usage_error "--depth ${ARM_DEPTH} is past ${MAX_ARM_DEPTH}, deeper than anything bought here, so it is read as a slipped digit rather than an ask."
+fi
+if [ "$ARM_DEPTH" != "$DRAIN_DEPTH" ] && { [ "$SUBCOMMAND" = "arm" ] || [ "$SUBCOMMAND" = "print-buy" ]; }; then
+  log_warn "Depth ${ARM_DEPTH} is not the drain depth ${DRAIN_DEPTH}. A test broadcast cannot fill a batch this size, so a drain sitting on it would report a rung that never ran dry. This is a depth to stream on."
 fi
 
 require_jq
@@ -374,7 +403,8 @@ short_id() {
 read_batch() {
   local mode="$1" batch_id="$2"
   printf '%s' "$NODE_BODY" | MODE="$mode" BATCH="$batch_id" RUNG="$RUNG" PORT="$PORT" \
-    WANT_DEPTH="$ARM_DEPTH" FLOOR_HOURS="$MIN_TTL_HOURS" MARGIN_HOURS="$ARM_TTL_MARGIN_HOURS" python3 -c '
+    WANT_DEPTH="$ARM_DEPTH" DEFAULT_DEPTH="$DRAIN_DEPTH" FLOOR_HOURS="$MIN_TTL_HOURS" \
+    MARGIN_HOURS="$ARM_TTL_MARGIN_HOURS" python3 -c '
 import json, os, sys
 
 mode = os.environ["MODE"]
@@ -382,6 +412,7 @@ batch_id = os.environ["BATCH"]
 rung = os.environ["RUNG"]
 port = os.environ["PORT"]
 want_depth = int(os.environ["WANT_DEPTH"])
+drain_depth = int(os.environ["DEFAULT_DEPTH"])
 floor_hours = float(os.environ["FLOOR_HOURS"]) + float(os.environ["MARGIN_HOURS"])
 # Eight characters and an ellipsis, the same truncation the uploader logs and for the same reason: a
 # scrollback outlives the command and a whole batch id reads like a wallet key.
@@ -449,10 +480,15 @@ if not exists or not usable:
         f"usable={str(usable).lower()}, and only a batch the node will spend can be made to run dry"
     )
 if int(depth) != want_depth:
+    why = (
+        "a deeper batch holds more chunks than a test broadcast can fill and the sitting would "
+        "report a rung that never drained"
+        if want_depth == drain_depth
+        else "this run named that depth itself"
+    )
     refuse(
-        f"batch {short} is depth {depth} and this script arms depth {want_depth} alone, the smallest "
-        f"bee allows, because a deeper batch holds more chunks than a test broadcast can fill and the "
-        f"sitting would report a rung that never drained"
+        f"batch {short} is depth {depth} and this run arms depth {want_depth}, because {why}. Pass "
+        f"--depth={depth} if the batch on the node is the one that was meant"
     )
 if ttl < floor_hours * 3600.0:
     refuse(
