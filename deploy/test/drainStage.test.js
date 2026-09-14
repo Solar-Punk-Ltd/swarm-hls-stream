@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { SKIP_WITHOUT_PERMISSION_ENFORCEMENT } from './helpers/permissionGuard.js';
 import { ALL_REMOTE, makeSandbox, removeSandboxes, runScript } from './helpers/sandbox.js';
 
 after(removeSandboxes);
@@ -627,23 +628,35 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
  * one line the rung was spending, and `restore` refuses in the meantime.
  */
 describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
+  /**
+   * A `cp` that refuses to write the backup, which is what a full disk and a read-only mount both
+   * look like to the script. Everything else it copies goes through, so only the backup is blocked.
+   *
+   * ⭐ This used to chmod the sandbox root to 0o500 instead, and that reads as the same thing only on
+   * a machine whose writes permission bits can stop. The verification box runs every job as root,
+   * which ignores them, so the copy succeeded, no refusal was printed, and the case failed against a
+   * script that was behaving correctly. Failing the tool the script actually calls says the same
+   * thing to every account.
+   */
+  function uncopyableBackup(sandbox) {
+    writeFileSync(
+      join(sandbox.binDir, 'cp'),
+      '#!/bin/sh\nfor arg in "$@"; do\n  case "$arg" in\n    *.bak-*) exit 1 ;;\n  esac\ndone\nexec /bin/cp "$@"\n',
+    );
+    chmodSync(join(sandbox.binDir, 'cp'), 0o755);
+  }
+
   /** ⛔ The copy is the fallback. Reporting one that was never made is worse than not making it. */
   it('refuses when the env file cannot be copied aside, rather than arming with no copy', async () => {
     const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    uncopyableBackup(sandbox);
 
-    // A directory nothing can create a file in, which is what a full disk and a read-only mount both
-    // look like to `cp`. The env file itself stays writable, so only the copy is blocked.
-    chmodSync(sandbox.root, 0o500);
-    try {
-      const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
 
-      assert.notEqual(run.exitCode, 0, 'a rung was armed with no copy of the env file to fall back on');
-      assert.match(run.stderr, /could not copy/);
-      assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with no copy of it');
-      assert.deepEqual(redeployedServices(sandbox), [], 'a failed copy still redeployed the uploader');
-    } finally {
-      chmodSync(sandbox.root, 0o755);
-    }
+    assert.notEqual(run.exitCode, 0, 'a rung was armed with no copy of the env file to fall back on');
+    assert.match(run.stderr, /could not copy/);
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with no copy of it');
+    assert.deepEqual(redeployedServices(sandbox), [], 'a failed copy still redeployed the uploader');
   });
 
   /**
@@ -653,10 +666,13 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
    */
   it('refuses when the original cannot be recorded, rather than arming with nothing to put back', async () => {
     const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
-    // A record another rung is already in and this process cannot append to, which is the shape of
-    // one written by a different account.
-    writeFileSync(recordPath(sandbox), `720p=${ORIGINAL['720p']}\n`);
-    chmodSync(recordPath(sandbox), 0o444);
+    // A record path that cannot be opened for writing by anybody, because it points into a directory
+    // that is not there. That is what a removed mount looks like, and `record_original` writes with a
+    // shell redirect, so there is no tool to fail instead.
+    //
+    // ⭐ It used to chmod the record to 0o444, which stops nothing on the verification box because
+    // jobs run there as root. A dangling link is refused by the kernel whatever the account.
+    symlinkSync(join(sandbox.root, 'a-directory-that-is-not-there', RECORD), recordPath(sandbox));
 
     const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
 
@@ -917,21 +933,35 @@ describe('drain-stage says so when it cannot clear its own record', () => {
     return sandbox;
   }
 
-  /** A record another rung is in as well, so clearing this one is a rewrite rather than a removal. */
-  it('refuses when the record cannot be rewritten without the rung, rather than reporting it removed', async () => {
-    const sandbox = armedSandbox({ record: `${RUNG}=${ORIGINAL[RUNG]}\n720p=${ORIGINAL['720p']}\n` });
-    chmodSync(recordPath(sandbox), 0o444);
+  /**
+   * A record another rung is in as well, so clearing this one is a rewrite rather than a removal.
+   *
+   * ⛔ The one case here with no lever that works as root, and the reason is the order of the two
+   * operations. `forget_original` READS the record with grep and then writes it back with a shell
+   * redirect, so the path has to be readable and unwritable at the same moment. A failing tool cannot
+   * do it, because the redirect is a shell builtin. A path that cannot be opened cannot do it either,
+   * because grep would fail first and the function would take its other branch and delete the record
+   * instead, which is a different case that already has its own. That leaves the permission bits,
+   * which root ignores, so this one stands down there and runs everywhere else.
+   */
+  it(
+    'refuses when the record cannot be rewritten without the rung, rather than reporting it removed',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      const sandbox = armedSandbox({ record: `${RUNG}=${ORIGINAL[RUNG]}\n720p=${ORIGINAL['720p']}\n` });
+      chmodSync(recordPath(sandbox), 0o444);
 
-    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+      const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
 
-    assert.notEqual(run.exitCode, 0, 'a record that could not be cleared was reported as cleared');
-    assert.doesNotMatch(run.stdout, /✓.*removed the record/, 'a ✓ was printed about a record nothing removed');
-    assert.match(run.stdout, /could not rewrite/, 'nothing said which of the two writes failed');
-    assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
-    // ⛔ And it says so about a stage that IS back, which is the whole reason this is not a rollback.
-    assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
-    assert.deepEqual(redeployedServices(sandbox), ['stream-uploader'], 'the restore did not redeploy');
-  });
+      assert.notEqual(run.exitCode, 0, 'a record that could not be cleared was reported as cleared');
+      assert.doesNotMatch(run.stdout, /✓.*removed the record/, 'a ✓ was printed about a record nothing removed');
+      assert.match(run.stdout, /could not rewrite/, 'nothing said which of the two writes failed');
+      assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
+      // ⛔ And it says so about a stage that IS back, which is the whole reason this is not a rollback.
+      assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
+      assert.deepEqual(redeployedServices(sandbox), ['stream-uploader'], 'the restore did not redeploy');
+    },
+  );
 
   /** A record this rung is alone in, so clearing it is a removal rather than a rewrite. */
   it('refuses when the record cannot be removed, rather than reporting it removed', async () => {
