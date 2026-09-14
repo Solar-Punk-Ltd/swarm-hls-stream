@@ -14,6 +14,7 @@ import {
   TEST_BATCH_DURATION,
   TEST_CHAIN_PRICE,
 } from './helpers/fakeBee.js';
+import { SKIP_WITHOUT_PERMISSION_ENFORCEMENT } from './helpers/permissionGuard.js';
 
 /** Enough for the quote to name a TTL, which is the only thing the buy path asks the chain for. */
 const CHAIN_STATE = { chainTip: 1, block: 1, totalAmount: '0', currentPrice: TEST_CHAIN_PRICE };
@@ -130,7 +131,7 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
     assert.equal(result.exitCode, undefined);
   });
 
-  it('refuses to spend when .env cannot be written', async () => {
+  it('refuses to spend when .env cannot be written', { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT }, async () => {
     writeFileSync(envPath, 'STREAM_KEY=aaa\n');
     chmodSync(envPath, 0o400);
 
@@ -148,23 +149,27 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
     assert.equal(existsSync(envPath), false);
   });
 
-  it('exits non-zero and names the recovery file when .env becomes unwritable after the preflight', async () => {
-    const result = await run({
-      envPath,
-      buyStamp: async () => {
-        chmodSync(dir, 0o500);
-        return BATCH_ID;
-      },
-    });
+  it(
+    'exits non-zero and names the recovery file when .env becomes unwritable after the preflight',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      const result = await run({
+        envPath,
+        buyStamp: async () => {
+          chmodSync(dir, 0o500);
+          return BATCH_ID;
+        },
+      });
 
-    const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
-    assert.ok(savedAt, `the notice must name where it saved the id, got: ${result.output}`);
-    recoveryFiles.push(savedAt);
+      const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
+      assert.ok(savedAt, `the notice must name where it saved the id, got: ${result.output}`);
+      recoveryFiles.push(savedAt);
 
-    assert.equal(readFileSync(savedAt, 'utf-8').trim(), `STAMP=${BATCH_ID}`);
-    assert.equal(result.exitCode, 1);
-    assert.match(result.output, /PAID FOR/);
-  });
+      assert.equal(readFileSync(savedAt, 'utf-8').trim(), `STAMP=${BATCH_ID}`);
+      assert.equal(result.exitCode, 1);
+      assert.match(result.output, /PAID FOR/);
+    },
+  );
 
   it('says the previous stamp value was replaced', async () => {
     // Overwriting STAMP orphans whatever batch was there. The operator should know.
@@ -228,23 +233,27 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
 
   // Same ordering on this command: the writability check comes first, so a run that was going to
   // refuse never asks. And the affordability refusal comes before the prompt for the same reason.
-  it('does not ask when the batch id could not have been recorded anyway', async () => {
-    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
-    chmodSync(envPath, 0o400);
-    let asked = 0;
+  it(
+    'does not ask when the batch id could not have been recorded anyway',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+      chmodSync(envPath, 0o400);
+      let asked = 0;
 
-    const result = await run({
-      envPath,
-      confirm: async () => {
-        asked += 1;
-        return true;
-      },
-    });
+      const result = await run({
+        envPath,
+        confirm: async () => {
+          asked += 1;
+          return true;
+        },
+      });
 
-    assert.equal(asked, 0, 'the operator was asked to approve a purchase this run then refused');
-    assert.equal(result.spends, 0);
-    assert.equal(result.exitCode, 1);
-  });
+      assert.equal(asked, 0, 'the operator was asked to approve a purchase this run then refused');
+      assert.equal(result.spends, 0);
+      assert.equal(result.exitCode, 1);
+    },
+  );
 
   // The affordability refusal `stamp:setup` has, on the command that had no guard at all. Showing a
   // cost the wallet cannot pay and then asking to confirm it is OPS-5's harm with a prompt in front.
