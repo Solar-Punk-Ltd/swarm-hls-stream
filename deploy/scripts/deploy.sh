@@ -86,11 +86,18 @@ check_stamp() {
   done
 
   if [ "$needs_stamp" = "true" ]; then
-    local stamp_val
+    local stamp_val publishers_val
+    # A deployment that splits its bees per rung carries one batch per rung in BEE_PUBLISHERS and
+    # never reads STAMP at all: the uploader's own `buildPublishers` takes the per-rung pool the
+    # moment that variable is set. `capacity-gate.sh` names the same either-or when it decides which
+    # batch to check, and `.env.sample` says the batch is the one in BEE_PUBLISHERS "or STAMP when
+    # unsplit". This guard was the one place that had not been told, so a fully funded ABR
+    # deployment was refused here for an empty variable its uploader would never have read.
+    publishers_val=$(grep -E '^BEE_PUBLISHERS=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')
     stamp_val=$(grep -E '^STAMP=' "$ENV_FILE" | cut -d= -f2-)
-    if [ -z "$stamp_val" ]; then
+    if [ -z "$publishers_val" ] && [ -z "$stamp_val" ]; then
       log_warn "STAMP is empty in .env — stream-uploader needs a valid postage stamp."
-      log_warn "Run: pnpm stamp:setup"
+      log_warn "Run: pnpm stamp:setup, or name one batch per rung in BEE_PUBLISHERS."
       echo ""
       read -r -p "Continue anyway? [y/N] " answer
       if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
