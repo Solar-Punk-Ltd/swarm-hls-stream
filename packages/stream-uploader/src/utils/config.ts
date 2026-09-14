@@ -116,10 +116,27 @@ function readPublisherSpecs(): PublisherSpec[] {
   return parsePublisherSpecs(optional('BEE_PUBLISHERS', ''));
 }
 
+/**
+ * Read before the object below, because whether STAMP is required depends on it.
+ *
+ * Parsing here rather than inline also means a mistyped pool is refused before any other variable
+ * is looked at, which is the refusal an operator can act on.
+ */
+const publishers = readPublisherSpecs();
+
 export const config = {
   beeUrl: required('BEE_URL'),
-  stamp: required('STAMP'),
-  publishers: readPublisherSpecs(),
+  /**
+   * The batch a single-node deployment publishes through, and nothing when there is a node per rung.
+   *
+   * `BeePublisherPool.single` is the only reader of this in the whole service, and `buildPublishers`
+   * reaches it only when BEE_PUBLISHERS named no pool. Requiring it regardless stopped a funded ABR
+   * deployment at startup for a batch nothing in it would ever spend, and the only way past was to
+   * invent one. An invented batch id is worse than an absent one: it is indistinguishable from a
+   * real one until something tries to pay with it.
+   */
+  stamp: publishers.length === 0 ? required('STAMP') : optional('STAMP', ''),
+  publishers,
   beeRequestTimeoutMs: optionalInt('BEE_REQUEST_TIMEOUT_MS', DEFAULT_BEE_REQUEST_TIMEOUT_MS, { min: 1 }),
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
