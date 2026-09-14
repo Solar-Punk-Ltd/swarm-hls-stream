@@ -22,9 +22,13 @@ function serviceKeys(compose, service) {
   assert.notEqual(start, -1, `service ${service} is not in the compose file`);
   const keys = [];
   for (const line of lines.slice(start + 1)) {
-    if (/^  [^ ]/.test(line)) break;
-    const key = /^    ([a-z_]+):/.exec(line);
-    if (key) keys.push(key[1]);
+    if (/^ {2}[^ ]/.test(line)) {
+      break;
+    }
+    const key = /^ {4}([a-z_]+):/.exec(line);
+    if (key) {
+      keys.push(key[1]);
+    }
   }
   return keys;
 }
@@ -42,7 +46,10 @@ describe('the images this repo builds are named after the deployment', () => {
     it(`builds ${service} without an image name, so its tag belongs to one project`, () => {
       const keys = serviceKeys(compose, service);
       assert.ok(keys.includes('build'), `${service} is expected to be built from a Dockerfile`);
-      assert.ok(!keys.includes('image'), `${service} names an image, so every deployment on the host shares that one tag`);
+      assert.ok(
+        !keys.includes('image'),
+        `${service} names an image, so every deployment on the host shares that one tag`,
+      );
     });
   }
 });
@@ -83,6 +90,8 @@ describe('clean.sh removes the images a whole-project clean built', () => {
     const calls = await runClean(makeSandbox(), ['srs']);
 
     assert.ok(calls.length > 0, 'no compose call at all was issued');
-    for (const call of calls) assert.doesNotMatch(call, /--rmi/, `a service clean removed images: ${call}`);
+    for (const call of calls) {
+      assert.doesNotMatch(call, /--rmi/, `a service clean removed images: ${call}`);
+    }
   });
 });
