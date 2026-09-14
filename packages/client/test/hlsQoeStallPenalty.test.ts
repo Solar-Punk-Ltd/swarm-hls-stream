@@ -48,6 +48,11 @@ function makeTrackedPlayer(targetLatency: number | null = LIVE_SYNC_DURATION_S) 
       return latest;
     },
     poll: () => vi.advanceTimersByTime(POLL_INTERVAL_MS),
+    media: (type: 'playing' | 'waiting' | 'pause' | 'ended') => {
+      const listener = mediaListeners.get(type);
+      assert.ok(listener, `the tracker never subscribed to the media event ${type}`);
+      listener();
+    },
     setTargetLatency: (value: number | null) => {
       hls.targetLatency = value;
     },
@@ -208,5 +213,55 @@ describe('switch frequency is a rate over elapsed time, not over playback time',
       player.metrics().qualitySwitchPerMin > 0,
       'switch frequency must divide by elapsed time, so it reports a rate with no playback time banked',
     );
+  });
+});
+
+/**
+ * The ratio divided stall time by playback time, and the tracker banks those into separate counters:
+ * playback time runs between `playing` and the next `waiting` or `pause`, stall time between
+ * `waiting` and the next `playing`. No millisecond is ever in both, so the quotient was not a share
+ * of anything, and a session that stalled longer than it played read above 100% on the overlay,
+ * which does not clamp.
+ *
+ * Reported by a cross-provider review on 2026-09-15. The same error was found and fixed for the
+ * quality switch rate, in the line directly below this one, and the ratio was left on the old
+ * denominator.
+ */
+describe('the rebuffering ratio is a share of the time the viewer sat there', () => {
+  it('divides by watched time, so a session that stalled more than it played stays under 100%', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    vi.advanceTimersByTime(3000);
+    player.media('playing');
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.rebufferingDurationMs, 3000, 'the stall was not banked');
+    assert.equal(metrics.playbackTimeMs, 1500, 'playback time picked up the stall');
+    assert.equal(metrics.rebufferingRatio, 3000 / 4500);
+    assert.ok(metrics.rebufferingRatio <= 1, 'a share of the session cannot exceed the session');
+  });
+
+  /**
+   * Why this is not simply the wall clock, which is what the switch rate uses. A viewer who pauses
+   * for a minute has not rebuffered for a minute. Paused time is banked into neither counter, so it
+   * lands in neither half of this quotient.
+   */
+  it('leaves a deliberate pause out of the denominator', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('pause');
+    vi.advanceTimersByTime(60_000);
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.poll();
+
+    assert.equal(player.metrics().rebufferingCount, 0, 'a pause was counted as a rebuffer');
+    assert.equal(player.metrics().rebufferingRatio, 0);
   });
 });

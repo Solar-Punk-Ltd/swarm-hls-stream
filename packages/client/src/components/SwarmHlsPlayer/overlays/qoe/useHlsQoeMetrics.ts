@@ -290,7 +290,12 @@ export const attachQoeTracking = (
       metrics.resolution = `${video.videoWidth}×${video.videoHeight}`;
     }
 
-    metrics.rebufferingRatio = total > 0 ? metrics.rebufferingDurationMs / total : 0;
+    // Stall time over watched time, and watched is playback plus stalls. The two counters never
+    // overlap, so dividing by playback alone was not a share of anything and read past 100% on a
+    // session that stalled more than it played. Paused time is banked into neither counter and so
+    // falls out of both halves, which is why this is not the wall clock the switch rate below uses.
+    const watched = total + metrics.rebufferingDurationMs;
+    metrics.rebufferingRatio = watched > 0 ? metrics.rebufferingDurationMs / watched : 0;
 
     // Elapsed wall clock, not playback time. Denominated in playback time this inflated exactly when
     // the session struggled: down-switches cluster in the rebuffering and paused stretches that
