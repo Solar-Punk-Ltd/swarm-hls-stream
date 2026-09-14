@@ -98,6 +98,16 @@ check_stamp() {
     if [ -z "$publishers_val" ] && [ -z "$stamp_val" ]; then
       log_warn "STAMP is empty in .env — stream-uploader needs a valid postage stamp."
       log_warn "Run: pnpm stamp:setup, or name one batch per rung in BEE_PUBLISHERS."
+      # Nobody is there to answer on a deploy the manager runs: it spawns a script with standard
+      # input closed, so `read` reaches end of file and the empty answer reads as a refusal. The
+      # operator was then shown a question and the word "Aborted." as though somebody had declined
+      # it. A caller that leaves standard input open instead gets neither, it gets a deploy that
+      # waits for a line that never comes. Say why, and keep the question for a terminal that can
+      # answer it.
+      if [ ! -t 0 ]; then
+        log_error "Refusing: no terminal to ask, and an uploader with no batch of its own cannot publish."
+        exit 1
+      fi
       echo ""
       read -r -p "Continue anyway? [y/N] " answer
       if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then

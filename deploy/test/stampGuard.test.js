@@ -38,6 +38,26 @@ const PUBLISHERS = ['360p@http://localhost:1633', '480p@http://localhost:11001',
   .map((node, index) => `${node}<${String(index + 1).repeat(64)}>`)
   .join(' ');
 
+/**
+ * The same script with an open pipe on standard input, which is what a caller that does not close
+ * it gives, including the stack's own shared `runScript` helper. A guard that asks a question there
+ * waits for a line nobody will send, so the deadline is the assertion: without one this case does
+ * not fail, it never finishes.
+ */
+function runWithOpenStdin(sandbox, name, args = [], deadlineMs = 10_000) {
+  return new Promise((resolve) => {
+    const child = spawn('bash', [sandbox.scriptPath(name), ...args], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+    });
+    let output = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ output, exitCode: null, timedOut: true }); }, deadlineMs);
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; });
+    child.on('close', (exitCode) => { clearTimeout(timer); resolve({ output, exitCode, timedOut: false }); });
+  });
+}
+
 const withEnv = (env) => makeSandbox({ envFiles: { '.env': `${env}\nSTREAM_KEY=key\n` } });
 
 /**
@@ -74,5 +94,30 @@ describe('the stamp guard, on a deployment that splits its bees per rung', () =>
     const run = await runHeadless(withEnv('STAMP=\nBEE_PUBLISHERS='), 'deploy.sh', ['client']);
 
     assert.equal(run.exitCode, 0, run.output);
+  });
+});
+
+/**
+ * A question asked where nobody can answer it, which is every deploy the manager makes.
+ *
+ * The guard printed "Continue anyway? [y/N]" and then "Aborted.", which reads as though somebody had
+ * declined rather than as a refusal, and gave an operator a command to run interactively as the only
+ * way out. Worse, whether that even ends is the caller's choice: with standard input closed `read`
+ * reaches end of file at once, and with it left open the deploy waits for a line that never comes.
+ */
+describe('the stamp guard, where there is nobody to ask', () => {
+  it('refuses in words rather than appearing to have been answered', async () => {
+    const run = await runHeadless(withEnv('STAMP=\nBEE_PUBLISHERS='), 'deploy.sh', ['stream-uploader']);
+
+    assert.notEqual(run.exitCode, 0);
+    assert.match(run.output, /no terminal/);
+    assert.doesNotMatch(run.output, /Continue anyway/);
+  });
+
+  it('ends rather than waiting when standard input is an open pipe', async () => {
+    const run = await runWithOpenStdin(withEnv('STAMP=\nBEE_PUBLISHERS='), 'deploy.sh', ['stream-uploader']);
+
+    assert.equal(run.timedOut, false, 'the deploy never returned, so it was waiting for an answer');
+    assert.notEqual(run.exitCode, 0);
   });
 });
