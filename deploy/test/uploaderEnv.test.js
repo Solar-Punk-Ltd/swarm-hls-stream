@@ -1,11 +1,29 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const CONFIG = resolve(ROOT, 'packages/stream-uploader/src/utils/config.ts');
+/**
+ * Every file the uploader keeps deployment-wide configuration in, read as one text.
+ *
+ * The directory rather than `config.ts` alone, and the difference is the whole point of deriving the
+ * list instead of writing one down. `readAbrConfig` moved out of `config.ts` into `abrConfig.ts` so
+ * that importing an engine stops demanding a full deployment's worth of variables, and a reader
+ * pinned to the one file would have kept passing while quietly no longer checking ABR_ENABLED,
+ * ABR_VHOST or ABR_LADDER. A test that covers less without saying so is the failure this file was
+ * written against, one level up.
+ *
+ * ⛔ `src/utils` and not `src/`, because the engines under `src/engines` read knobs of their own that
+ * a deployment supplies to one engine or the other rather than to every uploader.
+ */
+const CONFIG_DIR = resolve(ROOT, 'packages/stream-uploader/src/utils');
+const CONFIG = readdirSync(CONFIG_DIR)
+  .filter((name) => name.endsWith('.ts'))
+  .sort()
+  .map((name) => readFileSync(join(CONFIG_DIR, name), 'utf8'))
+  .join('\n');
 const COMPOSE = resolve(ROOT, 'deploy/docker-compose.yml');
 const ENV_SAMPLE = resolve(ROOT, '.env.sample');
 
@@ -29,15 +47,14 @@ const ENV_SAMPLE = resolve(ROOT, '.env.sample');
 describe('the uploader environment reaches the container', () => {
   /** Names read via the `optional*`/`required*` helpers, which is every knob the service has. */
   const knobs = [
-    ...new Set(
-      [...readFileSync(CONFIG, 'utf8').matchAll(/\b(?:optional|required)(?:Int|Bool)?\('([A-Z0-9_]+)'/g)].map(
-        (m) => m[1],
-      ),
-    ),
+    ...new Set([...CONFIG.matchAll(/\b(?:optional|required)(?:Int|Bool)?\('([A-Z0-9_]+)'/g)].map((m) => m[1])),
   ];
 
   it('reads a plausible set of knobs from config.ts, so an empty match cannot pass silently', () => {
-    assert.ok(knobs.length >= 10, `only found ${knobs.length} knobs, so the pattern has stopped matching config.ts`);
+    assert.ok(
+      knobs.length >= 10,
+      `only found ${knobs.length} knobs, so the pattern has stopped matching the config files`,
+    );
     assert.ok(knobs.includes('ORPHAN_REAP_MS'), 'the knob this test was written for is not being found');
   });
 
