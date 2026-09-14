@@ -201,7 +201,7 @@ services:
       # again: an argued-for setting that no deployment could actually move. The defaults repeat
       # config.ts on purpose, and `bee-publishers.sh` carries the same pair, which
       # `deploy/test/beePublishers.test.js` holds in step.
-      STAMP_MIN_TTL_HOURS: ${STAMP_MIN_TTL_HOURS:-24}
+      STAMP_MIN_TTL_HOURS: ${STAMP_MIN_TTL_HOURS:-1}
       STAMP_MAX_UTILIZATION: ${STAMP_MAX_UTILIZATION:-0.9}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}

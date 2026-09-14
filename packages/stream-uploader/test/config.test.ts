@@ -60,6 +60,20 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     fallback: 0.5,
     refused: ['half', '-0.5', '10000'],
   },
+  {
+    name: 'STAMP_MIN_TTL_HOURS',
+    field: 'stampMinTtlHours',
+    sample: '3',
+    fallback: 1,
+    refused: ['hours', '-1', '8761'],
+  },
+  {
+    name: 'STAMP_MAX_UTILIZATION',
+    field: 'stampMaxUtilization',
+    sample: '0.75',
+    fallback: 0.9,
+    refused: ['most', '-0.1', '1.1'],
+  },
 ];
 
 const requiredEnv = (): Record<string, string> =>

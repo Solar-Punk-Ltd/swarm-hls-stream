@@ -92,7 +92,7 @@ readonly PLUR_PER_BZZ=10000000000000000
 # The shell value is captured here rather than read later, because `load_env` copies the file's value
 # into this shell as a default and the two are indistinguishable once it has run. It is unset for the
 # same reason: the file has to win, and `load_env_file` skips a key this shell already declares.
-readonly DEFAULT_MIN_TTL_HOURS=24
+readonly DEFAULT_MIN_TTL_HOURS=1
 MIN_TTL_HOURS="$DEFAULT_MIN_TTL_HOURS"
 MIN_TTL_HOURS_IN_SHELL="${STAMP_MIN_TTL_HOURS:-}"
 unset STAMP_MIN_TTL_HOURS

@@ -29,12 +29,15 @@ const MAX_CHEQUEBOOK_MIN_BZZ = 1000;
 /**
  * How much time a postage batch must have left before the uploader will start on it.
  *
- * A day, because a batch that expires mid-broadcast stops paying for the data it was keeping, and a
- * floor shorter than the longest run anyone books here would clear a batch that cannot finish it.
- * This is a chosen bound and not a measured one: it is "comfortably longer than a sitting", and a
- * deployment that knows its run is shorter can lower it.
+ * An hour, which is a floor for the test sittings this stack ships for and not for a production
+ * broadcast. A batch that expires mid-broadcast stops paying for the data it was keeping, so a
+ * deployment whose run is longer than an hour raises this to cover the run.
+ *
+ * It was a day until 2026-09-15. A day is longer than any sitting anyone books here, so the floor
+ * refused batches that had hours of life left and every run those batches could have carried, which
+ * is a gate failing closed on work it was never meant to stop.
  */
-const DEFAULT_STAMP_MIN_TTL_HOURS = 24;
+const DEFAULT_STAMP_MIN_TTL_HOURS = 1;
 const MAX_STAMP_MIN_TTL_HOURS = 24 * 365;
 
 /**
