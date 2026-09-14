@@ -242,8 +242,12 @@ describe('the environment contract', () => {
  * STAMP. Sixty-four hex characters because that is what a batch id is, and a shorter one is the
  * shape a truncated paste takes.
  */
-const PER_RUNG = ['360p@http://localhost:1633', '480p@http://localhost:11001',
-  '720p@http://localhost:11003', '1080p@http://localhost:11005']
+const PER_RUNG = [
+  '360p@http://localhost:1633',
+  '480p@http://localhost:11001',
+  '720p@http://localhost:11003',
+  '1080p@http://localhost:11005',
+]
   .map((node, index) => `${node}<${String(index + 1).repeat(64)}>`)
   .join(' ');
 
@@ -269,7 +273,10 @@ describe('the postage a deployment has to name', () => {
     const config = await loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: PER_RUNG });
 
     assert.equal(config.publishers.length, 4);
-    assert.deepEqual(config.publishers.map((publisher) => publisher.rung), ['360p', '480p', '720p', '1080p']);
+    assert.deepEqual(
+      config.publishers.map((publisher) => publisher.rung),
+      ['360p', '480p', '720p', '1080p'],
+    );
     assert.equal(config.stamp, '');
   });
 
@@ -282,7 +289,11 @@ describe('the postage a deployment has to name', () => {
 
   it('builds the pool the service publishes through from that configuration', async () => {
     const config = await loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: PER_RUNG });
-    const pool = BeePublisherPool.perRung(config.publishers, ['360p', '480p', '720p', '1080p'], config.beeRequestTimeoutMs);
+    const pool = BeePublisherPool.perRung(
+      config.publishers,
+      ['360p', '480p', '720p', '1080p'],
+      config.beeRequestTimeoutMs,
+    );
 
     assert.equal(pool.nodes().length, 4);
   });
@@ -302,6 +313,12 @@ describe('the postage a deployment has to name', () => {
   it('still refuses a pool that does not cover the ladder it is given', async () => {
     const config = await loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: PER_RUNG });
 
-    assert.throws(() => BeePublisherPool.perRung(config.publishers, ['360p', '480p', '720p', '1080p', '1440p'], config.beeRequestTimeoutMs));
+    assert.throws(() =>
+      BeePublisherPool.perRung(
+        config.publishers,
+        ['360p', '480p', '720p', '1080p', '1440p'],
+        config.beeRequestTimeoutMs,
+      ),
+    );
   });
 });

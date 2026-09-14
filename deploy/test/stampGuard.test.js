@@ -22,8 +22,12 @@ function runHeadless(sandbox, name, args = []) {
       env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
     });
     let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk; });
-    child.stderr.on('data', (chunk) => { output += chunk; });
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk;
+    });
     child.on('close', (exitCode) => resolve({ output, exitCode }));
   });
 }
@@ -33,8 +37,12 @@ function runHeadless(sandbox, name, args = []) {
  * bees per rung carries instead of a single STAMP. The batch ids are 64 hex characters because
  * `capacity-gate.sh` refuses anything shorter as a truncated paste.
  */
-const PUBLISHERS = ['360p@http://localhost:1633', '480p@http://localhost:11001',
-  '720p@http://localhost:11003', '1080p@http://localhost:11005']
+const PUBLISHERS = [
+  '360p@http://localhost:1633',
+  '480p@http://localhost:11001',
+  '720p@http://localhost:11003',
+  '1080p@http://localhost:11005',
+]
   .map((node, index) => `${node}<${String(index + 1).repeat(64)}>`)
   .join(' ');
 
@@ -51,10 +59,20 @@ function runWithOpenStdin(sandbox, name, args = [], deadlineMs = 10_000) {
       env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
     });
     let output = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ output, exitCode: null, timedOut: true }); }, deadlineMs);
-    child.stdout.on('data', (chunk) => { output += chunk; });
-    child.stderr.on('data', (chunk) => { output += chunk; });
-    child.on('close', (exitCode) => { clearTimeout(timer); resolve({ output, exitCode, timedOut: false }); });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      resolve({ output, exitCode: null, timedOut: true });
+    }, deadlineMs);
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk;
+    });
+    child.on('close', (exitCode) => {
+      clearTimeout(timer);
+      resolve({ output, exitCode, timedOut: false });
+    });
   });
 }
 
