@@ -564,6 +564,12 @@ deploy_target() {
     docker compose $project_flag $compose_files --env-file "$ENV_FILE" $override_envfile_flag $profiles up -d --build
 
     rm -f "$override_file"
+
+    # Compose returning success means the containers were created and started, which a container that
+    # throws on its first line also does. Without this the next line is the only thing an operator
+    # sees and it is not true.
+    "$SCRIPT_DIR/assert-started.sh" "$PROFILE" "${services[@]}"
+
     log_ok "Local deploy complete"
   else
     # Remote deploy
@@ -594,6 +600,7 @@ ENVEOF
       docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env \$OVERRIDE_FLAG $profiles up -d --build
 
       rm -f .env.deploy.$PROFILE
+      ./scripts/assert-started.sh $PROFILE ${services[*]}
       echo "Stack started on \$(hostname)"
 REMOTE_SCRIPT
 

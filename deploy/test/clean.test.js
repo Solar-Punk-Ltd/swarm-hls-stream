@@ -89,7 +89,7 @@ describe('clean.sh straggler sweep (OPS-2)', () => {
 
     assert.deepEqual(
       forceRemovedIds(sandbox.calls()).sort(),
-      ['c-bee-gateway', 'c-bee-uploader', 'c-client', 'c-srs', 'c-stream-uploader'],
+      ['c-bee-gateway', 'c-bee-uploader', 'c-client', 'c-ome', 'c-srs', 'c-stream-uploader'],
       'an unfiltered clean must still catch stragglers compose could no longer see',
     );
   });
@@ -176,6 +176,7 @@ describe('clean.sh straggler sweep (OPS-2)', () => {
       'c-bee-gateway',
       'c-bee-uploader',
       'c-client',
+      'c-ome',
       'c-srs',
       'c-stream-uploader',
     ]);

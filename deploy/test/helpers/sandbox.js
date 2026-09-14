@@ -18,6 +18,7 @@ const ROOT_DIR = dirname(DEPLOY_DIR);
 const INVENTORY = [
   { id: 'c-stream-uploader', service: 'stream-uploader' },
   { id: 'c-srs', service: 'srs' },
+  { id: 'c-ome', service: 'ome' },
   { id: 'c-client', service: 'client' },
   { id: 'c-bee-uploader', service: 'bee-uploader' },
   { id: 'c-bee-gateway', service: 'bee-gateway' },
@@ -324,16 +325,32 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
+// A failing service's own output, which is the only place the reason for a refusal exists. Empty
+// unless a test asked for one, so every other test's deploy prints nothing extra.
+if (argv[0] === 'logs') {
+  if (process.env.DOCKER_STUB_LOG_LINE) {
+    console.log(process.env.DOCKER_STUB_LOG_LINE);
+  }
+  process.exit(0);
+}
+
 if (argv[0] !== 'ps' && argv[0] !== 'volume') {
   process.exit(0);
 }
 
 const inventory = ${JSON.stringify(INVENTORY)};
 const wanted = {};
+let status;
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--filter' && argv[i + 1] && argv[i + 1].startsWith('label=')) {
+  if (argv[i] !== '--filter' || !argv[i + 1]) {
+    continue;
+  }
+  if (argv[i + 1].startsWith('label=')) {
     const [key, value] = argv[i + 1].slice('label='.length).split('=');
     wanted[key] = value;
+  }
+  if (argv[i + 1].startsWith('status=')) {
+    status = argv[i + 1].slice('status='.length);
   }
 }
 
@@ -348,11 +365,22 @@ if (argv[0] === 'volume') {
   process.exit(0);
 }
 
+// Services whose container fell over, so a test can ask what a deploy does when one did not come
+// up. A container that is down exists and is not running, which is what a crash loop looks like to
+// docker ps, so it answers a restarting status filter and not a running one.
+const down = (process.env.DOCKER_STUB_DOWN || '').split(',').filter(Boolean);
 const service = wanted[${JSON.stringify(SERVICE_LABEL)}];
 for (const container of inventory) {
-  if (service === undefined || container.service === service) {
-    console.log(container.id);
+  if (service !== undefined && container.service !== service) {
+    continue;
   }
+  if (status === 'running' && down.includes(container.service)) {
+    continue;
+  }
+  if (status === 'restarting' && !down.includes(container.service)) {
+    continue;
+  }
+  console.log(container.id);
 }
 `;
 }
