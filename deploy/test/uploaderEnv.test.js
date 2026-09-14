@@ -31,6 +31,14 @@ const ENV_SAMPLE = resolve(ROOT, '.env.sample');
 const UPLOADER_SERVICE = 'stream-uploader';
 
 /**
+ * How a knob is read in the config source, as a pattern source rather than a regex object.
+ *
+ * Built fresh at every use on purpose: a `g` regex carries `lastIndex` between calls, so one shared
+ * object used for both `matchAll` and `test` answers differently depending on what asked last.
+ */
+const KNOB_CALL = String.raw`\b(?:optional|required)(?:Int|Bool|Number)?\('([A-Z0-9_]+)'`;
+
+/**
  * The `environment:` block of one compose service, as text, or an empty string if it has none.
  *
  * Walked by indentation rather than parsed, for the same reason `imageNames.test.js` walks it: adding
@@ -82,9 +90,7 @@ function serviceEnvironment(compose, service) {
  */
 describe('the uploader environment reaches the container', () => {
   /** Names read via the `optional*`/`required*` helpers, which is every knob the service has. */
-  const knobs = [
-    ...new Set([...CONFIG.matchAll(/\b(?:optional|required)(?:Int|Bool|Number)?\('([A-Z0-9_]+)'/g)].map((m) => m[1])),
-  ];
+  const knobs = [...new Set([...CONFIG.matchAll(new RegExp(KNOB_CALL, 'g'))].map((m) => m[1]))];
 
   it('reads a plausible set of knobs from config.ts, so an empty match cannot pass silently', () => {
     assert.ok(
@@ -92,6 +98,35 @@ describe('the uploader environment reaches the container', () => {
       `only found ${knobs.length} knobs, so the pattern has stopped matching the config files`,
     );
     assert.ok(knobs.includes('ORPHAN_REAP_MS'), 'the knob this test was written for is not being found');
+  });
+
+  /**
+   * That the pattern above still matches every way this codebase has of reading a knob.
+   *
+   * ⛔⛔ `optionalNumber` was not in the pattern for as long as it existed, so four knobs were never
+   * checked at all, among them both postage thresholds an operator most wants to move. The floor
+   * above did not notice, and could not: it asks whether the pattern still matches SOMETHING, and a
+   * pattern that has gone blind to one reader out of five still matches plenty.
+   *
+   * So the readers are derived from `utils/env.ts` and each is probed against the pattern directly.
+   * Adding `optionalList` there and not here now fails this case by name instead of quietly dropping
+   * every knob that uses it.
+   */
+  it('matches every knob reader utils/env.ts exports, so a new one cannot go unscraped', () => {
+    const readers = [
+      ...readFileSync(join(CONFIG_DIR, 'env.ts'), 'utf8').matchAll(/^export function ((?:optional|required)\w*)\(/gm),
+    ].map((match) => match[1]);
+
+    assert.ok(readers.length >= 4, `only found ${readers.length} readers in env.ts, so this case has stopped looking`);
+
+    const unmatched = readers.filter((reader) => !new RegExp(KNOB_CALL).test(`${reader}('A_KNOB'`));
+
+    assert.deepEqual(
+      unmatched,
+      [],
+      `exported by env.ts and not matched by the knob pattern, so every knob read through them is ` +
+        `unchecked: ${unmatched.join(', ')}`,
+    );
   });
 
   /**
