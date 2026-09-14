@@ -1,7 +1,7 @@
-import { AbrLadder, DEFAULT_LADDER_SPEC } from '../libs/AbrLadder.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 
-import { optional, optionalBool, optionalInt, optionalNumber, required } from './env.js';
+import { readAbrConfig } from './abrConfig.js';
+import { optional, optionalInt, optionalNumber, required } from './env.js';
 
 /**
  * How much SWAP chequebook balance every Bee node must hold before the uploader will start.
@@ -84,26 +84,6 @@ const MAX_HLS_FRAGMENT_SECONDS = 3600;
  * `test/config.test.ts` reads those windows out of the files that declare them and re-derives it.
  */
 const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
-
-/**
- * The ABR ladder, or null when the engine is producing a single rendition.
- *
- * Parsed eagerly and allowed to throw: a malformed ABR_LADDER means the uploader would group
- * rungs it cannot describe, and failing at startup is a great deal easier to diagnose than a
- * master playlist that silently omits half the ladder.
- */
-function readAbrConfig(): { vhost: string; ladder: AbrLadder } | null {
-  if (!optionalBool('ABR_ENABLED', false)) {
-    return null;
-  }
-
-  return {
-    // The vhost the engine republishes rungs onto. Anything arriving on another vhost is the
-    // untranscoded source, and the uploader has no business segmenting it.
-    vhost: optional('ABR_VHOST', 'abr'),
-    ladder: AbrLadder.parse(optional('ABR_LADDER', DEFAULT_LADDER_SPEC)),
-  };
-}
 
 /**
  * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.

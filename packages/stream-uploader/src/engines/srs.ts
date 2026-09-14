@@ -2,12 +2,11 @@ import { NextFunction, Request, RequestHandler, Response, Router } from 'express
 import fs from 'fs';
 import path from 'path';
 
-import { AbrLadder } from '../libs/AbrLadder.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
+import { AbrGuard, readAbrConfig } from '../utils/abrConfig.js';
 import { getErrorMessage } from '../utils/common.js';
-import { config } from '../utils/config.js';
 import { optional, required } from '../utils/env.js';
 import { assertUsablePublishKeySecret, hasValidPublishKey, publishKeyFromParam } from '../utils/publishKey.js';
 import { isUsableStreamId } from '../utils/streamId.js';
@@ -17,6 +16,9 @@ import { assertUsableWebhookToken, hasValidWebhookToken } from './srs/webhookTok
 import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
+
+// Re-exported from where it used to be declared, so nothing that named it has to move.
+export type { AbrGuard };
 
 export interface SrsEngineOptions {
   /** The ABR ladder, when one is configured. Absent means single-rendition, which is the default. */
@@ -87,12 +89,6 @@ interface SrsHlsPayload {
   duration: number;
 }
 
-/** The vhost the ladder's rungs are republished onto, and the rungs to expect there. */
-export interface AbrGuard {
-  vhost: string;
-  ladder: AbrLadder;
-}
-
 function srsResponse(res: Response, code: number): void {
   res.json(code);
 }
@@ -121,7 +117,7 @@ export function createSrsEngineFromEnv(): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
   const webhookToken = required('SRS_WEBHOOK_TOKEN');
   const publishKeySecret = optional('PUBLISH_KEY_SECRET', '');
-  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret, abr: config.abr ?? undefined });
+  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret, abr: readAbrConfig() ?? undefined });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
   // engine and then threw for a token that was merely too short.
