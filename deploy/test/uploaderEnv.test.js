@@ -27,6 +27,42 @@ const CONFIG = readdirSync(CONFIG_DIR)
 const COMPOSE = resolve(ROOT, 'deploy/docker-compose.yml');
 const ENV_SAMPLE = resolve(ROOT, '.env.sample');
 
+/** The compose service the uploader runs as, which is the only block its own knobs may be read from. */
+const UPLOADER_SERVICE = 'stream-uploader';
+
+/**
+ * The `environment:` block of one compose service, as text, or an empty string if it has none.
+ *
+ * Walked by indentation rather than parsed, for the same reason `imageNames.test.js` walks it: adding
+ * a YAML parser to a check that exists to catch a missing line means the check and the deployment no
+ * longer read the file the same way. Two levels, both fixed by the file's own style: a service name
+ * sits at two spaces and its keys at four.
+ */
+function serviceEnvironment(compose, service) {
+  const lines = compose.split('\n');
+  const start = lines.indexOf(`  ${service}:`);
+  if (start === -1) {
+    return '';
+  }
+
+  const block = [];
+  let inEnvironment = false;
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {2}\S/.test(line)) {
+      break;
+    }
+    if (/^ {4}\S/.test(line)) {
+      inEnvironment = line === '    environment:';
+      continue;
+    }
+    if (inEnvironment) {
+      block.push(line);
+    }
+  }
+
+  return block.join('\n');
+}
+
 /**
  * That every knob the uploader reads can actually be set on a deployment.
  *
@@ -66,8 +102,54 @@ describe('the uploader environment reaches the container', () => {
    */
   const FIXED_IN_THE_IMAGE = new Set(['STATE_DIR']);
 
+  /**
+   * That the block being read is the uploader's own and not the whole file.
+   *
+   * ⛔ The check below used to ask whether a knob appeared anywhere in `docker-compose.yml`, and four
+   * of them (ABR_ENABLED, ABR_VHOST, ABR_LADDER, HLS_FRAGMENT) are deliberately in two service blocks
+   * at once, because the engine and the uploader have to agree on them. So deleting one from the
+   * uploader while leaving it on the engine left this file green while the uploader silently went
+   * back to its compiled default, which is the exact defect this file exists to catch, wearing the
+   * one disguise it could not see through.
+   *
+   * A fixture rather than the real compose file, so both halves of the answer are asserted: that the
+   * service's own keys are in and that a neighbour's are out. Reading the real file could only ever
+   * show the first.
+   */
+  it("reads the uploader's own environment block and not a neighbouring service's", () => {
+    const fixture = [
+      'services:',
+      '  srs:',
+      '    environment:',
+      '      SHARED_WITH_THE_ENGINE: ${SHARED_WITH_THE_ENGINE:-0.5}',
+      '  stream-uploader:',
+      '    environment:',
+      '      OWN_KNOB: ${OWN_KNOB:-1}',
+      '    healthcheck:',
+      '      test: ANOTHER_KEY_ENTIRELY',
+      '  client:',
+      '    environment:',
+      '      A_THIRD_SERVICES_KNOB: ${A_THIRD_SERVICES_KNOB:-2}',
+    ].join('\n');
+
+    const block = serviceEnvironment(fixture, 'stream-uploader');
+
+    assert.match(block, /OWN_KNOB/);
+    assert.doesNotMatch(block, /SHARED_WITH_THE_ENGINE/);
+    assert.doesNotMatch(block, /A_THIRD_SERVICES_KNOB/);
+    // The service's other keys are outside its environment block and are not configuration.
+    assert.doesNotMatch(block, /ANOTHER_KEY_ENTIRELY/);
+  });
+
   it('passes every knob through docker-compose', () => {
-    const compose = readFileSync(COMPOSE, 'utf8');
+    // The uploader's own block, not the whole file. See the case above for what reading the whole
+    // file could not see.
+    const compose = serviceEnvironment(readFileSync(COMPOSE, 'utf8'), UPLOADER_SERVICE);
+    assert.ok(
+      compose.length > 0,
+      `${UPLOADER_SERVICE} has no environment block in ${COMPOSE}, so every knob below would be ` +
+        'reported missing for a reason that has nothing to do with the knobs',
+    );
     // Collected and asserted once rather than asserted inside the loop. `assert` throws on the first
     // failure, so a loop reports one name and stops, and the reader fixes that one and believes they
     // are done. Widening the pattern above found two knobs missing from compose and the old shape
