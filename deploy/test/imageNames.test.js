@@ -57,9 +57,26 @@ describe('the images this repo builds are named after the deployment', () => {
 after(removeSandboxes);
 
 /** Runs the real `clean.sh` against the sandbox's stubbed docker, the way clean.test.js does. */
+/**
+ * ⛔ Both streams on a failure, and that is the whole point of this wrapper rather than a bare await.
+ *
+ * `_lib.sh`'s `log_error` writes to stdout with a plain `echo`, and node builds an `execFile`
+ * rejection's message out of stderr alone. So a script that refuses for a stated reason arrives here
+ * as "Command failed: bash ..." with an empty line after it, and the reason is in a stream nobody
+ * printed. Twelve of these read exactly that way on the verification box and said nothing about why.
+ */
 async function runClean(sandbox, args) {
   await execFileAsync('bash', [sandbox.scriptPath('clean.sh'), '--yes', ...args], {
     env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+  }).catch((error) => {
+    // The same error, with its message widened. Rethrowing this one rather than asserting keeps
+    // `stdout` and `stderr` on it, which `runCleanExpectingFailure` below reads to make its
+    // assertions: replacing it with an assertion failure silently emptied both streams for every
+    // refusal case.
+    error.message =
+      `clean.sh ${args.join(' ')} exited ${error.code}\n` +
+      `--- stdout ---\n${error.stdout ?? ''}\n--- stderr ---\n${error.stderr ?? ''}`;
+    throw error;
   });
   return sandbox.calls().filter((call) => call.startsWith('compose '));
 }
