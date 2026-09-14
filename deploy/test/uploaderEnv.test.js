@@ -91,15 +91,19 @@ describe('the uploader environment reaches the container', () => {
       }
     }
 
+    // One assertion over both lists, not one per list. `assert` throws on the first failure, so two
+    // assertions report the earlier kind of defect and hide the later one, which is the same shape as
+    // the loop this file already stopped asserting inside and it was still here one level up. A
+    // change that drops a knob from compose and hard-codes another is exactly the case that reads as
+    // one problem and is two.
     assert.deepEqual(
-      unseen,
-      [],
-      `read by the uploader and never passed to it, so setting them does nothing: ${unseen.join(', ')}`,
-    );
-    assert.deepEqual(
-      hardCoded,
-      [],
-      `passed as a hard-coded value, so an operator setting them in .env is ignored: ${hardCoded.join(', ')}`,
+      { unseen, hardCoded },
+      { unseen: [], hardCoded: [] },
+      `unseen are read by the uploader and never passed to it, so setting them does nothing: ${
+        unseen.join(', ') || 'none'
+      }. hardCoded are passed as a fixed value, so an operator setting them in .env is ignored: ${
+        hardCoded.join(', ') || 'none'
+      }`,
     );
   });
 
