@@ -47,7 +47,7 @@ const ENV_SAMPLE = resolve(ROOT, '.env.sample');
 describe('the uploader environment reaches the container', () => {
   /** Names read via the `optional*`/`required*` helpers, which is every knob the service has. */
   const knobs = [
-    ...new Set([...CONFIG.matchAll(/\b(?:optional|required)(?:Int|Bool)?\('([A-Z0-9_]+)'/g)].map((m) => m[1])),
+    ...new Set([...CONFIG.matchAll(/\b(?:optional|required)(?:Int|Bool|Number)?\('([A-Z0-9_]+)'/g)].map((m) => m[1])),
   ];
 
   it('reads a plausible set of knobs from config.ts, so an empty match cannot pass silently', () => {
@@ -68,26 +68,39 @@ describe('the uploader environment reaches the container', () => {
 
   it('passes every knob through docker-compose', () => {
     const compose = readFileSync(COMPOSE, 'utf8');
+    // Collected and asserted once rather than asserted inside the loop. `assert` throws on the first
+    // failure, so a loop reports one name and stops, and the reader fixes that one and believes they
+    // are done. Widening the pattern above found two knobs missing from compose and the old shape
+    // would have named only the earlier of them.
+    const unseen = [];
+    const hardCoded = [];
 
     for (const knob of knobs) {
       // Present at all, which is what decides whether the container can see it.
-      assert.match(
-        compose,
-        new RegExp(`^\\s*${knob}:`, 'm'),
-        `${knob} is read by the uploader and never passed to it, so setting it does nothing`,
-      );
-
+      if (!new RegExp(`^\\s*${knob}:`, 'm').test(compose)) {
+        unseen.push(knob);
+        continue;
+      }
       if (FIXED_IN_THE_IMAGE.has(knob)) {
         continue;
       }
       // And interpolated from the same name, or it is passed as a constant nobody can change, which
       // is the same defect wearing a value.
-      assert.match(
-        compose,
-        new RegExp(`^\\s*${knob}:\\s*\\$\\{${knob}`, 'm'),
-        `${knob} is passed as a hard-coded value, so an operator setting it in .env is ignored`,
-      );
+      if (!new RegExp(`^\\s*${knob}:\\s*\\$\\{${knob}`, 'm').test(compose)) {
+        hardCoded.push(knob);
+      }
     }
+
+    assert.deepEqual(
+      unseen,
+      [],
+      `read by the uploader and never passed to it, so setting them does nothing: ${unseen.join(', ')}`,
+    );
+    assert.deepEqual(
+      hardCoded,
+      [],
+      `passed as a hard-coded value, so an operator setting them in .env is ignored: ${hardCoded.join(', ')}`,
+    );
   });
 
   /**
@@ -99,12 +112,14 @@ describe('the uploader environment reaches the container', () => {
     const SECRETS = new Set(['API_AUTH_TOKEN', 'STREAM_KEY', 'STAMP']);
     const sample = readFileSync(ENV_SAMPLE, 'utf8');
 
-    for (const knob of knobs.filter((name) => !SECRETS.has(name))) {
-      assert.match(
-        sample,
-        new RegExp(`^${knob}=`, 'm'),
-        `${knob} can be set but is not in .env.sample, so an operator has no way to learn it exists`,
-      );
-    }
+    const undocumented = knobs
+      .filter((name) => !SECRETS.has(name))
+      .filter((knob) => !new RegExp(`^${knob}=`, 'm').test(sample));
+
+    assert.deepEqual(
+      undocumented,
+      [],
+      `can be set but are not in .env.sample, so an operator has no way to learn they exist: ${undocumented.join(', ')}`,
+    );
   });
 });
