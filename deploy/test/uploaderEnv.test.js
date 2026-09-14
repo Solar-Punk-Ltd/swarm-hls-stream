@@ -107,6 +107,14 @@ describe('the uploader environment reaches the container', () => {
    * Secrets are excluded because `.env.sample` is committed and a sample value for one of these
    * reads as a credential to paste rather than as a placeholder. They are in compose, which is what
    * decides whether the container can see them.
+   *
+   * A commented assignment counts as documented, because the question this asks is whether an
+   * operator can learn the knob exists and not whether a fresh install sets it. `HLS_FRAGMENT` is
+   * deliberately shipped commented out, under four lines saying why: it is the same variable the
+   * engine reads, so a fresh install is meant to take the one compose default on both sides rather
+   * than a value from here. Demanding an active assignment would have read that as missing
+   * documentation and invited someone to uncomment it, which is the opposite of what the note asks
+   * for.
    */
   it('documents every non-secret knob in .env.sample', () => {
     const SECRETS = new Set(['API_AUTH_TOKEN', 'STREAM_KEY', 'STAMP']);
@@ -114,12 +122,14 @@ describe('the uploader environment reaches the container', () => {
 
     const undocumented = knobs
       .filter((name) => !SECRETS.has(name))
-      .filter((knob) => !new RegExp(`^${knob}=`, 'm').test(sample));
+      .filter((knob) => !new RegExp(`^#? *${knob}=`, 'm').test(sample));
 
     assert.deepEqual(
       undocumented,
       [],
-      `can be set but are not in .env.sample, so an operator has no way to learn they exist: ${undocumented.join(', ')}`,
+      `can be set but are not in .env.sample, so an operator has no way to learn they exist: ${undocumented.join(
+        ', ',
+      )}`,
     );
   });
 });
