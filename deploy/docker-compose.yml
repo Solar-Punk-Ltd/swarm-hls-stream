@@ -195,6 +195,14 @@ services:
       # where the 4000 comes from.
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
+      # The other two thresholds `PostageGate` refuses a start on, and they belong here for the same
+      # reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
+      # compiled 24 and 0.9 whatever an operator wrote in .env, which is the ORPHAN_REAP_MS shape
+      # again: an argued-for setting that no deployment could actually move. The defaults repeat
+      # config.ts on purpose, and `bee-publishers.sh` carries the same pair, which
+      # `deploy/test/beePublishers.test.js` holds in step.
+      STAMP_MIN_TTL_HOURS: ${STAMP_MIN_TTL_HOURS:-24}
+      STAMP_MAX_UTILIZATION: ${STAMP_MAX_UTILIZATION:-0.9}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN}
