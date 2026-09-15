@@ -76,7 +76,7 @@ declared no segment length at all.
 `e2e/suites/preflight/segment-length.test.ts` refuses a run whose **deployed stage** cuts at the other
 viewer type's length, and since 2026-09-04 also one whose **uploader dates segments** by a length the
 engine does not cut by. `HLS_FRAGMENT` is one value in the profile env reaching two containers: the
-engine cuts by it, the uploader steps `#EXT-X-PROGRAM-DATE-TIME` by it. An uploader on 1.0 in front of
+engine cuts by it, the uploader reads every segment against it to derive `#EXT-X-PROGRAM-DATE-TIME`. An uploader on 1.0 in front of
 an SRS cutting 2.0 passed all ten gates, and only the ABR ladder suite's timeline subtest caught it,
 mid-sitting. It reads the config the running SRS container was started on, through one
 `docker exec cat`, and both containers' own environment through two `docker inspect` reads, so it
@@ -300,8 +300,10 @@ that holds in one and not the other is a finding rather than a flake.
 ## The playlist timeline: asserted on the playlists a broadcast published
 
 **Added 2026-09-03, wired live the same day.** Every playlist the uploader writes opens at
-`#EXT-X-MEDIA-SEQUENCE:0` and carries an `#EXT-X-PROGRAM-DATE-TIME` on every segment, stepping by the
-deployment's nominal fragment length. The contract is described in
+`#EXT-X-MEDIA-SEQUENCE:0` and carries an `#EXT-X-PROGRAM-DATE-TIME` on every segment. Since
+2026-09-15 each stamp is the one in front of it plus the media that entry declares, read as the
+deployment's nominal fragment length wherever the two agree to within 5%, which under a ladder is
+every segment. The contract is described in
 [the uploader's README](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
 
 `manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the rulebook, and
