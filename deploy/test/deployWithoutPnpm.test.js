@@ -86,12 +86,34 @@ describe('a deploy on a host with pnpm', () => {
     assert.deepEqual(sandbox.pnpmCalls(), ['install', 'build']);
   });
 
-  it('skips the build for a local deploy whose dist is already there', async () => {
+  /**
+   * Both halves of the same rule the no-pnpm path was taught on 2026-09-16 and this one was not.
+   * `Dockerfile.uploader` copies `dist/` and runs `dist/index.js`, so the entry file is what says
+   * whether there is a build to ship, and its time is the only honest age of one.
+   */
+  it('skips the build for a local deploy whose dist is already built, and says how old it is', async () => {
     const sandbox = makeSandbox();
     seedDist(sandbox);
 
-    await runScriptOk(sandbox, 'deploy.sh', ['stream-uploader']);
+    const run = await runScriptOk(sandbox, 'deploy.sh', ['stream-uploader']);
 
     assert.deepEqual(sandbox.pnpmCalls(), []);
+    assert.match(run.stdout, /2026-01-02 03:04:05/, 'a local deploy shipped a dist without saying how stale it is');
+    assert.doesNotMatch(run.stdout, /2026-06-07/, 'the line dates the dist directory rather than the build');
+  });
+
+  /**
+   * An interrupted build leaves the directory holding whatever it got to, which for `tsc` can be a
+   * `.tsbuildinfo` and nothing else. Testing the directory called that built, and the container then
+   * exits on `Cannot find module '/app/dist/index.js'` and restarts behind a deploy that did the one
+   * thing it had a toolchain for and chose not to.
+   */
+  it('builds when the dist is there but has no index.js for the image to run', async () => {
+    const sandbox = makeSandbox();
+    seedDist(sandbox, { entry: false });
+
+    await runScriptOk(sandbox, 'deploy.sh', ['stream-uploader']);
+
+    assert.deepEqual(sandbox.pnpmCalls(), ['install', 'build'], 'a dist the image cannot run was shipped unbuilt');
   });
 });
