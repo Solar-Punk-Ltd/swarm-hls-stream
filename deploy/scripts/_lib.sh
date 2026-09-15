@@ -113,6 +113,28 @@ readonly PORT_VARS=(
   "BEE_RUNG_1080P_P2P_PORT:11006:11006"
 )
 
+# Refuse a per-deployment override whose value is not the shape that key takes.
+#
+# These four are the only argv values that reach a file the deploy `source`s, here and again on the
+# deployment host, so their shape is checked rather than trusted. `shell_quote` in
+# parameter_overrides_text is the other layer and neither is written to lean on the other: a value
+# carrying a newline would still end the remote heredoc at its own `ENVEOF` whatever the quoting
+# around it says, and only a shape check can say that value never existed.
+#
+# The value is not echoed back. One of the four is the publisher's private key, and a deploy's output
+# reaches the manager's logs and this repository's transcripts, where a key that appears once is a key
+# that has to be rotated. The flag and the shape it wants are what fixes a typo.
+#
+# @param $1 the flag as an operator typed it, $2 its value, $3 the regex, $4 the shape in plain words
+require_override_shape() {
+  local flag="$1" value="$2" pattern="$3" shape="$4"
+  [ -n "$value" ] || return 0
+  if ! [[ "$value" =~ $pattern ]]; then
+    echo -e "${RED}ERROR: $flag must be $shape${NC}" >&2
+    exit 1
+  fi
+}
+
 # Parse profile + portSlot flags from argv.
 # Accepted: --profile=<n>, --profile <n>, --portSlot=<N>, --portSlot <N>
 # Caller pattern:
@@ -240,6 +262,20 @@ parse_profile_args() {
     exit 1
   fi
 
+  # ⛔ These four end up in a file that is `source`d on this machine and on the deployment host, so a
+  # value nobody checked is a command line on both. The shapes are the ones the keys already have:
+  # an owner is an ethereum address, a stream key and a batch id are 32 bytes of hex, and a topic is
+  # either a plain word like the `swarm-stream` in `.env.sample` or a 64 character hex string.
+  # See parameter_overrides_text, which quotes them as well.
+  require_override_shape "--feed-owner" "$FEED_OWNER_OVERRIDE" '^(0x)?[0-9a-fA-F]{40}$' \
+    "a 40 character hex address, with or without a 0x prefix"
+  require_override_shape "--feed-topic" "$FEED_TOPIC_OVERRIDE" '^[A-Za-z0-9._-]{1,64}$' \
+    "letters, digits, dot, underscore or hyphen, at most 64 characters"
+  require_override_shape "--private-key" "$PRIVATE_KEY_OVERRIDE" '^(0x)?[0-9a-fA-F]{64}$' \
+    "a 64 character hex key, with or without a 0x prefix"
+  require_override_shape "--stamp-id" "$STAMP_ID_OVERRIDE" '^(0x)?[0-9a-fA-F]{64}$' \
+    "a 64 character hex batch id, with or without a 0x prefix"
+
   # A named profile always points at its OWN env file, present or not. The old fallback to the
   # default `.env` did not merely lose this profile's settings, it silently adopted the default
   # deployment's ports, STAMP and STREAM_KEY, so `--profile=streamr1` brought up a second stack
@@ -314,29 +350,38 @@ apply_port_slot() {
   fi
 }
 
-# Emit KEY=VALUE\n lines for every per-deployment parameter override that was
+# Emit one KEY=VALUE line for each per-deployment parameter override that was
 # supplied on the command line. Empty overrides are skipped so the .env value
 # wins. Mapping (CLI flag → docker .env key):
 #   --feed-owner   → VITE_APP_OWNER       (0x prefix stripped — viewer build expects raw hex)
 #   --feed-topic   → STREAM_LIST_TOPIC, VITE_APP_RAW_TOPIC
 #   --private-key  → STREAM_KEY
 #   --stamp-id     → STAMP                (0x prefix stripped — bee expects raw hex)
+#
+# Single-quoted through `shell_quote`, for the reason engine_env_overrides_text gives further down in
+# this file: the file these lines land in is `source`d as well as read by compose, so an unquoted
+# `$(...)` in a value runs as a command. These four are worse than the engine values in one way,
+# because they come from argv rather than from a file the operator wrote, and a deployment manager
+# puts operator-entered text there.
+#
+# The lines carry real newlines rather than the two-character `\n` the port and engine text use.
+# That text is expanded by `printf '%b'`, and `%b` reads a backslash escape inside a VALUE too, so a
+# value carrying a literal backslash-n would arrive as a second env line of its own choosing.
+# generate_env_overrides in deploy.sh keeps the two apart and is the only caller.
 parameter_overrides_text() {
-  local out=""
   if [ -n "$FEED_OWNER_OVERRIDE" ]; then
-    out+="VITE_APP_OWNER=${FEED_OWNER_OVERRIDE#0x}\n"
+    printf 'VITE_APP_OWNER=%s\n' "$(shell_quote "${FEED_OWNER_OVERRIDE#0x}")"
   fi
   if [ -n "$FEED_TOPIC_OVERRIDE" ]; then
-    out+="STREAM_LIST_TOPIC=${FEED_TOPIC_OVERRIDE}\n"
-    out+="VITE_APP_RAW_TOPIC=${FEED_TOPIC_OVERRIDE}\n"
+    printf 'STREAM_LIST_TOPIC=%s\n' "$(shell_quote "$FEED_TOPIC_OVERRIDE")"
+    printf 'VITE_APP_RAW_TOPIC=%s\n' "$(shell_quote "$FEED_TOPIC_OVERRIDE")"
   fi
   if [ -n "$PRIVATE_KEY_OVERRIDE" ]; then
-    out+="STREAM_KEY=${PRIVATE_KEY_OVERRIDE}\n"
+    printf 'STREAM_KEY=%s\n' "$(shell_quote "$PRIVATE_KEY_OVERRIDE")"
   fi
   if [ -n "$STAMP_ID_OVERRIDE" ]; then
-    out+="STAMP=${STAMP_ID_OVERRIDE#0x}\n"
+    printf 'STAMP=%s\n' "$(shell_quote "${STAMP_ID_OVERRIDE#0x}")"
   fi
-  printf '%s' "$out"
 }
 
 # --- Usage text ---
