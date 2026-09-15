@@ -42,10 +42,10 @@ export const ROOT_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url)))
  */
 export const runProfile: RunProfile = applyRunProfile();
 
-export const MODES = ['attach', 'deploy'] as const;
-export type Mode = (typeof MODES)[number];
+const MODES = ['attach', 'deploy'] as const;
+type Mode = (typeof MODES)[number];
 
-export const ENGINES = ['srs', 'ome'] as const;
+const ENGINES = ['srs', 'ome'] as const;
 export type EngineName = (typeof ENGINES)[number];
 
 /** `PROFILE`'s default in `_lib.sh`, and the compose project a deploy without `--profile` uses. */
@@ -319,7 +319,7 @@ export function engineEnvPath(engine: EngineName, profile: string, rootDir: stri
   return join(rootDir, 'engines', engine, profile === DEFAULT_PROFILE ? '.env' : `.env.${profile}`);
 }
 
-export interface LoadOptions {
+interface LoadOptions {
   /** Stands in for the process environment. */
   env?: NodeJS.ProcessEnv;
   /** Repository root to resolve env files against. Overridden by tests so fixtures replace the real files. */

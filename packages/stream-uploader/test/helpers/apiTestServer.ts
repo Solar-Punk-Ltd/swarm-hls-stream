@@ -126,7 +126,7 @@ export async function readStatusCode(port: number, request: string): Promise<num
   }
 }
 
-export interface WithheldBodyRequest {
+interface WithheldBodyRequest {
   path: string;
   /** The `Content-Length` the request announces and then never sends. */
   declaredBodyBytes: number;
@@ -171,7 +171,7 @@ export function withheldBodyRequest({
   return `${method} ${path} HTTP/1.1\r\n${lines.join('')}\r\n`;
 }
 
-export interface ApiResponse {
+interface ApiResponse {
   status: number;
   body: unknown;
   /** Lowercased response headers, for the ones that carry meaning of their own such as `Retry-After`. */

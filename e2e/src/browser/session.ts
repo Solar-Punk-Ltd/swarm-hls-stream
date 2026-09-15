@@ -34,7 +34,7 @@ import { feedStatesSeen, type ViewerFeedState } from './feedState.js';
  * about that much either way. One second covers that at every segment length this deployment runs,
  * since the uploader declares `ceil(segment duration)` and nothing here is longer than a second.
  */
-export const LATENCY_TARGET_TOLERANCE_S = 1;
+const LATENCY_TARGET_TOLERANCE_S = 1;
 
 /** Below this share of wall clock, playback is not advancing and the sample is a stall. */
 export const STALLED_ADVANCE_RATIO = 0.25;
@@ -225,7 +225,7 @@ export function judgeLatencyTarget(
   };
 }
 
-export interface PlaybackAdvance {
+interface PlaybackAdvance {
   /** Media seconds gained per wall-clock second. ~1 playing, ~1.1 catching up, ~0 stalled. */
   ratio: number;
   wallMs: number;

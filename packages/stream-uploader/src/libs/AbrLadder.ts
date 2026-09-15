@@ -14,7 +14,7 @@ export const DEFAULT_LADDER_SPEC = '1080p:1920:1080:5000 720p:1280:720:2800 480p
 // underscore (`live_720p`), so a name that contained one could never be resolved back to its rung.
 const RUNG_NAME = /^[a-zA-Z0-9.-]+$/;
 
-export interface RungMatch {
+interface RungMatch {
   /** The stream id with the rung suffix removed — the ladder all four rungs belong to. */
   baseStreamId: string;
   rung: LadderRung;

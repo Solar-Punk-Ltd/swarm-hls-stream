@@ -27,13 +27,13 @@ const SEGMENT_TIMEOUT_MS = 30_000;
 const SLOT_NOT_WRITTEN_YET = 404;
 
 /** A response with the bench-clock instant it finished arriving. */
-export interface TimedFetch<T> {
+interface TimedFetch<T> {
   body: T;
   /** Bench clock, taken once the whole body is in hand rather than at the headers. */
   atMs: number;
 }
 
-export class GatewayUnreachableError extends Error {
+class GatewayUnreachableError extends Error {
   constructor(url: string, cause: string) {
     super(
       `the bench cannot reach the viewer gateway at ${url}: ${cause}. Latency has to be measured from ` +
@@ -153,10 +153,10 @@ export function isFeedBlackout(msSinceLastSuccessfulPoll: number): boolean {
 export { resolvedFeedIndex };
 
 /** One read of the feed, and when it finished arriving here. */
-export type FeedRead = TimedFetch<string> & { resolvedIndex: number | null };
+type FeedRead = TimedFetch<string> & { resolvedIndex: number | null };
 
 /** The feed head, resolved by the node. What the player does once, on mount. */
-export async function fetchFeedManifest(gatewayUrl: string, owner: string, topicHex: string): Promise<FeedRead> {
+async function fetchFeedManifest(gatewayUrl: string, owner: string, topicHex: string): Promise<FeedRead> {
   const response = await timedFetch(`${gatewayUrl}/feeds/${owner}/${topicHex}`, FEED_TIMEOUT_MS);
   const resolvedIndex = resolvedFeedIndex(response.headers);
   const body = await response.text();
@@ -334,7 +334,7 @@ export interface UnservedRetry {
 
 export const NO_UNSERVED_RETRY: UnservedRetry = { budgetMs: 0, recheckMs: 0 };
 
-export interface SegmentFetch extends TimedFetch<Buffer> {
+interface SegmentFetch extends TimedFetch<Buffer> {
   /**
    * How long the gateway went on refusing these bytes, from the first refusal to the ask that worked.
    *

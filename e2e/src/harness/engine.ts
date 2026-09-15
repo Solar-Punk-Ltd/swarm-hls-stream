@@ -31,7 +31,7 @@ function publishKeyQuery(cfg: E2EConfig, streamPath: string): string {
   return `?${PUBLISH_KEY_PARAM}=${derivePublishKey(cfg.publishKeySecret, streamPath)}`;
 }
 
-export interface EngineProfile {
+interface EngineProfile {
   name: EngineName;
   /** The container fronting SRT ingest — restarted mid-stream by the engine-restart scenario. */
   mediaContainer(cfg: E2EConfig): string;

@@ -163,7 +163,7 @@ export interface StampedPublisher {
  * require the caller to be bee-js: a proxy or a hand-rolled client can answer in a shape the type
  * says is impossible, and absence of a reading has to refuse rather than default.
  */
-export interface PostageClient {
+interface PostageClient {
   getPostageBatch(batchId: string): Promise<PostageBatch>;
 }
 

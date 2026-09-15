@@ -26,7 +26,7 @@ const STREAM_ID_SEGMENT_RE = new RegExp(`^${STREAM_ID_SEGMENT}$`);
 export const MAX_STREAM_ID_LENGTH = 128;
 
 /** Whether one path component is usable as an `app` or a `stream` name. */
-export function isStreamIdSegment(value: string): boolean {
+function isStreamIdSegment(value: string): boolean {
   return STREAM_ID_SEGMENT_RE.test(value);
 }
 

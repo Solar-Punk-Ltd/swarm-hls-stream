@@ -22,7 +22,7 @@ import { attachRungFailover, attachWatchedRungReporter } from './rungHealth';
 import './SwarmHlsPlayer.scss';
 
 /** Pins playback to a named rung; `AUTO_LEVEL` hands the choice back to hls.js's ABR. */
-export const AUTO_LEVEL = 'auto';
+const AUTO_LEVEL = 'auto';
 
 // TODO Consider switching to React.MediaHTMLAttributes<HTMLMediaElement> to support <audio> as well
 /**
@@ -32,7 +32,7 @@ export const AUTO_LEVEL = 'auto';
  * `abrController` and friends, none of which survive the serialisation below, so promising them
  * would let a caller write code that compiles and silently never runs.
  */
-export interface HlsTuning {
+interface HlsTuning {
   liveSyncDuration?: number;
   liveMaxLatencyDuration?: number;
   maxLiveSyncPlaybackRate?: number;
@@ -70,7 +70,7 @@ export interface HlsTuning {
  * holds regardless of fragment length, while OME's is `SegmentCount x SegmentDuration`, which at
  * its defaults is 5 x 2s = 10s, exactly this value.
  */
-export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
+const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
   // Spread rather than restated. These are the buffering and latency numbers of
   // {@link HLS_TUNING}, each derived from a measurement recorded beside it, and a second copy here
   // is a second place for them to be wrong: the copy this replaces had drifted back to

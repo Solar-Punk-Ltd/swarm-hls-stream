@@ -27,7 +27,7 @@
 import { median } from './sweepAnalysis.js';
 
 /** One measured segment, reduced to what the pacing question needs. */
-export interface PacedSample {
+interface PacedSample {
   /**
    * The uploader's own count of segments produced, which skips nothing.
    *
@@ -113,7 +113,7 @@ export function mediaPacing(samples: readonly PacedSample[]): MediaPacing {
 }
 
 /** One measured segment, reduced to what the drift question needs. */
-export interface TimedSample {
+interface TimedSample {
   fetchedAtMs: number;
   totalMs: number;
 }
@@ -173,13 +173,13 @@ export function latencyDrift(samples: readonly TimedSample[]): LatencyDrift {
 }
 
 /** One measured segment, reduced to what the buffer question needs, plus when it arrived. */
-export interface BufferedSample {
+interface BufferedSample {
   fetchedAtMs: number;
   totalMs: number;
   segmentMs: number;
 }
 
-export interface BufferDemandTrend {
+interface BufferDemandTrend {
   /** The buffer the first third of the run would have needed to never stall. */
   firstThirdMs: number;
   lastThirdMs: number;
@@ -210,7 +210,7 @@ export function bufferDemandTrend(samples: readonly BufferedSample[]): BufferDem
   return { firstThirdMs, lastThirdMs, growthMs: lastThirdMs - firstThirdMs };
 }
 
-export interface LatencyBucket {
+interface LatencyBucket {
   /** Minutes since the run's first sample. */
   fromMinute: number;
   samples: number;

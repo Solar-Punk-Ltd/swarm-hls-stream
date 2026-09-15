@@ -312,7 +312,7 @@ export class ManifestStateManager {
 }
 
 /** A stream's ABR ladder, as the loader needs it: who owns the feeds, and what the rungs are. */
-export interface LadderSource {
+interface LadderSource {
   owner: string;
   renditions: Rendition[];
 }
@@ -324,7 +324,7 @@ export interface LadderSource {
  * having — but only up to the moment hls.js reads the master, which for a live stream is once. A
  * supplier picks up whatever has landed by then; a snapshot taken at registration could not.
  */
-export type LadderResolver = () => LadderSource;
+type LadderResolver = () => LadderSource;
 
 /**
  * A source known to be a ladder, and the topics actually handed to the poller.

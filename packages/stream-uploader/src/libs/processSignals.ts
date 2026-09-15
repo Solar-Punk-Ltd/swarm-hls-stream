@@ -2,12 +2,12 @@ import { type CrashLine, uncaughtExceptionLines, unhandledRejectionLines } from 
 import { Logger } from './Logger.js';
 
 /** The lifecycle, as signal handling needs it. Narrow so a test does not have to build a real one. */
-export interface ShutdownTarget {
+interface ShutdownTarget {
   shutdown(signal: string): Promise<void>;
 }
 
 /** What a crash line is written to. Matches `Logger`, narrowed to the one method used here. */
-export interface CrashLogger {
+interface CrashLogger {
   error(message: string, value?: unknown): void;
 }
 
@@ -15,7 +15,7 @@ export interface CrashLogger {
  * The part of `process` this module attaches to. Injected because the alternative is a module that
  * can only be exercised by the process it installs handlers on.
  */
-export interface ProcessEvents {
+interface ProcessEvents {
   on(event: 'SIGTERM' | 'SIGINT', listener: () => void): unknown;
   on(event: 'uncaughtException', listener: (error: Error) => void): unknown;
   on(event: 'unhandledRejection', listener: (reason: unknown) => void): unknown;

@@ -37,7 +37,7 @@ export function minimumSafeBufferMs(samples: readonly BufferSample[]): number {
   return Math.max(...samples.map((sample) => sample.totalMs - sample.segmentMs));
 }
 
-export interface BufferRecommendation {
+interface BufferRecommendation {
   /** The largest edge-to-fetchable delay observed, which is the hard floor. */
   observedFloorMs: number;
   /** That floor plus the client's poll cadence and a margin. */
@@ -83,7 +83,7 @@ export interface DeliverySample {
   fps: number;
 }
 
-export interface FrameDelivery {
+interface FrameDelivery {
   /** Median share of the expected frames that arrived, across the samples. */
   medianRatio: number;
   /** The single worst segment, since one gap is a visible glitch a median absorbs. */

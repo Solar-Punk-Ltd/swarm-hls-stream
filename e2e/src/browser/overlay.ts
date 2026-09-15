@@ -18,7 +18,7 @@ export interface OverlayRow {
 }
 
 /** The overlay's placeholder for a metric it does not have a value for yet. */
-export const OVERLAY_EMPTY = '—';
+const OVERLAY_EMPTY = '—';
 
 /** Section and label pairs, as `QoeOverlay.tsx` writes them. */
 export const OVERLAY_FIELDS = {
@@ -38,7 +38,7 @@ export const OVERLAY_FIELDS = {
   bufferStalls: { section: 'Live', label: 'Buffer Stalls' },
 } as const;
 
-export interface OverlayMetrics {
+interface OverlayMetrics {
   startupMs: number | null;
   rebufferCount: number;
   rebufferMs: number;
@@ -130,7 +130,7 @@ export function parseOverlayNumber(value: string): number | null {
 }
 
 /** What the overlay writes in `Level Selection` while the player is choosing its own rung. */
-export const LEVEL_SELECTION_AUTO = 'auto';
+const LEVEL_SELECTION_AUTO = 'auto';
 
 /**
  * A ladder row, as `QoeOverlay.tsx` labels one: the height, behind a marker for the current rung.

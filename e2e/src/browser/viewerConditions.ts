@@ -13,7 +13,7 @@ export const HYBRID_VIEWER = 'weeb3';
 /** weeb-3's own published page, which asks a gateway for nothing at all. */
 export const NATIVE_VIEWER = 'native';
 
-export type ViewerCondition = typeof HYBRID_VIEWER | typeof NATIVE_VIEWER;
+type ViewerCondition = typeof HYBRID_VIEWER | typeof NATIVE_VIEWER;
 
 /**
  * The arms of a gateway-less-versus-hybrid sitting, in the order they run.

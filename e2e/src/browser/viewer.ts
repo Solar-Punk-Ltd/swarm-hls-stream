@@ -71,7 +71,7 @@ import { type WebSocketTraffic } from './webSocketTraffic.js';
 import { openBrowserCdp, watchWorkerTargets, type WorkerTargetWatch } from './workerTargets.js';
 
 /** Where the image puts Google Chrome. Overridable so a workstation with Chrome elsewhere can run this. */
-export const CHROME_PATH = process.env.BROWSER_CHROME_PATH ?? '/opt/google/chrome/chrome';
+const CHROME_PATH = process.env.BROWSER_CHROME_PATH ?? '/opt/google/chrome/chrome';
 
 /** A desktop viewport, since that is what the client's layout is built for. */
 export const VIEWPORT = { width: 1440, height: 900 } as const;

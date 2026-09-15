@@ -9,12 +9,12 @@
 import type { Segment } from '@swarm-hls-stream/shared';
 
 /** Only the fields the decision reads, so a test does not have to build a whole `Response`. */
-export interface PreviewManifestResponse {
+interface PreviewManifestResponse {
   ok: boolean;
   status: number;
 }
 
-export type PreviewSource =
+type PreviewSource =
   | { kind: 'playable'; firstSegment: Segment }
   /** Nothing to show, and the card must say so rather than keep spinning. `reason` is for the log. */
   | { kind: 'unavailable'; reason: string };

@@ -31,8 +31,8 @@ import { type Ports, type ServiceName, SERVICES } from '../config.js';
  * startup, so there is no way to ask what a five second outage looks like. Pause and unpause are
  * both instant, which makes the window the one the scenario asked for.
  */
-export const FAULT_ACTIONS = ['stop', 'kill', 'restart', 'pause'] as const;
-export type FaultAction = (typeof FAULT_ACTIONS)[number];
+const FAULT_ACTIONS = ['stop', 'kill', 'restart', 'pause'] as const;
+type FaultAction = (typeof FAULT_ACTIONS)[number];
 
 /**
  * What each action reads as in a sentence.

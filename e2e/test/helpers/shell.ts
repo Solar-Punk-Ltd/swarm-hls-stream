@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { ROOT_DIR } from '../../src/config.js';
 
 /** The real deploy library, not a copy. A copy is a second thing to keep in step. */
-export const LIB_PATH = join(ROOT_DIR, 'deploy', 'scripts', '_lib.sh');
+const LIB_PATH = join(ROOT_DIR, 'deploy', 'scripts', '_lib.sh');
 
 /**
  * Field and record separators: control characters no env value in these fixtures contains, written
@@ -22,7 +22,7 @@ const RS = '\x1e';
  * The library path arrives as `$1` rather than interpolated into the script, so nothing about where
  * the repository sits can reach the shell as syntax. Extra `args` follow as `$2` onward.
  */
-export function inLib(snippet: string, ...args: readonly string[]): string {
+function inLib(snippet: string, ...args: readonly string[]): string {
   return execFileSync('bash', ['-c', `source "$1"\n${snippet}`, 'bash', LIB_PATH, ...args], {
     encoding: 'utf8',
   });
@@ -36,7 +36,7 @@ export function inLib(snippet: string, ...args: readonly string[]): string {
  * divergence as a match. Only names this test file controls are interpolated, and they are shell
  * identifiers by construction.
  */
-export function emitVar(name: string): string {
+function emitVar(name: string): string {
   return [
     `if declare -p ${name} >/dev/null 2>&1; then`,
     `  printf '%s${FS_OCTAL}set${FS_OCTAL}%s${RS_OCTAL}' '${name}' "$${name}"`,
@@ -46,13 +46,13 @@ export function emitVar(name: string): string {
   ].join('\n');
 }
 
-export interface ShellVar {
+interface ShellVar {
   readonly isSet: boolean;
   readonly value: string;
 }
 
 /** Parse the records `emitVar` produced back into a map. */
-export function parseVars(stdout: string): Record<string, ShellVar> {
+function parseVars(stdout: string): Record<string, ShellVar> {
   const vars: Record<string, ShellVar> = {};
   for (const record of stdout.split(RS)) {
     if (record === '') {

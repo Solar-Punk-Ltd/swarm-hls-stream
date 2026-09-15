@@ -329,7 +329,7 @@ function publisherKey(publisher: PublisherIdentity): string {
   return `${publisher.rung} ${publisher.url} ${publisher.stamp}`;
 }
 
-export interface MetricsCounters {
+interface MetricsCounters {
   segmentsUploadedTotal: number;
   /**
    * Uploads per ABR rung. Empty on a single-rendition deployment, where a segment belongs to no rung.

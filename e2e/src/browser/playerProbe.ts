@@ -37,13 +37,13 @@ const MEDIA_EVENTS = [
   'emptied',
 ];
 
-export interface ProbeEvent {
+interface ProbeEvent {
   name: string;
   atMs: number;
   readyState: number;
 }
 
-export interface MediaElementReading {
+interface MediaElementReading {
   currentTime: number;
   readyState: number;
   paused: boolean;

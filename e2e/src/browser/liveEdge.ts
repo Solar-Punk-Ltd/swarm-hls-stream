@@ -15,10 +15,10 @@ export interface EdgeSample {
 }
 
 /** How close to the end the playhead must sit before a window is a candidate for having run out. */
-export const EXHAUSTED_EDGE_S = 2;
+const EXHAUSTED_EDGE_S = 2;
 
 /** Media the playhead may gain across a whole window and still count as stopped. */
-export const EXHAUSTED_ADVANCE_S = 1;
+const EXHAUSTED_ADVANCE_S = 1;
 
 /**
  * Movement below this across a whole window is jitter rather than a live edge.
@@ -27,7 +27,7 @@ export const EXHAUSTED_ADVANCE_S = 1;
  * the two by orders of magnitude. The threshold is loose on purpose: it decides whether a result is
  * void, and voiding a real measurement is worse than reporting one that needs a second look.
  */
-export const EXHAUSTED_EDGE_ADVANCE_S = 0.5;
+const EXHAUSTED_EDGE_ADVANCE_S = 0.5;
 
 /**
  * The newest media this page can actually play, in media seconds.
@@ -122,7 +122,7 @@ export function behindProductionS(sample: EdgeSample, broadcastStartMs: number):
   return (sample.atMs - broadcastStartMs) / 1_000 - sample.currentTime;
 }
 
-export interface EdgeLagSummary {
+interface EdgeLagSummary {
   medianS: number | null;
   maxS: number | null;
   readings: number;

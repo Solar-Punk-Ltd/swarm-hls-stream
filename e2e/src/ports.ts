@@ -32,7 +32,7 @@ export const PORT_DEFAULTS = {
 
 export type PortVar = keyof typeof PORT_DEFAULTS;
 
-export const PORT_SLOT_STRIDE = 10;
+const PORT_SLOT_STRIDE = 10;
 
 /**
  * The highest slot `--portSlot` will create, and the ceiling is the second port block rather than

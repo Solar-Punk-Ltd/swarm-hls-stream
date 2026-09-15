@@ -33,7 +33,7 @@ export interface FfmpegProcess {
   stop(): Promise<void>;
 }
 
-export interface FfmpegOptions {
+interface FfmpegOptions {
   stopGraceMs?: number;
   /** Replaceable so the lifecycle can be driven without launching a real encoder. */
   spawnFn?: typeof nodeSpawn;

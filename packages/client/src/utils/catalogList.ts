@@ -6,7 +6,7 @@ import { Stream } from '@/types/stream';
  * `fetched` is deliberately `unknown`: it is whatever `JSON.parse` made of a feed slot written by
  * another program, so it is validated here rather than trusted by the caller.
  */
-export interface CatalogPoll {
+interface CatalogPoll {
   /** The streams on screen. */
   held: Stream[];
   /** The catalog body just read, parsed, or null when the read found nothing. */

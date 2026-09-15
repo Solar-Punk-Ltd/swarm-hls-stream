@@ -29,7 +29,7 @@ export interface ApiServerHandle {
   close(): Promise<void>;
 }
 
-export interface ApiAppOptions {
+interface ApiAppOptions {
   /** Shared bearer token for the control and ingest routes. Not optional: there is no unauthenticated mode. */
   authToken: string;
   engines?: EnginePlugin[];

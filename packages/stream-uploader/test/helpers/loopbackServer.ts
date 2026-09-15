@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
  */
 export const LOOPBACK_HOST = '127.0.0.1';
 
-export interface LoopbackServer {
+interface LoopbackServer {
   server: Server;
   /** Origin for the bound socket, e.g. `http://127.0.0.1:54321`. Derived from the bind, never rebuilt. */
   baseUrl: string;
