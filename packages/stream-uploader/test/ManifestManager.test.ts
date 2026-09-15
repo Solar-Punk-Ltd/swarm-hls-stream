@@ -1052,16 +1052,16 @@ describe('every segment carries a program date-time derived from the broadcast a
    */
   it('dates a single rendition by what its segments really held', () => {
     const manager = anchored();
-    const held = [2.067, 2.04, 2.4, 10, 2];
+    const held = [2.067, 2.4, 10.033, 2];
     held.forEach((duration, index) => manager.addSegment(index, duration, ref(index)));
 
     assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
       TEST_ANCHOR.startedAtMs,
-      TEST_ANCHOR.startedAtMs + 2_067,
-      // 2.04 is inside the tolerance, so it is read as the configured 2 rather than as itself.
-      TEST_ANCHOR.startedAtMs + 2_067 + 2_000,
-      TEST_ANCHOR.startedAtMs + 2_067 + 2_000 + 2_400,
-      TEST_ANCHOR.startedAtMs + 2_067 + 2_000 + 2_400 + 10_000,
+      // ⚠️ 2.067 sits inside the 100ms the tolerance allows a 2s fragment, so it is dated as 2.000
+      // and its overrun is not corrected. Only the segments past that band move their successor.
+      TEST_ANCHOR.startedAtMs + 2_000,
+      TEST_ANCHOR.startedAtMs + 2_000 + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_000 + 2_400 + 10_033,
     ]);
   });
 
@@ -1089,8 +1089,8 @@ describe('every segment carries a program date-time derived from the broadcast a
    */
   it('republishes a restored entry on the instant it was published with', () => {
     const manager = anchored();
-    manager.addSegment(0, 2.067, ref(0));
-    manager.addSegment(1, 2.4, ref(1));
+    manager.addSegment(0, 2.4, ref(0));
+    manager.addSegment(1, 10.033, ref(1));
     const published = programDateTimesOf(manager.buildLiveManifest());
     const state = manager.getState();
 
@@ -1098,9 +1098,10 @@ describe('every segment carries a program date-time derived from the broadcast a
     recovered.restoreState(state.segments, state.hlsHeaders);
     recovered.addSegment(2, 2, ref(2));
 
+    assert.deepEqual(published, [TEST_ANCHOR.startedAtMs, TEST_ANCHOR.startedAtMs + 2_400]);
     assert.deepEqual(programDateTimesOf(recovered.buildLiveManifest()), [
       ...published,
-      TEST_ANCHOR.startedAtMs + 2_067 + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_400 + 10_033,
     ]);
   });
 
@@ -1111,16 +1112,16 @@ describe('every segment carries a program date-time derived from the broadcast a
    */
   it('carries one instant per segment into the window, the closing playlist and the recording', () => {
     const manager = anchored();
-    manager.addSegment(0, 2.067, ref(0));
-    manager.addSegment(1, 2.4, ref(1));
+    manager.addSegment(0, 2.4, ref(0));
+    manager.addSegment(1, 10.033, ref(1));
     manager.addSegment(2, 2, ref(2));
 
     const live = programDateTimesOf(manager.buildLiveManifest());
 
     assert.deepEqual(live, [
       TEST_ANCHOR.startedAtMs,
-      TEST_ANCHOR.startedAtMs + 2_067,
-      TEST_ANCHOR.startedAtMs + 2_067 + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_400 + 10_033,
     ]);
     assert.deepEqual(programDateTimesOf(manager.buildClosingLiveManifest()), live);
     assert.deepEqual(programDateTimesOf(manager.buildVODManifest()), live);

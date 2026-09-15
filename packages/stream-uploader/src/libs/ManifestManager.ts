@@ -12,7 +12,14 @@ import {
   HLS_VERSION,
 } from '../utils/hlsTags.js';
 
-import { BroadcastDating, programDateTimeMsOf, soleRungDating, withEpoch } from './broadcastDating.js';
+import {
+  BroadcastDating,
+  PlacedMedia,
+  presentationMsOf,
+  programDateTimeMsOf,
+  soleRungDating,
+  withEpoch,
+} from './broadcastDating.js';
 import { Logger } from './Logger.js';
 
 /**
@@ -116,9 +123,9 @@ function gapUri(sequence: number): string {
  * A segment reaches here under the **engine's own index**, a counter SRS runs per rung stream and
  * carries on across broadcasts for as long as its process lives. The playlist publishes a
  * **sequence** instead, which counts from 0 at the first segment of this broadcast, and an
- * `EXT-X-PROGRAM-DATE-TIME` derived from that sequence and the broadcast's anchor. Every uploader
- * log line still names the engine's index, because that is what correlates with the engine's own
- * logs and with what the e2e harness reads.
+ * `EXT-X-PROGRAM-DATE-TIME` decided once as the segment is placed, from the broadcast's anchor plus
+ * the media held in front of it. Every uploader log line still names the engine's index, because
+ * that is what correlates with the engine's own logs and with what the e2e harness reads.
  *
  * ⭐ **The two are separate numbers because SRS's is not a broadcast's.** Read in `ossrs/srs`
  * 6.0release: `SrsHlsMuxer::_sequence_no` is set to 0 in the muxer's constructor and nowhere else,
@@ -135,6 +142,14 @@ function gapUri(sequence: number): string {
  * date-time therefore agree across rungs for the same media. A per-rung count of what each uploader
  * happened to see would drift the moment one rung started a fragment later than another, and a level
  * switch would land that far off.
+ *
+ * ⭐ **The date follows the media, and a ladder's rungs still agree because of the snapping.** A
+ * segment measuring within `FRAGMENT_TOLERANCE` of `HLS_FRAGMENT` is dated as exactly that length,
+ * and under a ladder every segment is, because the engine pins a keyframe every
+ * `ABR_FPS x HLS_FRAGMENT` frames. On a single rendition the publisher's own keyframe interval
+ * decides the segment: it measured 2.067 to 10.033 seconds against a configured 2 on 2026-09-15,
+ * and dating every one of those at 2.000 put the recording's clock further behind its own media with
+ * every segment, permanently. See `broadcastDating.ts`.
  *
  * An engine restart re-anchors the date-time as well as the numbering, on to the wall clock the
  * engine came back at, so the media after the gap carries the time it really happened. That
@@ -254,6 +269,7 @@ export class ManifestManager {
     // sorting on it would file the media that comes after the restart in front of the media that
     // came before.
     this.segments.sort((a, b) => sequenceOf(a) - sequenceOf(b));
+    this.datePlacements();
 
     const newTarget = Math.ceil(duration);
     if (newTarget > this.targetDuration) {
@@ -330,13 +346,18 @@ export class ManifestManager {
    * the epoch it had, so the segments still in the live window carry the dates a viewer was handed.
    *
    * The floor offered is the date `resumeAt` would have carried had nothing restarted, which is one
-   * fragment past the newest segment this rung has dated. It matters where the dating had run ahead
-   * of the wall clock, which is what a segment longer than `HLS_FRAGMENT` accumulates: minting at the
-   * clock there would pull a stamp backwards, and hls.js reads that as a parsing error rather than
-   * as a restart.
+   * segment's own media past the newest segment this rung has dated. It matters where the dating had
+   * run ahead of the wall clock, which is what a segment longer than `HLS_FRAGMENT` accumulates:
+   * minting at the clock there would pull a stamp backwards, and hls.js reads that as a parsing
+   * error rather than as a restart.
    */
   private reanchorDating(resumeAt: number): void {
-    const wouldHaveBeen = this.dateOf(resumeAt);
+    const newest = this.segments[this.segments.length - 1];
+    const wouldHaveBeen = presentationMsOf(
+      this.anchor,
+      resumeAt,
+      newest === undefined ? null : this.placedMedia(newest),
+    );
     const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen);
     this.anchor = withEpoch(this.anchor, epoch);
     // Composed in the shared log contract rather than written out here, because the e2e harness
@@ -465,15 +486,18 @@ export class ManifestManager {
   /**
    * Take a previous run's segments back, numbering and all.
    *
-   * ⛔ The numbering is restored rather than recomputed. Whatever this broadcast already published
-   * is what a viewer's player is holding, so a recovered session that renumbered its own history
-   * would move every sequence a viewer had already been handed. An entry written before the engine
-   * index and the playlist sequence were separate numbers carries no sequence at all, and its offset
-   * is recovered from the first segment it holds, which is what the sequence was then.
+   * ⛔ The numbering and the dating are both restored rather than recomputed. Whatever this
+   * broadcast already published is what a viewer's player is holding, so a recovered session that
+   * derived its own history again would move every sequence and every date a viewer had been handed.
+   * An entry written before the engine index and the playlist sequence were separate numbers carries
+   * no sequence at all, and its offset is recovered from the first segment it holds, which is what
+   * the sequence was then. An entry written before the date followed the media carries no instant,
+   * and the anchor's own arithmetic is what that entry went out with.
    */
   public restoreState(segments: SegmentEntry[], hlsHeaders: string[]): void {
     const firstIndex = segments[0]?.index ?? 0;
-    this.segments = segments.map((seg) => ({ ...seg, sequence: seg.sequence ?? seg.index - firstIndex }));
+    const renumbered = segments.map((seg) => ({ ...seg, sequence: seg.sequence ?? seg.index - firstIndex }));
+    this.segments = renumbered.map((seg) => ({ ...seg, presentedAtMs: this.presentedAtMsOf(seg) }));
     this.hlsHeaders = [...hlsHeaders];
 
     const newest = this.segments[this.segments.length - 1];
@@ -551,7 +575,7 @@ export class ManifestManager {
    */
   private segmentLines(seg: SegmentEntry): string[] {
     const discontinuity = seg.discontinuity ? [HLS_DISCONTINUITY] : [];
-    return [...discontinuity, buildProgramDateTime(this.dateOf(sequenceOf(seg))), buildExtinf(seg.duration), seg.ref];
+    return [...discontinuity, buildProgramDateTime(this.presentedAtMsOf(seg)), buildExtinf(seg.duration), seg.ref];
   }
 
   /**
@@ -571,17 +595,19 @@ export class ManifestManager {
    * One entry per sequence the broadcast lost between these two held segments, in order, and nothing
    * at all where they are consecutive.
    *
-   * The duration is the fragment length the deployment declared and never a measurement, for the same
-   * reason {@link dateOf} is derived: nothing was observed here, the media is gone. Taking the
-   * neighbouring segment's own `#EXTINF` would put one rung's encoder rounding on a hole the whole
-   * ladder lost, and the four rungs would then disagree about where the media after it starts.
+   * The duration is the fragment length the deployment declared and never a measurement: nothing was
+   * observed here, the media is gone. Taking the neighbouring segment's own `#EXTINF` would put one
+   * rung's encoder rounding on a hole the whole ladder lost, and the four rungs would then disagree
+   * about where the media after it starts. Where the run of gaps begins is a different question, and
+   * that is the media that really ran in front of it, which is what `from` carries.
    */
   private gapLines(from: SegmentEntry, to: SegmentEntry): string[] {
     const lines: string[] = [];
+    const previous = this.placedMedia(from);
     for (let sequence = sequenceOf(from) + 1; sequence < sequenceOf(to); sequence++) {
       lines.push(
         HLS_GAP,
-        buildProgramDateTime(this.dateOf(sequence)),
+        buildProgramDateTime(presentationMsOf(this.anchor, sequence, previous)),
         buildExtinf(this.anchor.fragmentSeconds),
         gapUri(sequence),
       );
@@ -590,14 +616,45 @@ export class ManifestManager {
   }
 
   /**
-   * When the segment at this sequence is presented, derived and never observed.
+   * When a held segment is presented, which was decided as it was placed and stored on the entry.
    *
-   * Nominal on both terms. The instant is the broadcast's own rather than any segment's arrival, and
-   * the step is the fragment length the deployment declared rather than the `#EXTINF` this segment
-   * measured. Using either observation would make the four rungs of one ladder disagree about the
-   * same media, which is the one thing this tag exists here to prevent.
+   * The fallback covers an entry persisted before the instant was, where the anchor's own arithmetic
+   * is not a guess: it is the very date that entry was published with.
    */
-  private dateOf(sequence: number): number {
-    return programDateTimeMsOf(this.anchor, sequence);
+  private presentedAtMsOf(seg: SegmentEntry): number {
+    return seg.presentedAtMs ?? programDateTimeMsOf(this.anchor, sequenceOf(seg));
+  }
+
+  private placedMedia(seg: SegmentEntry): PlacedMedia {
+    return { sequence: sequenceOf(seg), presentedAtMs: this.presentedAtMsOf(seg), durationSeconds: seg.duration };
+  }
+
+  /**
+   * Give the segments that have just been placed the instant they are presented at.
+   *
+   * ⛔ **An instant a playlist has gone out with is never decided twice.** Once a sequence has been
+   * published, every placement is above every sequence held, either because the numbering carried
+   * forward or because a restart resumed one past the highest, so only the arrival itself is dated
+   * and a viewer's history keeps the dates it was handed. Before then nothing has been promised and
+   * a segment can still arrive out of order or below the anchor, both of which change the media the
+   * segments behind it are dated from, so the whole held list is dated again.
+   */
+  private datePlacements(): void {
+    const settled = this.sequenceHasBeenPublished ? this.segments.length - 1 : 0;
+    const dated = this.segments.slice(0, settled);
+
+    for (const seg of this.segments.slice(settled)) {
+      const previous = dated[dated.length - 1];
+      dated.push({
+        ...seg,
+        presentedAtMs: presentationMsOf(
+          this.anchor,
+          sequenceOf(seg),
+          previous === undefined ? null : this.placedMedia(previous),
+        ),
+      });
+    }
+
+    this.segments = dated;
   }
 }
