@@ -157,8 +157,9 @@ available_plur() {
 # columns agree, nothing looks wrong, and the report says funding makes no difference to a viewer.
 #
 # The unfunded side is delegated rather than re-implemented: `unfunded-gateway.sh status` is the
-# definition of that condition, it reads a status code rather than a curl exit code, and it refuses a
-# node that is merely syncing as well as one that is missing.
+# definition of that condition, it reads the `beeMode` the node reports on /status rather than guessing
+# from a chequebook error that a light node gives too, and it refuses a node that is merely syncing as
+# well as one that is missing.
 conditions_are_distinct() {
   local have
   have="$(available_plur "${GATEWAY_BEE_PORT}")"
@@ -172,7 +173,7 @@ conditions_are_distinct() {
     say "  REFUSING: the node on ${UNFUNDED_BEE_PORT} is not the unfunded arm, see the lines above"
     return 1
   fi
-  say "  unfunded arm confirmed on the node: no chequebook"
+  say "  unfunded arm confirmed on the node: beeMode ultra-light"
   return 0
 }
 

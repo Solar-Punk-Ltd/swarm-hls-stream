@@ -44,7 +44,15 @@ const CONTAINER = 'swarm-hls-unfunded-gateway';
  * `existing` is what `docker ps -aq --filter name=...` answers, so a case can put a container in the
  * way and assert what the script does about it.
  */
-function stubBin({ dir, existing = '', portInUse = false, peers = 120, healthy = true, chequebookCode = 405 }) {
+function stubBin({
+  dir,
+  existing = '',
+  portInUse = false,
+  peers = 120,
+  healthy = true,
+  statusCode = 200,
+  beeMode = 'ultra-light',
+}) {
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   const argvLog = join(dir, 'docker-argv.jsonl');
@@ -69,12 +77,12 @@ if (url.includes('/health')) {
   ${healthy ? "process.stdout.write(JSON.stringify({ status: 'ok' }));" : 'process.exit(7);'}
 } else if (url.includes('/peers')) {
   process.stdout.write(JSON.stringify({ peers: Array.from({ length: ${peers} }, (_, i) => ({ address: String(i) })) }));
-} else if (url.includes('/chequebook/balance')) {
-  // ⛔ Answers a STATUS CODE, because that is what the script must read. \`curl -s\` exits 0 for any
-  // response it received, so a stub that merely exited non-zero would let a broken check pass.
+} else if (url.includes('/status')) {
+  // ⛔ Answers a STATUS CODE when one is asked for, because that is what the script must read. \`curl -s\`
+  // exits 0 for any response it received, so a stub that merely exited non-zero would let a broken check pass.
   const wantsCode = process.argv.includes('-w');
-  if (wantsCode) process.stdout.write('${chequebookCode}');
-  else if (${chequebookCode} === 200) process.stdout.write(JSON.stringify({ availableBalance: '1' }));
+  if (wantsCode) process.stdout.write('${statusCode}');
+  else if (${statusCode} === 200) process.stdout.write(JSON.stringify({ beeMode: ${JSON.stringify(beeMode)} }));
 }
 `,
   );
@@ -132,30 +140,41 @@ function dockerRun(argv) {
 }
 
 describe('the unfunded gateway stands up beside the funded one', () => {
+  /**
+   * ⛔ Bee decides the mode on the chain endpoint and never on swap. `--full-node=false` with an EMPTY
+   * `--blockchain-rpc-endpoint` is ultra-light, the same flag with any endpoint at all is a plain light
+   * node, and `--swap-enable` does not enter the decision (`isChainEnabled`, pkg/node/node.go). This
+   * script pointed at the stack gateway's local rpc so the arms would match flag for flag, and that is
+   * exactly what stopped it being the arm.
+   */
   it('runs an ultra-light node, which is the whole point of the arm', async () => {
     const { code, argv } = await runScript(['start']);
     const started = dockerRun(argv);
 
     assert.equal(code, 0);
     assert.ok(started, 'nothing was started');
-    // Both flags together are bee's ultra-light mode: no chequebook, so no way to pay a peer for
-    // bandwidth, so it lives on the free allowance alone. That IS the shipping viewer.
-    assert.ok(started.includes('--swap-enable=false'), `not ultra-light: ${started.join(' ')}`);
+    assert.ok(
+      started.includes('--blockchain-rpc-endpoint='),
+      `it carries a chain backend, so it is a light node rather than the arm: ${started.join(' ')}`,
+    );
     assert.ok(started.includes('--full-node=false'), `not ultra-light: ${started.join(' ')}`);
+    // Decides the chequebook rather than the mode, and is carried because the funded arm carries the
+    // same flag turned on.
+    assert.ok(started.includes('--swap-enable=false'), `the arm would have a chequebook: ${started.join(' ')}`);
   });
 
   /**
-   * ⛔⛔⛔ THE ARMS MUST DIFFER IN FUNDING AND IN NOTHING ELSE, and every flag here was found by
-   * running the script for real rather than by reading the compose file.
+   * ⛔⛔⛔ THE ARMS MUST DIFFER IN THEIR CHAIN BACKEND AND IN NOTHING ELSE, and every flag here was
+   * found by running the script for real rather than by reading the compose file.
    *
    * The first real start died instantly on `configure signer: inappropriate ioctl for device`,
    * because bee prompts for a password on first boot and a detached container has no terminal. No
    * stub asks bee for a password, so no stubbed test could have found it.
    *
-   * Reading `docker inspect latbench-bee-gateway-1` then showed three more differences the compose
-   * file does not: the funded gateway runs a LOCAL rpc at 127.0.0.1:9000 rather than the public
-   * gnosischain endpoint this script first defaulted to, and it carries `--cors-allowed-origins`,
-   * `--cache-capacity` and `--cache-retrieval`.
+   * Reading `docker inspect latbench-bee-gateway-1` then showed three more flags the compose file does
+   * not: `--cors-allowed-origins`, `--cache-capacity` and `--cache-retrieval`. It showed the funded
+   * gateway's local rpc at 127.0.0.1:9000 as well, and copying THAT is the one place matching went too
+   * far, because the endpoint is the mode. It is asserted empty above instead.
    *
    * ⭐ CORS is the one that would have been silently fatal. The viewer fetches from a browser, so
    * without it every retrieval in the unfunded arm fails at the preflight, and the arm reads as a
@@ -175,10 +194,6 @@ describe('the unfunded gateway stands up beside the funded one', () => {
     ]) {
       assert.ok(started.includes(flag), `the unfunded arm is missing ${flag}: ${started.join(' ')}`);
     }
-    assert.ok(
-      started.some((arg) => arg === '--blockchain-rpc-endpoint=http://127.0.0.1:9000'),
-      `it points at an rpc the funded gateway does not use: ${started.join(' ')}`,
-    );
   });
 
   it('names the container exactly, so a teardown can never match anything else', async () => {
@@ -274,35 +289,39 @@ describe('the unfunded gateway is warmed before it is measured', () => {
     assert.match(stdout, /not running/);
   });
 
-  it('reports it has no chequebook, which is the arm rather than a fault', async () => {
-    const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, chequebookCode: 405 });
+  it('reports the node ultra-light, which is the arm rather than a fault', async () => {
+    const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, beeMode: 'ultra-light' });
 
     assert.equal(code, 0);
-    assert.match(stdout, /no chequebook/i);
+    assert.match(stdout, /beeMode ultra-light/);
   });
 
   /**
-   * ⛔⛔ Against the real node the first version of this check called a correctly ultra-light node
-   * "not the arm", because `curl -s` exits 0 for any HTTP response it received, including a 405. The
-   * check has to read the status code, and these two cases are what hold it to that.
+   * ⛔⛔ THE CASE THE OLD CHECK COULD NOT SEE, and the reason this file no longer asks about a
+   * chequebook at all. It read `/chequebook/balance` and called any answer that was not a 200 the arm,
+   * and a plain light node with `--swap-enable=false` answers `405 chain disabled` exactly as an
+   * ultra-light one does. So a node that had just spent three minutes replaying the postage contract
+   * passed as the arm, and every unfunded figure gathered through it was gathered through a light node.
+   * `beeMode` is the only thing on the api that tells the two apart.
    */
-  it('refuses the arm when the node does have a chequebook', async () => {
-    const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, chequebookCode: 200 });
+  it('refuses the arm when the node reports itself light', async () => {
+    const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, beeMode: 'light' });
 
     assert.equal(code, 1);
-    assert.match(stdout, /NOT the unfunded arm/);
+    assert.match(stdout, /beeMode 'light'/);
+    assert.match(stdout, /NOT ultra-light/);
   });
 
   /**
-   * ⛔ A booting node answers 503 "Node is syncing", which says nothing about whether it has a
-   * chequebook. That is a third answer, and collapsing it into either verdict would clear a node
-   * nobody checked or reject one that is merely young. Measured on the real node while it booted.
+   * ⛔ A booting node answers 503 "Node is syncing", which says nothing about its mode. That is a third
+   * answer, and collapsing it into either verdict would clear a node nobody checked or reject one that
+   * is merely young. Measured on the real node while it booted, where it lasted three minutes.
    */
   it('will not call a still-syncing node either arm', async () => {
-    const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, chequebookCode: 503 });
+    const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, statusCode: 503 });
 
     assert.equal(code, 1);
     assert.match(stdout, /syncing/i);
-    assert.doesNotMatch(stdout, /no chequebook/i);
+    assert.doesNotMatch(stdout, /is the arm/i);
   });
 });
