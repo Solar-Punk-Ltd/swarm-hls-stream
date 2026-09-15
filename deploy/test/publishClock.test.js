@@ -73,6 +73,11 @@ if (body.includes('docker rm -f')) {
   process.exit(0);
 }
 
+// Whether a broadcast was ever started, which is what the money gates below have to be able to stop.
+if (body.includes('docker run -d')) {
+  state.published = true;
+}
+
 save();
 process.exit(0);
 `;
@@ -81,7 +86,10 @@ process.exit(0);
 function sandboxWithSsh(failOn) {
   const sandbox = makeSandbox({ config: ALL_REMOTE });
   const statePath = join(sandbox.root, 'ssh-state.json');
-  writeFileSync(statePath, JSON.stringify({ calls: 0, runningPolls: 0, running: true, killedWhileLive: false }));
+  writeFileSync(
+    statePath,
+    JSON.stringify({ calls: 0, runningPolls: 0, running: true, killedWhileLive: false, published: false }),
+  );
   const sshPath = join(sandbox.binDir, 'ssh');
   writeFileSync(sshPath, sshStubFailingOn(statePath, failOn));
   chmodSync(sshPath, 0o755);
@@ -95,6 +103,18 @@ function sandboxWithSsh(failOn) {
   return { sandbox, readState: () => JSON.parse(readFileSync(statePath, 'utf8')) };
 }
 
+/**
+ * Runs the publisher the way its six drivers do, which is with the money gates already satisfied.
+ *
+ * These cases are about the wait: whether a dropped poll ends a live broadcast and whether a stop the
+ * harness asked for reads as a failure. A sandbox has no chequebook and no spend ledger, so without
+ * this the gates would refuse every one of them before the wait was ever reached, and the suite would
+ * be proving the gate it already has its own cases for further down.
+ */
+function runPublisher(sandbox, args) {
+  return runScript(sandbox, 'publish-clock.sh', args, { PUBLISH_GATES_ALREADY_RAN: '1' });
+}
+
 describe('publish-clock.sh waiting on a detached publisher', () => {
   after(removeSandboxes);
 
@@ -102,7 +122,7 @@ describe('publish-clock.sh waiting on a detached publisher', () => {
     // Fails the third ssh call, which lands inside the wait loop while ffmpeg is still going.
     const { sandbox, readState } = sandboxWithSsh([3]);
 
-    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1']);
+    const run = await runPublisher(sandbox, ['--seconds=1']);
     const state = readState();
 
     assert.equal(
@@ -122,7 +142,7 @@ describe('publish-clock.sh waiting on a detached publisher', () => {
     // on for the rest of the broadcast, and must not be reported as a broadcast that completed.
     const { sandbox, readState } = sandboxWithSsh([3, 4, 5, 6, 7, 8]);
 
-    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1']);
+    const run = await runPublisher(sandbox, ['--seconds=1']);
 
     assert.notEqual(run.exitCode, 0, 'a wait that could not be taken must not report success');
     assert.match(
@@ -220,7 +240,7 @@ describe('a publisher container that was removed while this script watched it', 
   it('reads a blank line before missing as the container being gone, not as an exit status', async () => {
     const { sandbox, stopFile } = sandboxWithVanishingContainer(true);
 
-    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1', `--stop-file=${stopFile}`]);
+    const run = await runPublisher(sandbox, ['--seconds=1', `--stop-file=${stopFile}`]);
     const output = `${run.stdout}${run.stderr}`;
 
     assert.doesNotMatch(output, /publish FAILED/, 'a stop this harness asked for was reported as a failed broadcast');
@@ -236,11 +256,88 @@ describe('a publisher container that was removed while this script watched it', 
   it('still fails loudly when nothing asked for the stop, so the fix above cannot mute a real one', async () => {
     const { sandbox, stopFile } = sandboxWithVanishingContainer(false);
 
-    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1', `--stop-file=${stopFile}`]);
+    const run = await runPublisher(sandbox, ['--seconds=1', `--stop-file=${stopFile}`]);
     const output = `${run.stdout}${run.stderr}`;
 
     assert.notEqual(run.exitCode, 0, 'a container removed by somebody else is a real failure');
     assert.match(output, /publish FAILED/);
     assert.match(output, /went away and nothing asked this script to stop/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ THIS COMMAND STARTED A REAL PAID BROADCAST WITH NO GATE OF ANY KIND UNTIL 2026-09-16.
+ *
+ * Its own usage block documents a standalone invocation, and `--seconds=3600` is an hour of 720p
+ * published through the live uploader into Swarm. Nothing asked whether the chequebooks could pay,
+ * whether the postage batch had room, or whether tonight's authorisation had anything left. Every
+ * sitting driver has asked all three since PR #179, and the one command an operator runs by hand
+ * asked none of them. The test written to catch a driver without a capacity gate could not see it
+ * either, because it discovers drivers by which scripts source the burn rates and this one sourced
+ * nothing.
+ *
+ * ⭐ The assertion is on whether a broadcast was STARTED, not on the exit code, because a refusal
+ * and a failed publish both exit non-zero and only one of them costs money.
+ */
+describe('a direct publish is refused when it cannot be paid for', () => {
+  after(removeSandboxes);
+
+  /** A chequebook answering `bzz`, and nothing else, which is all `can_afford` reads. */
+  function withChequebook(sandbox, bzz) {
+    const plur = ((BigInt(Math.round(bzz * 1000)) * 10n ** 16n) / 1000n).toString();
+    const curlPath = join(sandbox.binDir, 'curl');
+    writeFileSync(
+      curlPath,
+      `#!/usr/bin/env node
+const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+if (url.includes('/chequebook/balance')) {
+  process.stdout.write(JSON.stringify({ totalBalance: '${plur}', availableBalance: '${plur}' }));
+}
+`,
+    );
+    chmodSync(curlPath, 0o755);
+  }
+
+  it('refuses before starting a publisher when the nodes cannot pay for the broadcast', async () => {
+    const { sandbox, readState } = sandboxWithSsh([]);
+    withChequebook(sandbox, 0);
+
+    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=3600']);
+    const output = `${run.stdout}${run.stderr}`;
+
+    assert.equal(readState().published, false, 'it published a broadcast the nodes could not pay for');
+    assert.notEqual(run.exitCode, 0);
+    assert.match(output, /REFUSING TO PUBLISH: the nodes cannot pay/);
+  });
+
+  /**
+   * ⛔ Nothing answers a chequebook here at all, so the gates would refuse if they ran. That is what
+   * makes this a proof that the caller's declaration is what skipped them rather than a lucky pass.
+   */
+  it('skips straight to the publish when the caller says the gates already ran', async () => {
+    const { sandbox, readState } = sandboxWithSsh([]);
+
+    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1'], { PUBLISH_GATES_ALREADY_RAN: '1' });
+    const output = `${run.stdout}${run.stderr}`;
+
+    assert.equal(readState().published, true, `no broadcast was started: ${output}`);
+    assert.equal(run.exitCode, 0, output);
+    assert.match(output, /the caller gated this sitting/);
+    assert.doesNotMatch(output, /REFUSING TO PUBLISH/);
+  });
+
+  /**
+   * The gates price the broadcast off `--seconds`, and bash reads a non-numeric value in arithmetic
+   * as an unset name worth zero. A length the gates read as zero is no gate at all, so the value is
+   * checked where it arrives rather than where it is used.
+   */
+  it('refuses a length that is not a number, rather than gating against zero minutes', async () => {
+    const { sandbox, readState } = sandboxWithSsh([]);
+
+    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=60s']);
+
+    assert.equal(readState().published, false);
+    assert.notEqual(run.exitCode, 0);
+    assert.match(`${run.stdout}${run.stderr}`, /not a whole number of seconds/);
   });
 });

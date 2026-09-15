@@ -280,7 +280,7 @@ start_publisher() {
     cd "${BENCH_REPO}" || exit 1
     # The marker above is cleared by the publisher itself at startup, which is what stops one sitting's
     # teardown from vouching for the next one's failure.
-    deploy/scripts/publish-clock.sh \
+    PUBLISH_GATES_ALREADY_RAN=1 deploy/scripts/publish-clock.sh \
       "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" --host=localhost \
       "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}" \
       "--stop-file=${PUBLISHER_STOP_FILE}"
