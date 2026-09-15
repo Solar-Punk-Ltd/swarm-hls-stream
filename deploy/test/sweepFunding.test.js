@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -97,7 +97,31 @@ async function startChequebook(availableBzz) {
 
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   cleanups.push(() => server.close());
+  balanceByPort.set(server.address().port, availableBzz);
   return server.address().port;
+}
+
+/** What each stub node answers, so a ledger can baseline a node where its own chequebook stands. */
+const balanceByPort = new Map();
+
+/**
+ * The night's authorisation, as `spend-ledger.sh` writes it, generous enough that these cases stay
+ * decided by funding.
+ *
+ * ⛔ One baseline per node that can spend and no more. The spend ceiling refuses a node it has no
+ * baseline for, and equally a baseline for a port nothing on the stage reads, because either way the
+ * ledger was written for a different set of nodes. Each node is baselined where its chequebook
+ * stands, so these sweeps have spent nothing yet.
+ */
+function writeLedger(dir, ports) {
+  const ledger = join(dir, 'spend-ledger.env');
+  const lines = ['authorised_at=2026-09-16T00:00:00Z', 'ceiling_plur=' + 10n ** 18n];
+  for (const port of new Set(ports)) {
+    const bzz = balanceByPort.get(port);
+    lines.push(`node_${port}_start_plur=${bzz === null ? 0n : bzzToPlur(bzz)}`);
+  }
+  writeFileSync(ledger, `${lines.join('\n')}\n`);
+  return ledger;
 }
 
 /**
@@ -113,6 +137,7 @@ async function runPreflight({ uploaderPort, gatewayPort, rounds = 1, minutes = 3
   const env = {
     ...process.env,
     OUT_DIR: out,
+    SPEND_LEDGER: writeLedger(out, [uploaderPort, gatewayPort]),
     PREFLIGHT_ONLY: '1',
     ROUNDS: String(rounds),
     MINUTES: String(minutes),

@@ -72,7 +72,29 @@ async function startChequebook(availableBzz) {
 
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   cleanups.push(() => server.close());
-  return server.address().port;
+  return { port: server.address().port, plur };
+}
+
+/**
+ * The night's authorisation, as `spend-ledger.sh` writes it, generous enough that nothing here is
+ * decided by the spend ceiling, which has its own cases in `sweepGates.test.js`.
+ *
+ * ⛔ One baseline per node that can spend and no more, at the balance the node answers, so this sweep
+ * has spent nothing yet. The gate refuses a node it has no baseline for, and equally a baseline for a
+ * port nothing on the stage reads.
+ */
+function writeLedger(dir, port, startPlur) {
+  const ledger = join(dir, 'spend-ledger.env');
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-09-16T00:00:00Z',
+      `ceiling_plur=${10n ** 18n}`,
+      `node_${port}_start_plur=${startPlur}`,
+      '',
+    ].join('\n'),
+  );
+  return ledger;
 }
 
 /**
@@ -101,7 +123,7 @@ process.exit(0);
 
 /** Runs the real sweep for one round against a stub docker, and returns every recorded argv. */
 async function runSweep(extraEnv) {
-  const port = await startChequebook(500);
+  const { port, plur } = await startChequebook(500);
   const out = mkdtempSync(join(tmpdir(), 'sweep-extra-'));
   const repo = mkdtempSync(join(tmpdir(), 'sweep-repo-'));
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
@@ -116,6 +138,7 @@ async function runSweep(extraEnv) {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     OUT_DIR: out,
+    SPEND_LEDGER: writeLedger(out, port, plur),
     // Kept off the real bench tree, which is where `run_one` looks for the report an arm wrote.
     REPO_DIR: repo,
     ROUNDS: '1',
