@@ -308,9 +308,10 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
 
     /**
      * A rung behind its siblings still dates its own first post-restart segment after the segment in
-     * front of it, and that holds without a floor because every rung was on one line before the
-     * restart too. The minted instant is at or after the date the leader's resuming sequence would
-     * have carried, so a rung `k` sequences behind lands at or after its own.
+     * front of it. The line the leader minted is at or after the date the leader's own resuming
+     * sequence would have carried, so a rung a few sequences behind lands that many fragments earlier
+     * on the same line, which is at or after its own. That argument is about a rung whose media kept
+     * to the grid, and the two cases below are the ones it does not reach.
      */
     it('still moves forwards from the segment in front of it', () => {
       const epoch = reanchorEpoch(minted, {
@@ -324,6 +325,56 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
         `a rung one behind its siblings dated its resuming segment at ${new Date(epoch.atMs).toISOString()}, ` +
           `at or before the ${new Date(nominalDateOf(38)).toISOString()} of the segment in front of it`,
       );
+    });
+
+    /**
+     * ⛔⛔⛔ A line is grid arithmetic and the media is not, so a rung can join a line that names an
+     * instant its own playlist has already gone past. The stage measured on 2026-09-15 cut 2.067
+     * seconds against a configured 2, so every segment since the restart put the real stamps another
+     * 67 milliseconds ahead of the line. A hundred segments in, the line dates the resuming sequence
+     * 6.7 seconds behind the segment in front of it, and the clock is still close enough to the line
+     * for this to read as the same restart.
+     *
+     * A date that goes backwards is not a late date. hls.js reads it as a parsing error rather than
+     * as a restart, the e2e manifest contract refuses the shape before it excuses a discontinuity,
+     * and a recording is sealed with it for ever.
+     */
+    it('never lands below the date this rung’s own media had already reached', () => {
+      // What the 2026-09-15 stage really cut against a configured 2 seconds, in milliseconds.
+      const MEASURED_MS = 2_067;
+      const SEGMENTS_SINCE_THE_RESTART = 100;
+      const resumeAt = 40 + SEGMENTS_SINCE_THE_RESTART;
+      const wouldHaveBeen = RESTARTED_AT_MS + SEGMENTS_SINCE_THE_RESTART * MEASURED_MS;
+
+      const { epoch, joined } = reanchorDecision(minted, {
+        resumeAt,
+        // A twenty second outage. The line dates this sequence 26.7 seconds ago, well inside the
+        // tolerance, so a second restart here is read as a sibling crossing the first one.
+        nowMs: wouldHaveBeen + 20_000,
+        notBeforeMs: wouldHaveBeen,
+      });
+
+      assert.equal(joined, true, 'the case is about the joining branch, so a mint here tests nothing');
+      assert.ok(
+        epoch.atMs >= wouldHaveBeen,
+        `the rung dated its resuming segment at ${new Date(epoch.atMs).toISOString()}, ` +
+          `${wouldHaveBeen - epoch.atMs}ms behind the ${new Date(wouldHaveBeen).toISOString()} its own media ` +
+          'had already reached',
+      );
+    });
+
+    /** The floor takes nothing from a rung whose media kept to the grid: the two are the same date. */
+    it('lands on the line itself where the media has kept to the grid', () => {
+      const onTheLine = RESTARTED_AT_MS + STEP_MS;
+
+      const { epoch, joined } = reanchorDecision(minted, {
+        resumeAt: 41,
+        nowMs: onTheLine + 1_200,
+        notBeforeMs: onTheLine,
+      });
+
+      assert.equal(joined, true);
+      assert.deepEqual(epoch, { fromSequence: 41, atMs: onTheLine });
     });
 
     it('keeps taking that line for as long as the restart is recognisable', () => {

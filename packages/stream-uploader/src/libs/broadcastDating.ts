@@ -222,11 +222,19 @@ interface ReanchorDecision {
  * re-anchoring, so the first restart of a broadcast always re-anchors, which is the lag this whole
  * shape exists to remove.
  *
- * The floor applies to a minted epoch and not to a reused one. Minting takes the wall clock, and a
- * dating that had run ahead of it would be pulled backwards, which hls.js reads as a parsing error
- * rather than as a restart. A reused line needs no floor: every rung was on one line before the
- * restart too, and the minter's floor already puts the line at or after the date its own resuming
- * sequence would have carried, so a rung any number of sequences behind lands at or after its own.
+ * ⛔ **The floor applies to both branches, because a line is grid arithmetic and the media is not.**
+ * A minted epoch takes the wall clock, and a reused one is {@link dateOnLine}, which steps by the
+ * configured fragment length from where the line was written down. Neither knows what the asking
+ * rung's media actually did. Since the dating started following the media, a rung whose segments run
+ * longer than `HLS_FRAGMENT` has stamped its playlist past that arithmetic, by the overrun times the
+ * segments since, so the line can name an instant behind the segment already in front of the one
+ * resuming. `notBeforeMs` is the caller's own account of the date that sequence would have carried,
+ * read off its media rather than off the grid, which is why it is the floor for either answer.
+ *
+ * What a floorless join cost, on the stage measured 2026-09-15 (`HLS_FRAGMENT=2`, segments really
+ * 2.067 seconds): about 67 milliseconds of backwards movement per segment since the restart the line
+ * belongs to, up to the tolerance below. A date that goes backwards is not a late date. hls.js reads
+ * it as a parsing error rather than as a restart, and a recording is sealed with it for ever.
  */
 export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorRequest): ReanchorDecision {
   const { resumeAt, nowMs, notBeforeMs } = request;
@@ -235,7 +243,7 @@ export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorReque
   if (minted !== undefined) {
     const onTheSameLine = dateOnLine(minted, resumeAt, anchor.fragmentSeconds);
     if (Math.abs(onTheSameLine - nowMs) <= SAME_RESTART_TOLERANCE_MS) {
-      return { epoch: { fromSequence: resumeAt, atMs: onTheSameLine }, joined: true };
+      return { epoch: { fromSequence: resumeAt, atMs: Math.max(onTheSameLine, notBeforeMs) }, joined: true };
     }
   }
 
