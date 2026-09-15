@@ -30,8 +30,11 @@
 #
 # ⛔ This script never restarts, recreates or funds a node. Both gateways are expected warm and
 # already peered before it runs, since a cold node costs 2-3x for about two minutes and a fresh one
-# needs some thirteen minutes of chain sync. `unfunded-gateway.sh start` and `wait` do that, well
-# before a sitting, and the arms then differ in funding and nothing else.
+# has no peers at all to begin with. What `unfunded-gateway.sh wait` waits on is the node's peer
+# count reaching a floor, 40 by default, polled every five seconds and given up on after ten minutes.
+# ⚠️ NOT chain sync, which an ultra-light node does not do: it has no chain backend to sync against.
+# `start` and `wait` are run well before a sitting, and the arms then differ in funding and nothing
+# else.
 #
 # Usage, from the repo root on the deployment host:
 #   ROUNDS=4 ARM_MINUTES=6 bash deploy/scripts/gateway-funding-arms.sh
