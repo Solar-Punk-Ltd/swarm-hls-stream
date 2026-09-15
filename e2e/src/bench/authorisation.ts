@@ -62,7 +62,12 @@ import { requireStageStamps } from '../harness/stageStamps.js';
  */
 export const MIN_STAMP_TTL_S = 600;
 
-export interface BenchAuthorisation {
+/**
+ * Not exported: both callers pass an object literal, so nothing needs the name, and exporting it
+ * would add one to the surface that nothing imports. `deploy/scripts/unused-exports.mjs` ratchets on
+ * exactly that, and `spendCeiling.ts` records the same rule about its own verdict shapes.
+ */
+interface BenchAuthorisation {
   /** TTL a publisher's configured batch must beat. Defaults to {@link MIN_STAMP_TTL_S}. */
   readonly minStampTtlS?: number;
   /**

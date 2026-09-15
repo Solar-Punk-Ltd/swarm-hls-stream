@@ -61,8 +61,14 @@ function plurToBzz(plur: bigint): string {
 
 const MIN_CHEQUEBOOK_PLUR = bzzToPlur(MIN_CHEQUEBOOK_BZZ);
 
-/** What one publisher node's chequebook answered, with the node it belongs to carried alongside. */
-export interface NodeFunding {
+/**
+ * What one publisher node's chequebook answered, with the node it belongs to carried alongside.
+ *
+ * Not exported: callers take it from {@link readChequebookFunding}'s inferred return, and exporting it
+ * would add a name to the surface that nothing imports. `spendCeiling.ts` keeps its own two verdict
+ * shapes unexported for the same reason, and `deploy/scripts/unused-exports.mjs` ratchets on it.
+ */
+interface NodeFunding {
   readonly node: PublisherNode;
   readonly availablePlur: bigint;
   readonly totalPlur: bigint;
