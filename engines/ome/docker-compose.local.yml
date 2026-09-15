@@ -1,7 +1,11 @@
 services:
   ome:
+    # OME_HTTP_BIND is restated here rather than left to the base file, because compose merges port
+    # lists and keeps two entries that differ in any field. Without it, a bind set for the base file's
+    # mapping would leave this path publishing 8081 twice, once bound and once on every interface,
+    # which both defeats the bind and claims the host port twice.
     ports:
-      - '${OME_HLS_PORT:-8081}:8081'
+      - '${OME_HTTP_BIND:-0.0.0.0}:${OME_HLS_PORT:-8081}:8081'
       - '${OME_SRT_PORT:-10080}:10080/udp'
     environment:
       OME_ADAPTER_HOST: host.docker.internal

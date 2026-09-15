@@ -36,6 +36,39 @@ const BROWSER_FACING = 'bee-gateway';
 /** Every compose file that starts a Bee node. */
 const BEE_COMPOSE_FILES = ['deploy/docker-compose.yml', 'nodes/docker-compose.yml'];
 
+/** Every compose file in the repository that publishes a port. */
+const PORT_COMPOSE_FILES = [
+  'deploy/docker-compose.yml',
+  'nodes/docker-compose.yml',
+  'engines/srs/docker-compose.yml',
+  'engines/ome/docker-compose.yml',
+  'engines/ome/docker-compose.local.yml',
+];
+
+/**
+ * The published ports that answer on every interface on purpose, and what binding each would cost.
+ *
+ * Keyed by the port variable rather than by service, because that is what survives a rename and a
+ * reindent. Every other published port has to offer a `*_BIND` variable, so one added without a way
+ * to bind it fails here rather than being found from outside.
+ */
+const EVERY_INTERFACE_ON_PURPOSE = new Map([
+  ['BEE_UPLOADER_P2P_PORT', 'P2P is how the node reaches Swarm, and restricting it cuts the node off'],
+  ['BEE_RUNG_480P_P2P_PORT', 'P2P, as above'],
+  ['BEE_RUNG_720P_P2P_PORT', 'P2P, as above'],
+  ['BEE_RUNG_1080P_P2P_PORT', 'P2P, as above'],
+  ['BEE_GATEWAY_P2P_PORT', 'P2P, as above'],
+  ['SRS_RTMP_PORT', 'ingest: a broadcaster dials it from wherever they are'],
+  ['SRS_SRT_PORT', 'ingest, as above'],
+  ['OME_SRT_PORT', 'ingest, as above'],
+  ['CLIENT_PORT', 'the viewer opens this one in a browser'],
+  [
+    'API_PORT',
+    "the uploader's own API, and the one port here with authentication of its own: every gated route " +
+      'needs the bearer token, there is no unauthenticated mode, and the engines post their webhooks to it',
+  ],
+]);
+
 function composeText(relativePath) {
   return readFileSync(join(ROOT, relativePath), 'utf8');
 }
@@ -64,6 +97,38 @@ function blockOf(text, service) {
   return body.join('\n');
 }
 
+/** The entries of one service's `ports:` list, comments skipped, stopping at the next key. */
+function portEntriesOf(block) {
+  const lines = block.split('\n');
+  const start = lines.findIndex((line) => line === '    ports:');
+  if (start === -1) {
+    return [];
+  }
+
+  const entries = [];
+  for (const line of lines.slice(start + 1)) {
+    const entry = /^ {6}- '(.+)'$/.exec(line);
+    if (entry !== null) {
+      entries.push(entry[1]);
+    } else if (!/^ {6}#/.test(line)) {
+      break;
+    }
+  }
+  return entries;
+}
+
+/** Every port a compose file publishes, with the service it belongs to. */
+function publishedPortsOf(text) {
+  return servicesOf(text).flatMap((service) =>
+    portEntriesOf(blockOf(text, service)).map((entry) => ({ service, entry })),
+  );
+}
+
+/** The `${NAME...}` variables an entry interpolates, in the order it writes them. */
+function variablesOf(entry) {
+  return [...entry.matchAll(/\$\{([A-Z0-9_]+)/g)].map((match) => match[1]);
+}
+
 /**
  * That only the viewer's node answers a web page.
  *
@@ -87,4 +152,79 @@ describe('the Bee nodes a web page can talk to', () => {
       );
     });
   }
+});
+
+/**
+ * That every published port an operator might need to shut in can be shut in.
+ *
+ * The Bee ports gained `*_API_BIND` and nothing else did, so an operator who followed the firewall
+ * guidance in `.env.sample` still had SRS's control API, SRS's file server and OME's HLS port open on
+ * every interface, with no variable to close them and no mention of them in that file. The control
+ * API alone names every live stream and every publisher's address, and the other two serve the
+ * segments, so a broadcast is watchable straight off the ingest host.
+ *
+ * The exemptions carry their reason rather than a list of numbers, and the map is checked for stale
+ * keys below, because an exemption nobody can justify any more is how this check would come to pass
+ * over the port it exists for.
+ */
+describe('the published ports an operator can bind to one interface', () => {
+  for (const file of PORT_COMPOSE_FILES) {
+    const text = composeText(file);
+    const published = publishedPortsOf(text);
+
+    /**
+     * That the reader above read the whole of every `ports:` list.
+     *
+     * Every quoted list entry in these files that interpolates a variable is a published port, so a
+     * parser that stopped early or skipped a service is visible here rather than as an empty pass.
+     */
+    it(`reads every published port in ${file}`, () => {
+      const declared = (text.match(/^ {6}- '\$\{[A-Z0-9_]+[^']*'$/gm) ?? []).map((line) => line.trim().slice(3, -1));
+      const entries = published.map(({ entry }) => entry);
+      const unread = declared.filter((entry) => !entries.includes(entry));
+
+      assert.deepEqual(unread, [], `the ports reader did not see these, so the check below cannot judge them`);
+      assert.ok(declared.length > 0, `no published port was found in ${file} at all`);
+    });
+
+    it(`offers a bind address for every published port in ${file} that is not deliberately open`, () => {
+      const open = published
+        .filter(({ entry }) => !variablesOf(entry).some((name) => name.endsWith('_BIND')))
+        .filter(
+          ({ entry }) => !EVERY_INTERFACE_ON_PURPOSE.has(variablesOf(entry).find((name) => name.endsWith('_PORT'))),
+        )
+        .map(({ service, entry }) => `${service}: ${entry}`);
+
+      assert.deepEqual(
+        open,
+        [],
+        `these answer on every interface with no way to bind them, so an operator on a host with a ` +
+          `public address cannot shut them in: ${open.join(' | ')}`,
+      );
+    });
+
+    it(`gives every bind variable in ${file} a default, so an unset one still publishes`, () => {
+      const withoutDefault = published
+        .filter(({ entry }) => /\$\{[A-Z0-9_]*_BIND\}/.test(entry))
+        .map(({ service, entry }) => `${service}: ${entry}`);
+
+      assert.deepEqual(
+        withoutDefault,
+        [],
+        `a bind variable with no :- default publishes a mapping starting with a colon when it is ` +
+          `unset, which is every deployment that has not set it: ${withoutDefault.join(' | ')}`,
+      );
+    });
+  }
+
+  it('keeps no exemption that no longer names a published port', () => {
+    const everyPortVariable = new Set(
+      PORT_COMPOSE_FILES.flatMap((file) =>
+        publishedPortsOf(composeText(file)).flatMap(({ entry }) => variablesOf(entry)),
+      ),
+    );
+    const stale = [...EVERY_INTERFACE_ON_PURPOSE.keys()].filter((name) => !everyPortVariable.has(name));
+
+    assert.deepEqual(stale, [], `these are excused from carrying a bind and no compose file publishes them any more`);
+  });
 });
