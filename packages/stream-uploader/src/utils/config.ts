@@ -1,7 +1,7 @@
-import { AbrLadder, DEFAULT_LADDER_SPEC } from '../libs/AbrLadder.js';
 import { assertUsableAdminApiToken } from '../libs/AdminApiClient.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 
+import { readAbrConfig } from './abrConfig.js';
 import { optional, optionalBool, optionalInt, optionalNumber, required } from './env.js';
 
 /**
@@ -30,12 +30,20 @@ const MAX_CHEQUEBOOK_MIN_BZZ = 1000;
 /**
  * How much time a postage batch must have left before the uploader will start on it.
  *
- * A day, because a batch that expires mid-broadcast stops paying for the data it was keeping, and a
- * floor shorter than the longest run anyone books here would clear a batch that cannot finish it.
- * This is a chosen bound and not a measured one: it is "comfortably longer than a sitting", and a
- * deployment that knows its run is shorter can lower it.
+ * Twelve hours. A batch that expires mid-broadcast stops keeping everything stored under it, the
+ * whole broadcast and its recording, so the floor has to outlast the longest run a deployment books.
+ * Half a day is longer than the 3 to 6 hour broadcasts booked here and short enough that a two-day
+ * batch, which is what this stack buys, clears it for most of its life. A deployment that streams
+ * for longer than half a day raises this to cover the run.
+ *
+ * Both earlier values are on the record. It was a day until 2026-09-15. A day is longer than any
+ * sitting anyone books here, so the floor refused batches that had hours of life left and every run
+ * those batches could have carried, which is a gate failing closed on work it was never meant to
+ * stop. The correction to an hour landed the same day and overshot the other way: an hour is
+ * shorter than a single booked broadcast, so the gate would admit a batch that expires part way
+ * through and takes the broadcast with it. The owner ruled twelve later that day, in the middle.
  */
-const DEFAULT_STAMP_MIN_TTL_HOURS = 24;
+const DEFAULT_STAMP_MIN_TTL_HOURS = 12;
 const MAX_STAMP_MIN_TTL_HOURS = 24 * 365;
 
 /**
@@ -87,26 +95,6 @@ const MAX_HLS_FRAGMENT_SECONDS = 3600;
 const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
 
 /**
- * The ABR ladder, or null when the engine is producing a single rendition.
- *
- * Parsed eagerly and allowed to throw: a malformed ABR_LADDER means the uploader would group
- * rungs it cannot describe, and failing at startup is a great deal easier to diagnose than a
- * master playlist that silently omits half the ladder.
- */
-function readAbrConfig(): { vhost: string; ladder: AbrLadder } | null {
-  if (!optionalBool('ABR_ENABLED', false)) {
-    return null;
-  }
-
-  return {
-    // The vhost the engine republishes rungs onto. Anything arriving on another vhost is the
-    // untranscoded source, and the uploader has no business segmenting it.
-    vhost: optional('ABR_VHOST', 'abr'),
-    ladder: AbrLadder.parse(optional('ABR_LADDER', DEFAULT_LADDER_SPEC)),
-  };
-}
-
-/**
  * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.
  *
  * Parsed eagerly and allowed to throw, for the same reason ABR_LADDER is: a publisher list that
@@ -155,10 +143,27 @@ function readAdminConfig(): AdminConfig | null {
   return { apiUrl, apiToken };
 }
 
+/**
+ * Read before the object below, because whether STAMP is required depends on it.
+ *
+ * Parsing here rather than inline also means a mistyped pool is refused before any other variable
+ * is looked at, which is the refusal an operator can act on.
+ */
+const publishers = readPublisherSpecs();
+
 export const config = {
   beeUrl: required('BEE_URL'),
-  stamp: required('STAMP'),
-  publishers: readPublisherSpecs(),
+  /**
+   * The batch a single-node deployment publishes through, and nothing when there is a node per rung.
+   *
+   * `BeePublisherPool.single` is the only reader of this in the whole service, and `buildPublishers`
+   * reaches it only when BEE_PUBLISHERS named no pool. Requiring it regardless stopped a funded ABR
+   * deployment at startup for a batch nothing in it would ever spend, and the only way past was to
+   * invent one. An invented batch id is worse than an absent one: it is indistinguishable from a
+   * real one until something tries to pay with it.
+   */
+  stamp: publishers.length === 0 ? required('STAMP') : optional('STAMP', ''),
+  publishers,
   beeRequestTimeoutMs: optionalInt('BEE_REQUEST_TIMEOUT_MS', DEFAULT_BEE_REQUEST_TIMEOUT_MS, { min: 1 }),
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,

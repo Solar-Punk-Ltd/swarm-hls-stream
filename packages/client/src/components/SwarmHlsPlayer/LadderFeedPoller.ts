@@ -1,11 +1,12 @@
-import { Topic } from '@ethersphere/bee-js';
+import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { extractFeedIndex, nextFeedRequest } from '@swarm-hls-stream/shared';
 
 import { TimedResponse } from '@/utils/fetchWithTimeout';
 
 import { FeedHealthTracker } from './feedState';
-import { isSlotNotWrittenYet, ManifestStateManager } from './ManifestManagement';
+import { ManifestStateManager } from './ManifestManagement';
 import { parseManifest } from './playlist';
+import { isSlotNotWrittenYet, probePastRefusal, shouldProbePastRefusal } from './refusedSlot';
 
 /**
  * Keeps every rung of a ladder at the live edge, whether or not it is the one playing.
@@ -266,8 +267,15 @@ export class LadderFeedPoller {
       try {
         response = await this.fetchResource(path);
       } catch (error) {
-        this.recordFailure(entry, error);
-        break;
+        const unservedPolls = this.recordFailure(entry, error);
+        if (unservedPolls === null || !shouldProbePastRefusal(unservedPolls)) {
+          break;
+        }
+        if (!(await this.stepPastRefusal(owner, entry, next))) {
+          break;
+        }
+        steps++;
+        continue;
       }
 
       // The gateway answered, whatever it carried, so a run of failures against it is over. Narrower
@@ -298,6 +306,47 @@ export class LadderFeedPoller {
     }
 
     return steps;
+  }
+
+  /**
+   * Take whatever {@link probePastRefusal} found behind the slot this rung is waiting on.
+   *
+   * ⛔⛔⛔ **A rung pays for a refusal it believes with the rung, and the single-rendition walk pays
+   * for one with a slower poll.** A 404 leaves the rung unserved, and once the ladder has delivered
+   * `RUNG_DEATH_LAG_SEGMENTS` segments this rung did not,
+   * {@link FeedHealthTracker.rungStoppedWhileOthersAdvance} calls it dead and `attachRungFailover`
+   * hands it to `hls.removeLevel`, which has no undo inside the session. So the walk where a refusal
+   * costs one poll had been asking what was behind it since 2026-08-06, and the walk where the same
+   * refusal costs a rung for the rest of the broadcast took it at face value. An outside reviewer
+   * watched 720p leave a ladder that way with all of its media on Swarm.
+   *
+   * @returns Whether the rung stepped forward, which is also whether this pass may ask for another
+   *   slot.
+   */
+  private async stepPastRefusal(owner: string, entry: PolledTopic, missing: FeedIndex): Promise<boolean> {
+    const found = await probePastRefusal(this.fetchResource, owner, entry.topic, missing);
+    if (found.kind === 'gatewayFailed') {
+      this.recordFailure(entry, found.error);
+      return false;
+    }
+    if (found.kind === 'nothing') {
+      return false;
+    }
+
+    // The same three records a served slot earns on the ordinary path above, in the same order and
+    // for the same reasons. `recordGatewayResponse` is the one that matters most here: it is what
+    // ends the unserved run and resets this rung's reading of how far the ladder has got, so a rung
+    // that was one request away from its media is not condemned for the gap it just stepped over.
+    this.feedHealth.recordGatewayReachable(entry.hexTopic);
+    entry.misses = 0;
+
+    if (entry.stopped || !this.ingest(entry, found.response.text)) {
+      return false;
+    }
+
+    this.stateManager.setIndex(entry.hexTopic, found.index);
+    this.feedHealth.recordGatewayResponse(entry.hexTopic);
+    return true;
   }
 
   /**
@@ -386,17 +435,21 @@ export class LadderFeedPoller {
    * transport error or a 5xx, is the gateway not answering: it earns the backoff {@link honourBackoff}
    * waits out and turns the overlay to reconnecting. Recording every 404 as a fault would back off
    * every caught-up viewer on nearly every poll.
+   *
+   * @returns How long a run of refusals this poll extends, which is what decides whether it is worth
+   *   asking what is behind the slot, or null when the read failed for a reason that is not a
+   *   refusal and there is therefore nothing to ask about.
    */
-  private recordFailure(entry: PolledTopic, error: unknown): void {
+  private recordFailure(entry: PolledTopic, error: unknown): number | null {
     this.recordMiss(entry, error);
     if (isSlotNotWrittenYet(error)) {
       // ⛔ Without this the `stalled` state is dead code on a ladder. The single-rendition walk has
       // always recorded it; this one never did, so a publisher that stopped left the viewer's own
       // gateway healthy, nothing counted, and the overlay stayed down over a frozen picture.
-      this.feedHealth.recordUnservedSlot(entry.hexTopic);
-      return;
+      return this.feedHealth.recordUnservedSlot(entry.hexTopic);
     }
     this.feedHealth.recordGatewayFailure(entry.hexTopic);
+    return null;
   }
 
   private recordMiss(entry: PolledTopic, error: unknown): void {

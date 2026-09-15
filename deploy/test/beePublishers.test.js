@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,74 @@ const BATCHES = {
   '720p': 'c'.repeat(64),
   '1080p': 'd'.repeat(64),
 };
+
+const STACK_ROOT = resolve(HERE, '..', '..');
+
+/**
+ * Every file that names the postage floor, and the shape each one names it in.
+ *
+ * The stack carries this threshold in two shell defaults, in the uploader's compiled default, in the
+ * compose fallback and in the sample an operator copies. All of them have to agree, because a
+ * deployment reads whichever one its own path reaches and the rest are invisible from there.
+ *
+ * ⛔ Every pattern is the whole definition line, anchored at both ends and global. These files
+ * discuss these very constants in their own comment blocks, and a pattern that can match anywhere
+ * reads the prose instead of the definition: a sentence naming the floor as 1, above a value that
+ * still says 24, kept this check green and every file "agreeing" on a number no deployment used.
+ */
+const MIN_TTL_SOURCES = [
+  { file: 'deploy/scripts/bee-publishers.sh', pattern: /^readonly DEFAULT_MIN_TTL_HOURS=([\d.]+)$/gm },
+  { file: 'deploy/scripts/drain-stage.sh', pattern: /^readonly DEFAULT_MIN_TTL_HOURS=([\d.]+)$/gm },
+  {
+    file: 'packages/stream-uploader/src/utils/config.ts',
+    pattern: /^const DEFAULT_STAMP_MIN_TTL_HOURS = ([\d.]+);$/gm,
+  },
+  {
+    file: 'deploy/docker-compose.yml',
+    pattern: /^[ \t]*STAMP_MIN_TTL_HOURS: \$\{STAMP_MIN_TTL_HOURS:-([\d.]+)\}$/gm,
+  },
+  { file: '.env.sample', pattern: /^STAMP_MIN_TTL_HOURS=([\d.]+)$/gm },
+];
+
+/** The ceiling, same rule. `drain-stage.sh` carries no copy of this one, so it is not listed. */
+const MAX_UTILIZATION_SOURCES = [
+  { file: 'deploy/scripts/bee-publishers.sh', pattern: /^readonly DEFAULT_MAX_UTILIZATION=([\d.]+)$/gm },
+  {
+    file: 'packages/stream-uploader/src/utils/config.ts',
+    pattern: /^const DEFAULT_STAMP_MAX_UTILIZATION = ([\d.]+);$/gm,
+  },
+  {
+    file: 'deploy/docker-compose.yml',
+    pattern: /^[ \t]*STAMP_MAX_UTILIZATION: \$\{STAMP_MAX_UTILIZATION:-([\d.]+)\}$/gm,
+  },
+  { file: '.env.sample', pattern: /^STAMP_MAX_UTILIZATION=([\d.]+)$/gm },
+];
+
+/**
+ * The one number each file names, refusing anything this check cannot read as exactly one number.
+ *
+ * ⛔ Counted rather than taken first. `exec` returns the earliest match of however many there are and
+ * says nothing about the rest, so a second definition further down the file, which is the state a
+ * half-finished edit leaves, was invisible to the reader and decisive for whatever reads that file.
+ *
+ * ⛔ And checked for a number before it is compared. A capture accepting anything turned a value
+ * written as a variable rather than a literal into NaN, and `assert.strictEqual` compares with
+ * Object.is, where NaN equals NaN. So two files this check could not read at all reported agreement,
+ * which is the one answer a threshold check must never give.
+ */
+function valuesNamed(sources) {
+  return sources.map((source) => {
+    const found = [...readFileSync(join(STACK_ROOT, source.file), 'utf8').matchAll(source.pattern)];
+    assert.equal(
+      found.length,
+      1,
+      `${source.file} names this threshold on ${found.length} lines in the shape this check reads, and one is the only readable answer`,
+    );
+    const value = Number(found[0][1]);
+    assert.ok(Number.isFinite(value), `${source.file} names this threshold as ${found[0][1]}, which is not a number`);
+    return { file: source.file, value };
+  });
+}
 
 /** A batch that clears both of the thresholds this script shares with the uploader's postage gate. */
 function healthy(batchID) {
@@ -158,17 +226,27 @@ describe('the BEE_PUBLISHERS generator', () => {
     execFileSync('bash', ['-n', SCRIPT], { stdio: 'pipe' });
   });
 
-  /** The floor and the ceiling have to be the ones PostageGate applies, or config it writes is config the service refuses. */
-  it('shares its refusal thresholds with the uploader’s own postage gate', () => {
-    const script = execFileSync('cat', [SCRIPT], { encoding: 'utf8' });
-    const gate = execFileSync('cat', [join(HERE, '..', '..', 'packages/stream-uploader/src/utils/config.ts')], {
-      encoding: 'utf8',
-    });
-
-    assert.match(script, /readonly DEFAULT_MIN_TTL_HOURS=24$/m);
-    assert.match(script, /readonly DEFAULT_MAX_UTILIZATION=0\.9$/m);
-    assert.match(gate, /DEFAULT_STAMP_MIN_TTL_HOURS = 24/);
-    assert.match(gate, /DEFAULT_STAMP_MAX_UTILIZATION = 0\.9/);
+  /**
+   * The floor and the ceiling have to be the ones PostageGate applies, or config this writes is
+   * config the service refuses.
+   *
+   * ⛔ Asserted as agreement between the files rather than against a number written here, because
+   * a number written here is what failed. Five files name the floor and this case checked two of
+   * them, so on 2026-09-15 it was lowered in one and left at 24 in the other four, and which value
+   * a deployment got depended on which of the five its path happened to reach.
+   */
+  it('names one postage floor and one ceiling across every file that carries them', () => {
+    for (const threshold of [MIN_TTL_SOURCES, MAX_UTILIZATION_SOURCES]) {
+      const named = valuesNamed(threshold);
+      const [first, ...rest] = named;
+      for (const other of rest) {
+        assert.equal(
+          other.value,
+          first.value,
+          `${other.file} names ${other.value} and ${first.file} names ${first.value}`,
+        );
+      }
+    }
   });
 });
 
@@ -183,7 +261,7 @@ describe('the BEE_PUBLISHERS generator', () => {
  * `drain-stage.sh` closed the same hole on its own copy of the floor. This is the other half of it.
  */
 describe('the generator takes its thresholds from the file the container reads', () => {
-  /** 40 hours clears the default floor of 24 and misses the 48 the env file below asks for. */
+  /** 40 hours clears the default floor of 12 and misses the 48 the env file below asks for. */
   const FORTY_HOURS = JSON.stringify({ stamps: [{ ...healthy(BATCHES['720p']), batchTTL: 40 * 3600 }] });
 
   it('applies the TTL floor the env file names, rather than its own default', async () => {
@@ -221,7 +299,7 @@ describe('the generator takes its thresholds from the file the container reads',
     assert.notEqual(exitCode, 0, 'a shell export the container never sees was allowed to set the floor');
     const out = `${stdout}${stderr}`;
     assert.match(out, /48/, 'the refusal did not name the value in this shell');
-    assert.match(out, /24/, 'the refusal did not name the floor the container will actually apply');
+    assert.match(out, /and 12 for the uploader/, 'the refusal did not name the floor the container will apply');
   });
 
   it('applies the utilization ceiling the env file names, rather than its own default', async () => {

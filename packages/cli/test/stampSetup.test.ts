@@ -14,6 +14,7 @@ import {
   TEST_BATCH_DURATION,
   TEST_CHAIN_PRICE,
 } from './helpers/fakeBee.js';
+import { SKIP_WITHOUT_PERMISSION_ENFORCEMENT } from './helpers/permissionGuard.js';
 
 // Unique per process. A fixed id let the recovery file this suite leaks into the shared temp
 // directory satisfy the next run's assertion, so the entire fallback mechanism could be deleted and
@@ -183,7 +184,7 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     );
   });
 
-  it('refuses to spend at all when .env cannot be written', async () => {
+  it('refuses to spend at all when .env cannot be written', { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT }, async () => {
     // The criterion's read-only case. Refusing before the spend is the outcome that costs nothing.
     writeFileSync(envPath, 'STREAM_KEY=aaa\n');
     chmodSync(envPath, 0o400);
@@ -196,49 +197,61 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     assert.match(result.output, /No money has been spent/);
   });
 
-  it('falls back to a recovery file when .env becomes unwritable after the preflight', async () => {
-    // The race the preflight cannot close: writable at check time, not at write time. The spend has
-    // happened by then, so the id has to land somewhere and be shouted about.
-    const result = await run({
-      envPath,
-      buyStamp: async () => {
-        chmodSync(dir, 0o500);
-        return BATCH_ID;
-      },
-    });
+  it(
+    'falls back to a recovery file when .env becomes unwritable after the preflight',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      // The race the preflight cannot close: writable at check time, not at write time. The spend has
+      // happened by then, so the id has to land somewhere and be shouted about.
+      const result = await run({
+        envPath,
+        buyStamp: async () => {
+          chmodSync(dir, 0o500);
+          return BATCH_ID;
+        },
+      });
 
-    // The path is read out of the output rather than discovered by scanning a shared directory, and
-    // its contents are checked. Scanning let a previous run's leftover satisfy this.
-    const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
-    assert.ok(savedAt, `the notice must name where it saved the id, got: ${result.output}`);
-    recoveryFiles.push(savedAt);
+      // The path is read out of the output rather than discovered by scanning a shared directory, and
+      // its contents are checked. Scanning let a previous run's leftover satisfy this.
+      const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
+      assert.ok(savedAt, `the notice must name where it saved the id, got: ${result.output}`);
+      recoveryFiles.push(savedAt);
 
-    assert.equal(
-      readFileSync(savedAt, 'utf-8').trim(),
-      `STAMP=${BATCH_ID}`,
-      'the recovery file must hold the id that was actually bought',
-    );
-    assert.equal(result.exitCode, 1, 'a spend whose id never reached .env is a failure');
-    assert.match(result.output, /PAID FOR/, 'the operator must be told the money is already gone');
-    assert.match(result.output, new RegExp(BATCH_ID), 'the id must be echoed whatever else fails');
-    assert.doesNotMatch(
-      result.output,
-      /Run \.\/deploy\/scripts\/deploy\.sh/,
-      'a run that could not record the id must not end by telling the operator to deploy',
-    );
-  });
+      assert.equal(
+        readFileSync(savedAt, 'utf-8').trim(),
+        `STAMP=${BATCH_ID}`,
+        'the recovery file must hold the id that was actually bought',
+      );
+      assert.equal(result.exitCode, 1, 'a spend whose id never reached .env is a failure');
+      assert.match(result.output, /PAID FOR/, 'the operator must be told the money is already gone');
+      assert.match(result.output, new RegExp(BATCH_ID), 'the id must be echoed whatever else fails');
+      assert.doesNotMatch(
+        result.output,
+        /Run \.\/deploy\/scripts\/deploy\.sh/,
+        'a run that could not record the id must not end by telling the operator to deploy',
+      );
+    },
+  );
 
-  it('does not claim a successful .env write when the write failed', async () => {
-    const result = await run({
-      envPath,
-      buyStamp: async () => {
-        chmodSync(dir, 0o500);
-        return BATCH_ID;
-      },
-    });
+  it(
+    'does not claim a successful .env write when the write failed',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      const result = await run({
+        envPath,
+        buyStamp: async () => {
+          chmodSync(dir, 0o500);
+          return BATCH_ID;
+        },
+      });
 
-    assert.doesNotMatch(result.output, /Written STAMP=.* to \.env/, 'reporting a write that did not happen is the bug');
-  });
+      assert.doesNotMatch(
+        result.output,
+        /Written STAMP=.* to \.env/,
+        'reporting a write that did not happen is the bug',
+      );
+    },
+  );
 
   it('exits zero on a fully successful run', async () => {
     // Without this, appending exit(1) to the success path changes no test, which is how the
@@ -331,23 +344,27 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
   // Nothing guarded the OTHER end of the ordering: the prompt sits after the writability check on
   // purpose, so nobody is asked to approve a purchase this run was about to refuse anyway. Moving
   // the ask earlier left the whole suite green.
-  it('does not ask when the batch id could not have been recorded anyway', async () => {
-    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
-    chmodSync(envPath, 0o400);
-    let asked = 0;
+  it(
+    'does not ask when the batch id could not have been recorded anyway',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+      chmodSync(envPath, 0o400);
+      let asked = 0;
 
-    const result = await run({
-      envPath,
-      confirm: async () => {
-        asked += 1;
-        return true;
-      },
-    });
+      const result = await run({
+        envPath,
+        confirm: async () => {
+          asked += 1;
+          return true;
+        },
+      });
 
-    assert.equal(asked, 0, 'the operator was asked to approve a purchase this run then refused');
-    assert.equal(result.spends, 0);
-    assert.equal(result.exitCode, 1);
-  });
+      assert.equal(asked, 0, 'the operator was asked to approve a purchase this run then refused');
+      assert.equal(result.spends, 0);
+      assert.equal(result.exitCode, 1);
+    },
+  );
 
   // The order matters as much as the prompt existing: an approval collected after the money is gone
   // is not an approval. The event log rather than a flag, because "was the prompt reached" and "was
@@ -405,32 +422,38 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     assert.doesNotMatch(result.output, /PAID FOR/, 'nothing was paid for on this path');
   });
 
-  it('does not claim a purchase when reuse cannot record the id', async () => {
-    const existing = 'cd'.repeat(32);
-    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
-    chmodSync(dir, 0o500);
+  it(
+    'does not claim a purchase when reuse cannot record the id',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      const existing = 'cd'.repeat(32);
+      writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+      chmodSync(dir, 0o500);
 
-    const result = await run({
-      envPath,
-      createBee: () =>
-        walletBee({
-          batches: [{ usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false }],
-        }),
-    });
+      const result = await run({
+        envPath,
+        createBee: () =>
+          walletBee({
+            batches: [
+              { usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false },
+            ],
+          }),
+      });
 
-    const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
-    if (savedAt) {
-      recoveryFiles.push(savedAt);
-    }
-    assert.equal(result.spends, 0);
-    assert.equal(result.exitCode, 1, 'an id that never reached .env is a failure here too');
-    assert.doesNotMatch(
-      result.output,
-      /PAID FOR/,
-      'telling someone their money is gone when it is not is the mirror bug',
-    );
-    assert.match(result.output, /Nothing was bought/);
-  });
+      const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
+      if (savedAt) {
+        recoveryFiles.push(savedAt);
+      }
+      assert.equal(result.spends, 0);
+      assert.equal(result.exitCode, 1, 'an id that never reached .env is a failure here too');
+      assert.doesNotMatch(
+        result.output,
+        /PAID FOR/,
+        'telling someone their money is gone when it is not is the mirror bug',
+      );
+      assert.match(result.output, /Nothing was bought/);
+    },
+  );
 
   // OPS-12: a check that fails is not a check that passed. Both of these used to warn on one line
   // and carry on to the purchase.

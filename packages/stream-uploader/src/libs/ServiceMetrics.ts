@@ -51,6 +51,25 @@ export class ServiceMetrics {
    * Keyed and bounded exactly as its sibling above, and a rung only appears once it has lost something.
    */
   private readonly segmentsDroppedByRung = new Map<string, number>();
+  /**
+   * Publishers bee has refused a paid write on, keyed by {@link publisherKey}.
+   *
+   * ⛔⛔⛔ **Keyed by publisher rather than by stream, and that is the whole of the fix.** Every other
+   * reading `/health` gives is folded over the orchestrator's `activeStreams`, and a broadcast ending
+   * empties its entry out of that map. A batch that filled mid-broadcast therefore took its only alarm
+   * with it at exactly the moment it did the most damage: the finalize failed on that same dead batch,
+   * the recovery entry was retained, no recording was published, the catalog went on saying `live`, and
+   * `/health` answered 200 with nothing wrong. A refused batch is a fact about a node and a batch id,
+   * never about the broadcast that happened to discover it.
+   *
+   * ⛔ **Nothing here ever clears it, and nothing should.** `BEE_PUBLISHERS` is read once at process
+   * start, so the batch a rung spends cannot change while this process lives. Only a redeploy carrying
+   * a different batch id clears this, because a redeploy is a different process with this map empty.
+   * A segment landing afterwards is the ramp rather than a recovery: a filling batch refuses the chunks
+   * whose own bucket is full, so it loses a growing share of segments over a minute or two rather than
+   * all of them at once. See `StreamUploader.reportBatchRefusal` for the measurement behind that.
+   */
+  private readonly postageRefusals = new Map<string, PostageRefusal>();
   private lastSegmentAt: number | null = null;
   private lastAuthRejectionAt: number | null = null;
 
@@ -210,11 +229,51 @@ export class ServiceMetrics {
   }
 
   /**
+   * A paid write bee answered with a status the upload policy will not retry, which is a postage
+   * batch that has stopped accepting chunks.
+   *
+   * `at` is the caller's instant and is kept only for the first refusal on a publisher, because what
+   * an operator needs is when the batch started failing rather than when it last did. The statuses
+   * accumulate instead, for the reason `StreamUploader.batchRefusalStatuses` keeps a set rather than a
+   * flag: a different status is a different condition, and keeping only the first would let an early
+   * 400 or 404 stand in the payload while the postage refusal that followed it went unnamed.
+   */
+  public recordPostageRefusal(publisher: PublisherIdentity, status: number, at: number): void {
+    const key = publisherKey(publisher);
+    const seen = this.postageRefusals.get(key);
+    if (seen === undefined) {
+      this.postageRefusals.set(key, {
+        rung: publisher.rung,
+        url: publisher.url,
+        stamp: publisher.stamp,
+        statuses: [status],
+        firstRefusedAt: at,
+      });
+      return;
+    }
+    if (!seen.statuses.includes(status)) {
+      this.postageRefusals.set(key, { ...seen, statuses: [...seen.statuses, status] });
+    }
+  }
+
+  /**
    * Deliberately not part of `MetricsCounters`, which is exactly the set `/metrics` renders. This
    * feeds the `/health` policy, which needs an age rather than an instant.
    */
   public getLastAuthRejectionAt(): number | null {
     return this.lastAuthRejectionAt;
+  }
+
+  /**
+   * Every publisher bee has refused a paid write on, in the order they were first refused.
+   *
+   * Carries the node URL and the batch id as configured. `/metrics` renders the count of these and
+   * never their contents, and `/health` reports them through the orchestrator, which renders each one
+   * off `BeePublisherPool.routing` so an unauthenticated reader is told exactly what the `publishers`
+   * block already tells them and no more.
+   */
+  public getPostageRefusals(): readonly PostageRefusal[] {
+    return [...this.postageRefusals.values()];
   }
 
   public getCounters(): MetricsCounters {
@@ -234,9 +293,40 @@ export class ServiceMetrics {
       segmentDurationsUnreadTotal: this.segmentDurationsUnread,
       authRejectionsTotal: this.authRejections,
       takeoversRefusedTotal: this.takeoversRefused,
+      postageRefusedPublishers: this.postageRefusals.size,
       lastSegmentAt: this.lastSegmentAt,
     };
   }
+}
+
+/**
+ * One rung's Bee node and the postage batch it spends there. `BeePublisher` satisfies this.
+ *
+ * Declared here rather than imported so this class keeps depending on nothing, the way
+ * `PostageGate.StampedPublisher` is declared beside its own use.
+ */
+interface PublisherIdentity {
+  readonly rung: string;
+  readonly url: string;
+  readonly stamp: string;
+}
+
+/** One publisher's postage refusals, as {@link ServiceMetrics.getPostageRefusals} reports them. */
+interface PostageRefusal extends PublisherIdentity {
+  /** Every distinct status bee answered with on this publisher, in the order they were first seen. */
+  readonly statuses: readonly number[];
+  /** Epoch milliseconds of the first refusal, which is when this rung's postage stopped working. */
+  readonly firstRefusedAt: number;
+}
+
+/**
+ * The node and the batch, which is the identity `PostageGate.distinctByNodeAndStamp` already checks a
+ * batch under, plus the rung it is routed to so the payload can name the quality an operator lost.
+ * One node can hold several batches and two rungs can be pointed at one, so no part of this is
+ * redundant.
+ */
+function publisherKey(publisher: PublisherIdentity): string {
+  return `${publisher.rung} ${publisher.url} ${publisher.stamp}`;
 }
 
 export interface MetricsCounters {
@@ -275,6 +365,14 @@ export interface MetricsCounters {
   authRejectionsTotal: number;
   /** Announces refused because a live session on that stream id is still producing. See SEC-26. */
   takeoversRefusedTotal: number;
+  /**
+   * Publishers bee has refused a paid write on, which is how many rungs have lost their postage.
+   *
+   * A set size rather than a count of events, so it never double-counts the same dead batch however
+   * many segments it goes on refusing, and never decreases, because nothing in this process can make
+   * a refused batch usable again.
+   */
+  postageRefusedPublishers: number;
   /** Epoch milliseconds of the newest segment that reached Swarm, or null while none has. */
   lastSegmentAt: number | null;
 }

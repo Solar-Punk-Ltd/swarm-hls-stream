@@ -179,6 +179,20 @@ services:
       dockerfile: deploy/Dockerfile.uploader
     profiles: ['stream-uploader']
     restart: unless-stopped
+    # SIGTERM starts a drain here, and docker's default gives it ten seconds before SIGKILL. This is
+    # the only service on the stack for which that is far too short: `ServiceLifecycle.shutdown` calls
+    # `StreamOrchestrator.cleanup`, which finalizes every live stream over the network, one `stopStream`
+    # per rung, and a four-rung ladder is four finalizes. Killed halfway, some rungs are finalized and
+    # the rest are left holding recovery entries that nothing clears until a replacement container
+    # starts successfully and picks them up a minute later. `docker compose up -d` recreating this
+    # service is the everyday way into that, so a deploy was routinely cutting its own drain.
+    #
+    # 120s rather than the five minutes of DRAIN_TIMEOUT_MS in StreamOrchestrator.ts. That five
+    # minutes is the deadline for a drain that has gone wrong, and waiting it out on every deploy
+    # would make one stuck stream hold a deploy for five minutes. A healthy four-rung finalize is well
+    # inside two, and a drain that has not finished by then is one the uploader's own deadline is
+    # about to give up on anyway.
+    stop_grace_period: 120s
     logging: *default-logging
     ports:
       - '${API_PORT:-3000}:${API_PORT:-3000}'
@@ -195,6 +209,14 @@ services:
       # where the 4000 comes from.
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
+      # The other two thresholds `PostageGate` refuses a start on, and they belong here for the same
+      # reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
+      # compiled 24 and 0.9 whatever an operator wrote in .env, which is the ORPHAN_REAP_MS shape
+      # again: an argued-for setting that no deployment could actually move. The defaults repeat
+      # config.ts on purpose, and `bee-publishers.sh` carries the same pair, which
+      # `deploy/test/beePublishers.test.js` holds in step.
+      STAMP_MIN_TTL_HOURS: ${STAMP_MIN_TTL_HOURS:-12}
+      STAMP_MAX_UTILIZATION: ${STAMP_MAX_UTILIZATION:-0.9}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN}

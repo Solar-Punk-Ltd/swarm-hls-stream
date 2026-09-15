@@ -86,11 +86,28 @@ check_stamp() {
   done
 
   if [ "$needs_stamp" = "true" ]; then
-    local stamp_val
+    local stamp_val publishers_val
+    # A deployment that splits its bees per rung carries one batch per rung in BEE_PUBLISHERS and
+    # never reads STAMP at all: the uploader's own `buildPublishers` takes the per-rung pool the
+    # moment that variable is set. `capacity-gate.sh` names the same either-or when it decides which
+    # batch to check, and `.env.sample` says the batch is the one in BEE_PUBLISHERS "or STAMP when
+    # unsplit". This guard was the one place that had not been told, so a fully funded ABR
+    # deployment was refused here for an empty variable its uploader would never have read.
+    publishers_val=$(grep -E '^BEE_PUBLISHERS=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')
     stamp_val=$(grep -E '^STAMP=' "$ENV_FILE" | cut -d= -f2-)
-    if [ -z "$stamp_val" ]; then
+    if [ -z "$publishers_val" ] && [ -z "$stamp_val" ]; then
       log_warn "STAMP is empty in .env — stream-uploader needs a valid postage stamp."
-      log_warn "Run: pnpm stamp:setup"
+      log_warn "Run: pnpm stamp:setup, or name one batch per rung in BEE_PUBLISHERS."
+      # Nobody is there to answer on a deploy the manager runs: it spawns a script with standard
+      # input closed, so `read` reaches end of file and the empty answer reads as a refusal. The
+      # operator was then shown a question and the word "Aborted." as though somebody had declined
+      # it. A caller that leaves standard input open instead gets neither, it gets a deploy that
+      # waits for a line that never comes. Say why, and keep the question for a terminal that can
+      # answer it.
+      if [ ! -t 0 ]; then
+        log_error "Refusing: no terminal to ask, and an uploader with no batch of its own cannot publish."
+        exit 1
+      fi
       echo ""
       read -r -p "Continue anyway? [y/N] " answer
       if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
@@ -547,6 +564,12 @@ deploy_target() {
     docker compose $project_flag $compose_files --env-file "$ENV_FILE" $override_envfile_flag $profiles up -d --build
 
     rm -f "$override_file"
+
+    # Compose returning success means the containers were created and started, which a container that
+    # throws on its first line also does. Without this the next line is the only thing an operator
+    # sees and it is not true.
+    "$SCRIPT_DIR/assert-started.sh" "$PROFILE" "${services[@]}"
+
     log_ok "Local deploy complete"
   else
     # Remote deploy
@@ -577,6 +600,7 @@ ENVEOF
       docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env \$OVERRIDE_FLAG $profiles up -d --build
 
       rm -f .env.deploy.$PROFILE
+      ./scripts/assert-started.sh $PROFILE ${services[*]}
       echo "Stack started on \$(hostname)"
 REMOTE_SCRIPT
 

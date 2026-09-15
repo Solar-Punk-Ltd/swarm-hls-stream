@@ -2,13 +2,12 @@ import { NextFunction, Request, RequestHandler, Response, Router } from 'express
 import fs from 'fs';
 import path from 'path';
 
-import { AbrLadder } from '../libs/AbrLadder.js';
 import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
+import { AbrGuard, readAbrConfig } from '../utils/abrConfig.js';
 import { getErrorMessage } from '../utils/common.js';
-import { config } from '../utils/config.js';
 import { optional, required } from '../utils/env.js';
 import { assertUsablePublishKeySecret, hasValidPublishKey, publishKeyFromParam } from '../utils/publishKey.js';
 import { isUsableStreamId } from '../utils/streamId.js';
@@ -19,6 +18,9 @@ import { ADMIN_PUBLISH_ALLOWED, isAuthRefusal, resolveAdminPublish } from './adm
 import { EngineFactoryDeps, EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
+
+// Re-exported from where it used to be declared, so nothing that named it has to move.
+export type { AbrGuard };
 
 export interface SrsEngineOptions {
   /** The ABR ladder, when one is configured. Absent means single-rendition, which is the default. */
@@ -98,12 +100,6 @@ interface SrsHlsPayload {
   duration: number;
 }
 
-/** The vhost the ladder's rungs are republished onto, and the rungs to expect there. */
-export interface AbrGuard {
-  vhost: string;
-  ladder: AbrLadder;
-}
-
 function srsResponse(res: Response, code: number): void {
   res.json(code);
 }
@@ -135,7 +131,7 @@ export function createSrsEngineFromEnv(deps: EngineFactoryDeps = {}): EnginePlug
   const engine = createSrsEngine(mediaPath, {
     webhookToken,
     publishKeySecret,
-    abr: config.abr ?? undefined,
+    abr: readAbrConfig() ?? undefined,
     adminApi: deps.adminApi,
   });
   // After construction, not before. `required` covers a missing or empty value, but the charset and

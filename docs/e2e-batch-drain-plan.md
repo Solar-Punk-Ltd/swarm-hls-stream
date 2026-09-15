@@ -61,7 +61,7 @@ Bee refuses to create a batch that would live under 24 hours: the stage's chain 
 inside a test. Filling is. The smallest batch bee allows, depth 17, has two stamp slots per bucket
 across 65536 buckets and stops accepting chunks when any bucket gets a third. That happens after
 roughly 3000 chunks, about 12 MB, which the 1080p rung produces in about 20 seconds. Buying that batch
-with two days of life, so the uploader's own 24 hour startup floor is cleared with margin, costs at
+with two days of life, so the uploader's own 12 hour startup floor is cleared with margin, costs at
 today's chain price 84370 PLUR per chunk per block:
 
 | Item                               | Figure          |
@@ -97,7 +97,9 @@ What the suite asserts, all correctness, no timings:
   answer bee gives. Its dropped segments show up under its own rung label in the metrics. ⛔ That it
   then publishes nothing is NOT asserted: the refusal is the start of a ramp rather than the end of
   anything, and what the suite waits for instead is the master dropping the rung.
-- The uploader process stays up, no restart, `/health` degraded with the segment-failure reason.
+- The uploader process stays up, no restart, `/health` degraded with the segment-failure reason and
+  with `postage_refused`, which is the one that stays after the broadcast ends because it is recorded
+  against the node and batch rather than against the stream.
 - The master playlist stops offering the drained rung and offers the other three, and the catalog
   line `Ladder ... now produces 3 rung(s), master rewritten` is logged.
 - A real viewer keeps playing and is never told the broadcast ended, in both byte sources. ⛔ The

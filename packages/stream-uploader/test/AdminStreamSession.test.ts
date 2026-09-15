@@ -46,6 +46,7 @@ import {
   makeFakeRecoveryStore,
   makeTestOrchestrator,
   TEST_ANCHOR,
+  testPublisher,
 } from './helpers/fakes.js';
 import { waitFor } from './helpers/waiting.js';
 
@@ -134,7 +135,7 @@ function newSession(options: SessionOptions = {}): Session {
 
   const uploader = new StreamUploader({
     anchor: TEST_ANCHOR,
-    bee: bee as Bee,
+    publisher: testPublisher(bee as Bee),
     streamCatalog: makeFakeCatalog({
       addStream: async (entry: unknown) => {
         catalogEntries.push(entry);
@@ -147,7 +148,6 @@ function newSession(options: SessionOptions = {}): Session {
       },
     }),
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     redundancyLevel: 0,
     streamId: STREAM_ID,
     streamTopic: DECLARED_TOPIC,

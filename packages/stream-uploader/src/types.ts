@@ -236,6 +236,8 @@ export const HEALTH_REASON_UNLISTED_STREAM = 'unlisted_stream' as const;
 export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
 export const HEALTH_REASON_INGEST_REFUSED = 'ingest_refused' as const;
 export const HEALTH_REASON_UNRECOVERABLE_STREAM = 'unrecoverable_stream' as const;
+export const HEALTH_REASON_FRAGMENT_MISMATCH = 'fragment_mismatch' as const;
+export const HEALTH_REASON_POSTAGE_REFUSED = 'postage_refused' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -246,7 +248,9 @@ export type HealthReason =
   | typeof HEALTH_REASON_UNLISTED_STREAM
   | typeof HEALTH_REASON_STATE_NOT_PERSISTED
   | typeof HEALTH_REASON_INGEST_REFUSED
-  | typeof HEALTH_REASON_UNRECOVERABLE_STREAM;
+  | typeof HEALTH_REASON_UNRECOVERABLE_STREAM
+  | typeof HEALTH_REASON_FRAGMENT_MISMATCH
+  | typeof HEALTH_REASON_POSTAGE_REFUSED;
 
 export const RECOVERY_ENTRY_MISSING = 'missing' as const;
 export const RECOVERY_ENTRY_LOADED = 'loaded' as const;
@@ -389,6 +393,30 @@ export interface HealthSignals {
    * repairs the quarantined file by hand. See task #38.
    */
   quarantinedRecoveryEntries: number;
+  /**
+   * Live rungs whose measured segments are not the length `HLS_FRAGMENT` says they are, on a stage
+   * where the two cannot legitimately differ.
+   *
+   * A count rather than a flag because one rung disagreeing and all four disagreeing are different
+   * deployments: the first is one container of a per-rung split left behind, the second is the
+   * engine. Latched for the life of each stream and cleared when it ends, since the next broadcast
+   * is a new measurement. See `libs/fragmentAgreement.ts`.
+   */
+  fragmentMismatchStreams: number;
+  /**
+   * Publishers, meaning a Bee node and the postage batch a rung spends on it, that have answered a
+   * paid write with a status the upload policy will not retry. Counted for this process's lifetime.
+   *
+   * A count of publishers rather than of refusals, because the same batch refuses a growing share of
+   * segments over a minute or two as it fills and every one of those answers describes the one dead
+   * batch. What an operator needs is how many rungs have lost their postage, and which.
+   *
+   * ⛔ **Never clears, and nothing in this process can clear it.** `BEE_PUBLISHERS` is read once at
+   * start, so the batch a rung spends is fixed until a redeploy replaces the process. See
+   * {@link StreamUploader.reportBatchRefusal} for why a segment landing afterwards is the ramp rather
+   * than a recovery.
+   */
+  postageRefusedPublishers: number;
 }
 
 export interface HealthReport {

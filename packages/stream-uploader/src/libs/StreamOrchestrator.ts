@@ -48,6 +48,17 @@ import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } fro
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
+import {
+  FRAGMENT_MISMATCH,
+  FRAGMENT_PUBLISHER_GOP,
+  FRAGMENT_UNDECIDED,
+  fragmentLengthNotice,
+  fragmentMismatchReport,
+  FragmentStage,
+  FragmentWatch,
+  UNWATCHED_FRAGMENT,
+  watchFragment,
+} from './fragmentAgreement.js';
 import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
@@ -138,6 +149,14 @@ export interface StreamOrchestratorConfig {
 interface RetainedStopOutcome {
   report: StreamStatusReport;
   recordedAt: number;
+}
+
+/** One rung's routing plus what bee answered on its batch. See {@link StreamOrchestrator.refusedPublishers}. */
+interface RefusedPublisher extends PublisherRoute {
+  /** Every distinct status bee answered with on this publisher, in the order they were first seen. */
+  readonly statuses: readonly number[];
+  /** Epoch milliseconds of the first refusal, so the reading can be dated against the uploader's log. */
+  readonly firstRefusedAt: number;
 }
 
 /** How a claimant is named in a log line, so an announce that named nobody does not read as `null`. */
@@ -246,6 +265,15 @@ export class StreamOrchestrator {
   private stallReapers = new Map<string, Timer>();
   /** Streams already reported as having unreadable segment durations, so the warning fires once each. */
   private unreadDurationReported = new Set<string>();
+  /**
+   * Per stream, what its opening segments measured and what that says about the stage.
+   *
+   * An entry appears on the first segment this could measure and settles on a verdict eight
+   * readings later. The verdict is what `/health` reads, and it is latched for the life of the
+   * stream rather than aged out: nothing an already-running broadcast can do makes the dates it has
+   * published correct again. See {@link noteFragmentLength}.
+   */
+  private fragmentWatches = new Map<string, FragmentWatch>();
   /**
    * Video streams still waiting for their first frame, with how much media has been withheld so far.
    *
@@ -575,6 +603,10 @@ export class StreamOrchestrator {
     // says it again. Whether an engine's segments are readable is a fact about the session producing
     // them, and the id can be handed to a different engine entirely.
     this.unreadDurationReported.delete(streamId);
+    // Same reasoning, and it is what keeps the latch from outliving what it describes. The verdict
+    // is about the media one session produced, the next session on this id is a fresh measurement,
+    // and a redeploy between the two is the whole remedy the fault names.
+    this.fragmentWatches.delete(streamId);
     // Same reasoning as the line above, and the same hazard OBS-19 was: whether a broadcast has shown
     // a frame is a fact about the session, and the id can be handed straight to another one.
     this.withheldOpeningSeconds.delete(streamId);
@@ -695,11 +727,10 @@ export class StreamOrchestrator {
     const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
 
     const uploader = new StreamUploader({
-      bee: publisher.bee,
+      publisher,
       streamCatalog: this.streamCatalog,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
-      stamp: publisher.stamp,
       redundancyLevel: this.config.segmentRedundancy,
       streamId,
       streamTopic,
@@ -834,6 +865,7 @@ export class StreamOrchestrator {
     this.streamActivityAt.set(streamId, this.clock.now());
 
     const reading = measureSegmentDuration(data, duration);
+    this.noteFragmentLength(streamId, reading);
     if (this.withholdOpeningSegment(streamId, segmentIndex, reading)) {
       // Accepted, because the engine must not retry: the segment reached this service intact and
       // there is nothing for a redelivery to fix. The discontinuity that may have come with it is
@@ -854,6 +886,59 @@ export class StreamOrchestrator {
     }
     uploader.handleSegment(segmentIndex, this.mediaDuration(streamId, segmentIndex, duration, reading), data);
     return { accepted: true };
+  }
+
+  /** What this deployment asked the engine to cut at, and whether its stage has to deliver it. */
+  private fragmentStage(): FragmentStage {
+    return { configuredSeconds: this.config.fragmentSeconds, underLadder: this.config.ladder !== undefined };
+  }
+
+  /**
+   * Fold one segment's measured length into what this stream has measured so far, and report the
+   * verdict the moment there is one.
+   *
+   * ⛔ **Only a reading the segment's own timestamps produced.** A fallback reading is the engine's
+   * declared duration, and SRS's claim was measured at 0.3205s against 0.2667s of media on
+   * 2026-08-06. Counting those would report the same deployment differently depending on how
+   * readable its bytes happened to be, which is the shape of instrument defect this whole comparison
+   * exists to catch.
+   *
+   * Reported once because {@link watchFragment} returns a settled watch unchanged, so the only call
+   * that changes the verdict is the one that settles it.
+   */
+  private noteFragmentLength(streamId: string, reading: SegmentDurationReading): void {
+    if (reading.fellBackBecause !== null) {
+      return;
+    }
+
+    const stage = this.fragmentStage();
+    const before = this.fragmentWatches.get(streamId) ?? UNWATCHED_FRAGMENT;
+    const after = watchFragment(before, reading.seconds, stage);
+    this.fragmentWatches.set(streamId, after);
+
+    const hasJustSettled = before.verdict.kind === FRAGMENT_UNDECIDED && after.verdict.kind !== FRAGMENT_UNDECIDED;
+    if (!hasJustSettled) {
+      return;
+    }
+
+    if (after.verdict.kind === FRAGMENT_MISMATCH) {
+      this.logger.error(
+        `[StreamOrchestrator] ${fragmentMismatchReport(streamId, after.verdict.measuredSeconds, stage)}`,
+      );
+    } else if (after.verdict.kind === FRAGMENT_PUBLISHER_GOP) {
+      this.logger.warn(`[StreamOrchestrator] ${fragmentLengthNotice(streamId, after.verdict.measuredSeconds, stage)}`);
+    }
+  }
+
+  /** Live streams whose segments are not the length this uploader dates them by. */
+  private getFragmentMismatchStreams(): number {
+    let mismatched = 0;
+    for (const watch of this.fragmentWatches.values()) {
+      if (watch.verdict.kind === FRAGMENT_MISMATCH) {
+        mismatched++;
+      }
+    }
+    return mismatched;
   }
 
   /**
@@ -1277,11 +1362,10 @@ export class StreamOrchestrator {
     const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
 
     const uploader = new StreamUploader({
-      bee: publisher.bee,
+      publisher,
       streamCatalog: this.streamCatalog,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
-      stamp: publisher.stamp,
       redundancyLevel: this.config.segmentRedundancy,
       streamId: state.streamId,
       streamTopic: state.streamRawTopic,
@@ -1681,6 +1765,30 @@ export class StreamOrchestrator {
     return this.publishers.routing();
   }
 
+  /**
+   * Which of those publishers bee has refused a paid write on, and what it answered.
+   *
+   * ⛔ The reason on its own sends an operator to read four nodes. Each rung's batch is bought and
+   * topped up separately, so which one died is the whole of what to do next, and a stage where one
+   * rung has lost its postage looks identical from outside to one where a different rung has.
+   *
+   * Built by walking the routing rather than by rendering the latch's own copy of the node url and
+   * batch id, so an unauthenticated reader is told exactly what the `publishers` block already tells
+   * them, character for character, and there is only ever one place deciding what is safe to say.
+   * See {@link BeePublisherPool.routing}. The count in `HealthSignals` is read off the latch instead,
+   * so a refusal this join cannot place still turns the service degraded.
+   */
+  public refusedPublishers(): RefusedPublisher[] {
+    const refusals = new Map(this.metrics.getPostageRefusals().map((refusal) => [refusal.rung, refusal]));
+    return this.publishers.routing().flatMap((route) => {
+      const refusal = refusals.get(route.rung);
+      if (refusal === undefined) {
+        return [];
+      }
+      return [{ ...route, statuses: refusal.statuses, firstRefusedAt: refusal.firstRefusedAt }];
+    });
+  }
+
   public getHealthSignals(): HealthSignals {
     const counters = this.metrics.getCounters();
     const lastAuthRejectionAt = this.metrics.getLastAuthRejectionAt();
@@ -1702,6 +1810,11 @@ export class StreamOrchestrator {
       openingSegmentsWithheld: counters.openingSegmentsWithheldTotal,
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
       quarantinedRecoveryEntries: this.recoveryStore.listQuarantined().length,
+      fragmentMismatchStreams: this.getFragmentMismatchStreams(),
+      // Read off the latch itself rather than off the rendered list below it, so a refusal recorded
+      // against a publisher the routing no longer names still turns this service degraded. The signal
+      // must never under-report, and a payload that cannot place one is the lesser failure.
+      postageRefusedPublishers: this.metrics.getPostageRefusals().length,
     };
   }
 

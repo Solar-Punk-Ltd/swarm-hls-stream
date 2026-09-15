@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 // where `ENGINE=srs` is enough to make a shipped default of `''` read back as `'srs'`.
 import '../src/utils/env.js';
 
+import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
+
 type Config = typeof import('../src/utils/config.js')['config'];
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -57,6 +59,20 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     sample: '0.25',
     fallback: 0.5,
     refused: ['half', '-0.5', '10000'],
+  },
+  {
+    name: 'STAMP_MIN_TTL_HOURS',
+    field: 'stampMinTtlHours',
+    sample: '3',
+    fallback: 12,
+    refused: ['hours', '-1', '8761'],
+  },
+  {
+    name: 'STAMP_MAX_UTILIZATION',
+    field: 'stampMaxUtilization',
+    sample: '0.75',
+    fallback: 0.9,
+    refused: ['most', '-0.1', '1.1'],
   },
 ];
 
@@ -308,5 +324,91 @@ describe('admin mode', () => {
     const config = await loadConfig({ ...requiredEnv(), ABR_ENABLED: 'true' });
     assert.equal(config.admin, null);
     assert.ok(config.abr, 'ABR on its own is still a supported deployment');
+  });
+});
+
+/**
+ * One batch per rung, which is what a deployment that splits its bees carries instead of a single
+ * STAMP. Sixty-four hex characters because that is what a batch id is, and a shorter one is the
+ * shape a truncated paste takes.
+ */
+const PER_RUNG = [
+  '360p@http://localhost:1633',
+  '480p@http://localhost:11001',
+  '720p@http://localhost:11003',
+  '1080p@http://localhost:11005',
+]
+  .map((node, index) => `${node}<${String(index + 1).repeat(64)}>`)
+  .join(' ');
+
+/** The required set without STAMP, which is the deployment a per-rung pool describes. */
+function envWithoutStamp(): Record<string, string> {
+  const { STAMP: _single, ...rest } = requiredEnv();
+  return rest;
+}
+
+/**
+ * Who has to carry a postage batch, and who does not.
+ *
+ * `buildPublishers` takes the per-rung pool the moment BEE_PUBLISHERS names one, and
+ * `BeePublisherPool.single` is the only reader of `stamp` in the whole service. Requiring STAMP
+ * regardless meant an ABR deployment could not start without a batch nothing would ever spend, and
+ * the only way past it was to invent one. An invented batch id is worse than an absent one: it is
+ * indistinguishable from a real one until something tries to pay with it.
+ *
+ * Found live on 2026-09-14, one layer under the deploy script's own guard, which had the same gap.
+ */
+describe('the postage a deployment has to name', () => {
+  it('starts a per-rung deployment with no STAMP set at all', async () => {
+    const config = await loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: PER_RUNG });
+
+    assert.equal(config.publishers.length, 4);
+    assert.deepEqual(
+      config.publishers.map((publisher) => publisher.rung),
+      ['360p', '480p', '720p', '1080p'],
+    );
+    assert.equal(config.stamp, '');
+  });
+
+  it('starts a per-rung deployment whose STAMP is present and empty', async () => {
+    const config = await loadConfig({ ...envWithoutStamp(), STAMP: '', BEE_PUBLISHERS: PER_RUNG });
+
+    assert.equal(config.publishers.length, 4);
+    assert.equal(config.stamp, '');
+  });
+
+  it('builds the pool the service publishes through from that configuration', async () => {
+    const config = await loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: PER_RUNG });
+    const pool = BeePublisherPool.perRung(
+      config.publishers,
+      ['360p', '480p', '720p', '1080p'],
+      config.beeRequestTimeoutMs,
+    );
+
+    assert.equal(pool.nodes().length, 4);
+  });
+
+  it('still refuses a single-node deployment with no STAMP', async () => {
+    await assert.rejects(() => loadConfig(envWithoutStamp()), /STAMP/);
+  });
+
+  it('still refuses a single-node deployment whose STAMP is empty', async () => {
+    await assert.rejects(() => loadConfig({ ...envWithoutStamp(), STAMP: '   ' }), /STAMP/);
+  });
+
+  it('still refuses a pool an operator mistyped, rather than falling back to one node', async () => {
+    await assert.rejects(() => loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: '360p@http://localhost:1633' }));
+  });
+
+  it('still refuses a pool that does not cover the ladder it is given', async () => {
+    const config = await loadConfig({ ...envWithoutStamp(), BEE_PUBLISHERS: PER_RUNG });
+
+    assert.throws(() =>
+      BeePublisherPool.perRung(
+        config.publishers,
+        ['360p', '480p', '720p', '1080p', '1440p'],
+        config.beeRequestTimeoutMs,
+      ),
+    );
   });
 });

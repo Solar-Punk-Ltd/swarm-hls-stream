@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { SKIP_WITHOUT_PERMISSION_ENFORCEMENT } from './helpers/permissionGuard.js';
 import { ALL_REMOTE, makeSandbox, removeSandboxes, runScript } from './helpers/sandbox.js';
 
 after(removeSandboxes);
@@ -61,6 +62,22 @@ const RECORD = `.drain-stage.${PROFILE}.env`;
 /** What the stage's chain state reads, and what the plan priced the small batch from. */
 const CHAIN_PRICE = 84370;
 const MINIMUM_VALIDITY_BLOCKS = 17280;
+
+/** PLUR in one BZZ, the conversion the script carries, so a cost row can be predicted from above. */
+const PLUR_PER_BZZ = 10 ** 16;
+
+/**
+ * The BZZ figure print-buy prints for a depth, derived from the chain state this suite serves rather
+ * than written down. Postage is charged per chunk, so a batch costs its per-chunk amount once for
+ * every chunk it could hold, and the amount is the price per block over the days of life bought.
+ *
+ * @param {number} depth
+ * @param {number} [days] The default `print-buy` buys, which is what the cases below leave alone.
+ * @returns {string} Four decimal places, as the script formats it.
+ */
+function costInBzz(depth, days = 2) {
+  return ((2 ** depth * CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * days) / PLUR_PER_BZZ).toFixed(4);
+}
 
 /** The smallest depth bee accepts, which is the only depth this script arms. */
 const DEPTH = 17;
@@ -505,18 +522,18 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
   });
 
   /**
-   * The uploader's own `PostageGate` refuses a configured batch under 24 hours, so a batch under the
-   * floor arms cleanly and then stops the container from starting at all. An hour of margin, because
-   * the arm and the sitting are not the same minute.
+   * The uploader's own `PostageGate` refuses a configured batch under its floor, so a batch under
+   * that floor arms cleanly and then stops the container from starting at all. An hour of margin,
+   * because the arm and the sitting are not the same minute.
    */
   it('refuses a TTL under the floor the uploader itself applies', async () => {
-    const sandbox = remoteSandbox({ readings: { stamps: [{ ...ARMABLE, batchTTL: 20 * 3600 }] } });
+    const sandbox = remoteSandbox({ readings: { stamps: [{ ...ARMABLE, batchTTL: 11.5 * 3600 }] } });
 
     const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
 
     assert.notEqual(run.exitCode, 0, 'a batch expiring inside the uploader’s floor was armed');
-    assert.match(run.stderr, /20\.0h/);
-    assert.match(run.stderr, /25\.0h/);
+    assert.match(run.stderr, /11\.5h/);
+    assert.match(run.stderr, /13\.0h/);
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG]);
   });
 
@@ -627,23 +644,35 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
  * one line the rung was spending, and `restore` refuses in the meantime.
  */
 describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
+  /**
+   * A `cp` that refuses to write the backup, which is what a full disk and a read-only mount both
+   * look like to the script. Everything else it copies goes through, so only the backup is blocked.
+   *
+   * ⭐ This used to chmod the sandbox root to 0o500 instead, and that reads as the same thing only on
+   * a machine whose writes permission bits can stop. The verification box runs every job as root,
+   * which ignores them, so the copy succeeded, no refusal was printed, and the case failed against a
+   * script that was behaving correctly. Failing the tool the script actually calls says the same
+   * thing to every account.
+   */
+  function uncopyableBackup(sandbox) {
+    writeFileSync(
+      join(sandbox.binDir, 'cp'),
+      '#!/bin/sh\nfor arg in "$@"; do\n  case "$arg" in\n    *.bak-*) exit 1 ;;\n  esac\ndone\nexec /bin/cp "$@"\n',
+    );
+    chmodSync(join(sandbox.binDir, 'cp'), 0o755);
+  }
+
   /** ⛔ The copy is the fallback. Reporting one that was never made is worse than not making it. */
   it('refuses when the env file cannot be copied aside, rather than arming with no copy', async () => {
     const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    uncopyableBackup(sandbox);
 
-    // A directory nothing can create a file in, which is what a full disk and a read-only mount both
-    // look like to `cp`. The env file itself stays writable, so only the copy is blocked.
-    chmodSync(sandbox.root, 0o500);
-    try {
-      const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
 
-      assert.notEqual(run.exitCode, 0, 'a rung was armed with no copy of the env file to fall back on');
-      assert.match(run.stderr, /could not copy/);
-      assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with no copy of it');
-      assert.deepEqual(redeployedServices(sandbox), [], 'a failed copy still redeployed the uploader');
-    } finally {
-      chmodSync(sandbox.root, 0o755);
-    }
+    assert.notEqual(run.exitCode, 0, 'a rung was armed with no copy of the env file to fall back on');
+    assert.match(run.stderr, /could not copy/);
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with no copy of it');
+    assert.deepEqual(redeployedServices(sandbox), [], 'a failed copy still redeployed the uploader');
   });
 
   /**
@@ -653,10 +682,13 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
    */
   it('refuses when the original cannot be recorded, rather than arming with nothing to put back', async () => {
     const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
-    // A record another rung is already in and this process cannot append to, which is the shape of
-    // one written by a different account.
-    writeFileSync(recordPath(sandbox), `720p=${ORIGINAL['720p']}\n`);
-    chmodSync(recordPath(sandbox), 0o444);
+    // A record path that cannot be opened for writing by anybody, because it points into a directory
+    // that is not there. That is what a removed mount looks like, and `record_original` writes with a
+    // shell redirect, so there is no tool to fail instead.
+    //
+    // ⭐ It used to chmod the record to 0o444, which stops nothing on the verification box because
+    // jobs run there as root. A dangling link is refused by the kernel whatever the account.
+    symlinkSync(join(sandbox.root, 'a-directory-that-is-not-there', RECORD), recordPath(sandbox));
 
     const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
 
@@ -917,21 +949,35 @@ describe('drain-stage says so when it cannot clear its own record', () => {
     return sandbox;
   }
 
-  /** A record another rung is in as well, so clearing this one is a rewrite rather than a removal. */
-  it('refuses when the record cannot be rewritten without the rung, rather than reporting it removed', async () => {
-    const sandbox = armedSandbox({ record: `${RUNG}=${ORIGINAL[RUNG]}\n720p=${ORIGINAL['720p']}\n` });
-    chmodSync(recordPath(sandbox), 0o444);
+  /**
+   * A record another rung is in as well, so clearing this one is a rewrite rather than a removal.
+   *
+   * ⛔ The one case here with no lever that works as root, and the reason is the order of the two
+   * operations. `forget_original` READS the record with grep and then writes it back with a shell
+   * redirect, so the path has to be readable and unwritable at the same moment. A failing tool cannot
+   * do it, because the redirect is a shell builtin. A path that cannot be opened cannot do it either,
+   * because grep would fail first and the function would take its other branch and delete the record
+   * instead, which is a different case that already has its own. That leaves the permission bits,
+   * which root ignores, so this one stands down there and runs everywhere else.
+   */
+  it(
+    'refuses when the record cannot be rewritten without the rung, rather than reporting it removed',
+    { skip: SKIP_WITHOUT_PERMISSION_ENFORCEMENT },
+    async () => {
+      const sandbox = armedSandbox({ record: `${RUNG}=${ORIGINAL[RUNG]}\n720p=${ORIGINAL['720p']}\n` });
+      chmodSync(recordPath(sandbox), 0o444);
 
-    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+      const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
 
-    assert.notEqual(run.exitCode, 0, 'a record that could not be cleared was reported as cleared');
-    assert.doesNotMatch(run.stdout, /✓.*removed the record/, 'a ✓ was printed about a record nothing removed');
-    assert.match(run.stdout, /could not rewrite/, 'nothing said which of the two writes failed');
-    assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
-    // ⛔ And it says so about a stage that IS back, which is the whole reason this is not a rollback.
-    assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
-    assert.deepEqual(redeployedServices(sandbox), ['stream-uploader'], 'the restore did not redeploy');
-  });
+      assert.notEqual(run.exitCode, 0, 'a record that could not be cleared was reported as cleared');
+      assert.doesNotMatch(run.stdout, /✓.*removed the record/, 'a ✓ was printed about a record nothing removed');
+      assert.match(run.stdout, /could not rewrite/, 'nothing said which of the two writes failed');
+      assert.match(run.stderr, /still names/, 'the refusal did not say the record still names the rung');
+      // ⛔ And it says so about a stage that IS back, which is the whole reason this is not a rollback.
+      assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
+      assert.deepEqual(redeployedServices(sandbox), ['stream-uploader'], 'the restore did not redeploy');
+    },
+  );
 
   /** A record this rung is alone in, so clearing it is a removal rather than a rewrite. */
   it('refuses when the record cannot be removed, rather than reporting it removed', async () => {
@@ -978,7 +1024,7 @@ describe('drain-stage says so when it cannot clear its own record', () => {
  * shell export and every reading of the ladder was taken against a value nothing had deployed.
  */
 describe('drain-stage takes its TTL floor from the file the container reads', () => {
-  /** 40 hours clears the default floor of 25 and misses the 49 the env file below asks for. */
+  /** 40 hours clears the default floor of 13 and misses the 49 the env file below asks for. */
   const FORTY_HOURS = { ...ARMABLE, batchTTL: 40 * 3600 };
 
   it('applies the floor the env file names, rather than its own default', async () => {
@@ -1011,7 +1057,7 @@ describe('drain-stage takes its TTL floor from the file the container reads', ()
 
     assert.notEqual(run.exitCode, 0, 'a shell export the container never sees was allowed to set the floor');
     assert.match(run.stderr, /48/, 'the refusal did not name the value in this shell');
-    assert.match(run.stderr, /24/, 'the refusal did not name the floor the container will actually apply');
+    assert.match(run.stderr, /and 12 for the uploader/, 'the refusal did not name the floor the container will apply');
   });
 
   it('says nothing when the shell and the env file agree', async () => {
@@ -1718,5 +1764,305 @@ describe('drain-stage argument handling', () => {
    */
   it('parses as bash, embedded python and all', () => {
     execFileSync('bash', ['-n', join(SCRIPTS, SCRIPT)], { stdio: 'pipe' });
+  });
+});
+
+/**
+ * ⛔ Depth 17 is a test affordance rather than a size. It is the only depth a short broadcast can
+ * fill, which is what a drain sitting needs and what starves a rung that is meant to stream:
+ * `docs/e2e-batch-drain-plan.md` measures the whole batch gone in about 20 seconds of 1080p. Arming
+ * anything roomier was refused outright, so the one rig that wires a batch into a rung could not be
+ * pointed at a sustained run at all, and a cross-provider review ran into exactly that on
+ * 2026-09-15.
+ *
+ * The depth is now the run's to name, and 17 stays the default, because a drain sitting that quietly
+ * armed a batch it cannot fill would report a rung that never ran dry and read as the product
+ * surviving.
+ */
+describe('drain-stage arms the depth the run asks for, and 17 is only the default', () => {
+  const ROOMY_DEPTH = 20;
+  const ROOMY = { ...ARMABLE, depth: ROOMY_DEPTH };
+
+  /** `MAX_ARM_DEPTH` in the script, the deepest batch it will price or arm. */
+  const MAX_DEPTH = 32;
+
+  it('arms a batch at the depth the run named', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.equal(publishersOf(sandbox)[RUNG], SMALL_BATCH, 'the rung was not pointed at the armed batch');
+  });
+
+  it('says a batch a broadcast cannot fill will not drain, rather than arming it silently', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.match(`${run.stdout}${run.stderr}`, /never ran dry/);
+  });
+
+  /**
+   * ⛔ And said again once the arm has finished, not only before it began. The first one is printed
+   * during argument checking, above the heading, above every tick, above the whole of `deploy.sh` and
+   * a compose recreate, so it is the first line a scrollback loses and under `| tee` the operator's
+   * last sight of the run is a plain "the stage is armed". The one thing they most need to carry away
+   * is that this stage will not drain.
+   *
+   * Both lines come out of `log_warn`, which writes to stdout, so their order in that one stream is
+   * the order they were printed in.
+   */
+  it('says it again at the end, where an arm leaves the operator looking', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    const armed = run.stdout.indexOf('The stage is armed');
+    assert.ok(armed !== -1, `the arm printed no completion line:\n${run.stdout}`);
+    assert.ok(
+      run.stdout.lastIndexOf('never ran dry') > armed,
+      `the depth warning is only above the arm's own output, where a tee scrolls it away:\n${run.stdout}`,
+    );
+  });
+
+  it('says nothing about draining when the depth is the drain depth', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /never ran dry/);
+  });
+
+  /**
+   * ⛔ That refusal carries a reason, and which reason is true depends on whether the run named the
+   * depth or took the default. This case and the one under it pin one branch each.
+   *
+   * Here the run named 20 and the node holds 17, so nothing is being said about what a broadcast can
+   * fill. The batch is simply not the one this run was told to arm. Reading the run's own depth as
+   * the default, or swapping the two sentences, leaves a refusal that still refuses and still names
+   * both numbers while telling the operator the opposite of what is wrong, which is the shape a
+   * count of failures cannot see.
+   */
+  it('refuses a batch that is not the depth the run named, naming both', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth-17 batch was armed for a run that asked for depth 20');
+    assert.match(run.stderr, new RegExp(`depth ${DEPTH}`));
+    assert.match(run.stderr, new RegExp(String(ROOMY_DEPTH)));
+    assert.match(run.stderr, /this run named that depth itself/);
+    assert.doesNotMatch(run.stderr, /never drained/);
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten anyway');
+  });
+
+  /** The other branch: the run named no depth, so the default is what the roomier batch misses. */
+  it('refuses a roomier batch under the default depth as one a broadcast cannot drain', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth-20 batch was armed for a run that asked for the drain depth');
+    assert.match(run.stderr, /never drained/);
+    assert.doesNotMatch(run.stderr, /named that depth itself/);
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten anyway');
+  });
+
+  /**
+   * ⛔ The two rows the python prints, and not only the buy url. That url is assembled by the shell
+   * out of the same variable the argument parser set, so it says what the parser read and nothing
+   * about what was priced. The depth reaching the parser and the depth reaching the pricing program
+   * are two separate hops, and quoting the drain depth while printing a url for depth 20 passes a
+   * check that reads the url alone, which is what the operator would then spend against.
+   */
+  it('prices the purchase at the depth the run named', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', `--depth=${ROOMY_DEPTH}`]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${ROOMY_DEPTH}`));
+    assert.match(run.stdout, new RegExp(`depth ${ROOMY_DEPTH}, `));
+    assert.ok(
+      run.stdout.includes(`cost ${costInBzz(ROOMY_DEPTH)} BZZ`),
+      `the cost row is not what this depth prices at against the fixture's chain state:\n${run.stdout}`,
+    );
+  });
+
+  /**
+   * ⛔ The last line print-buy prints is the whole instruction an operator pastes, and `arm` defaults
+   * to the drain depth. Without the flag on it, a purchase priced at any other depth was followed by
+   * an arm refusing the very batch that purchase had just bought, over a depth mismatch the operator
+   * never introduced.
+   *
+   * Scoped to the arm line rather than to the output, because the depth is in the buy url two lines
+   * above and a match against the whole of stdout passes on that alone.
+   */
+  it('carries the depth it priced into the arm command it prints', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', `--depth=${ROOMY_DEPTH}`]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    const armLine = run.stdout.split('\n').find((line) => line.includes('arm --batch='));
+    assert.ok(armLine, `print-buy printed no arm command at all:\n${run.stdout}`);
+    assert.match(armLine, new RegExp(`--depth=${ROOMY_DEPTH}`));
+  });
+
+  /**
+   * ⛔ The capacity estimate is a generalised birthday figure, `(k! * buckets ** (k - 1)) ** (1/k)`
+   * for k the first chunk count a bucket cannot hold. k doubles with every level, and computed
+   * directly the intermediate integer passes what a float can carry at depth 22, so the python died
+   * with an OverflowError and print-buy refused with a sentence blaming itself rather than pricing
+   * anything. Every depth from 22 to the ceiling of 32 was unbuyable while the argument parser
+   * accepted all of them.
+   */
+  it('prices a depth whose bucket count overflows a direct factorial', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth=22']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /cost [\d.]+ BZZ/);
+    assert.match(run.stdout, /refus\w+ near \d+ chunks/);
+  });
+
+  it('refuses a depth below the smallest batch bee sells', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${DEPTH - 1}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth no node will sell was accepted');
+    assert.match(run.stderr, /--depth/);
+    assert.match(run.stderr, new RegExp(String(DEPTH)));
+  });
+
+  it('refuses a depth past anything this stack buys, which is a typo rather than an ask', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth=200']);
+
+    assert.notEqual(run.exitCode, 0, 'a depth of 200 was priced');
+    assert.match(run.stderr, /--depth/);
+  });
+
+  /**
+   * The digit guard, which no case reached before this one. Every other depth refusal here is a
+   * comparison, and a comparison in `[` on a value that is not a number is a fatal shell error
+   * rather than a refusal, so the guard in front of them is the whole reason a typo comes back as a
+   * sentence about `--depth` instead of `integer expression expected`.
+   */
+  it('refuses a depth that is not a whole number, which is a typo rather than an ask', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth=2o']);
+
+    assert.equal(run.exitCode, 2, `a depth of 2o was not refused as a usage error: ${run.stdout}${run.stderr}`);
+    assert.match(run.stderr, /--depth/);
+    assert.match(run.stderr, /2o/);
+    assert.doesNotMatch(run.stderr, /integer expression expected/);
+  });
+
+  /**
+   * Both sides of the ceiling, because a guard is only a guard at its own edge. The case above uses
+   * 200, which a boundary off by one still refuses.
+   *
+   * ⛔ The accepting half also prices, which means the estimate has to survive a k of 65537. That is
+   * the depth the direct factorial died at hardest, so this case is the ceiling and the arithmetic
+   * at once.
+   */
+  it('prices the deepest depth the guard allows and refuses the first one past it', async () => {
+    const atCeiling = await drainStage(remoteSandbox(), ['print-buy', `--depth=${MAX_DEPTH}`]);
+
+    assert.equal(atCeiling.exitCode, 0, `the ceiling depth itself was refused: ${atCeiling.stdout}${atCeiling.stderr}`);
+    assert.match(atCeiling.stdout, new RegExp(`depth ${MAX_DEPTH}, `));
+
+    const pastCeiling = await drainStage(remoteSandbox(), ['print-buy', `--depth=${MAX_DEPTH + 1}`]);
+
+    assert.notEqual(pastCeiling.exitCode, 0, `depth ${MAX_DEPTH + 1} was priced`);
+    assert.match(pastCeiling.stderr, /--depth/);
+    assert.match(pastCeiling.stderr, new RegExp(String(MAX_DEPTH)));
+  });
+
+  /** The flag has two forms and the parser has two branches, so both are exercised. */
+  it('takes the depth as a separate word as well as after an equals sign', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth', String(ROOMY_DEPTH)]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`depth ${ROOMY_DEPTH}, `));
+  });
+
+  /**
+   * A `--depth` with nothing after it. Without the arity check the parser would shift past the end of
+   * argv under `set -u`, which is an unbound variable and a crash rather than a usage error.
+   */
+  it('refuses a --depth at the end of the command line, rather than reading past it', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth']);
+
+    assert.equal(run.exitCode, 2, `a --depth with no value was not refused as a usage error: ${run.stderr}`);
+    assert.match(run.stderr, /--depth/);
+    assert.doesNotMatch(run.stderr, /unbound variable/);
+  });
+
+  /**
+   * ⛔ A depth written with a leading zero is the same depth. The guards around it are numeric and
+   * agreed, but the warning asks whether the run's depth is the drain depth as a STRING, so `017`
+   * armed the drain depth while being told it was a size no broadcast could fill. The operator is
+   * then warned off the one batch that does what the sitting needs.
+   *
+   * ⛔⛔ And the normalisation cannot be plain arithmetic. A shell reads a leading zero as octal, so
+   * `$((017))` is 15: the fix for a cosmetic warning would have quietly priced and armed two levels
+   * down. The buy url below is where that shows, because it carries the depth the owner spends
+   * against.
+   */
+  it('reads a zero-padded depth as the number it is, rather than as a different one', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=0${DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /never ran dry/);
+    assert.equal(publishersOf(sandbox)[RUNG], SMALL_BATCH, 'the rung was not pointed at the armed batch');
+  });
+
+  it('prices a zero-padded depth at that depth, not at the octal reading of it', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', `--depth=0${DEPTH}`]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${DEPTH}\\?`));
+    assert.match(run.stdout, new RegExp(`depth ${DEPTH}, `));
+    assert.ok(
+      run.stdout.includes(`cost ${costInBzz(DEPTH)} BZZ`),
+      `the zero-padded depth was priced at some other depth:\n${run.stdout}`,
+    );
+  });
+
+  it('refuses --depth on a subcommand that neither buys nor arms', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['status', `--depth=${ROOMY_DEPTH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth was accepted on status');
+    assert.match(run.stderr, /--depth/);
   });
 });

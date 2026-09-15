@@ -10,10 +10,13 @@ import {
   FEED_STATE_RECONNECTING,
   FeedHealthTracker,
   FeedState,
+  RUNG_DEATH_LAG_SEGMENTS,
+  UNSERVED_POLLS_PROBE_CEILING,
 } from '../src/components/SwarmHlsPlayer/feedState.js';
 import { LadderFeedPoller } from '../src/components/SwarmHlsPlayer/LadderFeedPoller.js';
-import { ManifestFetchError, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
+import { ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
 import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist.js';
+import { ManifestFetchError, PROBE_DISTANCES } from '../src/components/SwarmHlsPlayer/refusedSlot.js';
 import { TimedResponse } from '../src/utils/fetchWithTimeout.js';
 import { RequestJitter } from '../src/utils/requestJitter.js';
 
@@ -915,6 +918,211 @@ describe('LadderFeedPoller telling the player a rung has stopped being produced'
       assert.deepEqual(stopped, [], 'a healthy ladder had one of its rungs called dead');
     } finally {
       poller.stop(ALL);
+    }
+  });
+});
+
+/**
+ * ⛔⛔⛔ **A rung pays for a refusal it believes with the rung itself.**
+ *
+ * The single-rendition walk has asked what is behind a refused slot since 2026-08-06, because on
+ * this deployment a 404 usually is not the publisher's head: seventy-four of seventy-six refused
+ * slots already had a served slot behind them, seventy-three of those at +1. The ladder walk never
+ * asked. It recorded the refusal, the rung went unserved, and once its siblings had delivered
+ * `RUNG_DEATH_LAG_SEGMENTS` segments it did not, the rung was handed to `hls.removeLevel`, which
+ * has no undo inside the session.
+ *
+ * So the walk where a wrong answer costs one slower poll was the one checking, and the walk where
+ * the same wrong answer costs a rung for the rest of the broadcast was the one believing it. An
+ * outside reviewer watched 720p leave a ladder that way with all of its media on Swarm.
+ */
+describe('LadderFeedPoller asking what is behind a slot the gateway refuses', () => {
+  let state: ManifestStateManager;
+
+  beforeEach(() => {
+    state = new ManifestStateManager();
+  });
+
+  const GROUP = Topic.fromString('the-broadcast-a-viewer-linked-to').toString();
+  const HOLED = Topic.fromString('group-1-720p');
+  const LIVING = ['group-1-360p', 'group-1-480p', 'group-1-1080p'].map((name) => Topic.fromString(name));
+  const ALL = [HOLED, ...LIVING];
+
+  /** The one index of the holed rung the gateway will not serve, although the publisher wrote it. */
+  const HOLE_AT = 1;
+
+  /** Comfortably past the hole, and more than twice what the ladder must deliver to condemn a rung. */
+  const PUBLISHED_THROUGH = HOLE_AT + 1 + 2 * RUNG_DEATH_LAG_SEGMENTS;
+
+  function ladderAt404(): FakeGateway {
+    const gateway = new FakeGateway();
+    // A slot the publisher has not written yet rather than a transport error, which is a gateway
+    // fault and a different thing entirely.
+    gateway.missingSlotStatus = 404;
+    for (const topic of ALL) {
+      gateway.publishFeedHead(topic, 0, manifest(1));
+    }
+    return gateway;
+  }
+
+  /**
+   * Publishes one index to each of `rungs` and waits for the ladder to take it before the caller
+   * publishes the next.
+   *
+   * ⛔ **The pacing is the fixture's whole job here, and without it the fixture decides the test.**
+   * The probe is gated on the refused rung's own poll count, three of them, while the condemnation
+   * is gated on what the LADDER delivered past that rung, four segments. At a two millisecond poll
+   * interval a sibling with a backlog delivers four in well under one of the holed rung's polls, so
+   * an unpaced fixture condemns the rung before it has had a chance to ask, whatever the client
+   * does. A real broadcast writes one index per rung per segment interval, which is this.
+   */
+  async function publishAndWait(gateway: FakeGateway, index: number, rungs: readonly Topic[]): Promise<void> {
+    for (const topic of rungs) {
+      gateway.publishSoc(topic, index, manifest(index + 1));
+    }
+    await waitFor(
+      () => rungs.every((topic) => segmentCount(state, topic) === index + 1),
+      `every rung of ${rungs.length} to reach index ${index}`,
+    );
+  }
+
+  /**
+   * The measured shape, and the one the reviewer saw live: the slot is refused and the rung's own
+   * media is sitting at +1 the whole time.
+   */
+  it('steps onto the slot behind the refusal instead of waiting on one the gateway will not serve', async () => {
+    const gateway = ladderAt404();
+    const feedHealth = new FeedHealthTracker();
+    const stopped: string[] = [];
+    feedHealth.onRungStopped((rung) => stopped.push(rung));
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, feedHealth);
+    poller.start(OWNER, ALL, GROUP);
+
+    try {
+      // The hole. Every rung but this one is written at this index, and this one never is.
+      await publishAndWait(gateway, HOLE_AT, LIVING);
+      for (let index = HOLE_AT + 1; index <= PUBLISHED_THROUGH; index++) {
+        await publishAndWait(gateway, index, ALL);
+      }
+
+      assert.ok(
+        gateway.requests.includes(socPath(HOLED, HOLE_AT + 1)),
+        'the rung never asked what was behind the slot it was refused',
+      );
+      assert.deepEqual(stopped, [], 'a rung one request away from its own media was dropped from the ladder');
+    } finally {
+      poller.stop(ALL);
+    }
+  });
+
+  /**
+   * The control the case above needs. Asking is a bet that a refusal is a hole, and a rung that
+   * really has stopped loses the bet on every distance, so it has to be dropped exactly as it was
+   * before anything asked.
+   */
+  it('still drops a rung there is genuinely nothing behind, having asked first', async () => {
+    const gateway = ladderAt404();
+    const feedHealth = new FeedHealthTracker();
+    const stopped: string[] = [];
+    feedHealth.onRungStopped((rung) => stopped.push(rung));
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, feedHealth);
+    poller.start(OWNER, ALL, GROUP);
+
+    try {
+      // Nothing is ever written for the holed rung, at the hole or behind it, so every distance the
+      // probe reaches for is refused too.
+      for (let index = HOLE_AT; index <= PUBLISHED_THROUGH; index++) {
+        await publishAndWait(gateway, index, LIVING);
+      }
+
+      await waitFor(() => stopped.length > 0, 'the dead rung to be dropped');
+      assert.deepEqual(stopped, [HOLED.toString()]);
+      assert.ok(
+        gateway.requests.includes(socPath(HOLED, HOLE_AT + 1)),
+        'the rung was dropped without anyone asking what was behind its refusal',
+      );
+    } finally {
+      poller.stop(ALL);
+    }
+  });
+
+  /**
+   * The bet is settled by the time the run reaches the ceiling. By then it has been placed on every
+   * poll and lost every one, so whatever is missing is not within reach and carrying on costs four
+   * extra requests a poll for as long as the page stays open. The walk still asks for the slot it
+   * needs at full cadence, so a slot that becomes retrievable later is picked up anyway.
+   */
+  it('stops asking once it has asked on every poll and found nothing', async () => {
+    const topic = Topic.fromString('group-1-360p');
+    const gateway = new FakeGateway();
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const tracker = new FeedHealthTracker();
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, [topic]);
+
+    const probePaths = PROBE_DISTANCES.map((distance) => socPath(topic, HOLE_AT + distance));
+    const probesMade = () => gateway.requests.filter((path) => probePaths.includes(path)).length;
+    const asksForTheSlotItNeeds = () => gateway.requests.filter((path) => path === socPath(topic, HOLE_AT)).length;
+    /** More polls than one probe is worth of requests, so a probe that carried on would be visible. */
+    const POLLS_PAST_THE_CEILING = PROBE_DISTANCES.length + 1;
+
+    try {
+      // Strictly past the ceiling, so the last poll that was allowed to ask has already finished and
+      // the count below cannot be read in the middle of one.
+      await waitFor(
+        () => tracker.unservedPollsRecorded(topic.toString()) > UNSERVED_POLLS_PROBE_CEILING,
+        'the run of refusals to pass the ceiling',
+      );
+      const probedByTheCeiling = probesMade();
+      const askedByTheCeiling = asksForTheSlotItNeeds();
+
+      await waitFor(
+        () => asksForTheSlotItNeeds() >= askedByTheCeiling + POLLS_PAST_THE_CEILING,
+        'several more polls past the ceiling',
+      );
+
+      assert.ok(probedByTheCeiling > 0, 'nothing asked past the refusal at all, so this bound proves nothing');
+      assert.equal(probesMade(), probedByTheCeiling, 'the rung kept asking past a refusal it had already given up on');
+    } finally {
+      poller.stop([topic]);
+    }
+  });
+
+  /**
+   * The cost side, and the reason the wait before asking is not zero. A rung that is being served
+   * must add no request at all: it is refused on plenty of polls simply because it has caught up
+   * with the publisher, and asking on each of those would cost every viewer four requests a poll to
+   * find nothing.
+   */
+  it('asks for nothing past the slot it needs while the rung is being served', async () => {
+    const topic = Topic.fromString('group-1-1080p');
+    const gateway = new FakeGateway();
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const BACKLOG = 20;
+    for (let index = 1; index <= BACKLOG; index++) {
+      gateway.publishSoc(topic, index, manifest(index + 1));
+    }
+
+    // A poll interval the test cannot outlive, so the whole backlog is consumed without the run of
+    // refusals ever reaching the length a probe needs. What is asserted is then the client's rule
+    // rather than how fast the machine happened to be.
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, 10_000);
+    poller.start(OWNER, [topic]);
+
+    try {
+      await waitFor(() => segmentCount(state, topic) === BACKLOG + 1, 'the whole backlog');
+
+      const contiguous = new Set(Array.from({ length: BACKLOG + 1 }, (_, step) => socPath(topic, step + 1)));
+      const beyond = gateway.requests.filter((path) => path.startsWith('soc/') && !contiguous.has(path));
+      assert.deepEqual(beyond, [], 'a rung that was being served went looking past the publisher');
+    } finally {
+      poller.stop([topic]);
     }
   });
 });

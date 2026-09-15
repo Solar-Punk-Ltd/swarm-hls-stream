@@ -17,7 +17,14 @@ import {
   StreamStatus,
 } from '../src/types.js';
 
-import { FakeFeedHead, makeFakeBee, makeFakeCatalog, makeFakeRecoveryStore, TEST_ANCHOR } from './helpers/fakes.js';
+import {
+  FakeFeedHead,
+  makeFakeBee,
+  makeFakeCatalog,
+  makeFakeRecoveryStore,
+  TEST_ANCHOR,
+  testPublisher,
+} from './helpers/fakes.js';
 
 /**
  * ## Scenario H, as a unit: a finalize that comes back after a crash must not buy the recording twice
@@ -74,7 +81,7 @@ interface RecoveredUploader {
 }
 
 interface RecoveredOptions {
-  /** What the manifest feed answers. `undefined` throws a 404, which is a feed nothing ever wrote. */
+  /** What the manifest feed answers. `undefined` throws a 404, which is a head that will not retrieve. */
   feedHead?: () => FakeFeedHead | null;
   catalog?: StreamCatalog;
   ladder?: LadderMembership;
@@ -118,11 +125,10 @@ function makeRecovered(options: RecoveredOptions = {}): RecoveredUploader {
 
   const uploader = new StreamUploader({
     anchor: TEST_ANCHOR,
-    bee,
+    publisher: testPublisher(bee),
     streamCatalog: options.catalog ?? makeFakeCatalog(),
     recoveryStore,
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     redundancyLevel: 0,
     streamId: STREAM_ID,
     streamTopic: RUNG_TOPIC,
@@ -231,21 +237,65 @@ describe('a single-rendition finalize that comes back after a crash', () => {
   });
 
   /**
+   * ⛔⛔⛔ The 404 that read as an empty feed, which is the 503 mistake below in its other shape. A
+   * 404 settles the question only for a reader that could be looking at a feed nobody ever wrote.
+   * This one cannot be: it runs only for a stream holding a SOC index it wrote itself, so the feed
+   * is known non-empty and a 404 is a chunk that will not retrieve right now. Answered "nothing was
+   * published" it buys the closing playlist and the recording a second time over a recording that
+   * may already be in the feed, which is the measured double publish of scenario H reinstated.
+   *
    * ⚠️ The saved index is left at its default so the read actually happens. This test used to pass
    * `socIndex: null`, which short-circuits `publishedRecordingIndex` before any feed is touched, so
-   * it proved the guard's other branch and said nothing at all about what a 404 does. The read count
-   * is asserted for that reason: it is the only thing separating the two.
+   * it proved the guard's other branch and said nothing at all about what a 404 does. That branch
+   * now has a test of its own, two below.
+   *
+   * ⏱️ **Spends the whole of `FEED_HEAD_READ_WINDOW_MS` in real time**, and for the same reason the
+   * 503 sibling does: proving a 404 is not short-circuited means letting the window run out.
    */
-  it('runs the full publish when the feed holds nothing at all', async () => {
-    const { uploader, published, headReads } = makeRecovered();
+  it('defers the finalize when a feed this stream is known to have written answers 404', async () => {
+    const { uploader, published, removed, headReads } = makeRecovered();
 
-    await uploader.notifyStop();
+    await assert.rejects(
+      () => uploader.notifyStop(),
+      (error: unknown) => {
+        const message = String(error);
+        assert.match(message, /did not read within/, 'a deferral has to say what it could not read');
+        assert.match(message, /socIndex/, 'and name the one hand an operator has if the feed really is empty');
+        return true;
+      },
+    );
 
-    assert.equal(headReads(), 1, 'the head was never asked, so the 404 answer was never exercised');
-    assert.equal(published.length, 2, 'a feed nothing was ever written to leaves the whole publish still to do');
+    assert.ok(headReads() > 1, 'a 404 answered on the first attempt is a 404 being read as an empty feed');
+    assert.deepEqual(published, [], 'a read it could not complete must never become a second recording');
+    assert.deepEqual(removed, [], 'the deferral keeps the entry, so the next boot asks the question again');
   });
 
-  /** The branch the test above used to cover by accident, kept deliberately and on its own. */
+  /**
+   * The other half of the retry, and the reason it is a retry rather than an immediate deferral: a
+   * 404 that clears inside the window must not cost the broadcast its finalize either. The finalize
+   * then runs off the head that came back, never off the answer that was refused.
+   */
+  it('finalizes against the head that came back when a 404 clears inside the window', async () => {
+    let refused = false;
+    const { uploader, published, removed, headReads } = makeRecovered({
+      feedHead: () => {
+        if (refused) {
+          return { index: 9, manifest: PLAYLISTS.vod };
+        }
+        refused = true;
+        return null;
+      },
+    });
+
+    const lines = await logLinesDuring(() => uploader.notifyStop());
+
+    assert.equal(headReads(), 3, 'the refused read, the retry that answered, and the playlist at its index');
+    assert.deepEqual(published, [], 'the recording was already in the feed, so nothing may be bought again');
+    assert.equal(linesHolding(lines, finalizeResumed(STREAM_ID, 9)), 1, 'the resume names the head that came back');
+    assert.deepEqual(removed, [STREAM_ID], 'a finished broadcast must leave no recovery entry');
+  });
+
+  /** The branch the 404 test above used to cover by accident, kept deliberately and on its own. */
   it('never asks the feed when this stream committed no manifest before the crash', async () => {
     const { uploader, published, headReads } = makeRecovered({ socIndex: null });
 

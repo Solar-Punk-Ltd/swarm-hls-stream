@@ -48,6 +48,11 @@ function makeTrackedPlayer(targetLatency: number | null = LIVE_SYNC_DURATION_S) 
       return latest;
     },
     poll: () => vi.advanceTimersByTime(POLL_INTERVAL_MS),
+    media: (type: 'playing' | 'waiting' | 'pause' | 'ended') => {
+      const listener = mediaListeners.get(type);
+      assert.ok(listener, `the tracker never subscribed to the media event ${type}`);
+      listener();
+    },
     setTargetLatency: (value: number | null) => {
       hls.targetLatency = value;
     },
@@ -208,5 +213,164 @@ describe('switch frequency is a rate over elapsed time, not over playback time',
       player.metrics().qualitySwitchPerMin > 0,
       'switch frequency must divide by elapsed time, so it reports a rate with no playback time banked',
     );
+  });
+});
+
+/**
+ * The ratio divided stall time by playback time, and the tracker banks those into separate counters:
+ * playback time runs between `playing` and the next `waiting` or `pause`, stall time between
+ * `waiting` and the next `playing`. No millisecond is ever in both, so the quotient was not a share
+ * of anything, and a session that stalled longer than it played read above 100% on the overlay,
+ * which does not clamp.
+ *
+ * Reported by a cross-provider review on 2026-09-15. The same error was found and fixed for the
+ * quality switch rate, in the line directly below this one, and the ratio was left on the old
+ * denominator.
+ */
+describe('the rebuffering ratio is a share of the time the viewer sat there', () => {
+  it('divides by watched time, so a session that stalled more than it played stays under 100%', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    vi.advanceTimersByTime(3000);
+    player.media('playing');
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.rebufferingDurationMs, 3000, 'the stall was not banked');
+    assert.equal(metrics.playbackTimeMs, 1500, 'playback time picked up the stall');
+    assert.equal(metrics.rebufferingRatio, 3000 / 4500);
+    assert.ok(metrics.rebufferingRatio <= 1, 'a share of the session cannot exceed the session');
+  });
+
+  /**
+   * Why this is not simply the wall clock, which is what the switch rate uses. A viewer who pauses
+   * for a minute has not rebuffered for a minute. Paused time is banked into neither counter, so it
+   * lands in neither half of this quotient.
+   */
+  it('leaves a deliberate pause out of the denominator', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('pause');
+    vi.advanceTimersByTime(60_000);
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.poll();
+
+    assert.equal(player.metrics().rebufferingCount, 0, 'a pause was counted as a rebuffer');
+    assert.equal(player.metrics().rebufferingRatio, 0);
+  });
+
+  /**
+   * What the two cases above cannot tell apart, found by running real mutants against the file on
+   * 2026-09-15. Neither has any time that is off both counters while the numerator is non-zero: the
+   * first pauses nothing, and the second has a zero numerator. So replacing the denominator with the
+   * session wall clock, or with any multiple of playback time, passed both.
+   *
+   * This one stalls and then pauses, which puts a minute in the wall clock and in neither counter.
+   * The wall clock reads 4.6% here and three times playback reads 40%, against the 54.5% that the
+   * time the viewer actually sat there gives.
+   */
+  it('rules out the wall clock as the denominator, with a pause taken after a stall', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    vi.advanceTimersByTime(3000);
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('pause');
+    vi.advanceTimersByTime(60_000);
+    player.media('playing');
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.playbackTimeMs, 2500);
+    assert.equal(metrics.rebufferingDurationMs, 3000);
+    assert.equal(metrics.rebufferingRatio, 3000 / 5500, 'the paused minute reached the denominator');
+  });
+});
+
+/**
+ * Both halves of the ratio used to freeze for exactly as long as the viewer did. Stall time was
+ * banked only on the `playing` that ended the stall, and playback time stopped accruing at the
+ * `waiting` that started it, so a viewer who played a minute and then froze read `Count 1,
+ * Duration 0ms, Ratio 0.0%` for the whole freeze. On a broadcast that never came back that was the
+ * final reading of the run.
+ *
+ * Playback time already had the answer one field over: its poll adds the open interval to the banked
+ * total instead of reporting the banked total alone. The open stall is added the same way.
+ *
+ * Reported by two independent reviewers on 2026-09-15.
+ */
+describe('a stall counts while it is still happening, not only once it ends', () => {
+  it('reports the stall so far, in the duration and in the ratio, while the viewer is still frozen', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    // No 'playing' after this. The reading below is taken with the viewer still frozen, which is the
+    // only reading a broadcast that never comes back ever gets.
+    vi.advanceTimersByTime(2500);
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.rebufferingDurationMs, 3000, 'the open stall was left out of the duration');
+    assert.equal(metrics.playbackTimeMs, 1000);
+    assert.equal(metrics.rebufferingRatio, 3000 / 4000, 'the open stall was left out of the denominator');
+  });
+
+  // The guard on the reading above. The open stall is added at the poll and banked at the `playing`,
+  // and counting it in both places would double every stall a viewer recovers from.
+  it('does not count the stall twice once playback resumes', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    vi.advanceTimersByTime(2500);
+    player.poll();
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.rebufferingDurationMs, 3000, 'the stall was banked on top of itself');
+    assert.equal(metrics.playbackTimeMs, 2500);
+    assert.equal(metrics.rebufferingRatio, 3000 / 5500);
+  });
+
+  /**
+   * The other half of the same defect, and the expensive half. `pause` closed the open playback
+   * interval and left the open stall running, so a viewer who froze for half a second, gave up and
+   * paused for a minute, then came back, had the whole minute charged to rebuffering at the next
+   * `playing`. Measured on the old code: 60500ms banked against 62000ms watched, an overlay reading
+   * of 97.6% for a viewer who lost half a second.
+   *
+   * A pause ends the stall the same way it ends playback, so the paused minute lands in neither half.
+   */
+  it('banks a stall up to a pause, and charges the paused minute to neither half', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    vi.advanceTimersByTime(500);
+    player.media('pause');
+    vi.advanceTimersByTime(60_000);
+    player.media('playing');
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.rebufferingCount, 1, 'one freeze, counted once');
+    assert.equal(metrics.rebufferingDurationMs, 500, 'the paused minute was charged to rebuffering');
+    assert.equal(metrics.playbackTimeMs, 1500, 'the paused minute was charged to playback');
+    assert.equal(metrics.rebufferingRatio, 0.25);
   });
 });

@@ -15,6 +15,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
+  HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
@@ -44,11 +45,21 @@ import { LOOPBACK_HOST } from './helpers/loopbackServer.js';
 
 const STREAM_ID = 'live/one';
 
+/** One refused publisher as `/health` serves it, which is a routing entry plus what bee answered. */
+interface RefusedPublisherBody {
+  rung: string;
+  url: string;
+  batch: string;
+  statuses: number[];
+  firstRefusedAt: number;
+}
+
 interface HealthBody {
   status?: string;
   reasons?: string[];
   activeStreams?: number;
   maxConsecutiveManifestFailures?: number;
+  maxConsecutiveSegmentFailures?: number;
 }
 
 function hasActiveStreams(count: number): (body: unknown) => boolean {
@@ -115,6 +126,9 @@ describe('api server over http (S0.7 test layer)', () => {
         'openingSegmentsWithheld',
         'segmentsNeverNamed',
         'quarantinedRecoveryEntries',
+        'fragmentMismatchStreams',
+        'postageRefusedPublishers',
+        'refusedPublishers',
         'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
@@ -149,6 +163,47 @@ describe('api server over http (S0.7 test layer)', () => {
     assert.ok(
       (body as { publishers: unknown[] }).publishers.length > 0,
       'an empty list would make every deployment look the same, which is the failure this closes',
+    );
+  });
+
+  /**
+   * ⛔ `postage_refused` says a batch somewhere on this stage has stopped paying, and on a four rung
+   * ladder that is four candidates. Which one decides everything an operator does next, because each
+   * rung's batch is bought and topped up separately, so the reason has to arrive with the rung, the
+   * node and the batch beside it rather than sending someone to read four nodes.
+   *
+   * Rendered off the pool's own routing, so what a reader is told here is character for character
+   * what the `publishers` block above already tells them: the url minus any credential, and a batch
+   * id truncated to enough to tell two apart. What is safe to say is `BeePublisherPool.routing`'s
+   * business and is pinned in its own tests.
+   */
+  it('names the rung, node and batch of the publisher whose postage was refused', async () => {
+    const orchestrator = makeTestOrchestrator({}, { uploadData: rejectImmediately });
+    const api = await start(orchestrator);
+    const askedAt = Date.now();
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).reasons?.includes(HEALTH_REASON_POSTAGE_REFUSED) === true,
+    );
+    const refused = (body as { refusedPublishers: RefusedPublisherBody[] }).refusedPublishers;
+
+    assert.equal(status, 503);
+    assert.equal(refused.length, 1, 'a reason with nobody named against it sends an operator to read every node');
+    const { firstRefusedAt, ...identity } = refused[0];
+    assert.deepEqual(identity, {
+      ...orchestrator.publisherRouting()[0],
+      // 400 is what the fake answers. The status is carried rather than interpreted, because which
+      // one bee gives for a batch that has filled is not settled and a guess would name the wrong fix.
+      statuses: [400],
+    });
+    assert.ok(
+      firstRefusedAt >= askedAt && firstRefusedAt <= Date.now(),
+      `the first refusal has to be datable against the log: ${firstRefusedAt}`,
     );
   });
 
@@ -721,7 +776,12 @@ describe('GET /health status (S2.1)', () => {
     );
 
     assert.equal(status, 503);
-    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+    assert.deepEqual(
+      (body as HealthBody).reasons,
+      [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE, HEALTH_REASON_POSTAGE_REFUSED],
+      'the symptom and its diagnosis: bee refused this write with a status nothing retries, which is ' +
+        'the postage side rather than a node that went away',
+    );
   });
 
   it('reports a stalled stream even while a sibling stream is feeding', async () => {
@@ -900,9 +960,16 @@ describe('GET /health status (S2.1)', () => {
     assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_LOSS]);
   });
 
-  it('clears the segment failure count once a segment lands again', async () => {
+  it('clears the segment failure count once a segment lands again, and keeps the refusal under it', async () => {
     // The counter is documented as consecutive rather than latching. Without this the threshold of
     // one would pin a stream at 503 for its whole life after a single transient drop.
+    //
+    // ⛔ The service nonetheless stays degraded here, and that is the fix rather than a regression.
+    // The fake answers with a status the upload policy will not retry, which is bee refusing the write
+    // rather than a node that went away, and a batch that has started refusing goes on refusing for the
+    // life of the process however many segments land in between: `BEE_PUBLISHERS` is read once at
+    // start. What clears this reading is a failure carrying no status at all, which is a spent retry
+    // window and really is transient.
     let attempts = 0;
     const failOnlyTheFirst = () => {
       attempts += 1;
@@ -918,13 +985,22 @@ describe('GET /health status (S2.1)', () => {
       '/health',
       (received) => (received as HealthBody).status === HEALTH_DEGRADED,
     );
-    assert.deepEqual((degraded.body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+    assert.deepEqual((degraded.body as HealthBody).reasons, [
+      HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
+      HEALTH_REASON_POSTAGE_REFUSED,
+    ]);
 
     await postSegment(api, 1);
-    const recovered = await api.requestUntil('/health', (received) => (received as HealthBody).status === HEALTH_OK);
+    const recovered = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).maxConsecutiveSegmentFailures === 0,
+    );
 
-    assert.equal(recovered.status, 200, 'a successful segment must clear the count, not leave it latched');
-    assert.deepEqual((recovered.body as HealthBody).reasons, []);
+    assert.deepEqual(
+      (recovered.body as HealthBody).reasons,
+      [HEALTH_REASON_POSTAGE_REFUSED],
+      'a successful segment must clear the count, not leave it latched, and must not clear the refusal',
+    );
   });
 
   it('reports degraded and 503 when a registered stream sends no segments', async () => {

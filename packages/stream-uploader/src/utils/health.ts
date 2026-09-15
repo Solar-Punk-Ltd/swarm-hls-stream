@@ -1,7 +1,9 @@
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
+  HEALTH_REASON_FRAGMENT_MISMATCH,
   HEALTH_REASON_INGEST_REFUSED,
+  HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
@@ -50,6 +52,17 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
 
   if (signals.maxConsecutiveSegmentFailures >= SEGMENT_FAILURE_THRESHOLD) {
     reasons.push(HEALTH_REASON_SEGMENT_UPLOAD_FAILURE);
+  }
+
+  // The diagnosis for the symptom above, which is why it sits next to it, and it is latched rather
+  // than counted because the two answer different questions. The counter above is consecutive and per
+  // stream, so it clears on the next segment that lands and it disappears entirely when the broadcast
+  // ends: a batch filling bucket by bucket made it flap, and a batch that was dead when the stream
+  // stopped left `/health` reporting `ok` while the finalize failed on that same batch, no recording
+  // was published and the catalog went on saying `live`. This one is a fact about a publisher rather
+  // than about a stream, so no threshold and no window can apply to it.
+  if (signals.postageRefusedPublishers > 0) {
+    reasons.push(HEALTH_REASON_POSTAGE_REFUSED);
   }
 
   // Two triggers for one reason, because they answer different questions. The ratio says the queue is
@@ -103,6 +116,14 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   // survives restarts and goes quiet exactly when the file does.
   if (signals.quarantinedRecoveryEntries > 0) {
     reasons.push(HEALTH_REASON_UNRECOVERABLE_STREAM);
+  }
+
+  // No threshold, because the count already is one: a stream reaches this signal only after eight of
+  // its segments have been measured and their median has missed the configured length. Nothing about
+  // the running process is failing while it is set, which is what kept it invisible. The damage is
+  // in the dates, and every segment published from here carries it into a recording that keeps it.
+  if (signals.fragmentMismatchStreams > 0) {
+    reasons.push(HEALTH_REASON_FRAGMENT_MISMATCH);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

@@ -24,6 +24,9 @@ export function createHealthRouter(streamOrchestrator: StreamOrchestrator, engin
       // apart from a stage pushing every rung through one, which nothing outside the process could
       // see before. See BeePublisherPool.routing for what is and is not safe to say here.
       publishers: streamOrchestrator.publisherRouting(),
+      // Which of those has stopped paying, beside the list of all of them, because `postage_refused`
+      // on its own leaves an operator four rungs to go and read. Empty on a healthy service.
+      refusedPublishers: streamOrchestrator.refusedPublishers(),
     });
   });
 

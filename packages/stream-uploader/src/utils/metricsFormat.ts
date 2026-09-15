@@ -124,6 +124,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.segmentDurationsUnreadTotal,
     },
     {
+      name: 'postage_refused_publishers',
+      type: 'gauge',
+      help: 'Publishers, meaning one Bee node and the postage batch a rung spends on it, that bee has refused a paid write on with a status the uploader does not retry. That is a batch which has filled or expired, and it does not recover: which batch a rung spends is read once at start, so this clears only when a redeploy replaces the process with a different batch id. A gauge rather than a counter because it is how many rungs have lost their postage rather than how many segments that cost, which is rung_segments_dropped_total. The rung, the node and the batch are named on /health under refusedPublishers.',
+      value: snapshot.postageRefusedPublishers,
+    },
+    {
       name: 'last_segment_timestamp_seconds',
       type: 'gauge',
       help: 'Unix time of the newest segment that reached Swarm. Zero while none has.',

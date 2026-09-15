@@ -54,8 +54,8 @@ export function getErrorMessage(error: unknown): string {
  * ⛔⛔ **Not for a reader that already knows the feed is non-empty.** This answers "could the feed be
  * empty" for a caller with nothing else to go on. `StreamUploader.readManifestFeedHead` has something
  * else: it runs only for a stream holding a SOC index it wrote itself, so an empty feed is already
- * ruled out and a 503 there is a warming node rather than an answer. That path uses its own
- * `isFeedNeverWritten`, which takes 404 alone. Taking 503 there republished a paid-for recording.
+ * ruled out and neither status is an answer there. That path takes 404 and 503 alike as a node it
+ * could not read and retries both. Answering "empty" to either republished a paid-for recording.
  */
 export function isFeedAbsent(error: unknown): boolean {
   return error instanceof BeeResponseError && (error.status === 404 || error.status === 503);

@@ -60,15 +60,27 @@ export interface FakeUploads {
    * What the head of a stream's manifest feed answers, which is what a finalize after a crash asks
    * before it publishes anything. See `StreamUploader.publishedRecordingIndex`.
    *
-   * Returning `null`, which is also the default, is a feed nothing was ever written to: bee answers
-   * that with a 404 and the finalize takes the ordinary full path. Every test that does not set this
-   * wants exactly that, so a fake left alone behaves the way it did before the read existed.
+   * Returning `null` is bee answering 404. The default is {@link CRASHED_MID_BROADCAST}.
    */
   feedHead?: () => FakeFeedHead | null;
 }
 
 /** Bee's answer for a feed topic nothing has ever been written to. */
 const feedNotFound = () => new BeeResponseError('GET', '/feeds', 'Not Found.', undefined, 404, 'Not Found');
+
+/**
+ * What an untouched fake holds at the head of a manifest feed: the live playlist a crash leaves
+ * there whenever it landed before the recording went out.
+ *
+ * ⛔ **A 404 was the default until 2026-09-15, and it now costs 15 seconds a test.** A recovered
+ * stream holds a SOC index it wrote itself, so `StreamUploader.readManifestFeedHead` reads a 404
+ * there as a chunk that will not retrieve, retries it for the whole of `FEED_HEAD_READ_WINDOW_MS`
+ * and then defers the finalize. Every recovery test would spend that window to reach a finalize none
+ * of them is about. A live playlist reaches the same full publish at once, because the discriminator
+ * is `#EXT-X-PLAYLIST-TYPE:VOD` and this carries neither that nor an index anything asserts on. A
+ * test about the 404, or about a recording already in the feed, says so with `feedHead` of its own.
+ */
+const CRASHED_MID_BROADCAST: FakeFeedHead = { index: 3, manifest: '#EXTM3U\n#EXT-X-VERSION:3\n' };
 
 /**
  * What the no-index read answers instead of the playlist, because a real recording is bigger than
@@ -106,7 +118,7 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
       // {@link OVERSIZED_PAYLOAD_WRAPPER}. A read at an index this feed is not at is a defect rather
       // than an empty feed, so it is refused rather than answered.
       downloadPayload: async (opts?: { index?: FeedIndex }) => {
-        const head = uploads.feedHead?.() ?? null;
+        const head = uploads.feedHead ? uploads.feedHead() : CRASHED_MID_BROADCAST;
         if (head === null || (opts?.index !== undefined && Number(opts.index.toBigInt()) !== head.index)) {
           throw feedNotFound();
         }
@@ -206,6 +218,8 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     openingSegmentsWithheld: 0,
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
+    fragmentMismatchStreams: 0,
+    postageRefusedPublishers: 0,
     ...overrides,
   };
 }
@@ -226,6 +240,7 @@ export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): M
     segmentDurationsUnreadTotal: 0,
     authRejectionsTotal: 0,
     takeoversRefusedTotal: 0,
+    postageRefusedPublishers: 0,
     segmentsUploadedByRung: {},
     segmentsDroppedByRung: {},
     lastSegmentAt: null,
@@ -299,8 +314,18 @@ export function toRecoveryFileId(streamId: string): string {
  */
 const FAKE_BEE_URL = 'http://fake-bee:1633';
 
+/**
+ * The node and batch a test uploader publishes through, wrapped around whichever fake Bee the test
+ * built. Every uploader test is a single-node deployment, so the rung and the url are the same ones
+ * {@link makeFakePublishers} hands the orchestrator, and only the batch id is worth overriding: it is
+ * what a refusal is reported under.
+ */
+export function testPublisher(bee: Bee, stamp = 'stamp'): BeePublisher {
+  return { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp, bee };
+}
+
 function makeFakePublishers(bee: Bee): BeePublisherPool {
-  const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp: 'stamp', bee };
+  const publisher = testPublisher(bee);
   return {
     coordinator: () => publisher,
     forRung: () => publisher,
