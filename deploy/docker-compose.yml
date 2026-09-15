@@ -204,6 +204,13 @@ services:
       # publisher authentication rather than rejecting everything, so an existing deployment keeps
       # working across the upgrade that introduced it. See SEC-28 and `publish-key.sh`.
       PUBLISH_KEY_SECRET: ${PUBLISH_KEY_SECRET:-}
+      # Admin mode, which ADMIN_API_URL alone turns on: set, the uploader publishes each stream on
+      # the topic the admin minted and reports state back instead of writing the catalog itself;
+      # empty leaves the deployment standalone, exactly as it was. The token is required whenever the
+      # URL is set, so a half-configured admin deployment refuses to start rather than running as a
+      # standalone one. Both default to empty so an existing deployment upgrades unchanged.
+      ADMIN_API_URL: ${ADMIN_API_URL:-}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
       API_PORT: ${API_PORT:-3000}
       STATE_DIR: /app/state
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-100}
