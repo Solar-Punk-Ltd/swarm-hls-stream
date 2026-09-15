@@ -461,8 +461,8 @@ export class LadderFeedPoller {
     entry.misses++;
     if (entry.misses === MISSES_BEFORE_WARNING) {
       console.warn(
-        `Feed ${entry.hexTopic} has not advanced in ${entry.misses} attempts; the stream may have ` +
-          `ended or the gateway may be unreachable.`,
+        `Feed ${entry.hexTopic} has not advanced in ${entry.misses} attempts. The stream may have ` +
+          `ended, or the gateway may be unreachable.`,
         error,
       );
     }
