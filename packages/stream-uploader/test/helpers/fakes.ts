@@ -206,6 +206,7 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     openingSegmentsWithheld: 0,
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
+    fragmentMismatchStreams: 0,
     ...overrides,
   };
 }

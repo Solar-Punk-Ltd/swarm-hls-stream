@@ -115,6 +115,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'openingSegmentsWithheld',
         'segmentsNeverNamed',
         'quarantinedRecoveryEntries',
+        'fragmentMismatchStreams',
         'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',

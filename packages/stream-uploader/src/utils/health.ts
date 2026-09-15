@@ -1,6 +1,7 @@
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
+  HEALTH_REASON_FRAGMENT_MISMATCH,
   HEALTH_REASON_INGEST_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
@@ -103,6 +104,14 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   // survives restarts and goes quiet exactly when the file does.
   if (signals.quarantinedRecoveryEntries > 0) {
     reasons.push(HEALTH_REASON_UNRECOVERABLE_STREAM);
+  }
+
+  // No threshold, because the count already is one: a stream reaches this signal only after eight of
+  // its segments have been measured and their median has missed the configured length. Nothing about
+  // the running process is failing while it is set, which is what kept it invisible. The damage is
+  // in the dates, and every segment published from here carries it into a recording that keeps it.
+  if (signals.fragmentMismatchStreams > 0) {
+    reasons.push(HEALTH_REASON_FRAGMENT_MISMATCH);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

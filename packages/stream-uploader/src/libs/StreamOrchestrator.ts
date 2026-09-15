@@ -46,6 +46,17 @@ import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } fro
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
+import {
+  FRAGMENT_MISMATCH,
+  FRAGMENT_PUBLISHER_GOP,
+  FRAGMENT_UNDECIDED,
+  fragmentLengthNotice,
+  fragmentMismatchReport,
+  FragmentStage,
+  FragmentWatch,
+  UNWATCHED_FRAGMENT,
+  watchFragment,
+} from './fragmentAgreement.js';
 import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
@@ -238,6 +249,15 @@ export class StreamOrchestrator {
   private stallReapers = new Map<string, Timer>();
   /** Streams already reported as having unreadable segment durations, so the warning fires once each. */
   private unreadDurationReported = new Set<string>();
+  /**
+   * Per stream, what its opening segments measured and what that says about the stage.
+   *
+   * An entry appears on the first segment this could measure and settles on a verdict eight
+   * readings later. The verdict is what `/health` reads, and it is latched for the life of the
+   * stream rather than aged out: nothing an already-running broadcast can do makes the dates it has
+   * published correct again. See {@link noteFragmentLength}.
+   */
+  private fragmentWatches = new Map<string, FragmentWatch>();
   /**
    * Video streams still waiting for their first frame, with how much media has been withheld so far.
    *
@@ -540,6 +560,10 @@ export class StreamOrchestrator {
     // says it again. Whether an engine's segments are readable is a fact about the session producing
     // them, and the id can be handed to a different engine entirely.
     this.unreadDurationReported.delete(streamId);
+    // Same reasoning, and it is what keeps the latch from outliving what it describes. The verdict
+    // is about the media one session produced, the next session on this id is a fresh measurement,
+    // and a redeploy between the two is the whole remedy the fault names.
+    this.fragmentWatches.delete(streamId);
     // Same reasoning as the line above, and the same hazard OBS-19 was: whether a broadcast has shown
     // a frame is a fact about the session, and the id can be handed straight to another one.
     this.withheldOpeningSeconds.delete(streamId);
@@ -761,6 +785,7 @@ export class StreamOrchestrator {
     this.streamActivityAt.set(streamId, this.clock.now());
 
     const reading = measureSegmentDuration(data, duration);
+    this.noteFragmentLength(streamId, reading);
     if (this.withholdOpeningSegment(streamId, segmentIndex, reading)) {
       // Accepted, because the engine must not retry: the segment reached this service intact and
       // there is nothing for a redelivery to fix. The discontinuity that may have come with it is
@@ -781,6 +806,59 @@ export class StreamOrchestrator {
     }
     uploader.handleSegment(segmentIndex, this.mediaDuration(streamId, segmentIndex, duration, reading), data);
     return { accepted: true };
+  }
+
+  /** What this deployment asked the engine to cut at, and whether its stage has to deliver it. */
+  private fragmentStage(): FragmentStage {
+    return { configuredSeconds: this.config.fragmentSeconds, underLadder: this.config.ladder !== undefined };
+  }
+
+  /**
+   * Fold one segment's measured length into what this stream has measured so far, and report the
+   * verdict the moment there is one.
+   *
+   * ⛔ **Only a reading the segment's own timestamps produced.** A fallback reading is the engine's
+   * declared duration, and SRS's claim was measured at 0.3205s against 0.2667s of media on
+   * 2026-08-06. Counting those would report the same deployment differently depending on how
+   * readable its bytes happened to be, which is the shape of instrument defect this whole comparison
+   * exists to catch.
+   *
+   * Reported once because {@link watchFragment} returns a settled watch unchanged, so the only call
+   * that changes the verdict is the one that settles it.
+   */
+  private noteFragmentLength(streamId: string, reading: SegmentDurationReading): void {
+    if (reading.fellBackBecause !== null) {
+      return;
+    }
+
+    const stage = this.fragmentStage();
+    const before = this.fragmentWatches.get(streamId) ?? UNWATCHED_FRAGMENT;
+    const after = watchFragment(before, reading.seconds, stage);
+    this.fragmentWatches.set(streamId, after);
+
+    const hasJustSettled = before.verdict.kind === FRAGMENT_UNDECIDED && after.verdict.kind !== FRAGMENT_UNDECIDED;
+    if (!hasJustSettled) {
+      return;
+    }
+
+    if (after.verdict.kind === FRAGMENT_MISMATCH) {
+      this.logger.error(
+        `[StreamOrchestrator] ${fragmentMismatchReport(streamId, after.verdict.measuredSeconds, stage)}`,
+      );
+    } else if (after.verdict.kind === FRAGMENT_PUBLISHER_GOP) {
+      this.logger.warn(`[StreamOrchestrator] ${fragmentLengthNotice(streamId, after.verdict.measuredSeconds, stage)}`);
+    }
+  }
+
+  /** Live streams whose segments are not the length this uploader dates them by. */
+  private getFragmentMismatchStreams(): number {
+    let mismatched = 0;
+    for (const watch of this.fragmentWatches.values()) {
+      if (watch.verdict.kind === FRAGMENT_MISMATCH) {
+        mismatched++;
+      }
+    }
+    return mismatched;
   }
 
   /**
@@ -1625,6 +1703,7 @@ export class StreamOrchestrator {
       openingSegmentsWithheld: counters.openingSegmentsWithheldTotal,
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
       quarantinedRecoveryEntries: this.recoveryStore.listQuarantined().length,
+      fragmentMismatchStreams: this.getFragmentMismatchStreams(),
     };
   }
 

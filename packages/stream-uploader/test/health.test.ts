@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
+  HEALTH_REASON_FRAGMENT_MISMATCH,
   HEALTH_REASON_INGEST_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
@@ -44,6 +45,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     openingSegmentsWithheld: 0,
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
+    fragmentMismatchStreams: 0,
     ...overrides,
   };
 }
@@ -177,6 +179,7 @@ describe('health wire contract', () => {
         HEALTH_REASON_STATE_NOT_PERSISTED,
         HEALTH_REASON_INGEST_REFUSED,
         HEALTH_REASON_UNRECOVERABLE_STREAM,
+        HEALTH_REASON_FRAGMENT_MISMATCH,
       ],
       [
         'segment_upload_failure',
@@ -188,6 +191,7 @@ describe('health wire contract', () => {
         'state_not_persisted',
         'ingest_refused',
         'unrecoverable_stream',
+        'fragment_mismatch',
       ],
     );
   });
@@ -495,5 +499,37 @@ describe('deriveHealthStatus quarantined recovery entries', () => {
 
     assert.equal(report.status, HEALTH_DEGRADED);
     assert.deepEqual(report.reasons, [HEALTH_REASON_UNRECOVERABLE_STREAM]);
+  });
+});
+
+describe('deriveHealthStatus fragment mismatch', () => {
+  it('is ok while every stream is cutting the length it is dated by', () => {
+    const report = deriveHealthStatus(signals({ fragmentMismatchStreams: 0 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  /**
+   * No threshold, because the count already is one: a stream reaches this signal only after eight of
+   * its measured segments have missed the configured length. See `libs/fragmentAgreement.ts`.
+   */
+  it('degrades on the first stream whose segments are not that length', () => {
+    const report = deriveHealthStatus(signals({ fragmentMismatchStreams: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_MISMATCH]);
+  });
+
+  /**
+   * Nothing about the running process is failing while this is set, which is what kept it invisible
+   * for two deployments. The damage is in the dates every segment from here carries into a recording.
+   */
+  it('stays degraded on a stream that is otherwise entirely healthy', () => {
+    const report = deriveHealthStatus(
+      signals({ fragmentMismatchStreams: 4, maxConsecutiveSegmentFailures: 0, queueBacklogSeconds: 0 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_MISMATCH]);
   });
 });
