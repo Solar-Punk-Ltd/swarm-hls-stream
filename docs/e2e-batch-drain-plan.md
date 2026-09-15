@@ -61,7 +61,7 @@ Bee refuses to create a batch that would live under 24 hours: the stage's chain 
 inside a test. Filling is. The smallest batch bee allows, depth 17, has two stamp slots per bucket
 across 65536 buckets and stops accepting chunks when any bucket gets a third. That happens after
 roughly 3000 chunks, about 12 MB, which the 1080p rung produces in about 20 seconds. Buying that batch
-with two days of life, so the uploader's own 1 hour startup floor is cleared with margin, costs at
+with two days of life, so the uploader's own 12 hour startup floor is cleared with margin, costs at
 today's chain price 84370 PLUR per chunk per block:
 
 | Item                               | Figure          |

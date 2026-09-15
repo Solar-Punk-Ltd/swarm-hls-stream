@@ -29,15 +29,20 @@ const MAX_CHEQUEBOOK_MIN_BZZ = 1000;
 /**
  * How much time a postage batch must have left before the uploader will start on it.
  *
- * An hour, which is a floor for the test sittings this stack ships for and not for a production
- * broadcast. A batch that expires mid-broadcast stops paying for the data it was keeping, so a
- * deployment whose run is longer than an hour raises this to cover the run.
+ * Twelve hours. A batch that expires mid-broadcast stops keeping everything stored under it, the
+ * whole broadcast and its recording, so the floor has to outlast the longest run a deployment books.
+ * Half a day is longer than the 3 to 6 hour broadcasts booked here and short enough that a two-day
+ * batch, which is what this stack buys, clears it for most of its life. A deployment that streams
+ * for longer than half a day raises this to cover the run.
  *
- * It was a day until 2026-09-15. A day is longer than any sitting anyone books here, so the floor
- * refused batches that had hours of life left and every run those batches could have carried, which
- * is a gate failing closed on work it was never meant to stop.
+ * Both earlier values are on the record. It was a day until 2026-09-15. A day is longer than any
+ * sitting anyone books here, so the floor refused batches that had hours of life left and every run
+ * those batches could have carried, which is a gate failing closed on work it was never meant to
+ * stop. The correction to an hour landed the same day and overshot the other way: an hour is
+ * shorter than a single booked broadcast, so the gate would admit a batch that expires part way
+ * through and takes the broadcast with it. The owner ruled twelve later that day, in the middle.
  */
-const DEFAULT_STAMP_MIN_TTL_HOURS = 1;
+const DEFAULT_STAMP_MIN_TTL_HOURS = 12;
 const MAX_STAMP_MIN_TTL_HOURS = 24 * 365;
 
 /**

@@ -56,7 +56,7 @@ STAMPS_FROM=""
 # values into this shell as defaults and the two are indistinguishable once it has run. They are
 # unset for the same reason: `load_env_file` skips any key this shell already declares, so the file
 # only wins once the shell stops holding one.
-readonly DEFAULT_MIN_TTL_HOURS=1
+readonly DEFAULT_MIN_TTL_HOURS=12
 readonly DEFAULT_MAX_UTILIZATION=0.9
 MIN_TTL_HOURS="$DEFAULT_MIN_TTL_HOURS"
 MAX_UTILIZATION="$DEFAULT_MAX_UTILIZATION"

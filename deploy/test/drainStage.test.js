@@ -527,13 +527,13 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
    * because the arm and the sitting are not the same minute.
    */
   it('refuses a TTL under the floor the uploader itself applies', async () => {
-    const sandbox = remoteSandbox({ readings: { stamps: [{ ...ARMABLE, batchTTL: 1.5 * 3600 }] } });
+    const sandbox = remoteSandbox({ readings: { stamps: [{ ...ARMABLE, batchTTL: 11.5 * 3600 }] } });
 
     const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
 
     assert.notEqual(run.exitCode, 0, 'a batch expiring inside the uploader’s floor was armed');
-    assert.match(run.stderr, /1\.5h/);
-    assert.match(run.stderr, /2\.0h/);
+    assert.match(run.stderr, /11\.5h/);
+    assert.match(run.stderr, /13\.0h/);
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG]);
   });
 
@@ -1024,7 +1024,7 @@ describe('drain-stage says so when it cannot clear its own record', () => {
  * shell export and every reading of the ladder was taken against a value nothing had deployed.
  */
 describe('drain-stage takes its TTL floor from the file the container reads', () => {
-  /** 40 hours clears the default floor of 2 and misses the 49 the env file below asks for. */
+  /** 40 hours clears the default floor of 13 and misses the 49 the env file below asks for. */
   const FORTY_HOURS = { ...ARMABLE, batchTTL: 40 * 3600 };
 
   it('applies the floor the env file names, rather than its own default', async () => {
@@ -1057,7 +1057,7 @@ describe('drain-stage takes its TTL floor from the file the container reads', ()
 
     assert.notEqual(run.exitCode, 0, 'a shell export the container never sees was allowed to set the floor');
     assert.match(run.stderr, /48/, 'the refusal did not name the value in this shell');
-    assert.match(run.stderr, /and 1 for the uploader/, 'the refusal did not name the floor the container will apply');
+    assert.match(run.stderr, /and 12 for the uploader/, 'the refusal did not name the floor the container will apply');
   });
 
   it('says nothing when the shell and the env file agree', async () => {

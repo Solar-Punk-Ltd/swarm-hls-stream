@@ -261,7 +261,7 @@ describe('the BEE_PUBLISHERS generator', () => {
  * `drain-stage.sh` closed the same hole on its own copy of the floor. This is the other half of it.
  */
 describe('the generator takes its thresholds from the file the container reads', () => {
-  /** 40 hours clears the default floor of 1 and misses the 48 the env file below asks for. */
+  /** 40 hours clears the default floor of 12 and misses the 48 the env file below asks for. */
   const FORTY_HOURS = JSON.stringify({ stamps: [{ ...healthy(BATCHES['720p']), batchTTL: 40 * 3600 }] });
 
   it('applies the TTL floor the env file names, rather than its own default', async () => {
@@ -299,7 +299,7 @@ describe('the generator takes its thresholds from the file the container reads',
     assert.notEqual(exitCode, 0, 'a shell export the container never sees was allowed to set the floor');
     const out = `${stdout}${stderr}`;
     assert.match(out, /48/, 'the refusal did not name the value in this shell');
-    assert.match(out, /and 1 for the uploader/, 'the refusal did not name the floor the container will apply');
+    assert.match(out, /and 12 for the uploader/, 'the refusal did not name the floor the container will apply');
   });
 
   it('applies the utilization ceiling the env file names, rather than its own default', async () => {

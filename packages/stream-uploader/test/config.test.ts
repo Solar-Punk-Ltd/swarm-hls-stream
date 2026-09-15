@@ -64,7 +64,7 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     name: 'STAMP_MIN_TTL_HOURS',
     field: 'stampMinTtlHours',
     sample: '3',
-    fallback: 1,
+    fallback: 12,
     refused: ['hours', '-1', '8761'],
   },
   {
