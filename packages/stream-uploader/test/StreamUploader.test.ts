@@ -18,7 +18,7 @@ import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
 
-import { makeFakeCatalog, makeFakeRecoveryStore, TEST_ANCHOR } from './helpers/fakes.js';
+import { makeFakeCatalog, makeFakeRecoveryStore, TEST_ANCHOR, testPublisher } from './helpers/fakes.js';
 
 // A valid 32-byte secp256k1 private key (value 1) — enough for bee-js to derive a signer in tests.
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
@@ -117,11 +117,10 @@ function newUploader(
   const feedControl = opts.feedControl ?? (opts.feedWriteFails ? { fail: permanentError } : {});
   return new StreamUploader({
     anchor: TEST_ANCHOR,
-    bee: makeBee(segmentControl, feedControl),
+    publisher: testPublisher(makeBee(segmentControl, feedControl), opts.stamp ?? 'stamp'),
     streamCatalog: makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore(),
     streamKey: TEST_STREAM_KEY,
-    stamp: opts.stamp ?? 'stamp',
     redundancyLevel: 1,
     streamId: 'stream-test',
     streamTopic: 'topic-test',
@@ -139,7 +138,7 @@ async function drain(uploader: StreamUploader): Promise<void> {
 function uploaderSaving(saved: StreamState[], bee: Bee): StreamUploader {
   return new StreamUploader({
     anchor: TEST_ANCHOR,
-    bee,
+    publisher: testPublisher(bee),
     streamCatalog: makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore({
       save: (_id: string, state: StreamState) => {
@@ -147,7 +146,6 @@ function uploaderSaving(saved: StreamState[], bee: Bee): StreamUploader {
       },
     }),
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     redundancyLevel: 1,
     streamId: 'stream-test',
     streamTopic: 'topic-test',
@@ -465,11 +463,10 @@ describe('StreamUploader Swarm write options', () => {
 
     const uploader = new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee,
+      publisher: testPublisher(bee),
       streamCatalog: makeFakeCatalog(),
       recoveryStore: makeFakeRecoveryStore(),
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -856,11 +853,10 @@ describe('StreamUploader finalization (CON-25)', () => {
 
     const uploader = new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee,
+      publisher: testPublisher(bee),
       streamCatalog: catalog,
       recoveryStore: makeFakeRecoveryStore(),
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -912,11 +908,10 @@ describe('StreamUploader finalization (CON-25)', () => {
 
     const uploader = new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee,
+      publisher: testPublisher(bee),
       streamCatalog: makeFakeCatalog(),
       recoveryStore: makeFakeRecoveryStore(),
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -981,11 +976,10 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
   function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs?: number): StreamUploader {
     return new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee: makeBee({}),
+      publisher: testPublisher(makeBee({})),
       streamCatalog: catalog,
       recoveryStore: makeFakeRecoveryStore(),
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -1121,11 +1115,10 @@ describe('StreamUploader recovery persist failures (OBS-4)', () => {
   function newUploaderWithStore(recoveryStore: RecoveryStore): StreamUploader {
     return new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee: makeBee({}),
+      publisher: testPublisher(makeBee({})),
       streamCatalog: makeFakeCatalog(),
       recoveryStore,
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -1243,11 +1236,10 @@ interface UploaderFixtureOptions {
 function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUploader {
   return new StreamUploader({
     anchor: TEST_ANCHOR,
-    bee,
+    publisher: testPublisher(bee),
     streamCatalog: options.streamCatalog ?? makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore(),
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     redundancyLevel: 1,
     streamId: 'stream-test',
     streamTopic: 'topic-test',
@@ -1644,7 +1636,7 @@ describe('StreamUploader catalog entry title', () => {
     const published: { title: string }[] = [];
     const uploader = new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee: makeBee({}),
+      publisher: testPublisher(makeBee({})),
       streamCatalog: makeFakeCatalog({
         addStream: async (entry: { title: string }) => {
           published.push(entry);
@@ -1652,7 +1644,6 @@ describe('StreamUploader catalog entry title', () => {
       }),
       recoveryStore: makeFakeRecoveryStore(),
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -1749,11 +1740,10 @@ describe('StreamUploader catalog failures on the segment path', () => {
 
     return new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee: makeBee({}),
+      publisher: testPublisher(makeBee({})),
       streamCatalog: catalog,
       recoveryStore: recovery,
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -1862,11 +1852,10 @@ describe('StreamUploader ladder finalize metrics', () => {
 
     return new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee: makeBee({}),
+      publisher: testPublisher(makeBee({})),
       streamCatalog: catalog,
       recoveryStore: recovery,
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: 'topic-test',
@@ -1914,11 +1903,10 @@ describe('StreamUploader ladder re-announce safety', () => {
 
     return new StreamUploader({
       anchor: TEST_ANCHOR,
-      bee: makeBee({}),
+      publisher: testPublisher(makeBee({})),
       streamCatalog: catalog,
       recoveryStore: recovery,
       streamKey: TEST_STREAM_KEY,
-      stamp: 'stamp',
       redundancyLevel: 1,
       streamId: 'stream-test',
       streamTopic: topic,

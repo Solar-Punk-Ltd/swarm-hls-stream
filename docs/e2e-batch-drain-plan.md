@@ -97,7 +97,9 @@ What the suite asserts, all correctness, no timings:
   answer bee gives. Its dropped segments show up under its own rung label in the metrics. ⛔ That it
   then publishes nothing is NOT asserted: the refusal is the start of a ramp rather than the end of
   anything, and what the suite waits for instead is the master dropping the rung.
-- The uploader process stays up, no restart, `/health` degraded with the segment-failure reason.
+- The uploader process stays up, no restart, `/health` degraded with the segment-failure reason and
+  with `postage_refused`, which is the one that stays after the broadcast ends because it is recorded
+  against the node and batch rather than against the stream.
 - The master playlist stops offering the drained rung and offers the other three, and the catalog
   line `Ladder ... now produces 3 rung(s), master rewritten` is logged.
 - A real viewer keeps playing and is never told the broadcast ended, in both byte sources. ⛔ The

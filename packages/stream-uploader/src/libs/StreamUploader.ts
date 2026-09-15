@@ -38,6 +38,7 @@ import {
   readinessFromPersisted,
   readinessToPersisted,
 } from './AnnounceReadiness.js';
+import { BeePublisher } from './BeePublisherPool.js';
 import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -158,11 +159,19 @@ interface RestoreState {
 }
 
 export interface StreamUploaderOptions {
-  bee: Bee;
+  /**
+   * The Bee node this session publishes through and the postage batch it pays with, as one value.
+   *
+   * One value rather than a client and a batch id passed side by side, because they are one routing
+   * decision taken in `BeePublisherPool` and a session that held a client from one node and a batch
+   * from another would spend a batch that node cannot issue against. It also carries the node's own
+   * rung and url, which is the identity a refused batch is reported under. See
+   * {@link StreamUploader.reportBatchRefusal}.
+   */
+  publisher: BeePublisher;
   streamCatalog: StreamCatalog;
   recoveryStore: RecoveryStore;
   streamKey: string;
-  stamp: string;
   streamId: string;
   /**
    * Feed topic for this stream's manifest. Supplied rather than generated, because a ladder's
@@ -207,6 +216,7 @@ export class StreamUploader {
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
+  private publisher: BeePublisher;
   private bee: Bee;
   private streamSigner: PrivateKey;
   private streamRawTopic: string;
@@ -284,12 +294,13 @@ export class StreamUploader {
   constructor(options: StreamUploaderOptions) {
     this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
     this.metrics = options.metrics;
-    this.bee = options.bee;
+    this.publisher = options.publisher;
+    this.bee = options.publisher.bee;
     this.streamSigner = new PrivateKey(options.streamKey);
     this.streamCatalog = options.streamCatalog;
     this.recoveryStore = options.recoveryStore;
     this.streamId = options.streamId;
-    this.stamp = options.stamp;
+    this.stamp = options.publisher.stamp;
     this.redundancyLevel = options.redundancyLevel;
     this.mediatype = options.mediatype;
     this.ladder = options.ladder;
@@ -1053,7 +1064,18 @@ export class StreamUploader {
    */
   private reportBatchRefusal(error: unknown): void {
     const status = nonRetryableStatus(error);
-    if (status === undefined || this.batchRefusalStatuses.has(status)) {
+    if (status === undefined) {
+      return;
+    }
+
+    // Recorded against the publisher before the log is deduplicated, and on the process-lifetime
+    // counters rather than on anything this session owns. Everything else this uploader reports is
+    // read back off the orchestrator's `activeStreams`, which the end of a broadcast empties, and this
+    // is the one condition that outlives the broadcast: the batch stays dead, the finalize fails on it
+    // and leaves no recording, and the catalog goes on saying `live`. See `ServiceMetrics`.
+    this.metrics?.recordPostageRefusal(this.publisher, status, Date.now());
+
+    if (this.batchRefusalStatuses.has(status)) {
       return;
     }
     this.batchRefusalStatuses.add(status);

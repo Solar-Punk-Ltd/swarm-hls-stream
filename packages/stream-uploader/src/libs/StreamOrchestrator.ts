@@ -663,11 +663,10 @@ export class StreamOrchestrator {
     const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
 
     const uploader = new StreamUploader({
-      bee: publisher.bee,
+      publisher,
       streamCatalog: this.streamCatalog,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
-      stamp: publisher.stamp,
       redundancyLevel: this.config.segmentRedundancy,
       streamId,
       streamTopic,
@@ -1282,11 +1281,10 @@ export class StreamOrchestrator {
     const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
 
     const uploader = new StreamUploader({
-      bee: publisher.bee,
+      publisher,
       streamCatalog: this.streamCatalog,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
-      stamp: publisher.stamp,
       redundancyLevel: this.config.segmentRedundancy,
       streamId: state.streamId,
       streamTopic: state.streamRawTopic,
@@ -1704,6 +1702,10 @@ export class StreamOrchestrator {
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
       quarantinedRecoveryEntries: this.recoveryStore.listQuarantined().length,
       fragmentMismatchStreams: this.getFragmentMismatchStreams(),
+      // Read off the latch itself rather than off the rendered list below it, so a refusal recorded
+      // against a publisher the routing no longer names still turns this service degraded. The signal
+      // must never under-report, and a payload that cannot place one is the lesser failure.
+      postageRefusedPublishers: this.metrics.getPostageRefusals().length,
     };
   }
 

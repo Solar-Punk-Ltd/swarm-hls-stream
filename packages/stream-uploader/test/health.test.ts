@@ -6,6 +6,7 @@ import {
   HEALTH_OK,
   HEALTH_REASON_FRAGMENT_MISMATCH,
   HEALTH_REASON_INGEST_REFUSED,
+  HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
@@ -46,6 +47,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     fragmentMismatchStreams: 0,
+    postageRefusedPublishers: 0,
     ...overrides,
   };
 }
@@ -180,6 +182,7 @@ describe('health wire contract', () => {
         HEALTH_REASON_INGEST_REFUSED,
         HEALTH_REASON_UNRECOVERABLE_STREAM,
         HEALTH_REASON_FRAGMENT_MISMATCH,
+        HEALTH_REASON_POSTAGE_REFUSED,
       ],
       [
         'segment_upload_failure',
@@ -192,6 +195,7 @@ describe('health wire contract', () => {
         'ingest_refused',
         'unrecoverable_stream',
         'fragment_mismatch',
+        'postage_refused',
       ],
     );
   });
@@ -531,5 +535,48 @@ describe('deriveHealthStatus fragment mismatch', () => {
     );
 
     assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_MISMATCH]);
+  });
+});
+
+/**
+ * ⛔ A postage batch bee has refused is dead for the life of this process, and until this signal
+ * existed the only reason that named it was `segment_upload_failure`, off a CONSECUTIVE counter read
+ * from the streams registered right now. It cleared on any segment that landed, so it flapped while
+ * the batch filled bucket by bucket, and it went quiet altogether when the broadcast ended and its
+ * stream left `activeStreams`. The finalize then failed on the same dead batch, no recording was
+ * published, the catalog kept saying `live`, and `/health` answered `ok` with nothing wrong.
+ */
+describe('deriveHealthStatus refused postage batches', () => {
+  it('is ok while every publisher this process writes through is still accepting', () => {
+    const report = deriveHealthStatus(signals({ postageRefusedPublishers: 0 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  it('degrades on the first publisher bee refused a paid write on', () => {
+    const report = deriveHealthStatus(signals({ postageRefusedPublishers: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_POSTAGE_REFUSED]);
+  });
+
+  /**
+   * The reading the consecutive segment counter structurally cannot give. Nothing is registered, every
+   * per-stream counter is back at zero, and the batch is exactly as dead as it was mid-broadcast.
+   */
+  it('stays degraded once the broadcast has ended and nothing is registered', () => {
+    const report = deriveHealthStatus(
+      signals({
+        postageRefusedPublishers: 1,
+        activeStreams: 0,
+        msSinceStreamActivity: null,
+        maxConsecutiveSegmentFailures: 0,
+      }),
+      STALL_MS,
+    );
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_POSTAGE_REFUSED]);
   });
 });

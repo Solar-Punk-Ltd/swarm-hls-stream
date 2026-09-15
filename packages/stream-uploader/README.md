@@ -479,14 +479,24 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 | `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying                                                                                                                                               |
 | `unrecoverable_stream`   | A recovery entry could not be parsed at boot, so a broadcast that was live when this service last died cannot be finalized: its recording stays unsealed and its catalog entry says `live`. The entry is kept as `<id>.json.corrupt` for repair rather than deleted. Latched for the life of the process, since only an operator clears it                                         |
 | `fragment_mismatch`      | A rung's segments are not the length `HLS_FRAGMENT` says they are, so every `#EXT-X-PROGRAM-DATE-TIME` derived from it drifts, cumulatively, and the recording keeps those dates. Raised only under `ABR_ENABLED`, once eight measured segments of a stream miss the configured length by over 5%. One of the two containers is running an older deploy, so redeploy the stale one |
+| `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                       |
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
 expected to be sending. The body also carries `activeStreams`, `staleManifestStreams`,
 `maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`,
-`msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`
-and `engines`. `queueBacklogSeconds` is the only field that says which of `queue_pressure`'s two triggers
-fired.
+`msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`,
+`postageRefusedPublishers` and `engines`. `queueBacklogSeconds` is the only field that says which of
+`queue_pressure`'s two triggers fired.
+
+**`segment_upload_failure` and `postage_refused` answer different questions and both are needed.** The
+first is a consecutive counter over the streams registered right now, so it clears on the next segment
+that lands and it disappears entirely when the broadcast ends. A filling batch refuses only the chunks
+whose own bucket is full, so it loses a growing share of segments over a minute or two rather than all
+of them at once, which made that counter flap. A batch that was dead when the broadcast stopped then
+took the last alarm with it, while the finalize failed on that same batch, no recording was published
+and the catalog went on saying `live`. `postage_refused` is a fact about a node and a batch id rather
+than about a broadcast, so it survives the stream that found it.
 
 **Segment headers:**
 

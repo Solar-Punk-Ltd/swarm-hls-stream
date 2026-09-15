@@ -7,6 +7,7 @@ import { MEDIA_TYPE_VIDEO, PRESSURE_HIGH, PRESSURE_LOW, PRESSURE_MEDIUM, QueuePr
 
 import { FakeClock } from './helpers/fakeClock.js';
 import { makeFakeCatalog, makeFakeRecoveryStore, makeTestOrchestrator, neverSettles } from './helpers/fakes.js';
+import { waitFor } from './helpers/waiting.js';
 
 /** Wide enough that a queue can land on either pressure threshold exactly rather than near it. */
 const QUEUE_CEILING = 10;
@@ -349,5 +350,61 @@ describe('the unrecoverable-stream alarm follows the disk', () => {
       0,
       'the repair must clear the alarm without a restart',
     );
+  });
+});
+
+/**
+ * ⛔ The whole point of keying this by publisher rather than by stream. Every other signal here is
+ * folded over `activeStreams`, and `retireSession` empties that map when a broadcast ends, so a batch
+ * that died mid-broadcast took its only alarm with it: the finalize then failed on the same dead
+ * batch, no recording was published, the catalog went on saying `live`, and `/health` answered 200.
+ */
+describe('a refused postage batch outlives the broadcast that found it', () => {
+  /** Bee refusing a full batch: 402 is outside the retryable set, so the segment is lost on the first answer. */
+  const overissued = () => Promise.reject(Object.assign(new Error('batch is overissued'), { status: 402 }));
+
+  it('reports the publisher after the stream that found it has been stopped and retired', async () => {
+    const orch = makeTestOrchestrator({}, { uploadData: overissued });
+
+    orch.startStream('live/drained', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/drained', 0, SEGMENT_SECONDS, Buffer.from('segment 0'));
+    await waitFor(() => orch.getHealthSignals().postageRefusedPublishers === 1, 5_000);
+
+    await orch.stopStream('live/drained');
+
+    const signals = orch.getHealthSignals();
+    assert.equal(signals.activeStreams, 0, 'the stop has to retire the stream, or this proves nothing');
+    assert.equal(
+      signals.maxConsecutiveSegmentFailures,
+      0,
+      'the counter that used to be the only alarm reads zero here, which is the defect this closes',
+    );
+    assert.equal(signals.postageRefusedPublishers, 1, 'the batch is as dead as it was while the broadcast ran');
+  });
+
+  /**
+   * One publisher however many segments it refuses, because a filling batch answers for a growing
+   * share of them over a minute or two and each answer describes the one dead batch.
+   */
+  it('counts the publisher once however many segments it loses', async () => {
+    const orch = makeTestOrchestrator({}, { uploadData: overissued });
+
+    orch.startStream('live/drained', MEDIA_TYPE_VIDEO);
+    for (let index = 0; index < 3; index += 1) {
+      orch.handleSegment('live/drained', index, SEGMENT_SECONDS, Buffer.from(`segment ${index}`));
+    }
+    await waitFor(() => orch.getMetricsSnapshot().segmentsDroppedTotal === 3, 5_000);
+
+    assert.equal(orch.getHealthSignals().postageRefusedPublishers, 1);
+  });
+
+  it('stays quiet while bee is taking the writes', async () => {
+    const orch = makeTestOrchestrator();
+
+    orch.startStream('live/healthy', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/healthy', 0, SEGMENT_SECONDS, Buffer.from('segment 0'));
+    await waitFor(() => orch.getMetricsSnapshot().segmentsUploadedTotal === 1, 5_000);
+
+    assert.equal(orch.getHealthSignals().postageRefusedPublishers, 0);
   });
 });

@@ -219,6 +219,7 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     fragmentMismatchStreams: 0,
+    postageRefusedPublishers: 0,
     ...overrides,
   };
 }
@@ -312,8 +313,18 @@ export function toRecoveryFileId(streamId: string): string {
  */
 const FAKE_BEE_URL = 'http://fake-bee:1633';
 
+/**
+ * The node and batch a test uploader publishes through, wrapped around whichever fake Bee the test
+ * built. Every uploader test is a single-node deployment, so the rung and the url are the same ones
+ * {@link makeFakePublishers} hands the orchestrator, and only the batch id is worth overriding: it is
+ * what a refusal is reported under.
+ */
+export function testPublisher(bee: Bee, stamp = 'stamp'): BeePublisher {
+  return { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp, bee };
+}
+
 function makeFakePublishers(bee: Bee): BeePublisherPool {
-  const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp: 'stamp', bee };
+  const publisher = testPublisher(bee);
   return {
     coordinator: () => publisher,
     forRung: () => publisher,

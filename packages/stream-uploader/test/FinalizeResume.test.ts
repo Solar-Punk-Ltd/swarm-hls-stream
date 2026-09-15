@@ -17,7 +17,14 @@ import {
   StreamStatus,
 } from '../src/types.js';
 
-import { FakeFeedHead, makeFakeBee, makeFakeCatalog, makeFakeRecoveryStore, TEST_ANCHOR } from './helpers/fakes.js';
+import {
+  FakeFeedHead,
+  makeFakeBee,
+  makeFakeCatalog,
+  makeFakeRecoveryStore,
+  TEST_ANCHOR,
+  testPublisher,
+} from './helpers/fakes.js';
 
 /**
  * ## Scenario H, as a unit: a finalize that comes back after a crash must not buy the recording twice
@@ -118,11 +125,10 @@ function makeRecovered(options: RecoveredOptions = {}): RecoveredUploader {
 
   const uploader = new StreamUploader({
     anchor: TEST_ANCHOR,
-    bee,
+    publisher: testPublisher(bee),
     streamCatalog: options.catalog ?? makeFakeCatalog(),
     recoveryStore,
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     redundancyLevel: 0,
     streamId: STREAM_ID,
     streamTopic: RUNG_TOPIC,
