@@ -305,14 +305,14 @@ export class ServiceMetrics {
  * Declared here rather than imported so this class keeps depending on nothing, the way
  * `PostageGate.StampedPublisher` is declared beside its own use.
  */
-export interface PublisherIdentity {
+interface PublisherIdentity {
   readonly rung: string;
   readonly url: string;
   readonly stamp: string;
 }
 
 /** One publisher's postage refusals, as {@link ServiceMetrics.getPostageRefusals} reports them. */
-export interface PostageRefusal extends PublisherIdentity {
+interface PostageRefusal extends PublisherIdentity {
   /** Every distinct status bee answered with on this publisher, in the order they were first seen. */
   readonly statuses: readonly number[];
   /** Epoch milliseconds of the first refusal, which is when this rung's postage stopped working. */

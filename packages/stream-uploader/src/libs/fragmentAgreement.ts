@@ -59,7 +59,7 @@ export const FRAGMENT_MISMATCH = 'mismatch' as const;
 /** The two differ on a single rendition, where the publisher's own GOP decides the segment. */
 export const FRAGMENT_PUBLISHER_GOP = 'publisher-gop' as const;
 
-export type FragmentVerdict =
+type FragmentVerdict =
   | { kind: typeof FRAGMENT_UNDECIDED }
   | { kind: typeof FRAGMENT_AGREES; measuredSeconds: number }
   | { kind: typeof FRAGMENT_MISMATCH; measuredSeconds: number }

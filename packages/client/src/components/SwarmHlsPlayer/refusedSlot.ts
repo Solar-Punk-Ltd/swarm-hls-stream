@@ -69,24 +69,24 @@ export function shouldProbePastRefusal(unservedPolls: number): boolean {
 }
 
 /** A slot behind the refusal answered, and this is which one and what it carried. */
-export interface ProbeServed {
+interface ProbeServed {
   readonly kind: 'served';
   readonly index: FeedIndex;
   readonly response: TimedResponse;
 }
 
 /** Every distance was refused too, so the refusal may really be the publisher's head. */
-export interface ProbeFoundNothing {
+interface ProbeFoundNothing {
   readonly kind: 'nothing';
 }
 
 /** The gateway stopped answering during the probe, which is a fact about the gateway. */
-export interface ProbeGatewayFailed {
+interface ProbeGatewayFailed {
   readonly kind: 'gatewayFailed';
   readonly error: unknown;
 }
 
-export type ProbeResult = ProbeServed | ProbeFoundNothing | ProbeGatewayFailed;
+type ProbeResult = ProbeServed | ProbeFoundNothing | ProbeGatewayFailed;
 
 /**
  * Ask whether anything is behind the slot a follower is waiting on.

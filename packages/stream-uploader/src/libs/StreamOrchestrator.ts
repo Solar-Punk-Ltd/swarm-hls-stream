@@ -144,7 +144,7 @@ interface RetainedStopOutcome {
 }
 
 /** One rung's routing plus what bee answered on its batch. See {@link StreamOrchestrator.refusedPublishers}. */
-export interface RefusedPublisher extends PublisherRoute {
+interface RefusedPublisher extends PublisherRoute {
   /** Every distinct status bee answered with on this publisher, in the order they were first seen. */
   readonly statuses: readonly number[];
   /** Epoch milliseconds of the first refusal, so the reading can be dated against the uploader's log. */
