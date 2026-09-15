@@ -181,10 +181,18 @@ export const attachQoeTracking = (
     flush();
   };
 
+  // A pause closes whichever interval is open, playback or stall, so the paused stretch is charged
+  // to neither. Left open, a stall ran for the whole pause and a viewer who froze for half a second
+  // and then paused for a minute was charged the minute.
   const onPause = () => {
     if (playbackStartTime !== null) {
       accPlaybackMs += performance.now() - playbackStartTime;
       playbackStartTime = null;
+    }
+    if (rebufferStart !== null) {
+      accRebufferingMs += performance.now() - rebufferStart;
+      rebufferStart = null;
+      metrics.rebufferingDurationMs = accRebufferingMs;
     }
   };
 

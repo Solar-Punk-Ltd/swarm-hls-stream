@@ -345,4 +345,32 @@ describe('a stall counts while it is still happening, not only once it ends', ()
     assert.equal(metrics.playbackTimeMs, 2500);
     assert.equal(metrics.rebufferingRatio, 3000 / 5500);
   });
+
+  /**
+   * The other half of the same defect, and the expensive half. `pause` closed the open playback
+   * interval and left the open stall running, so a viewer who froze for half a second, gave up and
+   * paused for a minute, then came back, had the whole minute charged to rebuffering at the next
+   * `playing`. Measured on the old code: 60500ms banked against 62000ms watched, an overlay reading
+   * of 97.6% for a viewer who lost half a second.
+   *
+   * A pause ends the stall the same way it ends playback, so the paused minute lands in neither half.
+   */
+  it('banks a stall up to a pause, and charges the paused minute to neither half', () => {
+    const player = makeTrackedPlayer();
+
+    player.media('playing');
+    vi.advanceTimersByTime(1000);
+    player.media('waiting');
+    vi.advanceTimersByTime(500);
+    player.media('pause');
+    vi.advanceTimersByTime(60_000);
+    player.media('playing');
+    player.poll();
+
+    const metrics = player.metrics();
+    assert.equal(metrics.rebufferingCount, 1, 'one freeze, counted once');
+    assert.equal(metrics.rebufferingDurationMs, 500, 'the paused minute was charged to rebuffering');
+    assert.equal(metrics.playbackTimeMs, 1500, 'the paused minute was charged to playback');
+    assert.equal(metrics.rebufferingRatio, 0.25);
+  });
 });
