@@ -96,8 +96,8 @@ export interface StreamOrchestratorConfig {
   orphanReapMs: number;
   segmentStallMs: number;
   /**
-   * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is what every segment's
-   * `#EXT-X-PROGRAM-DATE-TIME` steps by. See {@link BroadcastAnchor}.
+   * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
+   * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
    */
   fragmentSeconds: number;
   /** How many further segments an index stays remembered for, so a duplicate inside that is refused. */

@@ -121,16 +121,17 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
 
   // No threshold, because the count already is one: a stream reaches this signal only after eight of
   // its segments have been measured and their median has missed the configured length. Nothing about
-  // the running process is failing while it is set, which is what kept it invisible. The damage is
-  // in the dates, and every segment published from here carries it into a recording that keeps it.
+  // the running process is failing while it is set, which is what kept it invisible. The dates follow
+  // the media, so what is wrong is the deployment rather than the recording's clock: every gap entry
+  // is still sized at a length nothing is cutting, and so is the rung GOP the ladder was pinned on.
   if (signals.fragmentMismatchStreams > 0) {
     reasons.push(HEALTH_REASON_FRAGMENT_MISMATCH);
   }
 
   // The same reading with the ladder off, where it is the publisher's keyframe interval rather than a
   // stale container, and its own reason rather than a second trigger for the one above, because the
-  // two send an operator to different levers. Reported at all because the damage does not depend on
-  // the cause: the dates are arithmetic on the configured length whoever chose the real one.
+  // two send an operator to different levers. Reported at all because the consequence does not depend
+  // on the cause: a stage cutting a length nobody declared sizes every gap entry wrong either way.
   if (signals.publisherGopStreams.length > 0) {
     reasons.push(HEALTH_REASON_FRAGMENT_PUBLISHER_GOP);
   }

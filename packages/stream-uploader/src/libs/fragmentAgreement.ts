@@ -11,10 +11,15 @@
  * uploader believing 0.5 can sit behind an engine cutting 1.0, which is what this deployment was
  * measured doing on 2026-09-04 and again in the week of 2026-09-15.
  *
- * What that costs is not a wrong reading, it is a wrong recording. Every stamp drifts by the
- * difference, cumulatively, so a viewer's timeline runs at a different rate from the media, and the
- * recording keeps those dates for ever. After a reconnect the four rungs can even mint separate
- * dating lines from it. The uploader holds both numbers on every single segment and nothing had ever
+ * What that costs is no longer the recording's clock. A segment outside the band is dated by what it
+ * really held, so the stamps stay right on a stage cutting to another length. What is still wrong is
+ * everything else the declared value is the basis of. Every `#EXT-X-GAP` entry is dated and sized at
+ * it, so a segment the broadcast loses leaves a hole of the wrong size. The rung GOP the ladder is
+ * pinned on is derived from it, `ABR_FPS x HLS_FRAGMENT`, and so is this check, and so are the
+ * budgets: SRS force-closes at `HLS_FRAGMENT x HLS_AOF_RATIO` and a ladder asks for
+ * `rungs / HLS_FRAGMENT` announcements a second. After a reconnect the four rungs can even mint
+ * separate dating lines from it, because whether a rung is joining a sibling's line is decided on the
+ * declared length too. The uploader holds both numbers on every single segment and nothing had ever
  * compared them, and nothing on the deploy path compares them either.
  *
  * ⚠️ **Only a ladder makes a difference a fault.** With `ABR_ENABLED` on, `engines/srs/entrypoint.sh`
@@ -68,7 +73,7 @@ type FragmentVerdict =
 
 /** What the deployment asked for, and whether its stage is one where the engine must deliver it. */
 export interface FragmentStage {
-  /** Seconds of media per fragment, from `HLS_FRAGMENT`, which is what every date steps by. */
+  /** Seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every date is read against. */
   configuredSeconds: number;
   /** `ABR_ENABLED`, which is what makes a difference a fault rather than the publisher's choice. */
   underLadder: boolean;

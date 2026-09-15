@@ -35,23 +35,29 @@ and the uploader gets four feeds it groups back into one ladder.
 `HLS_FRAGMENT` is the same two-container shape, and it bites harder because the two containers can
 disagree rather than one of them simply being off. SRS cuts segments at it, and the uploader reads
 every segment against it: a segment within 1% of the declared length is dated as exactly that length,
-and one outside it by what it really held. So an uploader on 0.5 behind an engine on 1.0 reads every
-1.0 second segment as half that, dates each one half a second early, cumulatively, and the recording
-keeps those dates for ever. A container re-reads the variable only when it is recreated, so **recreate both
-after changing it**, which `deploy/scripts/deploy.sh` does and recreating the engine alone does not.
-The uploader now measures its first eight segments and reports `fragment_mismatch` on `/health` when
-they are not the length it was told, which is a signal after the fact rather than a substitute for
-redeploying the pair.
+and one outside it by what it really held. Under a correctly deployed ladder every segment sits inside
+that 1%, so nothing about the dating moved: each date is what stepping by the declared length always
+gave, and the four rungs stamp one piece of media identically. An uploader on 0.5 behind an engine on
+1.0 dates every 1.0 second segment by the second of media it really holds, so the recording's clock no
+longer goes wrong. What that disagreement still costs is everything else the declared length is the
+basis of: every `#EXT-X-GAP` entry is dated and sized at it, so a segment the broadcast loses leaves a
+hole of the wrong size in the timeline, and the rung GOP, SRS's force-close and the announcement
+ceiling described below are all derived from it. The deployment is not what its configuration says. A
+container re-reads the variable only when it is recreated, so **recreate both after changing it**,
+which `deploy/scripts/deploy.sh` does and recreating the engine alone does not. The uploader measures
+its first eight segments and reports `fragment_mismatch` on `/health` when they are not the length it
+was told, which is a signal after the fact rather than a substitute for redeploying the pair.
 
 With the ladder **off** the same measurement reports `fragment_publisher_gop` instead, and it is a
-different fault with the same damage. Nothing transcodes there, so SRS closes a segment at the first
-keyframe at or after `HLS_FRAGMENT` and the publisher's own keyframe interval decides the length, which
-makes the configured value a floor. A live single-rendition stream was measured on 2026-09-15 cutting
-2.067 to 10.033 seconds against a configured 2. No container is stale and no redeploy fixes it, but the
-dates are arithmetic on the configured value either way, so the recording's clock runs at a different
-rate from its media. The lever is the publisher: set `HLS_FRAGMENT` to its keyframe interval, or turn
-`ABR_ENABLED` on, where the fragment sets the segment directly. `/health` names each such stream under
-`publisherGopStreams` with both lengths. Neither reason changes a date, refuses a segment or ends a
+different cause with the same consequence. Nothing transcodes there, so SRS closes a segment at the
+first keyframe at or after `HLS_FRAGMENT` and the publisher's own keyframe interval decides the length,
+which makes the configured value a floor. A live single-rendition stream was measured on 2026-09-15
+cutting 2.067 to 10.033 seconds against a configured 2. No container is stale and no redeploy fixes it,
+and the dates follow that media rather than the configured 2, so the recording's clock is right here
+too. What the reason names is a stage cutting longer than the deployment declared, and its gap entries
+are charged the declared length exactly as above. The lever is the publisher: set `HLS_FRAGMENT` to its
+keyframe interval, or turn `ABR_ENABLED` on, where the fragment sets the segment directly. `/health`
+names each such stream under `publisherGopStreams` with both lengths. Neither reason changes a date, refuses a segment or ends a
 broadcast.
 
 The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
