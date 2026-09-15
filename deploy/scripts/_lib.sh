@@ -977,18 +977,3 @@ print_services() {
   done
   echo ""
 }
-
-# A probe that flips a key in the env file and compares the two arms measures nothing once the
-# compose file has stopped reading that key: both arms are then the same run, the difference comes
-# out as zero, and zero looks like a finding rather than like a harness with its control
-# disconnected. bee-gateway's swap flag became a constant on 2026-09-15, which is exactly that.
-require_compose_reads() {
-    local key="$1"
-    local compose="${2:-$DEPLOY_DIR/docker-compose.yml}"
-    if ! grep -qF "\${${key}" "$compose"; then
-        echo "ERROR: $(basename "$compose") no longer reads \${${key}}, so setting it in the env file changes nothing." >&2
-        echo "Both arms of this probe would be the same run and the comparison would report no difference." >&2
-        echo "Make it a variable in $compose again, deliberately, before running this." >&2
-        exit 1
-    fi
-}

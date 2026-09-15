@@ -230,12 +230,14 @@ METRICS_TSV="${OUT_DIR}/probe-metrics.tsv"
 
 say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 
-# This probe sets its arms by writing the env file, so the compose file has to read that key.
-# Once it stopped, both arms would be one run and the difference would come out as zero,
-# which reads as a finding rather than as a control that is not connected to anything.
-if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${STACK_DIR}/deploy/docker-compose.yml"; then
-  echo "ERROR: deploy/docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so setting it here changes nothing." >&2
-  echo "Both arms of this probe would be the same run. Make it a variable again, deliberately, before running this." >&2
+# This probe sets its arms by writing the env file, so the compose file has to read that key. Once it
+# stopped, both arms are one run and the difference comes out as zero, which reads as a finding rather
+# than as a control that is not connected to anything.
+if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${COMPOSE_DIR}/docker-compose.yml"; then
+  echo "ERROR: docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so writing it into the env file changes nothing." >&2
+  echo "The gateway there is hard-coded ultra-light: --blockchain-rpc-endpoint is empty, and an empty endpoint is the whole of what makes a node ultra-light. --swap-enable takes no part in that decision." >&2
+  echo "So both arms of this probe are the same run whatever the env file says." >&2
+  echo "Putting the swap variable back would NOT repair it. This probe has to be reworked to flip --blockchain-rpc-endpoint through a compose override, and that rework is not done." >&2
   exit 1
 fi
 BASELINE_SWAP="$(grep '^BEE_GATEWAY_SWAP_ENABLE=' "${ENV_FILE}" | cut -d= -f2)"

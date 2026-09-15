@@ -568,7 +568,18 @@ if [ -z "${BASELINE_SPEC}" ]; then
 fi
 # The arms of this comparison are set by writing the env file, so the compose file has to be the
 # thing that reads it. The gateway command below carries --swap-enable either way.
-require_compose_reads BEE_GATEWAY_SWAP_ENABLE
+#
+# Inlined rather than called from `_lib.sh`, because this file is copied to the measurement host on
+# its own and a bare call to a function that is not there is a `command not found` line and a sitting
+# that carries on regardless. Through `say` rather than to standard error, because the documented way
+# to start this sitting discards both streams and leaves the log as the only record.
+if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${COMPOSE_DIR}/docker-compose.yml"; then
+  say "REFUSING TO START: docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so writing it into the env file changes nothing."
+  say "  The gateway there is hard-coded ultra-light: --blockchain-rpc-endpoint is empty, and an empty endpoint is the whole of what makes a node ultra-light. --swap-enable takes no part in that decision."
+  say "  So both arms of this sitting are the same run whatever the env file says, and the contrast it exists to draw cannot appear."
+  say "  Putting the swap variable back would NOT repair it. This driver has to be reworked to flip --blockchain-rpc-endpoint through a compose override, and that rework is not done."
+  exit 1
+fi
 case "${BASELINE_SPEC}" in
   *'--swap-enable=true'*) BASELINE_SWAP=true ;;
   *'--swap-enable=false'*) BASELINE_SWAP=false ;;
