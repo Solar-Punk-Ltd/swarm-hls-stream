@@ -152,6 +152,34 @@ check_engine() {
 
 check_engine
 
+# --- Local Bee node guard ---
+
+# LOCAL_BEE_UPLOADER is the profile's own statement of whether this deployment runs a Bee node,
+# written into .env.<profile> by the deployment manager and read by resolve_bee_url below.
+#
+# Checked up here rather than where it is read, because resolve_bee_url runs inside two nested
+# command substitutions and an `exit` there leaves only the innermost subshell. Measured on the
+# bash this repo ships to (3.2): a refusal raised inside it is swallowed, the deploy carries on
+# and exits 0, and the only trace is a line on standard error. A refusal that depends on which
+# bash is running is not a refusal.
+#
+# Anything that is not one of the two values has to stop the deploy rather than fall through to
+# the old rule, because falling through is indistinguishable from the key working: a profile with
+# an external node and LOCAL_BEE_UPLOADER=flase would quietly get the compose service back and
+# crash-loop exactly as it did before the key existed.
+check_local_bee_uploader() {
+  case "${LOCAL_BEE_UPLOADER:-}" in
+    true | false | '') ;;
+    *)
+      log_error "LOCAL_BEE_UPLOADER must be true or false. $ENV_FILE says \"$LOCAL_BEE_UPLOADER\"."
+      log_error "It states whether this deployment runs a Bee node of its own, and the deployment manager writes it."
+      exit 1
+      ;;
+  esac
+}
+
+check_local_bee_uploader
+
 # --- Build ---
 
 build_if_needed() {
@@ -175,6 +203,30 @@ build_force() {
 # When bee-uploader is on a different host than stream-uploader,
 # the uploader can't use the docker service name — it needs the real IP.
 resolve_bee_url() {
+  # A profile that runs no Bee node of its own has no local address to compute, so the BEE_URL in
+  # .env.<profile> is both the only answer available and a deliberate one.
+  #
+  # is_enabled cannot answer this. It reads config.json, which says what the CHECKOUT is configured
+  # for, and the deployment manager writes that file once at bootstrap listing bee-uploader as
+  # "localhost". So every profile carrying a stream-uploader had its BEE_URL replaced by
+  # http://bee-uploader:<port> in the override file, which compose takes as a second --env-file and
+  # therefore ranks above .env.<profile>. An uploader pointed at a compose service that is not
+  # running died on `getaddrinfo ENOTFOUND bee-uploader` and restarted for ever, behind a deploy
+  # that had already exited 0.
+  #
+  # The service filter cannot answer it either. It says which services THIS invocation was asked to
+  # bring up, and the manager holds an uploader back until a batch is bought and then deploys it
+  # alone, for a profile that does own a node and does need the local address computed.
+  #
+  # Only the writer of .env.<profile> knows the profile's full service list, so it states it.
+  # Absent means decide as before, which leaves a hand-run deploy.sh and an older manager untouched.
+  # true falls through to the same computation rather than forcing an address, because the branches
+  # below still need config.json to name a target they can take a host from. check_local_bee_uploader
+  # has already refused every other value.
+  if [ "${LOCAL_BEE_UPLOADER:-}" = "false" ]; then
+    return
+  fi
+
   local bee_target uploader_target
   bee_target=$(get_target "$SVC_BEE_UPLOADER")
   uploader_target=$(get_target "$SVC_UPLOADER")
