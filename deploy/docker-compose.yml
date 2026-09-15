@@ -369,11 +369,20 @@ services:
     # Same port on both sides, because the entrypoint now binds SRS to these values rather than to
     # the fixed ones its config used to carry. Mapping a shifted host port onto a fixed container
     # port would leave the mapping pointing at nothing.
+    #
+    # The two ingest ports below stay on every interface: a broadcaster dials them from wherever they
+    # are. The two HTTP ones take a bind address for the same reason the Bee APIs do. SRS's control
+    # API has no authentication of any kind, and `/api/v1/streams` names every live stream as
+    # `app/stream`, which is the id an ingest URL and a publish key are built from, while
+    # `/api/v1/clients` names every publisher's and every viewer's address. The file server serves the
+    # segment directory itself, so a broadcast is watchable straight off this host. Both default to
+    # every interface, which is what they have always done, and every documented use of the API is a
+    # curl run on the host. See the paragraph in `.env.sample` beside the Bee binds.
     ports:
       - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
       - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
-      - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
-      - '${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
+      - '${SRS_HTTP_BIND:-0.0.0.0}:${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
+      - '${SRS_HTTP_API_BIND:-0.0.0.0}:${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
@@ -453,9 +462,12 @@ services:
     # the configured port rather than to a fixed one. A mapping from a fixed container port hid the
     # fact that these two variables never reached the container at all, which `network_mode: host`
     # then exposed by discarding the mapping. See OPS-30.
+    #
+    # The HLS port serves the segments themselves, so it takes a bind address the way SRS's two HTTP
+    # ports do. The SRT port is ingest and stays on every interface.
     ports:
       - '${OME_SRT_PORT:-10080}:${OME_SRT_PORT:-10080}/udp'
-      - '${OME_HLS_PORT:-8081}:${OME_HLS_PORT:-8081}'
+      - '${OME_HTTP_BIND:-0.0.0.0}:${OME_HLS_PORT:-8081}:${OME_HLS_PORT:-8081}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
