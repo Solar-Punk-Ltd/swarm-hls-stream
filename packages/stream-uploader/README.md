@@ -458,7 +458,7 @@ holds the stream, not as a verdict.
 
 Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
 looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
-who asks, so the gate is really protecting the thirteen process-lifetime counters, which say how many
+who asks, so the gate is really protecting the fifteen process-lifetime counters, which say how many
 broadcasts have run, how many were lost, and how many requests this deployment turned away. Point a scraper at it
 with an `authorization` credential:
 
