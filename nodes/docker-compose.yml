@@ -17,7 +17,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_UPLOADER_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --nat-addr=${BEE_UPLOADER_NAT_ADDR:-localhost}:${BEE_UPLOADER_P2P_PORT:-1634}
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password=${BEE_UPLOADER_PASSWORD:-}
@@ -39,6 +38,9 @@ services:
       - --full-node=false
       - --swap-enable=false
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
+      # The only node here a browser reads through, which is why bee-uploader above does not carry
+      # this. On a node holding a postage batch it lets any page that can route here read the full
+      # batch ids and spend them. See deploy/docker-compose.yml.
       - --cors-allowed-origins=*
       - --nat-addr=${BEE_GATEWAY_NAT_ADDR:-localhost}:${BEE_GATEWAY_P2P_PORT:-1734}
       - --verbosity=${BEE_VERBOSITY:-5}
