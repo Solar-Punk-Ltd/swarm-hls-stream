@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -92,8 +102,18 @@ export function removeSandboxes() {
  * at fixture config without touching the repo's own. It is also the only safe way to drive
  * `clean.sh` at all: the real script removes containers and volumes, and nothing here may reach a
  * live stack.
+ *
+ * `pnpm: false` is a host that has none, which is what the scripts meet inside
+ * streaming-infra-manager's api container. It takes the stub away AND takes every directory holding
+ * a real pnpm off the PATH the scripts run with, because a stub that is merely absent leaves the
+ * machine's own pnpm answering `command -v`.
  */
-export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles = DEFAULT_ENV_FILES } = {}) {
+export function makeSandbox({
+  project = 'default',
+  config = ALL_LOCAL,
+  envFiles = DEFAULT_ENV_FILES,
+  pnpm = true,
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-clean-'));
   sandboxes.push(root);
 
@@ -132,7 +152,14 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   writeFileSync(envFileJournal(remoteJournal), '');
 
   writeNodeStub(join(binDir, 'git'), gitStub(gitJournal));
-  writeNodeStub(join(binDir, 'pnpm'), pnpmStub(pnpmJournal));
+  if (pnpm) {
+    writeNodeStub(join(binDir, 'pnpm'), pnpmStub(pnpmJournal));
+  } else {
+    // nvm and corepack both keep `node` and `pnpm` in one directory, so dropping pnpm's directories
+    // drops node with them, and every stub here is a node script. This is the suite's own node, put
+    // somewhere the strip below cannot reach.
+    symlinkSync(process.execPath, join(binDir, 'node'));
+  }
   writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
   writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, sshJournal));
   writeNodeStub(join(binDir, 'rsync'), rsyncStub(remoteHome));
@@ -147,6 +174,8 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
     root,
     binDir,
     remoteHome,
+    /** What a script in this sandbox runs with, stubs first and a real pnpm only where one is wanted. */
+    path: `${binDir}${delimiter}${pnpm ? process.env.PATH ?? '' : pathWithoutPnpm()}`,
     /** Path to one of the real deploy scripts, copied into this sandbox. */
     scriptPath: (name) => join(deploy, 'scripts', name),
     /** Every `docker` invocation made on this host, in order, one argv per entry. */
@@ -168,6 +197,14 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   };
 }
 
+/** Every directory carrying a real `pnpm` removed, which is what `command -v pnpm` has to miss. */
+function pathWithoutPnpm() {
+  return (process.env.PATH ?? '')
+    .split(delimiter)
+    .filter((dir) => dir.length > 0 && !existsSync(join(dir, 'pnpm')))
+    .join(delimiter);
+}
+
 /**
  * Runs one of the real deploy scripts inside a sandbox whose `docker` and `ssh` are stubs, and
  * reports how it exited instead of throwing. Half of what these scripts are asked to prove is that
@@ -176,7 +213,7 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
 export async function runScript(sandbox, name, args = [], env = {}) {
   try {
     const ok = await execFileAsync('bash', [sandbox.scriptPath(name), ...args], {
-      env: { ...process.env, ...env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+      env: { ...process.env, ...env, PATH: sandbox.path },
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {
@@ -195,7 +232,7 @@ export async function sourceLib(sandbox, snippet) {
 async function runShell(sandbox, script) {
   try {
     const ok = await execFileAsync('bash', ['-c', script], {
-      env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+      env: { ...process.env, PATH: sandbox.path },
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {
