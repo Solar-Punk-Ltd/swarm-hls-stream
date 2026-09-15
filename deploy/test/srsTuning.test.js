@@ -36,6 +36,29 @@ after(() => {
   }
 });
 
+/**
+ * A piece of the shipped entrypoint, lifted out by shape so that a test runs the real code rather
+ * than a copy of it. See `shippedGuard` below for what a second copy costs.
+ */
+function shippedBlock(pattern, what) {
+  const found = pattern.exec(readFileSync(ENTRYPOINT, 'utf8'));
+  assert.ok(found, `${ENTRYPOINT} no longer carries ${what}`);
+  return found[1] ?? found[0];
+}
+
+const REQUIRE_NUMBER = /^require_number\(\) \{\n[\s\S]*?\n\}$/m;
+
+/**
+ * Where the ceiling is turned into the ratio SRS takes.
+ *
+ * ⛔ Replaying only the `sed -i ` lines was not enough, and the gap was invisible: the ratio's sed
+ * line carried a `:-5.0` of its own, so this harness substituted that literal, the assertion that
+ * the shipped ceiling is 2.5s passed against it, and deleting `aof_ratio_for` and its call left the
+ * whole file green. The fallback is gone from the script and the derivation runs here instead, so
+ * the number asserted below is the one a container gets.
+ */
+const HLS_TUNING = /^# --- hls tuning ---\n([\s\S]*?)^# --- end hls tuning ---$/m;
+
 /** Runs the real entrypoint's substitution step and returns the srs.conf it produced. */
 function renderSrsConf(env) {
   const dir = mkdtempSync(join(tmpdir(), 'srs-conf-'));
@@ -56,9 +79,18 @@ function renderSrsConf(env) {
   // untouched template. Only the in-place flag is adapted; the expressions run verbatim.
   const localSeds = process.platform === 'darwin' ? seds.map((line) => line.replace(/^sed -i /, "sed -i '' ")) : seds;
 
-  execFileSync('bash', ['-c', `set -e\nCONF=${JSON.stringify(conf)}\n${localSeds.join('\n')}`], {
-    env: { ...process.env, ...env },
-  });
+  const program = [
+    'set -e',
+    `CONF=${JSON.stringify(conf)}`,
+    shippedBlock(REQUIRE_NUMBER, 'require_number'),
+    shippedBlock(HLS_TUNING, 'the hls tuning block'),
+    ...localSeds,
+  ].join('\n');
+
+  // PATH and the case's own values, and nothing else of this machine's. Every value replayed here
+  // is read from the environment with a `:-` default, so an ambient HLS_SEGMENT_MAX or HLS_AOF_RATIO
+  // would decide what these cases assert.
+  execFileSync('bash', ['-c', program], { env: { PATH: process.env.PATH, ...env } });
 
   const rendered = readFileSync(conf, 'utf8');
   assert.notEqual(rendered, readFileSync(TEMPLATE, 'utf8'), 'the harness substituted nothing, so it proves nothing');
@@ -127,7 +159,9 @@ describe('the SRS latency knobs', () => {
     assert.match(conf, /hls_fragment\s+0\.5;/);
     // The ceiling is 2.5s, and it is set in seconds now rather than as the ratio SRS takes, so what
     // is asserted is the product. It was 2.1s for weeks, which turned out to be 35ms short of what a
-    // 2.0s GOP needs. See the overshoot test below.
+    // 2.0s GOP needs. See the overshoot test below. The ratio read here is derived from
+    // HLS_SEGMENT_MAX's own default by the block the harness replays, so moving that default moves
+    // this number, which is what the dead `:-5.0` in the sed line used to hide.
     const shippedRatio = Number(conf.match(/hls_aof_ratio\s+([\d.]+);/)[1]);
     assert.equal(Number((0.5 * shippedRatio).toFixed(3)), 2.5);
     assert.match(conf, /hls_window\s+15;/);
@@ -226,9 +260,7 @@ describe('the SRS latency knobs', () => {
    * the same constant the implementation returns. Task #104.
    */
   function shippedGuard() {
-    const declared = /^require_number\(\) \{\n[\s\S]*?\n\}$/m.exec(readFileSync(ENTRYPOINT, 'utf8'));
-    assert.ok(declared, `${ENTRYPOINT} no longer declares require_number, so there is no guard to test`);
-    return declared[0];
+    return shippedBlock(REQUIRE_NUMBER, 'require_number, so there is no guard to test');
   }
 
   const runGuard = (name, value) =>

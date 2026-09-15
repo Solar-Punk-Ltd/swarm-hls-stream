@@ -118,6 +118,7 @@ require_rung_name() {
 #
 # ⚠️ `HLS_WINDOW` is SECONDS of playlist, not fragments. This comment used to say "fifteen fragments",
 # which is only the same number when the fragment is 1.0 and is double the intent at 0.5.
+# --- hls tuning ---
 require_number HLS_FRAGMENT "${HLS_FRAGMENT:-0.5}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
 HLS_FRAGMENT="${HLS_FRAGMENT:-0.5}"
@@ -163,6 +164,7 @@ aof_ratio_for() {
 }
 
 HLS_AOF_RATIO="$(aof_ratio_for "$HLS_FRAGMENT" "$HLS_SEGMENT_MAX" "${HLS_AOF_RATIO:-}")"
+# --- end hls tuning ---
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.
 #
@@ -378,7 +380,7 @@ else
 fi
 
 sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-0.5}/" "$CONF"
-sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-5.0}/" "$CONF"
+sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO}/" "$CONF"
 sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-15}/" "$CONF"
 
 # Substitute webhook host and port
