@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import { previewMode, thumbnailImageUrl } from '../src/components/StreamPreview/previewMode';
+import { previewMode, thumbnailFailed, thumbnailImageUrl } from '../src/components/StreamPreview/previewMode';
 
 const REF = '6ce8aab7f729e4614ceab32b108336e0d25d53a673bc7c028d01ff386a9aaa70';
 
@@ -51,6 +51,58 @@ describe('where a preview card gets its picture', () => {
   it('falls back to the probe when a live or finished stream’s image fails to load', () => {
     assert.equal(previewMode({ thumbnail: REF, state: 'live', imageFailed: true }), 'probe');
     assert.equal(previewMode({ thumbnail: REF, state: 'vod', imageFailed: true }), 'probe');
+  });
+});
+
+/**
+ * A preview card outlives the picture it was given, so an image failure has to be a fact about one
+ * reference rather than about the card.
+ *
+ * `StreamList` keys a card by topic. In admin mode the topic belongs to the declaration and outlives
+ * every session on it, so a publisher who replaces an unfetchable thumbnail re-renders the same
+ * mounted component with a new reference and no remount. Recorded as a boolean, the first failure
+ * latched: the replacement picture was never rendered, and for a scheduled entry — which is never
+ * probed — the card stayed a placeholder for as long as the list was open.
+ */
+describe('whether a recorded image failure still applies', () => {
+  const OTHER_REF = 'a'.repeat(64);
+
+  it('demotes the reference that actually failed', () => {
+    assert.equal(thumbnailFailed(REF, REF), true);
+    assert.equal(previewMode({ thumbnail: REF, state: 'live', imageFailed: thumbnailFailed(REF, REF) }), 'probe');
+  });
+
+  it('does not demote a card that has never had a failure', () => {
+    assert.equal(thumbnailFailed(null, REF), false);
+  });
+
+  /** ⛔ The regression itself: a new picture must be rendered rather than inheriting the old verdict. */
+  it('stops applying once the publisher hands the card a different reference', () => {
+    assert.equal(thumbnailFailed(REF, OTHER_REF), false);
+    assert.equal(
+      previewMode({ thumbnail: OTHER_REF, state: 'live', imageFailed: thumbnailFailed(REF, OTHER_REF) }),
+      'image',
+      'a replaced thumbnail must be rendered, not probed past',
+    );
+  });
+
+  /**
+   * The case that was worst, because a scheduled card has no probe to fall back to: it showed the
+   * default image and nothing could ever move it off.
+   */
+  it('lets a scheduled card show a replacement picture instead of the placeholder for ever', () => {
+    assert.equal(
+      previewMode({ thumbnail: OTHER_REF, state: 'scheduled', imageFailed: thumbnailFailed(REF, OTHER_REF) }),
+      'image',
+    );
+  });
+
+  it('still demotes when the publisher re-publishes the same broken reference', () => {
+    assert.equal(thumbnailFailed(REF, REF), true);
+  });
+
+  it('treats an entry that lost its thumbnail as carrying no failure', () => {
+    assert.equal(thumbnailFailed(REF, undefined), false);
   });
 });
 

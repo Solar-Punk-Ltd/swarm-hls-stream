@@ -46,6 +46,25 @@ export function previewMode({ thumbnail, state, imageFailed = false }: PreviewEn
   return state === STREAM_STATUS_SCHEDULED ? 'placeholder' : 'probe';
 }
 
+/**
+ * Whether an image failure this card recorded still applies to the picture it is now being asked to
+ * render.
+ *
+ * ⛔ A card outlives the picture it was given, which is why this compares references rather than
+ * reading a flag. `StreamList` keys a card by topic, and in admin mode the topic belongs to the
+ * declaration and outlives every session on it, so a publisher replacing an unfetchable thumbnail
+ * re-renders the same mounted component with a new reference. Latched on a boolean, the first failure
+ * demoted the card for as long as it stayed mounted: a live card went on probing when it had a
+ * perfectly good picture to show, and a scheduled one went on showing the placeholder for ever, since
+ * {@link previewMode} never probes a scheduled stream.
+ *
+ * @param failedThumbnail the reference that failed to load, or null while none has.
+ * @param thumbnail the reference this render carries.
+ */
+export function thumbnailFailed(failedThumbnail: string | null, thumbnail: string | undefined): boolean {
+  return failedThumbnail !== null && failedThumbnail === thumbnail;
+}
+
 /** Absent and empty are the same answer: the publisher gave no image. */
 function hasThumbnail(thumbnail: string | undefined): thumbnail is string {
   return typeof thumbnail === 'string' && thumbnail.trim().length > 0;
