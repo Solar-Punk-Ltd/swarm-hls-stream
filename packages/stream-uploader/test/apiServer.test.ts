@@ -45,6 +45,15 @@ import { LOOPBACK_HOST } from './helpers/loopbackServer.js';
 
 const STREAM_ID = 'live/one';
 
+/** One refused publisher as `/health` serves it, which is a routing entry plus what bee answered. */
+interface RefusedPublisherBody {
+  rung: string;
+  url: string;
+  batch: string;
+  statuses: number[];
+  firstRefusedAt: number;
+}
+
 interface HealthBody {
   status?: string;
   reasons?: string[];
@@ -119,6 +128,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'quarantinedRecoveryEntries',
         'fragmentMismatchStreams',
         'postageRefusedPublishers',
+        'refusedPublishers',
         'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
@@ -153,6 +163,47 @@ describe('api server over http (S0.7 test layer)', () => {
     assert.ok(
       (body as { publishers: unknown[] }).publishers.length > 0,
       'an empty list would make every deployment look the same, which is the failure this closes',
+    );
+  });
+
+  /**
+   * ⛔ `postage_refused` says a batch somewhere on this stage has stopped paying, and on a four rung
+   * ladder that is four candidates. Which one decides everything an operator does next, because each
+   * rung's batch is bought and topped up separately, so the reason has to arrive with the rung, the
+   * node and the batch beside it rather than sending someone to read four nodes.
+   *
+   * Rendered off the pool's own routing, so what a reader is told here is character for character
+   * what the `publishers` block above already tells them: the url minus any credential, and a batch
+   * id truncated to enough to tell two apart. What is safe to say is `BeePublisherPool.routing`'s
+   * business and is pinned in its own tests.
+   */
+  it('names the rung, node and batch of the publisher whose postage was refused', async () => {
+    const orchestrator = makeTestOrchestrator({}, { uploadData: rejectImmediately });
+    const api = await start(orchestrator);
+    const askedAt = Date.now();
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).reasons?.includes(HEALTH_REASON_POSTAGE_REFUSED) === true,
+    );
+    const refused = (body as { refusedPublishers: RefusedPublisherBody[] }).refusedPublishers;
+
+    assert.equal(status, 503);
+    assert.equal(refused.length, 1, 'a reason with nobody named against it sends an operator to read every node');
+    const { firstRefusedAt, ...identity } = refused[0];
+    assert.deepEqual(identity, {
+      ...orchestrator.publisherRouting()[0],
+      // 400 is what the fake answers. The status is carried rather than interpreted, because which
+      // one bee gives for a batch that has filled is not settled and a guess would name the wrong fix.
+      statuses: [400],
+    });
+    assert.ok(
+      firstRefusedAt >= askedAt && firstRefusedAt <= Date.now(),
+      `the first refusal has to be datable against the log: ${firstRefusedAt}`,
     );
   });
 

@@ -83,6 +83,7 @@ describe('metrics exposition format', () => {
     segmentDurationsUnreadTotal: 3,
     authRejectionsTotal: 4,
     takeoversRefusedTotal: 6,
+    postageRefusedPublishers: 1,
     lastSegmentAt: 1_700_000_000_000,
     activeStreams: 2,
     queueDepth: 7,
@@ -93,8 +94,8 @@ describe('metrics exposition format', () => {
     segmentsDroppedByRung: { '1080p': 2 },
   };
 
-  /** 17 unlabelled metrics, plus the two per-rung families, whose series are one sample line each. */
-  const UNLABELLED = 17;
+  /** 18 unlabelled metrics, plus the two per-rung families, whose series are one sample line each. */
+  const UNLABELLED = 18;
   const LABELLED_FAMILIES = 2;
   const FAMILIES = UNLABELLED + LABELLED_FAMILIES;
   const RUNGS_IN_SNAPSHOT = 4;

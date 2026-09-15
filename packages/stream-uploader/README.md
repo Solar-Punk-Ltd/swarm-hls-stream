@@ -370,6 +370,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording      |
 | `swarm_hls_streams_reaped_total`            | counter | Broadcasts finalized because their engine went silent       |
 | `swarm_hls_segment_durations_unread_total`  | counter | Segments published on the engine's word, unreadable here    |
+| `swarm_hls_postage_refused_publishers`      | gauge   | Rungs whose postage batch bee has refused. Never clears     |
 | `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none   |
 | `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing             |
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |
@@ -497,6 +498,13 @@ of them at once, which made that counter flap. A batch that was dead when the br
 took the last alarm with it, while the finalize failed on that same batch, no recording was published
 and the catalog went on saying `live`. `postage_refused` is a fact about a node and a batch id rather
 than about a broadcast, so it survives the stream that found it.
+
+**`refusedPublishers` on the same body says which rung**, because on a four rung ladder the reason on
+its own leaves four batches to go and read, and each one is bought and topped up separately. Each
+entry is that rung's line out of the `publishers` block, the node url minus any credential and the
+batch id truncated, plus `statuses`, every distinct status bee answered with on it, and
+`firstRefusedAt`, the epoch milliseconds of the first one, which is what dates it against the
+`Postage batch … refused by bee` lines in the log. Empty on a healthy service.
 
 **Segment headers:**
 

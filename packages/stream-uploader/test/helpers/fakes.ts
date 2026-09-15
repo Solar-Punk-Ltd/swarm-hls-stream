@@ -240,6 +240,7 @@ export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): M
     segmentDurationsUnreadTotal: 0,
     authRejectionsTotal: 0,
     takeoversRefusedTotal: 0,
+    postageRefusedPublishers: 0,
     segmentsUploadedByRung: {},
     segmentsDroppedByRung: {},
     lastSegmentAt: null,

@@ -143,6 +143,14 @@ interface RetainedStopOutcome {
   recordedAt: number;
 }
 
+/** One rung's routing plus what bee answered on its batch. See {@link StreamOrchestrator.refusedPublishers}. */
+export interface RefusedPublisher extends PublisherRoute {
+  /** Every distinct status bee answered with on this publisher, in the order they were first seen. */
+  readonly statuses: readonly number[];
+  /** Epoch milliseconds of the first refusal, so the reading can be dated against the uploader's log. */
+  readonly firstRefusedAt: number;
+}
+
 /** How a claimant is named in a log line, so an announce that named nobody does not read as `null`. */
 function describeClaimant(claimant: StreamClaimant): string {
   return claimant.address ?? 'an unnamed publisher';
@@ -1678,6 +1686,30 @@ export class StreamOrchestrator {
    */
   public publisherRouting(): PublisherRoute[] {
     return this.publishers.routing();
+  }
+
+  /**
+   * Which of those publishers bee has refused a paid write on, and what it answered.
+   *
+   * ⛔ The reason on its own sends an operator to read four nodes. Each rung's batch is bought and
+   * topped up separately, so which one died is the whole of what to do next, and a stage where one
+   * rung has lost its postage looks identical from outside to one where a different rung has.
+   *
+   * Built by walking the routing rather than by rendering the latch's own copy of the node url and
+   * batch id, so an unauthenticated reader is told exactly what the `publishers` block already tells
+   * them, character for character, and there is only ever one place deciding what is safe to say.
+   * See {@link BeePublisherPool.routing}. The count in `HealthSignals` is read off the latch instead,
+   * so a refusal this join cannot place still turns the service degraded.
+   */
+  public refusedPublishers(): RefusedPublisher[] {
+    const refusals = new Map(this.metrics.getPostageRefusals().map((refusal) => [refusal.rung, refusal]));
+    return this.publishers.routing().flatMap((route) => {
+      const refusal = refusals.get(route.rung);
+      if (refusal === undefined) {
+        return [];
+      }
+      return [{ ...route, statuses: refusal.statuses, firstRefusedAt: refusal.firstRefusedAt }];
+    });
   }
 
   public getHealthSignals(): HealthSignals {

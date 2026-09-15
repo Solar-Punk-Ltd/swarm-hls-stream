@@ -293,6 +293,7 @@ export class ServiceMetrics {
       segmentDurationsUnreadTotal: this.segmentDurationsUnread,
       authRejectionsTotal: this.authRejections,
       takeoversRefusedTotal: this.takeoversRefused,
+      postageRefusedPublishers: this.postageRefusals.size,
       lastSegmentAt: this.lastSegmentAt,
     };
   }
@@ -364,6 +365,14 @@ export interface MetricsCounters {
   authRejectionsTotal: number;
   /** Announces refused because a live session on that stream id is still producing. See SEC-26. */
   takeoversRefusedTotal: number;
+  /**
+   * Publishers bee has refused a paid write on, which is how many rungs have lost their postage.
+   *
+   * A set size rather than a count of events, so it never double-counts the same dead batch however
+   * many segments it goes on refusing, and never decreases, because nothing in this process can make
+   * a refused batch usable again.
+   */
+  postageRefusedPublishers: number;
   /** Epoch milliseconds of the newest segment that reached Swarm, or null while none has. */
   lastSegmentAt: number | null;
 }
