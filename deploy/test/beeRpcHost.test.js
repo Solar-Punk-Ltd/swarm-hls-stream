@@ -30,13 +30,19 @@ function services() {
 }
 
 const RPC_FLAG = '--blockchain-rpc-endpoint';
+const CONFIGURABLE_RPC = '--blockchain-rpc-endpoint=${';
 const HOST_ALIAS = 'host.docker.internal:host-gateway';
 
 describe('a node reaching the chain through an endpoint of the operator\'s own', () => {
-  const chainNodes = services().filter((service) => blockOf(service).includes(RPC_FLAG));
+  // The flag alone is not the test. bee-gateway carries it deliberately EMPTY,
+  // which is half of what puts it in ultra-light mode, so it reaches no chain
+  // and an operator has nowhere to point it. Only a service whose endpoint is a
+  // variable is one this is about.
+  const chainNodes = services().filter((service) => blockOf(service).includes(CONFIGURABLE_RPC));
 
   it('names every service that talks to the chain, so this file cannot go stale quietly', () => {
-    assert.ok(chainNodes.length >= 5, chainNodes.join(', '));
+    assert.ok(chainNodes.length >= 4, chainNodes.join(', '));
+    assert.ok(!chainNodes.includes('bee-gateway'), 'the gateway reaches no chain');
   });
 
   // The default endpoint is a public RPC, and on 2026-09-15 it answered one
@@ -73,5 +79,20 @@ describe('the node a viewer reads through', () => {
   it('has swap off, stated rather than configured', () => {
     assert.match(block, /--swap-enable=false$/m);
     assert.doesNotMatch(block, /--swap-enable=\$\{/);
+  });
+
+  /**
+   * The half that actually decides the mode, and the half a commit on
+   * 2026-09-15 left out. bee reads pkg/node/node.go isChainEnabled:
+   * `chainDisabled := swapEndpoint == ""` and `lightMode := !o.FullNodeMode`,
+   * and only those two together give ultra-light. --swap-enable takes no part.
+   * An endpoint left set here keeps the chain on whatever the other flags say,
+   * so the node comes up plain `light`, replays the postage contract for about
+   * three minutes on every empty data dir and answers 503 throughout.
+   */
+  it('reaches no chain at all, which is what makes it ultra-light rather than light', () => {
+    assert.match(block, /--blockchain-rpc-endpoint=$/m);
+    assert.doesNotMatch(block, /--blockchain-rpc-endpoint=\$\{/);
+    assert.doesNotMatch(block, /--blockchain-rpc-endpoint=https?:/);
   });
 });

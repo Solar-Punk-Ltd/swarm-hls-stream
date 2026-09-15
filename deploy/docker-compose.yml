@@ -155,16 +155,23 @@ services:
       - start
       - --api-addr=${BEE_GATEWAY_API_LISTEN:-}:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
-      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
-      # Both flags together are bee's `ultra-light` mode: a light node with no chequebook, so it
-      # owns no way to pay a peer and cannot be made to spend. Levi ruled on 2026-09-15 that a
-      # viewer node is always this, so neither is a variable any more. What that costs is LAT-10:
-      # such a node lives on the free bandwidth allowance alone, and a viewer polling it sees the
-      # feed freeze 30 to 48s at a time. Paying peers would need swap on, a reachable RPC endpoint
-      # and a funded wallet at the address `/addresses` reports as `chain_address`, which is a
-      # deliberate change to this file rather than a setting anything can reach. The variables
-      # this replaced were reachable from neither .env.sample nor the manager's key spec, so no
-      # deployment path could set them and none is lost.
+      # ⛔ These two lines ARE the mode, and the endpoint is the half that decides it. Bee reads
+      # `pkg/node/node.go:1605` isChainEnabled: `chainDisabled := swapEndpoint == ""`, `lightMode :=
+      # !o.FullNodeMode`, and only those two together give ultra-light. `--swap-enable` takes no
+      # part in the decision, it is only refused at node.go:429 when swap is asked for without a
+      # chain. So an endpoint left set here keeps the chain ON however the other flags read: the
+      # node comes up as plain `light`, replays the postage contract for about three minutes on
+      # every empty data dir and answers 503 throughout, and gains nothing for it. An earlier
+      # version of this comment stated the rule wrongly and four other places in the tree carried
+      # the same error.
+      #
+      # Levi ruled on 2026-09-15 that a viewer node is always ultra-light, so both are stated here
+      # rather than left to a variable. What that costs is LAT-10: such a node has no chequebook,
+      # lives on the free bandwidth allowance alone, and a viewer polling it sees the feed freeze
+      # 30 to 48s at a time. Paying peers would need an endpoint, swap on and a funded wallet at
+      # the address `/addresses` reports as `chain_address`, which is a deliberate edit to this
+      # file rather than a setting anything can reach.
+      - --blockchain-rpc-endpoint=
       - --full-node=false
       - --swap-enable=false
       # ⛔⛔ ZERO IS THE ONE VALUE THAT GUARANTEES A THRASH LOOP, so read this before changing it and
