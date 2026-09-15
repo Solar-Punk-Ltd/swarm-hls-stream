@@ -1,0 +1,172 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  BEE_PROBE_PATH,
+  beeBaseUrlFromTypedAddress,
+  describeProbeOutcome,
+  gatewayLabel,
+  isDefaultGateway,
+  probeGateway,
+} from '@/components/DomainSelector/gatewayProbe';
+import { FetchTimeoutError, fetchWithTimeout } from '@/utils/fetchWithTimeout';
+
+/**
+ * That the Bee node picker reads an address before it saves it, and says what it found in words a
+ * viewer can act on.
+ *
+ * Saving whatever was typed is how a viewer reached a browse page with nothing on it. The node was
+ * not there, or it was there and refused this site's origin, and neither of those reached them as
+ * anything other than an empty catalog. A browser reports a CORS refusal exactly like a closed port,
+ * so the copy has to name both.
+ *
+ * The wait belongs to `fetchWithTimeout`, which owns the window and has its own test for it, so
+ * nothing here re-checks that a timer fires. What these check is the reading the probe takes from
+ * what comes back, including the one case the primitive hands over as an error of its own.
+ */
+
+const BEE_HEALTH = '{"status":"ok","version":"2.8.2","apiVersion":"7.3.0"}';
+
+/** A single-page app answers every path with its index page and a 200, this project's own client included. */
+const SPA_INDEX = '<!doctype html><html><head><title>Multimedia Streaming over Swarm</title></head></html>';
+
+function answering(status: number, text = BEE_HEALTH): typeof fetchWithTimeout {
+  return async () => ({ ok: status >= 200 && status < 300, status, headers: new Headers(), text });
+}
+
+/** One rejection stands for a closed port, a DNS miss and a CORS refusal, which a browser never tells apart. */
+function refusing(): typeof fetchWithTimeout {
+  return async () => {
+    throw new TypeError('Failed to fetch');
+  };
+}
+
+/** A node that accepts the connection and then goes quiet, which the primitive turns into an error of its own. */
+function silent(): typeof fetchWithTimeout {
+  return async (url, options) => {
+    throw new FetchTimeoutError(url, options?.timeoutMs ?? 0);
+  };
+}
+
+describe('beeBaseUrlFromTypedAddress', () => {
+  it('strips whitespace and trailing slashes, because every caller appends its own path', () => {
+    expect(beeBaseUrlFromTypedAddress('  http://localhost:1633///  ')).toBe('http://localhost:1633');
+  });
+
+  it('adds http:// to a bare host and port, which is how an address is copied out of Swarm Desktop', () => {
+    expect(beeBaseUrlFromTypedAddress('localhost:1633')).toBe('http://localhost:1633');
+    expect(beeBaseUrlFromTypedAddress('192.168.1.20:1633')).toBe('http://192.168.1.20:1633');
+  });
+
+  it('leaves an explicit scheme alone, whatever its case', () => {
+    expect(beeBaseUrlFromTypedAddress('HTTPS://gateway.example')).toBe('HTTPS://gateway.example');
+  });
+
+  it('keeps a path-only address such as the deployed default as it is', () => {
+    expect(beeBaseUrlFromTypedAddress('/bee/')).toBe('/bee');
+  });
+
+  it('returns an empty string for nothing, so the picker can refuse it', () => {
+    expect(beeBaseUrlFromTypedAddress('   ')).toBe('');
+  });
+});
+
+describe('probeGateway', () => {
+  it('asks the health endpoint under the address it was given', async () => {
+    let asked = '';
+    const fetcher: typeof fetchWithTimeout = async (url, options) => {
+      asked = url;
+      return answering(200)(url, options);
+    };
+
+    await probeGateway('http://localhost:1633', { fetcher });
+
+    expect(asked).toBe(`http://localhost:1633${BEE_PROBE_PATH}`);
+  });
+
+  it('bounds its own wait, so a node that goes quiet cannot hold the picker open', async () => {
+    let window: number | undefined;
+    const fetcher: typeof fetchWithTimeout = async (url, options) => {
+      window = options?.timeoutMs;
+      return answering(200)(url, options);
+    };
+
+    await probeGateway('http://localhost:1633', { fetcher });
+
+    expect(window).toBeGreaterThan(0);
+  });
+
+  it('accepts an address that answers with a Bee health document', async () => {
+    expect(await probeGateway('http://localhost:1633', { fetcher: answering(200) })).toEqual({ kind: 'ok' });
+  });
+
+  it('refuses a single-page app that answers 200 with its index page', async () => {
+    expect(await probeGateway('http://localhost:4173', { fetcher: answering(200, SPA_INDEX) })).toEqual({
+      kind: 'not-bee',
+    });
+  });
+
+  it('accepts a Bee node whose health says nok, because it is still a Bee node', async () => {
+    expect(await probeGateway('http://localhost:1633', { fetcher: answering(200, '{"status":"nok"}') })).toEqual({
+      kind: 'ok',
+    });
+  });
+
+  it('reports the status when something answers with an error', async () => {
+    expect(await probeGateway('http://localhost:8080', { fetcher: answering(404) })).toEqual({
+      kind: 'rejected',
+      status: 404,
+    });
+  });
+
+  it('reports a refusal rather than throwing, so the picker always has something to show', async () => {
+    expect(await probeGateway('http://localhost:1', { fetcher: refusing() })).toEqual({ kind: 'unreachable' });
+  });
+
+  it('keeps a node that never answered apart from one that could not be reached', async () => {
+    expect(await probeGateway('http://localhost:1633', { fetcher: silent() })).toEqual({ kind: 'timed-out' });
+  });
+});
+
+describe('describeProbeOutcome', () => {
+  it('tells an unreachable viewer about CORS, because a browser hides that cause behind a failed fetch', () => {
+    expect(describeProbeOutcome({ kind: 'unreachable' })).toContain('cors-allowed-origins');
+  });
+
+  it('sends a viewer whose node never answered to the node rather than to its CORS settings', () => {
+    const timedOut = describeProbeOutcome({ kind: 'timed-out' });
+
+    expect(timedOut).not.toContain('cors-allowed-origins');
+    expect(timedOut).not.toBe(describeProbeOutcome({ kind: 'unreachable' }));
+  });
+
+  it('names the status when something answered with an error', () => {
+    expect(describeProbeOutcome({ kind: 'rejected', status: 502 })).toContain('502');
+  });
+
+  it('says plainly that the thing answering is not a Bee node', () => {
+    expect(describeProbeOutcome({ kind: 'not-bee' })).toContain('not a Bee node');
+  });
+});
+
+describe('the way back to the default gateway', () => {
+  it('knows a viewer is on the default, so the way back is offered only when it does something', () => {
+    expect(isDefaultGateway('/bee', '/bee')).toBe(true);
+    expect(isDefaultGateway('http://localhost:1633', '/bee')).toBe(false);
+  });
+
+  it('still knows the default when the saved value lost a trailing slash the env var carries', () => {
+    expect(isDefaultGateway('https://gateway.example', 'https://gateway.example/')).toBe(true);
+  });
+
+  it('names the default rather than showing a path a viewer has never seen', () => {
+    expect(gatewayLabel('/bee', '/bee')).toBe('Default gateway');
+  });
+
+  it('shows a viewer their own node as its host, which is what they typed', () => {
+    expect(gatewayLabel('http://localhost:1633', '/bee')).toBe('localhost:1633');
+  });
+
+  it('falls back to the raw value when it is not a URL', () => {
+    expect(gatewayLabel('/other-proxy', '/bee')).toBe('/other-proxy');
+  });
+});
