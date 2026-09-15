@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   datedDurationMs,
+  DATING_SNAP_TOLERANCE,
   presentationMsOf,
   programDateTimeMsOf,
   reanchorDecision,
@@ -97,29 +98,36 @@ describe('the media a segment contributes to the date of the next one', () => {
   it('reads a measurement inside the tolerance as the configured length, so a ladder agrees', () => {
     assert.equal(datedDurationMs(1.001, 1), 1000);
     assert.equal(datedDurationMs(0.999, 1), 1000);
-    assert.equal(datedDurationMs(2.04, 2), 2000);
-    // ⚠️ Five percent of a 2s fragment is 100ms, so a segment that really ran 2.067 is dated as
-    // 2.000 and its 67ms is not corrected. That is the band the one shared tolerance buys, and it is
-    // the price of a ladder whose rungs cannot be dated apart. See the owner note in the report.
-    assert.equal(datedDurationMs(2.067, 2), 2000);
+    assert.equal(datedDurationMs(2.015, 2), 2000);
   });
 
   it('reads a measurement outside the tolerance as itself', () => {
+    assert.equal(datedDurationMs(2.067, 2), 2067);
     assert.equal(datedDurationMs(2.4, 2), 2400);
     assert.equal(datedDurationMs(10.033, 2), 10_033);
     assert.equal(datedDurationMs(1, 2), 1000);
   });
 
   /**
-   * One definition of "the same length", so a pair of rungs can only be dated apart where the
-   * fragment agreement check already calls them a mismatch.
+   * ⛔ The two tolerances answer different questions and must not be made one number. The agreement
+   * check asks whether this stage is misconfigured, so it is wide enough to survive a force-closed
+   * segment. This one only absorbs the tick rounding several encoders put on one keyframe grid.
+   *
+   * ⛔ The gap between them is not academic: it is exactly the live reading this dating exists for.
+   * 2.067 seconds against a configured 2 is inside five percent, so the agreement check calls the
+   * stage healthy, which it is. Dating it as 2.000 would lose 67ms per segment for ever, about two
+   * minutes an hour.
    */
-  it('takes its tolerance from the fragment agreement check', () => {
-    const justInside = 2 * (1 + FRAGMENT_TOLERANCE) - 0.001;
-    const justOutside = 2 * (1 + FRAGMENT_TOLERANCE) + 0.001;
+  it('snaps on its own band rather than on the agreement check’s, which is five times wider', () => {
+    const justInside = 2 * (1 + DATING_SNAP_TOLERANCE) - 0.001;
+    const justOutside = 2 * (1 + DATING_SNAP_TOLERANCE) + 0.001;
 
     assert.equal(datedDurationMs(justInside, 2), 2000);
     assert.equal(datedDurationMs(justOutside, 2), Math.round(justOutside * 1000));
+
+    assert.ok(DATING_SNAP_TOLERANCE < FRAGMENT_TOLERANCE, 'the dating snapped on the agreement check’s band');
+    assert.ok(Math.abs(2.067 - 2) <= 2 * FRAGMENT_TOLERANCE, 'the agreement check no longer calls 2.067 a healthy 2');
+    assert.equal(datedDurationMs(2.067, 2), 2067);
   });
 
   it('rounds to the millisecond, which is all a stamp can carry', () => {
@@ -146,7 +154,7 @@ describe('when a placed segment is presented', () => {
   });
 
   it('steps by the configured length where the one in front measured within tolerance', () => {
-    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 1.98 };
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 1.995 };
 
     assert.equal(presentationMsOf(BROADCAST, 5, previous), STARTED_AT_MS + STEP_MS);
   });

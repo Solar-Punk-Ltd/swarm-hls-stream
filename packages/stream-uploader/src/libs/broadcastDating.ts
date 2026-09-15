@@ -1,8 +1,34 @@
 import { BroadcastAnchor, BroadcastEpoch } from '../types.js';
 
-import { FRAGMENT_TOLERANCE } from './fragmentAgreement.js';
-
 const MS_PER_SECOND = 1000;
+
+/**
+ * How far a segment's measured length may sit from the configured one and still be dated as that
+ * configured length.
+ *
+ * **What it is: the rounding band of one keyframe grid seen by several encoders.** Under
+ * `ABR_ENABLED` every rung is re-encoded from one source with a keyframe forced every
+ * `ABR_FPS x HLS_FRAGMENT` frames, and SRS cuts on that keyframe, so all four rungs are cutting the
+ * same instants of media. What separates their readings is 90kHz tick rounding at a frame rate that
+ * does not divide it, which is a fraction of a percent. One percent covers that with room and
+ * nothing else, which is the whole job: every rung reads the same segment as the configured length,
+ * so all four date it identically while each publishes its own `#EXTINF`.
+ *
+ * ⛔ **What it is NOT: `FRAGMENT_TOLERANCE` from `fragmentAgreement.ts`, and the two are different
+ * numbers on purpose.** That one answers a different question, whether this stage is misconfigured,
+ * and it is five percent because it has to survive a segment SRS force-closed at
+ * `HLS_FRAGMENT x HLS_AOF_RATIO` without calling a correct deployment broken. Borrowing it here
+ * would leave real media unmeasured: a segment of 2.067 seconds against a configured 2 is inside
+ * five percent, so it would be dated as 2.000 and its 67 milliseconds lost, every segment, which is
+ * about two minutes an hour. That is the exact live stream this dating exists to fix, measured
+ * 2026-09-15.
+ *
+ * The consequence, both ways. A measured duration within one percent of the configured length is
+ * read as the configured length, so the rungs of a ladder stay identical to the millisecond.
+ * Anything wider is read as itself, rounded to the millisecond, so a recording says what its media
+ * really did.
+ */
+export const DATING_SNAP_TOLERANCE = 0.01;
 
 /**
  * How far the dating a restart already minted may sit from the wall clock and still be read as that
@@ -65,23 +91,20 @@ export function programDateTimeMsOf(anchor: BroadcastAnchor, sequence: number): 
 /**
  * The media one segment contributes to the date of the one after it, in milliseconds.
  *
- * ⛔ **A measurement inside {@link FRAGMENT_TOLERANCE} of the configured length is read AS the
- * configured length, and that is what keeps a ladder's rungs agreeing to the millisecond.** Under
- * `ABR_ENABLED` the engine pins a keyframe every `ABR_FPS x HLS_FRAGMENT` frames and SRS cuts
- * exactly there, so every rung's segment holds the configured length to within 90kHz tick rounding.
- * Reading all of those as the configured length makes four rungs date one piece of media
- * identically while each keeps its own `#EXTINF`. Two rungs can only fall on opposite sides of this
- * by measuring the same segment more than the tolerance apart, which `fragmentAgreement.ts` already
- * calls a mismatch, so the tolerance is imported from there rather than written down twice.
+ * ⛔ **A measurement inside {@link DATING_SNAP_TOLERANCE} of the configured length is read AS the
+ * configured length, and that is what keeps a ladder's rungs agreeing to the millisecond.** Every
+ * rung of one ladder is cut on one keyframe grid, so what separates their readings of a segment is
+ * tick rounding rather than media, and reading all of those as the configured length makes four
+ * rungs date one piece of media identically while each keeps its own `#EXTINF`.
  *
- * Outside the tolerance the segment is read as itself. That is the single-rendition stage, where the
+ * Outside that band the segment is read as itself. That is the single-rendition stage, where the
  * publisher's own keyframe interval decides the segment and `HLS_FRAGMENT` is a floor: segments
  * measured 2.067 to 10.033 seconds against a configured 2 on 2026-09-15, and dating each of them at
  * 2.000 put the recording's wall clock further behind its own media with every segment, permanently.
  */
 export function datedDurationMs(measuredSeconds: number, fragmentSeconds: number): number {
-  const agrees = Math.abs(measuredSeconds - fragmentSeconds) <= fragmentSeconds * FRAGMENT_TOLERANCE;
-  return Math.round((agrees ? fragmentSeconds : measuredSeconds) * MS_PER_SECOND);
+  const onTheGrid = Math.abs(measuredSeconds - fragmentSeconds) <= fragmentSeconds * DATING_SNAP_TOLERANCE;
+  return Math.round((onTheGrid ? fragmentSeconds : measuredSeconds) * MS_PER_SECOND);
 }
 
 /** A segment already placed in the broadcast, as the dating reads one. */
