@@ -14,7 +14,7 @@ Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swar
                       │                      └─ Update stream catalog feed
                       │
                       ├─ Backpressure (bounded queue, 429 on overflow)
-                      ├─ Deduplication (reject duplicate segments)
+                      ├─ Deduplication (a repeat index is accepted and does no work)
                       └─ Crash recovery (persisted state + recovery timeout)
 ```
 
@@ -558,9 +558,17 @@ batch id truncated, plus `statuses`, every distinct status bee answered with on 
 
 **Error responses:**
 
-- `429` — Queue full (retry after `Retry-After` header)
-- `404` — Unknown stream
-- `400` — Missing required fields
+- `429`: queue full, retry after the `Retry-After` header
+- `404`: unknown stream
+- `400`: missing required fields, or an `x-duration` that is not a usable segment length
+- `409`: another session holds the id on `POST /stream/start`, or the stream is finalizing and accepts
+  no more segments on `POST /stream/segment`. No retry of either can succeed
+- `401`: a missing or wrong bearer token, on any `/stream/*` route and on `GET /metrics`
+
+A segment whose index this stream has already taken is **not** in that list. It is answered
+`200 {ok: true, queued: true}` and nothing is queued, which is what makes a sender's own retry after
+a network timeout safe. A caller counting what reached Swarm from its own `200`s therefore counts
+every retry, and the service's `swarm_hls_segments_uploaded_total` is the number that does not.
 
 ## Engine Plugin Architecture
 
