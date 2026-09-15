@@ -33,10 +33,15 @@ const CONFIG_WITHOUT_BEE = {
   services: { ...CONFIG_WITH_BEE.services, 'bee-uploader': false },
 };
 
-function envText(lines) {
-  return `${['STAMP=stamp', 'STREAM_KEY=key', `BEE_URL=${EXTERNAL_BEE}`, 'BEE_UPLOADER_API_PORT=1633', ...lines].join(
-    '\n',
-  )}\n`;
+/**
+ * A profile's env file. `beeUrl: ''` is the line left blank during bring-up and `beeUrl: null` is the
+ * line an operator commented out, which are the two ways a deployment ends up naming no address for
+ * the node it publishes through. `null` rather than `undefined`, because a destructuring default
+ * fills an `undefined` property back in and the case would quietly test the opposite of itself.
+ */
+function envText(lines, { beeUrl = EXTERNAL_BEE } = {}) {
+  const beeUrlLine = beeUrl === null ? [] : [`BEE_URL=${beeUrl}`];
+  return `${['STAMP=stamp', 'STREAM_KEY=key', ...beeUrlLine, 'BEE_UPLOADER_API_PORT=1633', ...lines].join('\n')}\n`;
 }
 
 /**
@@ -166,6 +171,66 @@ describe('LOCAL_BEE_UPLOADER deciding whether the uploader gets a local Bee addr
       sandbox.calls().filter((call) => call.startsWith('compose')),
       [],
       'a rejected value still reached compose',
+    );
+  });
+});
+
+/**
+ * ⛔ `false` on its own is not an answer, it is half of one.
+ *
+ * Saying the deployment runs no Bee node leaves BEE_URL in `.env.<profile>` as the only address the
+ * uploader has, and the compose file reads `${BEE_URL:-http://bee-uploader:1633}`. `:-` substitutes
+ * its default for an EMPTY value as well as for an unset one, so a profile that named no address got
+ * the compose service back and crash-looped on `getaddrinfo ENOTFOUND bee-uploader`, which is word
+ * for word the failure this key was added to end.
+ *
+ * An empty address during bring-up is the ordinary half-configured state rather than an exotic one.
+ * `assert-started.sh` does turn the deploy red, so nothing ships broken, but what it can report is a
+ * container that fell over, and the cause is a default in a file the operator never edited.
+ */
+describe('a deployment that owns no Bee node has to name the one it uses', () => {
+  const REFUSAL_CASES = [
+    { name: 'left blank during bring-up', beeUrl: '' },
+    { name: 'commented out, so the key is not there at all', beeUrl: null },
+  ];
+
+  for (const { name, beeUrl } of REFUSAL_CASES) {
+    it(`refuses an address ${name}, and deploys nothing`, async () => {
+      const sandbox = makeSandbox({
+        config: CONFIG_WITH_BEE,
+        envFiles: { '.env': envText(['LOCAL_BEE_UPLOADER=false'], { beeUrl }) },
+      });
+
+      const run = await runScript(sandbox, 'deploy.sh', ['stream-uploader']);
+      const said = `${run.stdout}${run.stderr}`;
+
+      assert.notEqual(run.exitCode, 0, `a profile with no Bee address was deployed: ${said}`);
+      assert.match(said, /BEE_URL/);
+      assert.match(said, /LOCAL_BEE_UPLOADER/);
+      assert.deepEqual(
+        sandbox.calls().filter((call) => call.startsWith('compose')),
+        [],
+        'a deployment with no Bee address still reached compose',
+      );
+    });
+  }
+
+  /**
+   * The refusal belongs to the uploader, which is the only service in the compose file that reads
+   * BEE_URL. Refusing every deploy of that profile would stop the client being brought up while the
+   * external node's address is still being worked out, which is the state this whole case is about.
+   */
+  it('still deploys a service that does not read the address', async () => {
+    const sandbox = makeSandbox({
+      config: CONFIG_WITH_BEE,
+      envFiles: { '.env': envText(['LOCAL_BEE_UPLOADER=false'], { beeUrl: '' }) },
+    });
+
+    await runScriptOk(sandbox, 'deploy.sh', ['client']);
+
+    assert.ok(
+      sandbox.calls().some((call) => call.startsWith('compose')),
+      'the client was refused for an address it never reads',
     );
   });
 });
