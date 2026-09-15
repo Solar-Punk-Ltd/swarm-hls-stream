@@ -137,7 +137,7 @@ services:
       # ${RPC_ENDPOINT:-https://rpc.gnosischain.com} until 2026-09-13, so the gateway was never once
       # ultra-light. Measured on viewer slot 7, bee 2.8.2, fresh volume: `beeMode: light`, and 195s
       # replaying the postage contract to block ~47.7M while answering 503 on /status and
-      # /chequebook, so the client proxying it had no gateway for three minutes — on every deploy
+      # /chequebook, so the client proxying it had no gateway for three minutes, on every deploy
       # that starts empty. It bought nothing for that: /chequebook/balance still said `405 chain
       # disabled` and the wallet held 0 BZZ, so it could no more pay a peer than an ultra-light node.
       # ⚠️ Its own variable, not RPC_ENDPOINT, because the uploader and the three rungs buy stamps
@@ -148,9 +148,9 @@ services:
       # ⭐ Decides the chequebook, NOT the mode above, whatever this comment claimed before
       # 2026-09-13. False deploys no chequebook, so the node cannot pay a peer for bandwidth and
       # lives on the free allowance alone. LAT-10: a viewer polling such a node sees the feed freeze
-      # 30 to 48s at a time. Turning it on needs BEE_GATEWAY_RPC_ENDPOINT set as well — swap with no
-      # chain is a node that will not start — plus a funded wallet at the address `/addresses`
-      # reports as `chain_address`. So it stays off by default and is opt-in per profile.
+      # 30 to 48s at a time. Turning it on needs two more things. BEE_GATEWAY_RPC_ENDPOINT set,
+      # because swap with no chain is a node that will not start, and a funded wallet at the address
+      # `/addresses` reports as `chain_address`. So it stays off by default and is opt-in per profile.
       - --swap-enable=${BEE_GATEWAY_SWAP_ENABLE:-false}
       # In PLUR, so a whole BZZ is 1e16. Bee's own default is 0, which deploys a chequebook that
       # can back no cheque at all, so swap-enable alone leaves the node just as unable to pay.

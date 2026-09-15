@@ -32,7 +32,7 @@ const COMPOSE_CONFIG_TIMEOUT_MS = 30_000;
  *
  * Measured on viewer slot 7, 2026-09-11, bee 2.8.2 on a fresh volume: `/status` reported
  * `beeMode: "light"` and spent **195 seconds** replaying the postage-batch contract to block
- * ~47.7M, answering `503 Node is syncing` on `/status` and `/chequebook/*` throughout — so the
+ * ~47.7M, answering `503 Node is syncing` on `/status` and `/chequebook/*` throughout, so the
  * client proxying that gateway had no gateway for those three minutes, on every deploy that starts
  * with an empty data directory. It bought nothing for it: `/chequebook/balance` still answered
  * `405 chain disabled` and the wallet held 0 BZZ, so the node could no more pay a peer than an
@@ -58,7 +58,7 @@ describe('the gateway is ultra-light', () => {
 
   /**
    * Asserted against the text as well as against compose below, because the check that renders the
-   * file skips wherever docker is absent — which includes the machine most likely to be editing it.
+   * file skips wherever docker is absent, which includes the machine most likely to be editing it.
    */
   it('does not hand the gateway the endpoint the paying nodes share', () => {
     const flag = /--blockchain-rpc-endpoint=(.*)/.exec(commandBlock('bee-gateway'));
@@ -167,8 +167,8 @@ describe('the gateway is ultra-light once compose has resolved it', () => {
   });
 
   /**
-   * A gateway on a chain is a thing someone may genuinely want — `gateway-funding-arms.sh` measures
-   * one — so the variable has to work, not merely be ignorable. A refusal that also refused every
+   * A gateway on a chain is a thing someone may genuinely want, and `gateway-funding-arms.sh`
+   * measures one, so the variable has to work, not merely be ignorable. A refusal that also refused every
    * real value would pass every test above.
    */
   it('still lets a profile ask for a chain-enabled gateway', (t) => {
