@@ -35,18 +35,23 @@ export interface StreamState {
 /**
  * What fixes a broadcast's playlists to a wall clock, so all four rungs date the same media alike.
  *
- * ⛔ **A segment's date is derived from its playlist sequence and never read off a clock per
- * segment.** Four rung uploaders stamping each segment with the time it happened to reach them
+ * ⛔ **A segment's date is this anchor plus the media held in front of it, and never a clock read
+ * per segment.** Four rung uploaders stamping each segment with the time it happened to reach them
  * would disagree by their own upload jitter, and hls.js would read that disagreement as the rungs
- * covering different media. So the arithmetic is the point, and `broadcastDating.ts` holds it.
+ * covering different media. So the derivation is the point, and `broadcastDating.ts` holds it.
  *
  * `startedAtMs` is where the dating begins: one instant for the whole ladder, minted when the
  * broadcast is admitted, outliving every session of that broadcast including one rebuilt from a
  * recovery entry.
  *
- * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`, not what any segment
- * measured. It is nominal by design: a stamp that tracked measured drift would move a viewer's clock
- * around by the encoder's rounding.
+ * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`. It is the grid the
+ * media is read against rather than a step taken blind: a segment measuring within
+ * `FRAGMENT_TOLERANCE` of it is dated as exactly this length, so a ladder whose rungs are cut on one
+ * keyframe grid dates one piece of media identically on all four. A segment outside the tolerance is
+ * dated by what it really held, because a single rendition's segment is decided by the publisher's
+ * own keyframe interval and dating a 10 second one as 2 leaves the recording's clock behind its
+ * media for ever. It is never persisted with the broadcast, so a redeployment under a new
+ * `HLS_FRAGMENT` reads the grid it is now cutting at.
  */
 export interface BroadcastAnchor {
   /** Epoch milliseconds of the broadcast's first fragment, shared by every rung of the ladder. */
@@ -130,6 +135,15 @@ export interface SegmentEntry {
    * the offset between them is recovered from the first segment held.
    */
   sequence?: number;
+  /**
+   * When this segment is presented, in epoch milliseconds, decided once as it was placed.
+   *
+   * Stored rather than derived on every build, so a recovered session republishes the dates a viewer
+   * was already handed and a slice of the held segments carries its own. Absent on entries persisted
+   * before the dating followed the media, where the anchor's own arithmetic is not a guess but the
+   * very date the entry went out with. See `broadcastDating.ts`.
+   */
+  presentedAtMs?: number;
 }
 
 /**

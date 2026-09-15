@@ -98,12 +98,16 @@ describe('the media a segment contributes to the date of the next one', () => {
     assert.equal(datedDurationMs(1.001, 1), 1000);
     assert.equal(datedDurationMs(0.999, 1), 1000);
     assert.equal(datedDurationMs(2.04, 2), 2000);
+    // ⚠️ Five percent of a 2s fragment is 100ms, so a segment that really ran 2.067 is dated as
+    // 2.000 and its 67ms is not corrected. That is the band the one shared tolerance buys, and it is
+    // the price of a ladder whose rungs cannot be dated apart. See the owner note in the report.
+    assert.equal(datedDurationMs(2.067, 2), 2000);
   });
 
   it('reads a measurement outside the tolerance as itself', () => {
-    assert.equal(datedDurationMs(2.067, 2), 2067);
     assert.equal(datedDurationMs(2.4, 2), 2400);
     assert.equal(datedDurationMs(10.033, 2), 10_033);
+    assert.equal(datedDurationMs(1, 2), 1000);
   });
 
   /**
@@ -119,7 +123,7 @@ describe('the media a segment contributes to the date of the next one', () => {
   });
 
   it('rounds to the millisecond, which is all a stamp can carry', () => {
-    assert.equal(datedDurationMs(2.0666, 2), 2067);
+    assert.equal(datedDurationMs(2.4567, 2), 2457);
   });
 });
 

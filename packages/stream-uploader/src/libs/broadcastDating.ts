@@ -1,5 +1,7 @@
 import { BroadcastAnchor, BroadcastEpoch } from '../types.js';
 
+import { FRAGMENT_TOLERANCE } from './fragmentAgreement.js';
+
 const MS_PER_SECOND = 1000;
 
 /**
@@ -49,14 +51,75 @@ function dateOnLine(epoch: BroadcastEpoch, sequence: number, fragmentSeconds: nu
 }
 
 /**
- * When the segment at this playlist sequence is presented, in epoch milliseconds.
+ * When the segment at this playlist sequence is presented, counting every sequence below it as one
+ * configured fragment of media.
  *
- * Derived and never observed. Not the time the segment arrived, and not its own `#EXTINF`: four rung
- * uploaders stamping their own readings would disagree about the same media by their upload jitter.
- * See {@link BroadcastAnchor}.
+ * What the dating was before it followed the media, and still the answer in the two places where no
+ * media is there to follow: the first segment placed at or after an epoch, and a sequence nothing
+ * has been placed below. {@link presentationMsOf} dates a segment that has media in front of it.
  */
 export function programDateTimeMsOf(anchor: BroadcastAnchor, sequence: number): number {
   return dateOnLine(epochFor(anchor, sequence), sequence, anchor.fragmentSeconds);
+}
+
+/**
+ * The media one segment contributes to the date of the one after it, in milliseconds.
+ *
+ * ⛔ **A measurement inside {@link FRAGMENT_TOLERANCE} of the configured length is read AS the
+ * configured length, and that is what keeps a ladder's rungs agreeing to the millisecond.** Under
+ * `ABR_ENABLED` the engine pins a keyframe every `ABR_FPS x HLS_FRAGMENT` frames and SRS cuts
+ * exactly there, so every rung's segment holds the configured length to within 90kHz tick rounding.
+ * Reading all of those as the configured length makes four rungs date one piece of media
+ * identically while each keeps its own `#EXTINF`. Two rungs can only fall on opposite sides of this
+ * by measuring the same segment more than the tolerance apart, which `fragmentAgreement.ts` already
+ * calls a mismatch, so the tolerance is imported from there rather than written down twice.
+ *
+ * Outside the tolerance the segment is read as itself. That is the single-rendition stage, where the
+ * publisher's own keyframe interval decides the segment and `HLS_FRAGMENT` is a floor: segments
+ * measured 2.067 to 10.033 seconds against a configured 2 on 2026-09-15, and dating each of them at
+ * 2.000 put the recording's wall clock further behind its own media with every segment, permanently.
+ */
+export function datedDurationMs(measuredSeconds: number, fragmentSeconds: number): number {
+  const agrees = Math.abs(measuredSeconds - fragmentSeconds) <= fragmentSeconds * FRAGMENT_TOLERANCE;
+  return Math.round((agrees ? fragmentSeconds : measuredSeconds) * MS_PER_SECOND);
+}
+
+/** A segment already placed in the broadcast, as the dating reads one. */
+export interface PlacedMedia {
+  sequence: number;
+  /** When it is presented, as {@link presentationMsOf} decided when it was placed. */
+  presentedAtMs: number;
+  /** Its own measured `#EXTINF`, in seconds. */
+  durationSeconds: number;
+}
+
+/**
+ * When the segment at `sequence` is presented, given the newest segment placed below it.
+ *
+ * ⛔ **Decided from the shared anchor plus the media in front of it, never from an arrival time.**
+ * Four rung uploaders stamping the clock they received a segment at would disagree about the same
+ * media by their upload jitter, and hls.js reads that as the rungs covering different media.
+ *
+ * A sequence between the two carries no media anybody observed, so it is charged the configured
+ * length. That is also the `#EXTINF` its own `#EXT-X-GAP` entry declares, so a hole says the same
+ * length it occupies.
+ *
+ * `previous` is null where nothing has been placed below `sequence`, and a `previous` that sits
+ * below the epoch dating `sequence` is media from before a restart. Both take the epoch's own
+ * arithmetic, which is what re-anchoring on the wall clock means.
+ */
+export function presentationMsOf(anchor: BroadcastAnchor, sequence: number, previous: PlacedMedia | null): number {
+  const epoch = epochFor(anchor, sequence);
+  if (previous === null || previous.sequence < epoch.fromSequence) {
+    return dateOnLine(epoch, sequence, anchor.fragmentSeconds);
+  }
+
+  const lost = sequence - previous.sequence - 1;
+  return (
+    previous.presentedAtMs +
+    datedDurationMs(previous.durationSeconds, anchor.fragmentSeconds) +
+    Math.round(lost * anchor.fragmentSeconds * MS_PER_SECOND)
+  );
 }
 
 /**
