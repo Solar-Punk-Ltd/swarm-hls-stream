@@ -25,7 +25,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO } from '../src/types.js';
 import { derivePublishKey } from '../src/utils/publishKey.js';
 
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { makeFakeOrchestrator, makeTestOrchestrator } from './helpers/fakes.js';
 import { listenOnLoopback } from './helpers/loopbackServer.js';
 import { waitFor } from './helpers/waiting.js';
 
@@ -346,3 +346,67 @@ for (const [name, withThisEngine] of ENGINES) {
     });
   });
 }
+
+/**
+ * The half of `OME_ADMISSION_FAIL_OPEN` that admin mode has to override, and the counterpart to
+ * `EnginePublishKey.test.ts`'s "still refuses a keyless admission when the handler is configured to
+ * fail open", which pins only the standalone side.
+ *
+ * Nothing unauthorised was ever getting in: every step that decides the verdict either cannot throw
+ * or catches its own errors, so this catch is reachable only once the gate has already admitted the
+ * publisher. What it was answering `allowed: true` to is the narrower failure — `startStream`
+ * returning false is a refusal the handler honours, and `startStream` *throwing* was being answered
+ * as an admission.
+ *
+ * ⛔ The bargain `failOpen` offers an operator — a broadcast admitted while this handler is broken
+ * beats a broadcast lost to it — has nothing to buy in admin mode, because there is no broadcast left
+ * to save. The topic and the catalog entry both live in the declaration, so a stream admitted without
+ * a session publishes to nothing and no viewer can find it. `srs.ts` already makes this call in its
+ * own catch and says so; without this, the two engines disagreed about the same deployment the moment
+ * an operator set the knob.
+ */
+describe('fail-open in admin mode', () => {
+  it('refuses an admission the handler threw on, even with OME_ADMISSION_FAIL_OPEN set', async () => {
+    const adminApi = adminAnswering(answersDraft());
+    const orchestrator = makeFakeOrchestrator({
+      startStream: () => {
+        throw new Error('orchestrator exploded');
+      },
+    });
+    const engine = createOmeEngine('http://ome.test:8081', 50, {
+      admissionSecret: OME_SECRET,
+      publishKeySecret: LEGACY_PUBLISH_SECRET,
+      adminApi,
+      failOpen: true,
+    });
+
+    const app = express();
+    app.use(
+      express.json({
+        verify: (req, _res, buf) => {
+          (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+        },
+      }),
+    );
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+
+    try {
+      const reply = await postAdmission(
+        baseUrl,
+        engine.prefix,
+        BROADCASTER,
+        `srt://ingest.example:9999/${APP}/${STREAM}?key=${DECLARED_KEY}`,
+      );
+
+      assert.deepEqual(
+        reply,
+        { allowed: false, reason: 'handler error' },
+        'admin mode is fail-closed whatever the operator chose, because an admitted stream with no session publishes nowhere',
+      );
+    } finally {
+      server.close();
+      engine.stopIngest?.();
+    }
+  });
+});

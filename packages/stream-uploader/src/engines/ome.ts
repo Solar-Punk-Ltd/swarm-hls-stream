@@ -595,7 +595,7 @@ async function handleAdmission(
   } catch (error) {
     const msg = getErrorMessage(error);
     logger.error(`[OME] Admission handler error: ${msg}`);
-    if (failOpen) {
+    if (failOpen && !adminApi) {
       reply(res, { allowed: true, reason: 'handler error (fail-open)' });
     } else {
       reply(res, { allowed: false, reason: 'handler error' });
