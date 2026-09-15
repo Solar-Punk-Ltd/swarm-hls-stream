@@ -12,6 +12,7 @@ import './utils/env.js';
 
 import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
+import { AdminApiClient } from './libs/AdminApiClient.js';
 import { BeePublisherPool } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
@@ -58,9 +59,31 @@ function buildPublishers(): BeePublisherPool {
   );
 }
 
+/**
+ * The admin service this uploader answers to, or undefined for the standalone deployment.
+ *
+ * Constructed once and shared, deliberately. The engines' publish gate resolves declarations through
+ * it and each uploader reports state through it, and those two pointed at different admins is a
+ * deployment where a broadcast is admitted by one service and reported to another. See
+ * {@link AdminApiClient}.
+ */
+function buildAdminApi(): AdminApiClient | undefined {
+  if (!config.admin) {
+    logger.info('[Admin] ADMIN_API_URL is not set, running standalone: the stream catalog on Swarm is ours to write');
+    return undefined;
+  }
+
+  logger.info(
+    `[Admin] Admin mode against ${config.admin.apiUrl}: streams are declared there, publishes are resolved ` +
+      'and authenticated against those declarations, and this service writes no stream catalog entries',
+  );
+  return new AdminApiClient({ baseUrl: config.admin.apiUrl, token: config.admin.apiToken });
+}
+
 async function start() {
   try {
     const publishers = buildPublishers();
+    const adminApi = buildAdminApi();
 
     // First, ahead of recovery and the engines, because a dry chequebook is silent: the node answers
     // /health normally and stalls every paid push behind an allowance that never arrives. Refusing
@@ -115,12 +138,13 @@ async function start() {
       segmentRedundancy: config.segmentRedundancy,
       ladder: config.abr?.ladder,
       ladderGroupStore,
+      adminApi,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
-    const engines = loadEngines(config.engine);
+    const engines = loadEngines(config.engine, { adminApi });
     const apiServer = startApiServer(streamOrchestrator, config.apiPort, {
       authToken: config.apiAuthToken,
       engines,

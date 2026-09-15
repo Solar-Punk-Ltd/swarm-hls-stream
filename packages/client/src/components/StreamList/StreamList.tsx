@@ -2,16 +2,24 @@ import { useMemo } from 'react';
 
 import { StreamPreview } from '@/components/StreamPreview/StreamPreview';
 import { useAppContext } from '@/providers/App';
-import { StreamState } from '@/types/stream';
+import { STREAM_STATUS_LIVE } from '@/types/stream';
 
 import './StreamList.scss';
 
 const MAX_DISPLAYED_STREAMS = 10;
-const STREAM_STATE_LIVE: StreamState = 'live';
 
+/**
+ * Live first, then newest first, and that is all this ever tests for.
+ *
+ * ⭐ It reads `live` rather than switching on the status on purpose, so a status it has never heard
+ * of — `scheduled` was one until the admin layer started writing it — lands in the same bucket as a
+ * recording and is ordered by timestamp with the rest. An announcement is not more urgent than a
+ * broadcast that is actually running, and a comparator that had to be taught each new status would
+ * have sorted the unknown one to an arbitrary end of the list instead.
+ */
 function compareStreams(a: { state?: string; timestamp?: number; index?: number }, b: typeof a): number {
-  const aLive = a.state === STREAM_STATE_LIVE;
-  const bLive = b.state === STREAM_STATE_LIVE;
+  const aLive = a.state === STREAM_STATUS_LIVE;
+  const bLive = b.state === STREAM_STATUS_LIVE;
   if (aLive !== bLive) {
     return aLive ? -1 : 1;
   }
@@ -49,6 +57,8 @@ export function StreamList() {
             mediatype={stream.mediatype}
             title={stream.title}
             index={stream.index}
+            thumbnail={stream.thumbnail}
+            scheduledStartTime={stream.scheduledStartTime}
           />
         ))}
       </div>

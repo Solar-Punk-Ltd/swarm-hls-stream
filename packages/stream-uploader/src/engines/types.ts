@@ -1,6 +1,20 @@
 import { Request, RequestHandler, Router } from 'express';
 
+import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
+
+/**
+ * What an engine factory needs that the environment cannot hand it.
+ *
+ * Only the admin client so far, and it lives here rather than being read from `config` inside each
+ * factory because the orchestrator needs the same instance: one client, constructed once at boot, so
+ * the publish gate and the state reports cannot end up pointed at two different admins. Every field
+ * is optional, and a factory called with nothing still builds the engine a standalone deployment has
+ * always had.
+ */
+export interface EngineFactoryDeps {
+  adminApi?: AdminApiClient;
+}
 
 export interface EnginePlugin {
   name: string;

@@ -32,12 +32,33 @@ export {
  * Whether the feature is on at all is the caller's question, decided once at construction. See SEC-3.
  */
 export function hasValidPublishKey(secret: string, streamId: string, presented: string | null): boolean {
-  if (!secret || !presented) {
+  if (!secret) {
+    return false;
+  }
+  return matchesPublishKey(derivePublishKey(secret, streamId), presented);
+}
+
+/**
+ * Whether `presented` is the key `expected`, compared the way a credential has to be.
+ *
+ * Split out of `hasValidPublishKey` for admin mode, where the expected key is not derived from a
+ * local secret at all: the admin minted it when the stream was declared and hands it back with the
+ * draft. That is the only difference between the two modes at this level, so it is the only thing
+ * that differs between the two functions — the compare below is the one both of them use, and there
+ * being exactly one of it is the point.
+ *
+ * ⛔ Both emptiness guards are load-bearing rather than defensive. Two empty strings encode to two
+ * zero-length buffers, which `timingSafeEqual` reports as **equal**, so a draft that arrived without
+ * a key would otherwise authenticate a broadcaster who presented none. `AdminApiClient.asDraft`
+ * already refuses such a draft; this is the half that does not depend on it. See SEC-3.
+ */
+export function matchesPublishKey(expected: string, presented: string | null): boolean {
+  if (!expected || !presented) {
     return false;
   }
 
   const a = Buffer.from(presented, 'utf8');
-  const b = Buffer.from(derivePublishKey(secret, streamId), 'utf8');
+  const b = Buffer.from(expected, 'utf8');
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
