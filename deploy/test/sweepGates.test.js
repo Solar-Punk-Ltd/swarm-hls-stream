@@ -96,11 +96,36 @@ if (process.argv[2] === 'run') fs.appendFileSync(${JSON.stringify(runs)}, proces
   return { bin, utilizationFile, runs };
 }
 
+/**
+ * The night's authorisation, as `spend-ledger.sh` writes it.
+ *
+ * Both nodes are baselined where the stubbed chequebook answers, so a sweep has spent nothing yet
+ * and the ceiling is the only thing left that can refuse it. ⛔ One line per node that can spend and
+ * no more: the gate refuses a node it has no baseline for, and equally a baseline for a port nothing
+ * on the stage reads, because either way the ledger was written for a different set of nodes.
+ */
+function writeLedger(dir, ceilingPlur, availableBzz) {
+  const ledger = join(dir, 'spend-ledger.env');
+  const startPlur = ((BigInt(Math.round(availableBzz * 1000)) * PLUR_PER_BZZ) / 1000n).toString();
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-09-16T00:00:00Z',
+      `ceiling_plur=${ceilingPlur}`,
+      `node_10075_start_plur=${startPlur}`,
+      `node_10077_start_plur=${startPlur}`,
+      '',
+    ].join('\n'),
+  );
+  return ledger;
+}
+
 async function runSweep({
   rounds = 1,
   minutes = 3,
   configs = 'ref-720-0.5:1280x720:2500:0.5',
   preflightOnly = false,
+  ceilingPlur = 10n ** 17n,
   ...node
 }) {
   const out = mkdtempSync(join(tmpdir(), 'sweep-gates-'));
@@ -112,6 +137,7 @@ async function runSweep({
     PATH: `${stubs.bin}:${process.env.PATH}`,
     OUT_DIR: out,
     REPO_DIR: out,
+    SPEND_LEDGER: writeLedger(out, ceilingPlur, node.availableBzz ?? 500),
     ROUNDS: String(rounds),
     MINUTES: String(minutes),
     SWEEP_CONFIGS: configs,
@@ -218,6 +244,7 @@ if (process.argv[2] === 'run') {
           PATH: `${stubs.bin}:${process.env.PATH}`,
           OUT_DIR: out,
           REPO_DIR: out,
+          SPEND_LEDGER: writeLedger(out, 10n ** 17n, 500),
           ROUNDS: '3',
           MINUTES: '3',
           SWEEP_CONFIGS: 'a:1280x720:2500:0.5 b:1280x720:2500:2.0',
@@ -239,5 +266,191 @@ if (process.argv[2] === 'run') {
     assert.equal(code, 0, 'a sitting that measured rows before stopping is not a failed sitting');
     assert.equal(published.length, 1, 'the sweep carried on publishing past a full batch');
     assert.match(state, /NOT-RUN\(postage exhausted\)/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ THIS SWEEP PUBLISHED WITH NO SPEND CEILING AT ALL UNTIL 2026-09-16.
+ *
+ * Its whole money check was `funds_cover_minutes`, which asks whether the nodes hold enough to pay.
+ * That stays true right down to an empty chequebook, so it authorises the entire balance, and it
+ * cannot see what an earlier sitting the same night already spent, so two sweeps that each pass it
+ * land past the owner's total together. Every other publishing driver has called `within_ceiling`
+ * since PR #179 and this one was left out, which is the same shape as the postage gap the tests
+ * above were written for, one gate over.
+ *
+ * ⭐ `SKIP_FUNDS_CHECK` does not reach it, and that is the point of the last case here. That switch
+ * exists because a chequebook can be topped up between rounds, which is a fact about the nodes. The
+ * authorisation is a fact about what the owner said, and no environment variable overrides it.
+ */
+describe('a sweep proves the owner authorised what it would spend', () => {
+  it('refuses a sweep past the authorisation, and publishes nothing', async () => {
+    const { code, log, published } = await runSweep({ ceilingPlur: 1n });
+
+    assert.equal(code, 1);
+    assert.deepEqual(published, [], 'a sweep published past the authorisation');
+    assert.match(log, /REFUSING TO START: this sweep would spend past the authorisation/);
+  });
+
+  it('refuses when no ledger authorises anything, since a missing ceiling is not an unlimited one', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'sweep-noledger-'));
+    cleanups.push(() => rmSync(out, { recursive: true, force: true }));
+    const stubs = stubBin({ dir: out });
+
+    let code = 0;
+    try {
+      await run('bash', [SCRIPT], {
+        env: {
+          ...process.env,
+          PATH: `${stubs.bin}:${process.env.PATH}`,
+          OUT_DIR: out,
+          REPO_DIR: out,
+          SPEND_LEDGER: join(out, 'no-such-ledger.env'),
+          ROUNDS: '1',
+          MINUTES: '3',
+          SWEEP_CONFIGS: 'a:1280x720:2500:0.5',
+          UPLOADER_BEE_PORT: '10075',
+          GATEWAY_BEE_PORT: '10077',
+          UPLOADER_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
+          GATEWAY_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
+          FUNDS_MARGIN_PERCENT: '100',
+        },
+        encoding: 'utf8',
+      });
+    } catch (failure) {
+      code = failure.code;
+    }
+
+    assert.equal(code, 1);
+    assert.deepEqual(readFileSync(stubs.runs, 'utf8').split('\n').filter(Boolean), []);
+    assert.match(readFileSync(join(out, 'sweep.log'), 'utf8'), /no spend ledger/);
+  });
+
+  /**
+   * ⭐ The sweep's own broadcasts are what spend, so a sitting long enough to matter can start inside
+   * the authorisation and cross it under itself. Asking once is asking about a night that no longer
+   * exists by run four.
+   */
+  it('asks again before every run, not only at the preflight', async () => {
+    const sweep = await runSweep({ rounds: 4, configs: 'a:1280x720:2500:0.5 b:1280x720:2500:2.0' });
+
+    assert.ok(sweep.published.length > 0, 'nothing published, so the per-run gate was never reached');
+    assert.ok(sweep.log.split('spend ceiling:').length - 1 > 1, 'the authorisation was read once for the whole sweep');
+  });
+
+  it('stops partway with a named reason when the night runs out under it', async () => {
+    // Authorises 0.50 BZZ, which covers the whole sweep's projection of 0.36 at the preflight. The
+    // first run then drops both chequebooks by 1 BZZ each, which is what the ledger's baselines
+    // measure as spend, and the next run's own 0.06 no longer fits.
+    const out = mkdtempSync(join(tmpdir(), 'sweep-ceiling-fills-'));
+    cleanups.push(() => rmSync(out, { recursive: true, force: true }));
+    const stubs = stubBin({ dir: out });
+
+    // The uploader's own publishing is what drains the chequebook, so the stub drops the balance on
+    // the first run, which is what the gate measures the spend from.
+    const balance = join(out, 'balance');
+    writeFileSync(balance, (10n ** 16n * 500n).toString());
+    writeFileSync(
+      join(stubs.bin, 'curl'),
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+if (url.includes('/chequebook/balance')) {
+  const now = fs.readFileSync(${JSON.stringify(balance)}, 'utf8').trim();
+  process.stdout.write(JSON.stringify({ totalBalance: now, availableBalance: now }));
+} else if (url.includes('/stamps')) {
+  process.stdout.write(JSON.stringify({ stamps: [{
+    batchID: ${JSON.stringify(BATCH)}, utilization: 254,
+    usable: true, label: 'stub', depth: 25, amount: '36043833600', bucketDepth: 16,
+    immutableFlag: true, exists: true, batchTTL: 941760,
+  }] }));
+} else if (url.includes('/metrics')) {
+  process.stdout.write('bee_pusher_total_synced 12\\n');
+}
+`,
+    );
+    writeFileSync(
+      join(stubs.bin, 'docker'),
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv[2] === 'inspect') process.stdout.write(${JSON.stringify(`STAMP=${BATCH}\n`)});
+if (process.argv[2] === 'run') {
+  fs.appendFileSync(${JSON.stringify(stubs.runs)}, 'run\\n');
+  fs.writeFileSync(${JSON.stringify(balance)}, (10n ** 16n * 500n - 10n ** 16n).toString());
+}
+`,
+    );
+    for (const name of ['curl', 'docker']) {
+      chmodSync(join(stubs.bin, name), 0o755);
+    }
+
+    let code = 0;
+    try {
+      await run('bash', [SCRIPT], {
+        env: {
+          ...process.env,
+          PATH: `${stubs.bin}:${process.env.PATH}`,
+          OUT_DIR: out,
+          REPO_DIR: out,
+          SPEND_LEDGER: writeLedger(out, 5n * 10n ** 15n, 500),
+          ROUNDS: '3',
+          MINUTES: '3',
+          SWEEP_CONFIGS: 'a:1280x720:2500:0.5 b:1280x720:2500:2.0',
+          UPLOADER_BEE_PORT: '10075',
+          GATEWAY_BEE_PORT: '10077',
+          UPLOADER_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
+          GATEWAY_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
+          FUNDS_MARGIN_PERCENT: '100',
+        },
+        encoding: 'utf8',
+      });
+    } catch (failure) {
+      code = failure.code;
+    }
+
+    const published = readFileSync(stubs.runs, 'utf8').split('\n').filter(Boolean);
+    const state = readFileSync(join(out, 'sweep-state.tsv'), 'utf8');
+
+    assert.equal(code, 0, 'a sitting that measured rows before stopping is not a failed sitting');
+    assert.equal(published.length, 1, 'the sweep carried on publishing past the authorisation');
+    assert.match(state, /NOT-RUN\(past the authorisation\)/);
+  });
+
+  it('is asked even when SKIP_FUNDS_CHECK turns the chequebook check off', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'sweep-skipfunds-'));
+    cleanups.push(() => rmSync(out, { recursive: true, force: true }));
+    const stubs = stubBin({ dir: out });
+
+    let code = 0;
+    try {
+      await run('bash', [SCRIPT], {
+        env: {
+          ...process.env,
+          PATH: `${stubs.bin}:${process.env.PATH}`,
+          OUT_DIR: out,
+          REPO_DIR: out,
+          SPEND_LEDGER: writeLedger(out, 1n, 500),
+          SKIP_FUNDS_CHECK: '1',
+          ROUNDS: '1',
+          MINUTES: '3',
+          SWEEP_CONFIGS: 'a:1280x720:2500:0.5',
+          UPLOADER_BEE_PORT: '10075',
+          GATEWAY_BEE_PORT: '10077',
+          UPLOADER_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
+          GATEWAY_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
+          FUNDS_MARGIN_PERCENT: '100',
+        },
+        encoding: 'utf8',
+      });
+    } catch (failure) {
+      code = failure.code;
+    }
+
+    const log = readFileSync(join(out, 'sweep.log'), 'utf8');
+
+    assert.equal(code, 1);
+    assert.deepEqual(readFileSync(stubs.runs, 'utf8').split('\n').filter(Boolean), []);
+    assert.match(log, /funding check skipped by SKIP_FUNDS_CHECK/, 'the skip was not in force');
+    assert.match(log, /would spend past the authorisation/);
   });
 });

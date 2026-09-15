@@ -44,6 +44,14 @@
 # every run against that one run. Running out is then a clean stop with a named reason rather than a
 # quiet slide into measuring starvation.
 #
+# ## And why "can the nodes pay" is not the same question as "may this spend"
+#
+# Until 2026-09-16 that funding check was the whole of what stood between this sweep and the money,
+# and it authorises the entire balance, because a node can pay right up to an empty chequebook. It
+# also cannot see what an earlier sitting the same night already spent, so two sweeps that each pass
+# it land past the owner's total together. `within_ceiling` is the one that reads the authorisation
+# in `.spend-ledger.env`, and it is asked at the same two moments, with no way to skip it.
+#
 # Usage, from the repo root on the laptop:
 #   rsync -a deploy/scripts/ manager-host:~/swarm-hls-bench/deploy/scripts/   # the DIRECTORY, it sources burn-rates.sh
 #   ssh manager-host 'setsid nohup bash ~/swarm-hls-bench/sweep-interleaved.sh >/dev/null 2>&1 &'
@@ -138,6 +146,10 @@ GATES="$(dirname "${BASH_SOURCE[0]}")/capacity-gate.sh"
   echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+# Whether the owner authorised what this sweep would spend, which is a different question from
+# whether the nodes can pay it. Sourced further down, after `available_plur`, because it reads a
+# chequebook through that function and refuses a caller that has not defined one yet.
+CEILING="$(dirname "${BASH_SOURCE[0]}")/spend-ceiling.sh"
 
 # What the nodes themselves say each run did. ⛔ Every row this sweep has ever produced was scored on
 # what the bench saw across the network, while both bee nodes kept a complete account of the same
@@ -164,7 +176,10 @@ bzz() {
 #
 # `availableBalance` is total minus cheques already issued, and it is NOT restored when a peer cashes
 # one. Only a deposit raises it, so waiting for it to recover never works.
-chequebook_available_plur() {
+#
+# Named `available_plur` because `spend-ceiling.sh` reads every chequebook through a function of that
+# name that the caller owes it, and the five other publishing drivers all spell it this way.
+available_plur() {
   curl -s --max-time 10 "http://127.0.0.1:${1}/chequebook/balance" 2>/dev/null |
     python3 -c 'import sys,json;print(json.load(sys.stdin)["availableBalance"])' 2>/dev/null
 }
@@ -184,7 +199,7 @@ funds_cover_minutes() {
     # against a threshold around 1.6e16, so it is twelve orders of magnitude below anything decidable.
     # shellcheck disable=SC2017
     need=$((rate * minutes / 100 * FUNDS_MARGIN_PERCENT))
-    have="$(chequebook_available_plur "${port}")"
+    have="$(available_plur "${port}")"
     if [ -z "${have}" ]; then
       say "  ${label}: ${who} chequebook on ${port} did not answer, so funding is unknown"
       short=1
@@ -196,6 +211,14 @@ funds_cover_minutes() {
     fi
   done
   return ${short}
+}
+
+# Sourced here rather than beside the other gates, because it reads a chequebook through
+# available_plur() and refuses a caller that has not defined one yet.
+# shellcheck source=deploy/scripts/spend-ceiling.sh
+. "${CEILING}" || {
+  echo "cannot read ${CEILING}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
 }
 
 run_one() {
@@ -311,6 +334,21 @@ if ! has_capacity "${TOTAL_MINUTES}"; then
   exit 1
 fi
 
+# ⛔ Distinct from `funds_cover_minutes` above, which asks whether the nodes CAN pay and so authorises
+# the whole balance right down to an empty chequebook. This asks whether the owner said they may, and
+# it is the only check here that can see what an earlier sitting tonight already spent, so two sweeps
+# that each pass the funding check cannot land past the authorisation together. It also reads every
+# node that can spend rather than the uploader and the gateway alone: since the per-rung split most
+# publishing spend lands on the 480p, 720p and 1080p nodes, which `funds_cover_minutes` never reads.
+#
+# ⛔⛔ Outside the SKIP_FUNDS_CHECK branch on purpose. That switch exists because a chequebook can be
+# topped up between rounds, which is a fact about the nodes. It says nothing about the authorisation,
+# and there is deliberately no way to skip this.
+if ! within_ceiling "${TOTAL_MINUTES}"; then
+  say "REFUSING TO START: this sweep would spend past the authorisation in ${SPEND_LEDGER}"
+  exit 1
+fi
+
 # Answering "can I afford this?" should not require starting it, since the answer decides whether an
 # operator goes on chain first. Exit code is the answer, and the log holds the per-node figures.
 if [ "${PREFLIGHT_ONLY:-0}" = "1" ]; then
@@ -365,6 +403,17 @@ for round in $(seq 1 "${ROUNDS}"); do
       printf '%s\t%s\t%s\t%s\t%s\t%ss\t%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" \
         "NOT-RUN(postage exhausted)" >> "${STATE}"
+      break 2
+    fi
+
+    # Re-asked per run for the same reason the other two are: the sweep's own broadcasts are what
+    # spend, so a sitting long enough to matter can start inside the authorisation and cross it under
+    # itself, and the preflight measured a night that no longer exists by run four.
+    if ! within_ceiling "${MINUTES}"; then
+      say "STOPPING after $(wc -l < "${STATE}") runs: the next one would spend past the authorisation."
+      printf '%s\t%s\t%s\t%s\t%s\t%ss\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" \
+        "NOT-RUN(past the authorisation)" >> "${STATE}"
       break 2
     fi
 
