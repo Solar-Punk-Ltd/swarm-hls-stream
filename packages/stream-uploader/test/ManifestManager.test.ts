@@ -416,6 +416,41 @@ describe('the dating a broadcast re-anchors to when the engine restarts inside i
     assert.deepEqual(dating.asked, [{ resumeAt: 3, notBeforeMs: TEST_ANCHOR.startedAtMs + 3 * STEP_MS }]);
   });
 
+  /**
+   * The floor is one segment's media past the newest segment this rung has dated, which on a stream
+   * whose segments run long is further ahead than the configured grid would put it. Offering the
+   * grid there would let a restart pull a stamp backwards, and hls.js reads that as a parsing error
+   * rather than as a restart.
+   */
+  it('offers a floor that counts the media the broadcast really held', () => {
+    const dating = pinnedDating(RESTARTED_AT_MS);
+    const manager = new ManifestManager(TEST_ANCHOR, dating);
+    feed(manager, 0, 3, 10);
+    manager.buildLiveManifest();
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.deepEqual(dating.asked, [{ resumeAt: 3, notBeforeMs: TEST_ANCHOR.startedAtMs + 3 * 10_000 }]);
+  });
+
+  /**
+   * The resuming segment takes the restart's own instant, and the media behind it carries on from
+   * what each segment really held rather than from the grid the restart landed on.
+   */
+  it('resumes at the restart’s instant and carries on by the media that follows it', () => {
+    const manager = livePast(3, pinnedDating(RESTARTED_AT_MS));
+
+    manager.addSegment(0, 2.4, 'after-restart-0', true);
+    manager.addSegment(1, 10, 'after-restart-1');
+    manager.addSegment(2, 2, 'after-restart-2');
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()).slice(-3), [
+      RESTARTED_AT_MS,
+      RESTARTED_AT_MS + 2_400,
+      RESTARTED_AT_MS + 2_400 + 10_000,
+    ]);
+  });
+
   it('asks its dating once per restart rather than once per segment', () => {
     const dating = pinnedDating(RESTARTED_AT_MS);
     const manager = livePast(3, dating);
@@ -659,15 +694,33 @@ describe('a hole in the sequences is published as gap entries', () => {
     assert.equal(uris.indexOf(ref(6)), 6);
   });
 
-  it('steps a gap by the declared fragment length rather than by a measured duration', () => {
+  /**
+   * A hole is media nobody observed, so it is charged the length the deployment declared, which is
+   * also the `#EXTINF` its own entry carries: the gap says two seconds and occupies two. Where it
+   * starts is a different question, and that is the media that really ran in front of it.
+   */
+  it('charges a lost sequence the declared fragment length, after the media that really ran', () => {
     const manifest = withHole(1, 1, 1, 1.75).buildLiveManifest();
     const gapExtinf = manifest.split('\n')[manifest.split('\n').indexOf(GAP_TAG) + 2];
 
     assert.equal(gapExtinf, '#EXTINF:2,');
-    assert.deepEqual(
-      programDateTimesOf(manifest),
-      [0, 1, 2].map((sequence) => TEST_ANCHOR.startedAtMs + sequence * TEST_ANCHOR.fragmentSeconds * 1000),
-    );
+    assert.deepEqual(programDateTimesOf(manifest), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + 1_750,
+      TEST_ANCHOR.startedAtMs + 1_750 + 2_000,
+    ]);
+  });
+
+  it('advances a three sequence hole by three declared lengths past the media in front of it', () => {
+    const manifest = withHole(1, 3, 1, 2.4).buildLiveManifest();
+
+    assert.deepEqual(programDateTimesOf(manifest), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_400 + 2_000,
+      TEST_ANCHOR.startedAtMs + 2_400 + 4_000,
+      TEST_ANCHOR.startedAtMs + 2_400 + 6_000,
+    ]);
   });
 
   it('says a hole in the recording as well as in the live window', () => {
@@ -977,17 +1030,100 @@ describe('every segment carries a program date-time derived from the broadcast a
     assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [TEST_ANCHOR.startedAtMs]);
   });
 
-  it('steps by the declared fragment length, not by the segment’s own EXTINF', () => {
+  it('steps by the media a segment holds where that is outside the tolerance', () => {
     const manager = anchored();
-    // Half the declared fragment, which is what a force-closed segment looks like. The stamp must
-    // not follow it: a rung whose encoder cut short would otherwise drift away from its siblings.
+    // Half the declared fragment, which is what a force-closed segment looks like. Nothing under a
+    // ladder produces it, so the playlist says what the media did rather than a grid it left behind.
     feed(manager, 0, 3, 1);
 
     assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
       TEST_ANCHOR.startedAtMs,
-      TEST_ANCHOR.startedAtMs + STEP_MS,
-      TEST_ANCHOR.startedAtMs + 2 * STEP_MS,
+      TEST_ANCHOR.startedAtMs + 1_000,
+      TEST_ANCHOR.startedAtMs + 2_000,
     ]);
+  });
+
+  /**
+   * The stage this exists for, measured live on 2026-09-15. A single rendition, where the
+   * publisher's own keyframe interval decides the segment and `HLS_FRAGMENT` is a floor, cut
+   * segments from 2.067 to 10.033 seconds against a configured 2 while every date stepped exactly
+   * 2.000. The recording's wall clock fell further behind its own media with every segment and kept
+   * those dates for ever.
+   */
+  it('dates a single rendition by what its segments really held', () => {
+    const manager = anchored();
+    const held = [2.067, 2.04, 2.4, 10, 2];
+    held.forEach((duration, index) => manager.addSegment(index, duration, ref(index)));
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + 2_067,
+      // 2.04 is inside the tolerance, so it is read as the configured 2 rather than as itself.
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_000,
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_000 + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_000 + 2_400 + 10_000,
+    ]);
+  });
+
+  /**
+   * ⛔ The half that must not move. Under a ladder the engine pins a keyframe every
+   * `ABR_FPS x HLS_FRAGMENT` frames and SRS cuts exactly there, so a rung's segment holds the
+   * configured length and only 90kHz tick rounding is left. Every one of those readings is inside
+   * the tolerance, so the dating is the same arithmetic it always was and nothing a ladder publishes
+   * today changes.
+   */
+  it('dates a ladder rung on the configured grid, tick rounding and all', () => {
+    const manager = new ManifestManager({ startedAtMs: TEST_ANCHOR.startedAtMs, fragmentSeconds: 1 });
+    feed(manager, 0, 4, 1.001);
+
+    assert.deepEqual(
+      programDateTimesOf(manager.buildLiveManifest()),
+      [0, 1, 2, 3].map((sequence) => TEST_ANCHOR.startedAtMs + sequence * 1_000),
+    );
+  });
+
+  /**
+   * ⛔ A recovered session republishes the dates a viewer is already holding rather than deriving
+   * them again. The instant each segment went out with is on the entry, and re-deriving it would
+   * move every date of a broadcast whose segments ran longer than the configured length.
+   */
+  it('republishes a restored entry on the instant it was published with', () => {
+    const manager = anchored();
+    manager.addSegment(0, 2.067, ref(0));
+    manager.addSegment(1, 2.4, ref(1));
+    const published = programDateTimesOf(manager.buildLiveManifest());
+    const state = manager.getState();
+
+    const recovered = anchored();
+    recovered.restoreState(state.segments, state.hlsHeaders);
+    recovered.addSegment(2, 2, ref(2));
+
+    assert.deepEqual(programDateTimesOf(recovered.buildLiveManifest()), [
+      ...published,
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_400,
+    ]);
+  });
+
+  /**
+   * The three playlists a broadcast publishes are the live window, the closing playlist a viewer is
+   * handed when it ends, and the recording. A segment's instant is decided once and stored on the
+   * entry, so all three name the same one and a viewer carried across them sees no date move.
+   */
+  it('carries one instant per segment into the window, the closing playlist and the recording', () => {
+    const manager = anchored();
+    manager.addSegment(0, 2.067, ref(0));
+    manager.addSegment(1, 2.4, ref(1));
+    manager.addSegment(2, 2, ref(2));
+
+    const live = programDateTimesOf(manager.buildLiveManifest());
+
+    assert.deepEqual(live, [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + 2_067,
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_400,
+    ]);
+    assert.deepEqual(programDateTimesOf(manager.buildClosingLiveManifest()), live);
+    assert.deepEqual(programDateTimesOf(manager.buildVODManifest()), live);
   });
 
   it('writes UTC to the millisecond, which is what a sub-second fragment needs', () => {

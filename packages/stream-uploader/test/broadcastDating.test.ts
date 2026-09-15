@@ -2,22 +2,25 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  datedDurationMs,
+  presentationMsOf,
   programDateTimeMsOf,
   reanchorDecision,
   reanchorEpoch,
   SAME_RESTART_TOLERANCE_MS,
   withEpoch,
 } from '../src/libs/broadcastDating.js';
+import { FRAGMENT_TOLERANCE } from '../src/libs/fragmentAgreement.js';
 import { BroadcastAnchor } from '../src/types.js';
 
 /**
  * What dates a broadcast's playlists once the engine has restarted inside it.
  *
- * A broadcast's dating is a list of epochs rather than one instant. Segment N is dated from the
- * newest epoch that starts at or below N, stepping by the declared fragment length, and the
- * broadcast's own start is the implicit first epoch. An engine restart adds one, so the media after
- * the gap carries the real time it happened while the media before it keeps the date it was
- * published with.
+ * A broadcast's dating is a list of epochs rather than one instant. The first segment placed at or
+ * after an epoch takes that epoch's instant, every segment after it is dated from the one in front
+ * of it plus the media that one holds, and the broadcast's own start is the implicit first epoch. An
+ * engine restart adds one, so the media after the gap carries the real time it happened while the
+ * media before it keeps the date it was published with.
  *
  * ⛔ The two things these hold together pull in opposite directions. A restart must move the dating
  * on to the wall clock, and every rung of one ABR ladder must still date a given sequence
@@ -76,6 +79,102 @@ describe('the date a playlist sequence carries', () => {
 
     assert.equal(programDateTimeMsOf(third, 1), 333);
     assert.equal(programDateTimeMsOf(third, 3), 1000);
+  });
+});
+
+/**
+ * How much media a segment contributes to the date of the one after it.
+ *
+ * ⛔ The snapping is what keeps a ladder's rungs agreeing. Under `ABR_ENABLED` every rung is
+ * re-encoded with a keyframe every `ABR_FPS x HLS_FRAGMENT` frames, so each rung's segment holds the
+ * configured length to within 90kHz tick rounding, and reading every one of those as the configured
+ * length makes four rungs date the same media identically. Outside the tolerance the measurement is
+ * the only honest answer: on a single rendition the publisher's own keyframe interval decides the
+ * segment, and dating a 10 second segment as 2 puts the recording's clock 8 seconds behind its own
+ * media and leaves it there.
+ */
+describe('the media a segment contributes to the date of the next one', () => {
+  it('reads a measurement inside the tolerance as the configured length, so a ladder agrees', () => {
+    assert.equal(datedDurationMs(1.001, 1), 1000);
+    assert.equal(datedDurationMs(0.999, 1), 1000);
+    assert.equal(datedDurationMs(2.04, 2), 2000);
+  });
+
+  it('reads a measurement outside the tolerance as itself', () => {
+    assert.equal(datedDurationMs(2.067, 2), 2067);
+    assert.equal(datedDurationMs(2.4, 2), 2400);
+    assert.equal(datedDurationMs(10.033, 2), 10_033);
+  });
+
+  /**
+   * One definition of "the same length", so a pair of rungs can only be dated apart where the
+   * fragment agreement check already calls them a mismatch.
+   */
+  it('takes its tolerance from the fragment agreement check', () => {
+    const justInside = 2 * (1 + FRAGMENT_TOLERANCE) - 0.001;
+    const justOutside = 2 * (1 + FRAGMENT_TOLERANCE) + 0.001;
+
+    assert.equal(datedDurationMs(justInside, 2), 2000);
+    assert.equal(datedDurationMs(justOutside, 2), Math.round(justOutside * 1000));
+  });
+
+  it('rounds to the millisecond, which is all a stamp can carry', () => {
+    assert.equal(datedDurationMs(2.0666, 2), 2067);
+  });
+});
+
+/**
+ * When a segment is presented, which is decided once as it is placed and then never derived again.
+ *
+ * The anchor plus the media held in front of it, never an arrival time. A missing sequence is media
+ * nobody observed, so it is charged at the configured length, which is also the `#EXTINF` its gap
+ * entry carries.
+ */
+describe('when a placed segment is presented', () => {
+  it('dates the first segment of a broadcast at the anchor itself', () => {
+    assert.equal(presentationMsOf(BROADCAST, 0, null), STARTED_AT_MS);
+  });
+
+  it('dates a segment from the one in front of it plus the media that one holds', () => {
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(BROADCAST, 5, previous), STARTED_AT_MS + 2400);
+  });
+
+  it('steps by the configured length where the one in front measured within tolerance', () => {
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 1.98 };
+
+    assert.equal(presentationMsOf(BROADCAST, 5, previous), STARTED_AT_MS + STEP_MS);
+  });
+
+  it('charges the configured length for every sequence nobody observed', () => {
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(BROADCAST, 8, previous), STARTED_AT_MS + 2400 + 3 * STEP_MS);
+  });
+
+  it('takes the epoch itself for the first segment placed at or after a re-anchoring', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: STARTED_AT_MS + 600_000 });
+    const before = { sequence: 9, presentedAtMs: nominalDateOf(9), durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(restarted, 10, before), STARTED_AT_MS + 600_000);
+  });
+
+  it('carries on from the media held once a segment of that epoch has been placed', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: STARTED_AT_MS + 600_000 });
+    const resumed = { sequence: 10, presentedAtMs: STARTED_AT_MS + 600_000, durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(restarted, 11, resumed), STARTED_AT_MS + 600_000 + 2400);
+  });
+
+  /**
+   * Nothing is held where a restart is asking what its resuming sequence would have been dated, and
+   * the epoch's own arithmetic is the answer that was right before any media was observed.
+   */
+  it('falls back to the epoch’s own arithmetic where nothing has been placed', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: STARTED_AT_MS + 600_000 });
+
+    assert.equal(presentationMsOf(restarted, 12, null), STARTED_AT_MS + 600_000 + 2 * STEP_MS);
   });
 });
 
