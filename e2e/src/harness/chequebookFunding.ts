@@ -125,7 +125,7 @@ export function describeChequebookFunding(readings: readonly NodeFunding[]): str
     ...readings.map((reading) => {
       const held = reading.totalPlur - reading.availablePlur;
       return (
-        `  | ${reading.node.rungs.join(', ')} :${reading.node.port} batch ${reading.node.batch} — ` +
+        `  | ${reading.node.rungs.join(', ')} :${reading.node.port} batch ${reading.node.batch}, ` +
         `${plurToBzz(reading.availablePlur)} BZZ available of ${plurToBzz(reading.totalPlur)} total ` +
         `(${plurToBzz(held)} in uncashed cheques), need >= ${MIN_CHEQUEBOOK_BZZ}`
       );
