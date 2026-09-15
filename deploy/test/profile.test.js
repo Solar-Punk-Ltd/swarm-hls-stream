@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { promisify } from 'node:util';
 
 import { makeSandbox, removeSandboxes, runScript, runScriptOk, sourceLib } from './helpers/sandbox.js';
+
+const execFileAsync = promisify(execFile);
 
 after(removeSandboxes);
 
@@ -201,5 +207,112 @@ describe('--portSlot stops below the second port block', () => {
 
     assert.notEqual(run.exitCode, 0, 'slot 999 was accepted');
     assert.match(run.stderr, /--portSlot must be 0-99/);
+  });
+});
+
+/** Obviously not a real batch id or key. A committed fixture that looked like one is one somebody tries. */
+const FAKE_HEX_64 = 'ab'.repeat(32);
+
+/** What `--feed-owner` takes: an ethereum address, twenty bytes. Fake for the same reason. */
+const FAKE_HEX_40 = 'ab'.repeat(20);
+
+/**
+ * The startup watch driven fast, as `deployStarted.test.js` drives it. Nothing here is about the
+ * watch, and its real window is five seconds of waiting per deploy against a stub that has already
+ * made up its mind.
+ */
+const FAST_WATCH = {
+  DEPLOY_SETTLE_SECONDS: '0',
+  DEPLOY_WATCH_INTERVAL_SECONDS: '0.05',
+  DEPLOY_READY_TIMEOUT_SECONDS: '0.5',
+};
+
+/** The env text compose was handed, sourced the way `deploy_target` sources the file it writes. */
+async function sourcedValue(sandbox, name) {
+  const file = join(sandbox.root, 'sourced.env');
+  writeFileSync(file, sandbox.envFiles());
+  const read = await execFileAsync('bash', ['-c', `. ${JSON.stringify(file)}\nprintf '%s' "\${${name}:-}"`]);
+  return read.stdout;
+}
+
+/**
+ * ⛔⛔⛔ The four per-deployment flags reach a file the deploy `source`s, on this machine and again on
+ * the deployment host, so whatever is typed after `--feed-topic=` used to be shell on both.
+ *
+ * Three shapes, all of them the same omission. A `$(...)` in a value ran as a command. A literal
+ * backslash-n was expanded by the `printf '%b'` that writes the file, so one value could set a second
+ * key of its own choosing. And the remote path splices the text into a heredoc whose terminator is
+ * the word `ENVEOF`, so a value carrying that word on a line of its own ended the heredoc early and
+ * everything after it became commands on the host.
+ *
+ * The flags exist for the deployment manager, which is an admin surface, so the values are likelier
+ * to come from a form than from the owner's own keyboard. Checked here as a shape refused up front,
+ * and quoted in `parameter_overrides_text` as well, because neither layer is written to lean on the
+ * other: quoting cannot undo a newline that ends a heredoc, and a shape check is only as good as the
+ * shape somebody wrote down.
+ */
+describe('the per-deployment overrides are checked before they reach a source', () => {
+  it('refuses a feed topic carrying a command substitution, naming the flag', async () => {
+    const sandbox = makeSandbox();
+
+    const run = await runScript(sandbox, 'deploy.sh', ['--feed-topic=a$(exit 7)b', 'stream-uploader']);
+    const said = `${run.stdout}${run.stderr}`;
+
+    assert.notEqual(run.exitCode, 0, `a topic carrying a command substitution was accepted: ${said}`);
+    assert.match(said, /--feed-topic/);
+    assert.deepEqual(
+      sandbox.calls().filter((call) => call.startsWith('compose')),
+      [],
+      'a rejected value still reached compose',
+    );
+  });
+
+  it('refuses a value carrying a backslash escape, which the writer used to turn into a second line', async () => {
+    const sandbox = makeSandbox();
+
+    const run = await runScript(sandbox, 'deploy.sh', ['--feed-topic=aa\\nEXTRA_KEY=smuggled', 'stream-uploader']);
+    const said = `${run.stdout}${run.stderr}`;
+
+    assert.notEqual(run.exitCode, 0, `a topic carrying a backslash escape was accepted: ${said}`);
+    assert.match(said, /--feed-topic/);
+    assert.doesNotMatch(sandbox.envFiles(), /EXTRA_KEY/, 'the smuggled key reached the env file compose reads');
+  });
+
+  it('refuses a stamp id that is not 64 hex characters', async () => {
+    const sandbox = makeSandbox();
+
+    const run = await runScript(sandbox, 'deploy.sh', ['--stamp-id=not-a-batch', 'stream-uploader']);
+    const said = `${run.stdout}${run.stderr}`;
+
+    assert.notEqual(run.exitCode, 0, `a stamp id that is not hex was accepted: ${said}`);
+    assert.match(said, /--stamp-id/);
+    assert.match(said, /64/, 'the refusal does not say what shape it wanted');
+  });
+
+  it('writes a valid stamp id quoted, and sourcing the file gives back exactly the value', async () => {
+    const sandbox = makeSandbox();
+
+    await runScriptOk(sandbox, 'deploy.sh', [`--stamp-id=0x${FAKE_HEX_64}`, 'stream-uploader'], FAST_WATCH);
+
+    assert.match(
+      sandbox.envFiles(),
+      new RegExp(`^STAMP='${FAKE_HEX_64}'$`, 'm'),
+      `the stamp reached compose unquoted: ${sandbox.envFiles()}`,
+    );
+    assert.equal(await sourcedValue(sandbox, 'STAMP'), FAKE_HEX_64);
+  });
+
+  it('accepts a plain feed topic and an owner address, which is what a deployment normally passes', async () => {
+    const sandbox = makeSandbox();
+
+    await runScriptOk(
+      sandbox,
+      'deploy.sh',
+      ['--feed-topic=swarm-stream', `--feed-owner=0x${FAKE_HEX_40}`, 'stream-uploader'],
+      FAST_WATCH,
+    );
+
+    assert.equal(await sourcedValue(sandbox, 'STREAM_LIST_TOPIC'), 'swarm-stream');
+    assert.equal(await sourcedValue(sandbox, 'VITE_APP_OWNER'), FAKE_HEX_40);
   });
 });

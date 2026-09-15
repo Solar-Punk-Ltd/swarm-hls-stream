@@ -547,10 +547,6 @@ generate_env_overrides() {
   overrides="$(engine_env_overrides_text)"
   overrides+="$PORT_OVERRIDES_TEXT"
 
-  # Per-deployment parameter overrides supplied on the CLI (feed_owner, feed_topic,
-  # private_key, stamp_id). When set they take precedence over .env.<profile>.
-  overrides+="$(parameter_overrides_text)"
-
   for svc in "${services[@]}"; do
     if [ "$svc" = "$SVC_UPLOADER" ]; then
       local bee_url ome_hls_url
@@ -586,6 +582,15 @@ generate_env_overrides() {
   # printf '%b' interprets backslash escapes in $overrides — and unlike `echo -e`
   # it works under POSIX `sh` too (so `sh deploy.sh` doesn't write a literal "-e").
   printf '%b' "$overrides"
+
+  # The per-deployment overrides supplied on the command line (feed owner, feed topic, private key,
+  # stamp id) are printed after that expansion rather than joining it, because they are the only
+  # values here that come from argv and `%b` would read a backslash escape inside one as a line
+  # ending, letting a value set a second key of its own choosing. They carry their own newlines.
+  #
+  # Printing them last also means they win on a duplicate key, which is what a flag typed at the
+  # deploy should do to anything a file said.
+  parameter_overrides_text
 }
 
 # --- Deploy to a target ---
@@ -612,7 +617,10 @@ deploy_target() {
     # Write overrides to per-profile temp file (concurrent group deploys would
     # otherwise race on a single shared .env.deploy and clobber each other's ports).
     local override_file="$DEPLOY_DIR/.env.deploy.$PROFILE"
-    printf '%b' "$overrides" > "$override_file"
+    # `%s`, not `%b`: generate_env_overrides has already expanded every escape the port and engine
+    # lines carry, so a second pass would only ever read a backslash inside an operator's own value
+    # as a line ending of its own.
+    printf '%s' "$overrides" > "$override_file"
 
     # Export overrides into current env for compose
     if [ -n "$overrides" ]; then
@@ -654,9 +662,10 @@ deploy_target() {
       set -e
       cd $REMOTE_BASE/deploy
 
-      # Write env overrides
+      # Write env overrides. Inserted as they are for the reason the local writer above gives: the
+      # escapes are already expanded, and a second pass here would expand one inside a value.
       cat > .env.deploy.$PROFILE <<'ENVEOF'
-$(printf '%b' "$overrides")
+$overrides
 ENVEOF
 
       # Source overrides into env, then run compose with root .env
