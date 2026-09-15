@@ -5,6 +5,7 @@ import {
   beeBaseUrlFromTypedAddress,
   describeProbeFailure,
   gatewayLabel,
+  isBlockedAsMixedContent,
   isDefaultGateway,
   probeGateway,
 } from '@/components/DomainSelector/gatewayProbe';
@@ -124,6 +125,60 @@ describe('probeGateway', () => {
 
   it('keeps a node that never answered apart from one that could not be reached', async () => {
     expect(await probeGateway('http://localhost:1633', { fetcher: silent() })).toEqual({ kind: 'timed-out' });
+  });
+});
+
+/**
+ * ⛔ A node on the viewer's own network, named from the deployed site, never gets a request at all.
+ *
+ * The site is served over TLS and a browser refuses a plain `http` subresource from an `https` page,
+ * before anything is sent. What the probe saw was the same `TypeError` a closed port produces, so the
+ * picker told the viewer their node might not be running and to set `cors-allowed-origins` to `*` and
+ * restart it. They can do that as often as they like and nothing changes, because the request never
+ * left the page.
+ *
+ * `beeBaseUrlFromTypedAddress` puts `http://` in front of a bare host and port, which is how an
+ * address is copied out of Swarm Desktop, so this is the ordinary path into it rather than an exotic
+ * one.
+ */
+describe('a plain http node named from an https page', () => {
+  /** Any call is a failure: the point is that the probe decides this without asking anything. */
+  const neverAsked: typeof fetchWithTimeout = async (url) => {
+    throw new Error(`the probe asked ${url}, which a browser would have refused to send`);
+  };
+
+  it('is refused as mixed content rather than sent and misread as unreachable', async () => {
+    expect(await probeGateway('http://192.168.1.20:1633', { pageProtocol: 'https:', fetcher: neverAsked })).toEqual({
+      kind: 'mixed-content',
+    });
+  });
+
+  it('says what would actually help, rather than naming a setting that cannot', async () => {
+    const message = describeProbeFailure({ kind: 'mixed-content' });
+
+    expect(message).not.toContain('cors-allowed-origins');
+    expect(message).toContain('http');
+  });
+
+  it("still asks loopback, which browsers exempt, so a node on the viewer's own machine works", async () => {
+    const asked: string[] = [];
+    const fetcher: typeof fetchWithTimeout = async (url, options) => {
+      asked.push(url);
+      return answering(200)(url, options);
+    };
+
+    expect(await probeGateway('http://localhost:1633', { pageProtocol: 'https:', fetcher })).toEqual({ kind: 'ok' });
+    expect(await probeGateway('http://127.0.0.1:1633', { pageProtocol: 'https:', fetcher })).toEqual({ kind: 'ok' });
+    expect(asked).toHaveLength(2);
+  });
+
+  it('leaves an https node and a page served over http alone', () => {
+    expect(isBlockedAsMixedContent('https://node.example:1633', 'https:')).toBe(false);
+    expect(isBlockedAsMixedContent('http://192.168.1.20:1633', 'http:')).toBe(false);
+  });
+
+  it("leaves the deployed default alone, which is a path on this page's own origin", () => {
+    expect(isBlockedAsMixedContent('/bee', 'https:')).toBe(false);
   });
 });
 

@@ -41,9 +41,49 @@ export function beeBaseUrlFromTypedAddress(input: string): string {
   return `http://${trimmed}`;
 }
 
+/**
+ * Hosts a browser treats as trustworthy whatever the scheme, so a plain `http` node on one of them
+ * is not blocked from an `https` page.
+ *
+ * Chrome and Firefox both exempt loopback, which is why the common case of a node on the viewer's
+ * own machine works and only a node on another machine fails. Written out rather than inferred,
+ * because the exemption belongs to the browser and this list is a claim about what it does.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.startsWith('127.') || hostname === '[::1]'
+  );
+}
+
+/**
+ * Whether the browser will refuse this address before any request leaves the page.
+ *
+ * An `https` page may not load a plain `http` subresource, so a node typed as `192.168.1.20:1633`
+ * from the deployed site is blocked as mixed content. The `fetch` rejects with the same `TypeError`
+ * a closed port and a CORS refusal produce, which is why this has to be decided before the request
+ * rather than read off the failure.
+ *
+ * Exported because it is the one failure this module can name exactly rather than guess at.
+ */
+export function isBlockedAsMixedContent(gatewayUrl: string, pageProtocol: string): boolean {
+  if (pageProtocol !== 'https:') {
+    return false;
+  }
+  try {
+    const candidate = new URL(gatewayUrl);
+    return candidate.protocol === 'http:' && !isLoopbackHost(candidate.hostname);
+  } catch {
+    // A path-only address such as the deployed `/bee` default, which is served by this page's own
+    // origin and carries its scheme with it.
+    return false;
+  }
+}
+
 type GatewayProbeOutcome =
   | { kind: 'ok' }
   | { kind: 'rejected'; status: number }
+  /** An `http` node named from an `https` page, which the browser refuses before anything is sent. */
+  | { kind: 'mixed-content' }
   /**
    * Something answered 2xx and it was not Bee's health document. A web server with a single-page
    * fallback route answers any path with its index page and a 200, which is the case a status-only
@@ -57,6 +97,17 @@ type GatewayProbeOutcome =
 interface GatewayProbeOptions {
   /** Injected only by tests. Production always uses the bounded fetcher. */
   fetcher?: typeof fetchWithTimeout;
+  /**
+   * The scheme this page is served over. Injected only by tests, and read lazily in production
+   * because this package runs vitest with no DOM, where touching `window` at module load is a
+   * `ReferenceError`.
+   */
+  pageProtocol?: string;
+}
+
+/** Empty off a browser, where nothing is being loaded into a page and nothing can be blocked. */
+function currentPageProtocol(): string {
+  return typeof window === 'undefined' ? '' : window.location.protocol;
 }
 
 /**
@@ -69,8 +120,15 @@ interface GatewayProbeOptions {
  */
 export async function probeGateway(
   gatewayUrl: string,
-  { fetcher = fetchWithTimeout }: GatewayProbeOptions = {},
+  { fetcher = fetchWithTimeout, pageProtocol = currentPageProtocol() }: GatewayProbeOptions = {},
 ): Promise<GatewayProbeOutcome> {
+  // Asked before the fetch, because this is the one failure that is knowable without one and the
+  // only one whose cause survives: once the browser has refused it, what reaches this code is
+  // indistinguishable from a closed port.
+  if (isBlockedAsMixedContent(gatewayUrl, pageProtocol)) {
+    return { kind: 'mixed-content' };
+  }
+
   try {
     const response = await fetcher(`${gatewayUrl}${BEE_PROBE_PATH}`, { timeoutMs: PROBE_TIMEOUT_MS });
     if (!response.ok) {
@@ -116,6 +174,8 @@ export function describeProbeFailure(failure: GatewayProbeFailure): string {
       return `Something answered at this address with an error (HTTP ${failure.status}). ${CHECK_THE_PORT}`;
     case 'not-bee':
       return `Something answered at this address, but it is not a Bee node. ${CHECK_THE_PORT}`;
+    case 'mixed-content':
+      return 'This site is served over https, and a browser refuses to load anything over plain http from it, so the request never leaves this page. Give the node an https address, or open this site over http.';
     case 'timed-out':
       return 'The node accepted the connection and then stopped answering. Check that it has finished starting up, then try again.';
     case 'unreachable':
