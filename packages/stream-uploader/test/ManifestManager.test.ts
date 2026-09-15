@@ -87,6 +87,13 @@ function mediaSequenceOf(manifest: string): number {
   return Number.parseInt(line!.split(':')[1], 10);
 }
 
+/** The `#EXT-X-TARGETDURATION` a manifest declares, which is the ceiling of its longest segment. */
+function targetDurationOf(manifest: string): number {
+  const line = manifest.split('\n').find((l) => l.startsWith('#EXT-X-TARGETDURATION:'));
+  assert.ok(line, 'manifest must carry an EXT-X-TARGETDURATION');
+  return Number.parseInt(line!.split(':')[1], 10);
+}
+
 function segmentUris(manifest: string): string[] {
   return manifest
     .split('\n')
@@ -1222,5 +1229,40 @@ describe('every segment carries a program date-time derived from the broadcast a
       TEST_ANCHOR.startedAtMs,
       TEST_ANCHOR.startedAtMs + STEP_MS,
     ]);
+  });
+});
+
+/**
+ * ⛔ `segments` holds every segment the broadcast ever published, because the VOD manifest is built
+ * from the same array and nothing prunes it. The target duration was read off that array with a
+ * spread, which passes every element as its own argument, and measured on node v22.22.3 in this
+ * repository that is fine at 109,770 elements and throws `RangeError: Maximum call stack size
+ * exceeded` by 109,921. At the shipping half-second profile a broadcast crosses that in about 15.3
+ * hours, and a stream that runs all day crosses it on its first day.
+ *
+ * What the throw cost: `restoreState` runs from the `StreamUploader` constructor, and the
+ * orchestrator hands the failure to the error handler, so the stream is simply not recovered. Its
+ * recording is never sealed, its catalog entry says `live` for ever, and the `unrecoverable_stream`
+ * health reason never fires, because that counts quarantined entries and this one parses perfectly
+ * well. Every later boot read it, threw again, and moved on.
+ */
+describe('ManifestManager restoring a broadcast longer than an argument list', () => {
+  const ENTRIES = 150_000;
+  const LONGEST_SECONDS = 3.4;
+
+  it('takes back 150,000 segments and declares the longest of them as the target duration', () => {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    const restored = Array.from({ length: ENTRIES }, (_, index) => ({
+      index,
+      // The longest segment sits at the very start, far outside the live window, because the target
+      // duration is a property of the whole recording rather than of the window.
+      duration: index === 0 ? LONGEST_SECONDS : 2,
+      ref: ref(index),
+      sequence: index,
+    }));
+
+    manager.restoreState(restored, ['#EXTM3U', '#EXT-X-VERSION:3']);
+
+    assert.equal(targetDurationOf(manager.buildLiveManifest()), Math.ceil(LONGEST_SECONDS));
   });
 });
