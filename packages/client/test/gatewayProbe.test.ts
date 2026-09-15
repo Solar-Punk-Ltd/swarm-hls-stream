@@ -7,6 +7,7 @@ import {
   gatewayLabel,
   isBlockedAsMixedContent,
   isDefaultGateway,
+  PROBE_TIMEOUT_MS,
   probeGateway,
 } from '@/components/DomainSelector/gatewayProbe';
 import { FetchTimeoutError, fetchWithTimeout } from '@/utils/fetchWithTimeout';
@@ -84,7 +85,7 @@ describe('probeGateway', () => {
     expect(asked).toBe(`http://localhost:1633${BEE_PROBE_PATH}`);
   });
 
-  it('bounds its own wait, so a node that goes quiet cannot hold the picker open', async () => {
+  it('bounds its own wait at the window it ships with, so a node that goes quiet cannot hold the picker open', async () => {
     let window: number | undefined;
     const fetcher: typeof fetchWithTimeout = async (url, options) => {
       window = options?.timeoutMs;
@@ -93,7 +94,18 @@ describe('probeGateway', () => {
 
     await probeGateway('http://localhost:1633', { fetcher });
 
-    expect(window).toBeGreaterThan(0);
+    // The constant itself, not a lower bound. Above zero is satisfied by ten minutes, which is the
+    // picker held open rather than a wait with an end.
+    expect(window).toBe(PROBE_TIMEOUT_MS);
+  });
+
+  /**
+   * The line above proves the probe uses the window it declares, and says nothing about the window
+   * being short. A ceiling rather than the shipped value, so tuning the constant is free and a
+   * viewer left staring at "Checking the node..." is not.
+   */
+  it('keeps that window short enough that a viewer waits rather than gives up', () => {
+    expect(PROBE_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
   });
 
   it('accepts an address that answers with a Bee health document', async () => {
