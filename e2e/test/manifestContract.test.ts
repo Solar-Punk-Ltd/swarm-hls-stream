@@ -275,6 +275,40 @@ describe('the timeline a playlist declares', () => {
   });
 
   /**
+   * ⛔ The same defect in the other direction, and the one that used to pass. A stage cutting a whole
+   * multiple of `HLS_FRAGMENT` while the publisher dates by the configured length steps forwards by a
+   * whole number of fragments every time, so the remainder is zero and the count of fragments lost is
+   * negative. Every pair of entries then claims the same two seconds of media and the recording's
+   * clock falls two seconds behind its own media per segment, half an hour out by the end of an hour.
+   */
+  it('refuses dates that step a whole fragment short of the media the entries declare', () => {
+    const overlapping = datedPlaylist([
+      { holds: 4, atMs: STARTED_AT_MS },
+      { holds: 4, atMs: STARTED_AT_MS + 2_000 },
+      { holds: 4, atMs: STARTED_AT_MS + 4_000 },
+    ]);
+
+    const failures = manifestContractFailures(overlapping, CONTRACT);
+
+    assert.equal(failures.length, 2, failures.join('\n'));
+    failures.forEach((failure) => assert.match(failure, /dated 1 fragment short of the media/));
+  });
+
+  it('counts how far short the dates step, so a wider overlap says so', () => {
+    const byOne = datedPlaylist([
+      { holds: 10, atMs: STARTED_AT_MS },
+      { holds: 10, atMs: STARTED_AT_MS + 8_000 },
+    ]);
+    const byTwo = datedPlaylist([
+      { holds: 10, atMs: STARTED_AT_MS },
+      { holds: 10, atMs: STARTED_AT_MS + 6_000 },
+    ]);
+
+    assert.match(manifestContractFailures(byOne, CONTRACT)[0], /dated 1 fragment short of the media/);
+    assert.match(manifestContractFailures(byTwo, CONTRACT)[0], /dated 2 fragments short of the media/);
+  });
+
+  /**
    * ⛔ The half that must not move. Under a ladder every rung is re-encoded with a keyframe every
    * `ABR_FPS x HLS_FRAGMENT` frames, so each rung's readings sit a tick either side of the declared
    * length and every one of them is read as that length. The dates then step by exactly the declared

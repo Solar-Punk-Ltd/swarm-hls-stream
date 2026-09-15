@@ -201,6 +201,13 @@ function heldMediaMs(segment: Segment, fragmentSeconds: number): number {
  * of the playlist entirely, which is the numbering defect the gap entries exist to prevent, and it is
  * still what this refuses.
  *
+ * ⛔ A step a whole number of fragments **short** of that media is refused too, and that is the same
+ * defect in the other direction: the entries overlap, so the playlist dates one piece of media twice
+ * and the recording's clock falls behind what it holds by the difference every segment. It read as
+ * correct until 2026-09-16 because the count of fragments is rounded off a signed difference and only
+ * a positive count was reported, so a stage cutting a whole multiple of `HLS_FRAGMENT` while the
+ * publisher dated by the configured length passed this check silently.
+ *
  * ⛔ Across a discontinuity a forward step of **any** size is legal, and this required a whole number
  * of fragments until the owner's decision of 2026-09-03. An engine restart re-anchors the dating on
  * the wall clock the engine came back at, so the step across that break is the length of the outage
@@ -253,6 +260,15 @@ function stampFailures(segments: Segment[], fragmentSeconds: number): string[] {
         `entry ${i} is dated ${fragmentsRead(lost)} past the media the entry before it declares, with ` +
           'no #EXT-X-GAP entries for the sequences in between, so the playlist promises a viewer media ' +
           'it does not name and renumbers everything behind the hole',
+      );
+      continue;
+    }
+
+    if (lost < 0) {
+      failures.push(
+        `entry ${i} is dated ${fragmentsRead(-lost)} short of the media the entry before it declares, so ` +
+          'the two entries claim the same media and the recording keeps a clock that falls further ' +
+          'behind what it holds with every segment',
       );
     }
   }
