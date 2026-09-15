@@ -130,6 +130,36 @@ describe('the media a segment contributes to the date of the next one', () => {
     assert.equal(datedDurationMs(2.067, 2), 2067);
   });
 
+  /**
+   * ⭐ The band is inclusive, and this pins that rather than sitting a millisecond either side of it.
+   * A fragment of 1.21 is chosen because its band is exactly 0.0121 in binary floating point, so
+   * `1.2221` and `1.1979` land ON the edge rather than near it. At a fragment of 2 the same attempt
+   * is not honest: `Math.abs(1.98 - 2)` is 0.020000000000000018 against a band of 0.02, a float hair
+   * outside.
+   *
+   * Without these the comparison could be narrowed from `<=` to `<` with the suite still green:
+   * every measured value the suite used sat clear of the edge on one side or the other, so the
+   * mutant survived. One millisecond of band is small, and an arithmetic line nothing pins is not.
+   */
+  it('takes a measurement exactly on the band as the configured length, on both sides of it', () => {
+    const fragment = 1.21;
+    const band = fragment * DATING_SNAP_TOLERANCE;
+    assert.equal(band, 0.0121, 'the point of this fragment length is that its band is exact');
+
+    assert.equal(datedDurationMs(fragment + band, fragment), 1210);
+    assert.equal(datedDurationMs(fragment - band, fragment), 1210);
+  });
+
+  /**
+   * The lower side of the band, which nothing covered at all. A segment measuring 1.98 against a
+   * configured 2 is dated as the 1.980 it really held, so a stage cutting short keeps its clock the
+   * same way a stage cutting long does. `ManifestManager.test.ts` used to carry this value and moved
+   * off it, which left the direction untested everywhere.
+   */
+  it('reads a measurement just below the band as itself, not as the configured length', () => {
+    assert.equal(datedDurationMs(1.98, 2), 1980);
+  });
+
   it('rounds to the millisecond, which is all a stamp can carry', () => {
     assert.equal(datedDurationMs(2.4567, 2), 2457);
   });
