@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Phase 0.6 — a viewer's gateway, funded against unfunded, measured in a browser.
+# Phase 0.6, a viewer's gateway, funded light against ultra-light, measured in a browser.
 #
 # ## The question
 #
@@ -9,6 +9,23 @@
 # nobody funded, which is the state a viewer reaches by watching. An ultra-light bee node has no
 # chequebook and no way to pay a peer for bandwidth, so it lives on the free allowance alone. If a
 # stream holds on one, the viewer path needs no chain, no wallet and no on-chain funding at all.
+#
+# ## Which two nodes the arms actually are
+#
+# ⛔ `--swap-enable` does not decide the mode and never did. Bee reads `--full-node=false` plus an
+# EMPTY `--blockchain-rpc-endpoint` as ultra-light, and anything else with a chain endpoint is a
+# light node whatever swap says. So the endpoint moves with the arm here, not just the swap flag:
+#
+#   arm L: swap on, the shared RPC_ENDPOINT of the stack's own env file. A light node with a
+#          deployed chequebook, which is what every viewer figure to date was measured through.
+#   arm U: swap off, no endpoint at all. A genuinely ultra-light node, which is what a viewer gets.
+#
+# ⛔ Before 2026-09-13 the gateway read the shared endpoint unconditionally, so the U arm was a light
+# node with swap turned off rather than an ultra-light one, and the contrast this sitting exists to
+# draw was never on the axis its name claims. Since the gateway got its own endpoint variable the two
+# are separable, and leaving the U arm's endpoint alone would have left it light. Worse in the other
+# direction: swap on with an empty endpoint is a node that refuses to start, so an L arm that wrote
+# only the swap flag would recreate the gateway into a crash loop and measure nothing.
 #
 # It was measured once, on 2026-08-04, and the answer does not survive: both arms read through the
 # bench's `/feeds/` head lookup, which is 50-57% frozen on its own and which a viewer never calls, and
@@ -37,15 +54,17 @@
 #
 # ## Why the flip is checked on the node rather than trusted from compose
 #
-# The arm is one env value and a container recreate, which is exactly the kind of change that can
+# The arm is two env values and a container recreate, which is exactly the kind of change that can
 # appear to happen. Two things are asserted after every recreate:
 #
-#   1. The container's command differs from the one found at startup in `--swap-enable` and nothing
-#      else, and its mounts and ports are identical. A recreate that quietly lost a port binding or
-#      a data directory would otherwise be measured as an arm.
+#   1. The container's command differs from the one found at startup in `--swap-enable` and
+#      `--blockchain-rpc-endpoint` and nothing else, and its mounts and ports are identical. A
+#      recreate that quietly lost a port binding or a data directory would otherwise be measured as
+#      an arm. Both flags are allowed to move because both define the arm, and a recreate that wrote
+#      only one of them would then be caught here rather than measured.
 #   2. The node's own `/chequebook/balance` answers in the shape the arm requires. A funded node
-#      returns a balance; a node started with swap disabled has no chequebook at all and answers 405.
-#      That is the difference between the two arms, read off the node rather than off the intent.
+#      returns a balance, and a node with no chain has no chequebook at all and answers 405. That is
+#      the difference between the two arms, read off the node rather than off the intent.
 #
 # ## Funding, and why the margin here is doubled
 #
@@ -217,12 +236,18 @@ container_spec() {
 
 BASELINE_SPEC=""
 BASELINE_SWAP=""
+BASELINE_RPC=""
 
 # The recreate is asserted against the container found at startup rather than against the compose file
 # it was supposed to come from. Reconstructing this stack's environment by hand is how a node comes
 # back on a default port or with an empty data directory and still looks like it started, and the
 # whole arm would then be a measurement of a node that had never seen the stream.
-spec_matches_baseline_except_swap() {
+#
+# ⚠️ The endpoint's substitution carries the closing quote of the JSON string it sits in, because an
+# ultra-light arm's value is EMPTY: without the quote the pattern `--blockchain-rpc-endpoint=` is a
+# prefix of every non-empty endpoint as well, and putting a chain back would append to the old value
+# instead of replacing it.
+spec_matches_baseline_except_arm_flags() {
   local now expected
   now="$(container_spec)"
   if [ -z "${now}" ]; then
@@ -230,8 +255,9 @@ spec_matches_baseline_except_swap() {
     return 1
   fi
   expected="${BASELINE_SPEC//--swap-enable=${BASELINE_SWAP}/--swap-enable=${CURRENT_ARM_SWAP}}"
+  expected="${expected//--blockchain-rpc-endpoint=${BASELINE_RPC}\"/--blockchain-rpc-endpoint=${CURRENT_ARM_RPC}\"}"
   if [ "${now}" != "${expected}" ]; then
-    say "  the recreated gateway differs from the one found at startup by more than --swap-enable"
+    say "  the recreated gateway differs from the one found at startup by more than the two arm flags"
     say "    wanted: ${expected}"
     say "    got:    ${now}"
     return 1
@@ -274,14 +300,39 @@ chequebook_shape_matches_arm() {
 
 ARM_CHANGED=0
 
+# ⛔ Appends the key when the file has none, because `sed` that matched nothing exits 0 and a write
+# that never happened is then indistinguishable from one that did. A stack deployed before the
+# gateway had an endpoint variable of its own carries no line for it, and the arm would silently be
+# whatever compose's own default resolves to.
+#
+# ⚠️ `|` rather than `/` as the delimiter: the value is a URL.
+set_env_key() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "${ENV_FILE}"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "${ENV_FILE}" || return 1
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}" || return 1
+  fi
+  return 0
+}
+
+# Both flags, because both define the arm: swap alone leaves an ultra-light arm on a chain, and an
+# L arm written without an endpoint is a node that will not start at all.
 set_arm() {
   CURRENT_ARM_SWAP="$1"
-  say "  setting BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP} and recreating the gateway"
-  if ! sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP}/" "${ENV_FILE}"; then
+  CURRENT_ARM_RPC="$2"
+  say "  setting BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP} with endpoint '${CURRENT_ARM_RPC}' and recreating the gateway"
+  if ! set_env_key BEE_GATEWAY_SWAP_ENABLE "${CURRENT_ARM_SWAP}"; then
     say "  could not write ${ENV_FILE}"
     return 1
   fi
+  # Between the two writes on purpose. A second write that fails has still left the first one in the
+  # file, and a restore that skipped on that path would leave the stack in neither arm.
   ARM_CHANGED=1
+  if ! set_env_key BEE_GATEWAY_RPC_ENDPOINT "${CURRENT_ARM_RPC}"; then
+    say "  could not write ${ENV_FILE}"
+    return 1
+  fi
   # `--no-deps` so nothing else in the stack is touched, and the port variables are exported because
   # they are resolved by `apply_port_slot` at deploy time and are not in the env file. Without them
   # compose falls back to the 1733 defaults in the compose file and the node comes up unreachable.
@@ -299,7 +350,7 @@ set_arm() {
     return 1
   }
   wait_for_gateway_api || return 1
-  spec_matches_baseline_except_swap || return 1
+  spec_matches_baseline_except_arm_flags || return 1
   chequebook_shape_matches_arm || return 1
   return 0
 }
@@ -315,14 +366,17 @@ restore_light() {
     say "the gateway was never changed, so there is nothing to restore"
     return 0
   fi
-  say "restoring the gateway to the arm it was found in (swap-enable=${BASELINE_SWAP})"
+  say "restoring the gateway to the arm it was found in (swap-enable=${BASELINE_SWAP}, endpoint '${BASELINE_RPC}')"
   if [ -n "${BASELINE_SWAP}" ]; then
-    CURRENT_ARM_SWAP="${BASELINE_SWAP}"
-    if set_arm "${BASELINE_SWAP}"; then
+    # The endpoint found on the node, never the one this sitting's arms use. A gateway found at swap
+    # off WITH a chain is a light node somebody configured, and putting back an empty endpoint would
+    # hand back an ultra-light one instead, which is a different node than the one borrowed.
+    if set_arm "${BASELINE_SWAP}" "${BASELINE_RPC}"; then
       say "gateway restored"
     else
       say "⛔ THE GATEWAY COULD NOT BE RESTORED. It may still be running the unfunded arm."
-      say "⛔ Put it back with: sed -i 's/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}/' ${ENV_FILE}"
+      say "⛔ Put it back with: sed -i 's|^BEE_GATEWAY_SWAP_ENABLE=.*|BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}|' ${ENV_FILE}"
+      say "⛔ and:               sed -i 's|^BEE_GATEWAY_RPC_ENDPOINT=.*|BEE_GATEWAY_RPC_ENDPOINT=${BASELINE_RPC}|' ${ENV_FILE}"
       say "⛔ then recreate bee-gateway with the compose command this script logs above."
     fi
   fi
@@ -467,11 +521,18 @@ PY
 
 run_arm() {
   local label="$1" swap="$2" watch_seconds="$3" warm_seconds="$4" round="$5"
-  local started verdict report gw_before gw_after
+  local started verdict report gw_before gw_after endpoint
   started="$(date -u +%s)"
   say "round ${round}: arm ${label} (swap-enable=${swap}, ${watch_seconds}s watch) starting"
 
-  if ! set_arm "${swap}"; then
+  # The L arm's chain is the stack's own shared endpoint, refused at startup when empty. The U arm
+  # has none at all, which is the whole of what makes it ultra-light rather than light.
+  endpoint=""
+  if [ "${swap}" = "true" ]; then
+    endpoint="${SHARED_RPC_ENDPOINT}"
+  fi
+
+  if ! set_arm "${swap}" "${endpoint}"; then
     record_row "${round}" "${label}" "${swap}" "${watch_seconds}" "ARM-NOT-SET"
     return 1
   fi
@@ -574,8 +635,33 @@ case "${BASELINE_SPEC}" in
     exit 1
     ;;
 esac
+# The value ends at the closing quote of its JSON string, and it is legitimately EMPTY on an
+# ultra-light node, so the flag has to be found by name rather than by having a value.
+case "${BASELINE_SPEC}" in
+  *'--blockchain-rpc-endpoint='*)
+    BASELINE_RPC="${BASELINE_SPEC#*--blockchain-rpc-endpoint=}"
+    BASELINE_RPC="${BASELINE_RPC%%\"*}"
+    ;;
+  *)
+    say "REFUSING TO START: the gateway command has no --blockchain-rpc-endpoint, so this script cannot"
+    say "  tell which mode it was found in and has nothing to put back."
+    exit 1
+    ;;
+esac
 CURRENT_ARM_SWAP="${BASELINE_SWAP}"
-say "found the gateway at swap-enable=${BASELINE_SWAP}, and that is what it will be put back to"
+CURRENT_ARM_RPC="${BASELINE_RPC}"
+
+# ⛔ Checked before the trap is installed, so a refusal here has changed nothing. The L arm is a node
+# with a chequebook, which bee can only deploy on a chain, and swap on with an empty endpoint is a
+# container that exits at startup rather than a node that measures badly.
+SHARED_RPC_ENDPOINT="$(grep -E '^RPC_ENDPOINT=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')"
+if [ -z "${SHARED_RPC_ENDPOINT}" ]; then
+  say "REFUSING TO START: arm L needs a chain and RPC_ENDPOINT is empty or unreadable in ${ENV_FILE}."
+  say "  A gateway with swap on and no endpoint does not start, so that arm would measure nothing."
+  exit 1
+fi
+
+say "found the gateway at swap-enable=${BASELINE_SWAP} endpoint '${BASELINE_RPC}', and that is what it will be put back to"
 trap restore_light EXIT INT TERM
 
 ACTIVE="$(curl -s --max-time 10 "http://127.0.0.1:${UPLOADER_API_PORT}/health" 2>/dev/null |
