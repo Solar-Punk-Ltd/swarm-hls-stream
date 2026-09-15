@@ -21,12 +21,11 @@ import {
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 
 /**
- * The wall clock a test broadcast is dated against, and the fragment length it steps by.
+ * The wall clock a test broadcast is dated against, and the fragment length it declares.
  *
  * A round instant and a whole number of seconds, so a `#EXT-X-PROGRAM-DATE-TIME` an assertion writes
- * out by hand is legible. Deliberately unlike any `#EXTINF` the fakes produce: the stamp is derived
- * from the declared fragment length and never from what a segment measured, and a test whose two
- * numbers agreed would not notice if that stopped being true.
+ * out by hand is legible. Deliberately unlike any `#EXTINF` the fakes produce, so a test reading a
+ * date cannot pass on the declared length and the measured one happening to be the same number.
  */
 export const TEST_ANCHOR: BroadcastAnchor = {
   startedAtMs: Date.UTC(2026, 8, 1, 12, 0, 0),

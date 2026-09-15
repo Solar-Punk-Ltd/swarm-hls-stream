@@ -180,9 +180,9 @@ function gapUri(sequence: number): string {
  * all. The gaps are only ever between two entries that are both there.
  *
  * ⚠️ **A hole is NOT a discontinuity.** A lost segment does not restart the encoder's clock, so the
- * media after the hole is a continuation and its date carries on stepping by one fragment per
- * sequence. `#EXT-X-DISCONTINUITY` is left for the two things that really are a break: the origin
- * declaring one, and the engine's counter restarting, which re-anchors the dating here.
+ * media after the hole is a continuation and its date carries on from the media in front of it.
+ * `#EXT-X-DISCONTINUITY` is left for the two things that really are a break: the origin declaring
+ * one, and the engine's counter restarting, which re-anchors the dating here.
  *
  * ⭐ **`#EXT-X-VERSION` stays at 3.** RFC 8216bis §8 lists no minimum protocol version for
  * `#EXT-X-GAP`: its bullets run from version 2 through 12 and none of them names the tag. Version 3

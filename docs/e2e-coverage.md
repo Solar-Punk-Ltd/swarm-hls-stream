@@ -308,9 +308,9 @@ every segment. The contract is described in
 
 `manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the rulebook, and
 `e2e/test/manifestContract.test.ts` proves it against playlist text: sequence 0 on the first playlist
-of a broadcast, a readable wall clock on every entry, strictly rising stamps, and a step of exactly
-one fragment between entries that carry no `#EXT-X-DISCONTINUITY` between them. That is free and it
-runs in CI.
+of a broadcast, a readable wall clock on every entry, strictly rising stamps, and a step between
+entries carrying no `#EXT-X-DISCONTINUITY` that matches the media the earlier one declares, which
+under a ladder is exactly one fragment. That is free and it runs in CI.
 
 Across a discontinuity a forward step of any size is legal, decided by the owner on 2026-09-03. An
 engine restart inside a broadcast re-anchors the dating on the wall clock the engine came back at, so
@@ -349,7 +349,7 @@ Each one prints one line per rung: whether the feed answered a live playlist or 
 media segments it names, how many gap entries and how many discontinuities it declares, the sequence
 it declares and the span of dates it holds. A refusal names the rung, the entry and the date it
 objected to. Everything but the sequence is asserted in all eight: a wall clock on every entry,
-strictly rising, stepping by a whole number of fragments, nothing wider without an
+strictly rising, stepping by the media each entry declares, nothing wider without an
 `#EXT-X-DISCONTINUITY`, and no date before this project existed. `service/happy-path` and
 `service/abr-ladder` also assert zero gap entries, which is the published half of the zero they
 already assert off the log.
