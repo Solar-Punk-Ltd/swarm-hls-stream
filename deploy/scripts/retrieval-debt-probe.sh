@@ -233,7 +233,7 @@ say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 # This probe sets its arms by writing the env file, so the compose file has to read that key.
 # Once it stopped, both arms would be one run and the difference would come out as zero,
 # which reads as a finding rather than as a control that is not connected to anything.
-if ! grep -q '\${BEE_GATEWAY_SWAP_ENABLE' "${STACK_DIR}/deploy/docker-compose.yml"; then
+if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${STACK_DIR}/deploy/docker-compose.yml"; then
   echo "ERROR: deploy/docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so setting it here changes nothing." >&2
   echo "Both arms of this probe would be the same run. Make it a variable again, deliberately, before running this." >&2
   exit 1

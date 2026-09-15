@@ -985,7 +985,7 @@ print_services() {
 require_compose_reads() {
     local key="$1"
     local compose="${2:-$DEPLOY_DIR/docker-compose.yml}"
-    if ! grep -q "\${${key}" "$compose"; then
+    if ! grep -qF "\${${key}" "$compose"; then
         echo "ERROR: $(basename "$compose") no longer reads \${${key}}, so setting it in the env file changes nothing." >&2
         echo "Both arms of this probe would be the same run and the comparison would report no difference." >&2
         echo "Make it a variable in $compose again, deliberately, before running this." >&2
