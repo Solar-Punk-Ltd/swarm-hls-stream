@@ -165,7 +165,7 @@ const BITRATE_REFRESH_INTERVAL_MS = 30_000;
  * 3. **The feed index is resumed from the feed head on start**, because the topic came from the
  *    declaration and outlives the session. See {@link resumeAdminFeedIndex}.
  */
-export interface AdminReporting {
+interface AdminReporting {
   client: AdminApiClient;
   /** The admin's own id for this stream, which every report names. */
   id: string;

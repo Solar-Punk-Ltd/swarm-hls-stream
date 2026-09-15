@@ -41,13 +41,13 @@ export const MIN_ADMIN_API_TOKEN_LENGTH = 32;
  * lookup that spends much longer than this turns "the admin is slow" into "the engine gave up on the
  * uploader", which is a worse failure than a refusal because it is invisible from this side.
  */
-export const DEFAULT_LOOKUP_TIMEOUT_MS = 5_000;
+const DEFAULT_LOOKUP_TIMEOUT_MS = 5_000;
 
 /**
  * How long one state report may take. Twice the lookup's, because nobody is waiting on it and the
  * report the admin has to act on — the VOD flip — is the one it does the most work for.
  */
-export const DEFAULT_REPORT_TIMEOUT_MS = 10_000;
+const DEFAULT_REPORT_TIMEOUT_MS = 10_000;
 
 /**
  * How many times a state report is attempted, and how long it waits in between.
@@ -115,7 +115,7 @@ export function stateWasReported(outcome: StateReportOutcome): boolean {
   return outcome !== STATE_REPORT_FAILED;
 }
 
-export interface AdminApiClientOptions {
+interface AdminApiClientOptions {
   baseUrl: string;
   token: string;
   lookupTimeoutMs?: number;

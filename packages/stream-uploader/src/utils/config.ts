@@ -118,7 +118,7 @@ function readPublisherSpecs(): PublisherSpec[] {
 }
 
 /** Where the admin service lives, or null for the standalone deployment this service has always been. */
-export interface AdminConfig {
+interface AdminConfig {
   apiUrl: string;
   apiToken: string;
 }

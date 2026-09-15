@@ -33,18 +33,18 @@ const logger = Logger.getInstance();
  *    that builds the wrong codec set from the first fragment.
  */
 export const ADMIN_PUBLISH_ALLOWED = 'allowed' as const;
-export const ADMIN_PUBLISH_UNANNOUNCED = 'unannounced' as const;
-export const ADMIN_PUBLISH_UNREACHABLE = 'unreachable' as const;
-export const ADMIN_PUBLISH_BAD_KEY = 'bad-key' as const;
-export const ADMIN_PUBLISH_WRONG_MEDIA_TYPE = 'wrong-media-type' as const;
+const ADMIN_PUBLISH_UNANNOUNCED = 'unannounced' as const;
+const ADMIN_PUBLISH_UNREACHABLE = 'unreachable' as const;
+const ADMIN_PUBLISH_BAD_KEY = 'bad-key' as const;
+const ADMIN_PUBLISH_WRONG_MEDIA_TYPE = 'wrong-media-type' as const;
 
-export type AdminPublishRefusal =
+type AdminPublishRefusal =
   | typeof ADMIN_PUBLISH_UNANNOUNCED
   | typeof ADMIN_PUBLISH_UNREACHABLE
   | typeof ADMIN_PUBLISH_BAD_KEY
   | typeof ADMIN_PUBLISH_WRONG_MEDIA_TYPE;
 
-export type AdminPublishVerdict =
+type AdminPublishVerdict =
   | { kind: typeof ADMIN_PUBLISH_ALLOWED; session: AdminSession }
   | { kind: AdminPublishRefusal };
 

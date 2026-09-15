@@ -14,7 +14,7 @@
 
 import { STREAM_STATUS_SCHEDULED, StreamState } from '@/types/stream';
 
-export type PreviewMode =
+type PreviewMode =
   /** The catalog carries a picture. Render it and fetch nothing else. */
   | 'image'
   /** No picture to render, so the frame has to come out of the stream's own first segment. */
@@ -22,7 +22,7 @@ export type PreviewMode =
   /** Nothing to render and nothing worth asking for. The default image, immediately. */
   | 'placeholder';
 
-export interface PreviewEntry {
+interface PreviewEntry {
   /** A Swarm reference, or '' / absent on an entry whose publisher gave no image. */
   thumbnail?: string;
   state?: StreamState;
