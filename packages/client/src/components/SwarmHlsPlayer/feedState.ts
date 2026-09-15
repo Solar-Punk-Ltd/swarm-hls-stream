@@ -26,7 +26,7 @@ export type FeedState =
   | typeof FEED_STATE_DEGRADED
   | typeof FEED_STATE_ENDED;
 
-export type FeedStateListener = (state: FeedState) => void;
+type FeedStateListener = (state: FeedState) => void;
 
 /**
  * How long to wait before asking a failing gateway again, after its first failure. Doubles per
@@ -37,7 +37,7 @@ export type FeedStateListener = (state: FeedState) => void;
  * time before failing pushes the next poll that much further inside the window. Only a run of
  * failures actually slows the polling down.
  */
-export const MANIFEST_RETRY_BASE_MS = 2_000;
+const MANIFEST_RETRY_BASE_MS = 2_000;
 
 /**
  * The longest gap between attempts on a failing gateway, which is also the longest a viewer whose

@@ -48,7 +48,7 @@ export interface Weeb3Module {
   Weeb3No103: new (sharedWorkerUrl?: string | null) => Weeb3Node;
 }
 
-export type Weeb3ModuleLoader = () => Promise<Weeb3Module>;
+type Weeb3ModuleLoader = () => Promise<Weeb3Module>;
 
 /**
  * How many peers the node must reach before the first segment is asked for.
@@ -60,7 +60,7 @@ export type Weeb3ModuleLoader = () => Promise<Weeb3Module>;
 export const WEEB3_BOOT_MIN_PEERS = 1;
 
 /** Measured 2026-08-11: a browser node reaches its first peers in seconds and ~200 within a minute. */
-export const WEEB3_BOOT_TIMEOUT_MS = 30_000;
+const WEEB3_BOOT_TIMEOUT_MS = 30_000;
 
 /**
  * Where this origin serves weeb-3's SharedWorker runtime.

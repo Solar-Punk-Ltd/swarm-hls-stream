@@ -69,7 +69,7 @@ async function resolveStateVolume(host: Host, cfg: E2EConfig): Promise<StateVolu
  * network operation this suite should not need mid-scenario and the deployment host must not acquire
  * anything on our account.
  */
-export async function runInStateDir(host: Host, cfg: E2EConfig, script: string): Promise<string> {
+async function runInStateDir(host: Host, cfg: E2EConfig, script: string): Promise<string> {
   const { name, prefix } = await resolveStateVolume(host, cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   const { stdout } = await host.run(`docker inspect -f '{{.Config.Image}}' ${uploader}`);

@@ -17,7 +17,7 @@ export const READINESS_ANNOUNCED = 'announced' as const;
 export type AnnounceReadiness = typeof READINESS_PENDING | typeof READINESS_SEGMENT_READY | typeof READINESS_ANNOUNCED;
 
 /** The persisted shape, unchanged, so a recovery entry written by an older build still loads. */
-export interface PersistedReadiness {
+interface PersistedReadiness {
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
 }
@@ -30,7 +30,7 @@ export class IllegalReadinessTransition extends Error {
 }
 
 /** What a restore produced, and whether the persisted pair had to be repaired to get there. */
-export interface RestoredReadiness {
+interface RestoredReadiness {
   readiness: AnnounceReadiness;
   /** The unreachable pair that was read, when one was. Absent on a normal restore. */
   repairedFrom?: PersistedReadiness;

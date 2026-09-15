@@ -314,7 +314,7 @@ function unservedLines(samples: readonly SegmentSample[]): string[] {
   ];
 }
 
-export function renderLongRun(run: BenchRun, runMinutes: number, watch?: UnservedSegmentWatch): string {
+function renderLongRun(run: BenchRun, runMinutes: number, watch?: UnservedSegmentWatch): string {
   const samples = [...run.samples].sort((a, b) => a.split.instants.fetchedAtMs - b.split.instants.fetchedAtMs);
   if (samples.length < 3) {
     return [

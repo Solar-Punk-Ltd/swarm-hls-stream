@@ -18,7 +18,7 @@ import { exposeGatewayForInstrumentation } from './gatewayTestHandle';
  * viewer can switch node while a poll is in flight. Attributing the answer to whichever gateway is
  * selected by the time it arrives is how another node's catalog came to be shown as this node's.
  */
-export interface CatalogRead {
+interface CatalogRead {
   gateway: string;
   /** The parsed catalog, or null when the gateway had nothing newer to give. */
   streams: unknown;

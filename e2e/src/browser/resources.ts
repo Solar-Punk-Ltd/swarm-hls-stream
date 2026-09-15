@@ -41,13 +41,13 @@ export const PLUR_PER_BZZ = 1e16;
  * that dies at minute forty of an hour is a wasted broadcast, so the warning has to arrive with
  * enough room left to finish whatever is already planned.
  */
-export const POSTAGE_WARN_SHARE = 0.8;
+const POSTAGE_WARN_SHARE = 0.8;
 
 /** TTL below which the batch expires sooner than a campaign is likely to finish. */
-export const POSTAGE_WARN_TTL_DAYS = 3;
+const POSTAGE_WARN_TTL_DAYS = 3;
 
 /** Chequebook balance below which there is not obviously another long run's worth of BZZ. */
-export const CHEQUEBOOK_WARN_BZZ = 1.5;
+const CHEQUEBOOK_WARN_BZZ = 1.5;
 
 /** One Bee node's postage and funding, at one moment. */
 export interface NodeReading {

@@ -20,7 +20,7 @@ const MAX_LISTED = 8;
  * signed" invents a security finding out of a network blip, and folding it into "signed" hides a
  * real one. Neither is acceptable, so it is reported as itself.
  */
-export type SignatureState = 'signed' | 'unsigned' | 'unreadable';
+type SignatureState = 'signed' | 'unsigned' | 'unreadable';
 
 /** Age gets the same treatment, for the same reason. `null` means the date was never read. */
 export interface VersionProvenance {
@@ -101,7 +101,7 @@ function list(entries: readonly VersionProvenance[], label: (e: VersionProvenanc
   return `${entries.length}: ${shown.join(', ')}${remainder > 0 ? `, and ${remainder} more` : ''}`;
 }
 
-export interface ProvenanceSummary {
+interface ProvenanceSummary {
   introduced: string;
   unsigned: string;
   unreadable: string;
@@ -143,7 +143,7 @@ export function summarise(entries: readonly VersionProvenance[]): ProvenanceSumm
 }
 
 /** Neither of these is collected here, and both are still owed on any lockfile change. */
-export const UNCOLLECTED_DEPENDENCY_CHECKS =
+const UNCOLLECTED_DEPENDENCY_CHECKS =
   '`npm audit signatures` (reads the installed tree, not the diff) and `gh api /advisories?type=malware`';
 
 /**

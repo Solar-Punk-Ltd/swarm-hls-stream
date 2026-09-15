@@ -23,7 +23,7 @@ import {
 } from './viewer.js';
 
 /** How long to wait for the page to reach playing before giving up on the run. */
-export const PLAYBACK_START_TIMEOUT_MS = 90_000;
+const PLAYBACK_START_TIMEOUT_MS = 90_000;
 
 /** How many samples between screenshots. Enough for a clock comparison, not a flipbook. */
 export const SCREENSHOT_EVERY = 30;
@@ -78,7 +78,7 @@ export async function openViewer(page: Page, clientUrl: string): Promise<string>
   return watchUrl;
 }
 
-export interface SamplingOptions {
+interface SamplingOptions {
   page: Page;
   /** How long this stretch runs for. A crash run is three stretches with a fault between them. */
   forMs: number;

@@ -547,7 +547,7 @@ function lastAnswer(listed: ConfiguredStampRead | null, unread: string | null): 
 }
 
 /** bee's on-chain SWAP chequebook balances, as PLUR integer strings (1 BZZ = 1e16 PLUR). */
-export interface ChequebookBalance {
+interface ChequebookBalance {
   totalBalance: string;
   availableBalance: string;
 }

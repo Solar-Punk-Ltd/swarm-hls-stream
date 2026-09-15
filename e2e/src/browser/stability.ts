@@ -43,7 +43,7 @@ export const WINDOW_MS = 5 * 60_000;
  */
 export const MIN_WINDOWS_FOR_TREND = 4;
 
-export interface StabilityWindow {
+interface StabilityWindow {
   index: number;
   fromMs: number;
   toMs: number;
@@ -58,7 +58,7 @@ export interface StabilityWindow {
   rebuffers: number;
 }
 
-export interface StabilityVerdict {
+interface StabilityVerdict {
   windows: StabilityWindow[];
   /**
    * Change in median latency from the first window to the last, in seconds.
@@ -76,10 +76,10 @@ export interface StabilityVerdict {
 }
 
 /** Below this, a window did not keep up with real time and the picture was frozen for the rest. */
-export const WINDOW_ADVANCE_FLOOR = 0.99;
+const WINDOW_ADVANCE_FLOOR = 0.99;
 
 /** How far a window's median latency may sit from the target before it counts as drifted off it. */
-export const WINDOW_LATENCY_TOLERANCE_S = 2;
+const WINDOW_LATENCY_TOLERANCE_S = 2;
 
 function median(values: readonly number[]): number | null {
   if (values.length === 0) {
@@ -99,7 +99,7 @@ function median(values: readonly number[]): number | null {
  * when it is genuinely a fragment keeps the comparison between windows fair without discarding the
  * end of the run.
  */
-export const MIN_WINDOW_COVERAGE = 0.9;
+const MIN_WINDOW_COVERAGE = 0.9;
 
 function summarizeWindow(
   index: number,

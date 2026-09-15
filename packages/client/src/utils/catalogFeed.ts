@@ -25,7 +25,7 @@ const MAX_WALK_PER_READ = 32;
 const SLOT_NOT_WRITTEN_YET = 404;
 
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
-export class CatalogFetchError extends Error {
+class CatalogFetchError extends Error {
   constructor(url: string, readonly status: number) {
     super(`Catalog feed request to ${url} was refused with ${status}`);
     this.name = 'CatalogFetchError';

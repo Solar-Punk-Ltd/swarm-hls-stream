@@ -20,7 +20,7 @@ import {
   seconds,
 } from './report.js';
 
-export interface CrashRun extends BrowserRun {
+interface CrashRun extends BrowserRun {
   scenario: FaultScenario;
   container: string;
   fault: { injectedAtMs: number; liftedAtMs: number; servingAtMs: number | null };

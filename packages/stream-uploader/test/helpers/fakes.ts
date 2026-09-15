@@ -199,7 +199,7 @@ export function makeFakeOrchestrator(overrides: Record<string, unknown> = {}): S
 }
 
 /** An entirely healthy reading, so a test that cares about one signal sets only that one. */
-export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignals {
+function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignals {
   return {
     activeStreams: 0,
     staleManifestStreams: 0,

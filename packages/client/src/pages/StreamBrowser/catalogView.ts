@@ -10,7 +10,7 @@
  * a rule left inside the component is a rule nothing covers.
  */
 
-export type CatalogView =
+type CatalogView =
   /** Streams to show. Stale ones count, which is the point of the ordering below. */
   | 'streams'
   /** The fetch failed and there is nothing to fall back on. */
@@ -20,7 +20,7 @@ export type CatalogView =
   /** The gateway answered and there is genuinely nothing on it yet. */
   | 'empty';
 
-export interface CatalogFetchState {
+interface CatalogFetchState {
   isLoading: boolean;
   hasError: boolean;
   streamCount: number;

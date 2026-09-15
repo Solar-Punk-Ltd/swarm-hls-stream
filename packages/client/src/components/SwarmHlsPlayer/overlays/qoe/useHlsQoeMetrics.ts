@@ -74,7 +74,7 @@ export interface QoeMetrics {
   playbackTimeMs: number;
 }
 
-export interface LadderLevel {
+interface LadderLevel {
   height: number;
   bitrateKbps: number;
   current: boolean;
