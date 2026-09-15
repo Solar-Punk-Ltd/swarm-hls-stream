@@ -383,8 +383,8 @@ OBS/FFmpeg ──SRT──> SRS (port 10080)
 
 | Service           | Image                            | Description                                          |
 | ----------------- | -------------------------------- | ---------------------------------------------------- |
-| `bee-uploader`    | `ethersphere/bee:2.8.1`          | Bee node for uploading to Swarm                      |
-| `bee-gateway`     | `ethersphere/bee:2.8.1`          | Bee node for reading (paired with `client`)          |
+| `bee-uploader`    | `ethersphere/bee:2.8.2`          | Bee node for uploading to Swarm                      |
+| `bee-gateway`     | `ethersphere/bee:2.8.2`          | Bee node for reading (paired with `client`)          |
 | `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm                  |
 | `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS segmenting (no transcode)            |
 | `client`          | Built from `Dockerfile.client`   | React viewer (nginx) — proxies `/bee/` → bee-gateway |
