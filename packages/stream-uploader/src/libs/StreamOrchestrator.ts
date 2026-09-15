@@ -43,7 +43,7 @@ import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from
 
 import { AbrLadder } from './AbrLadder.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
-import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } from './broadcastDating.js';
+import { BroadcastDating, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -1903,9 +1903,12 @@ export class StreamOrchestrator {
       joined
         ? `[StreamOrchestrator] Broadcast ${datingKey} joined the dating line already minted for this ` +
             `restart, at sequence ${resumeAt}: ${new Date(epoch.atMs).toISOString()}`
-        : `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
-            `${new Date(programDateTimeMsOf(anchor, resumeAt)).toISOString()} becomes ` +
-            `${new Date(epoch.atMs).toISOString()}`,
+        : // The date the asking rung would really have carried, which is what it offered as its floor.
+          // Not this anchor's own arithmetic: a rung whose segments ran longer than HLS_FRAGMENT has
+          // dated its media past that, so the arithmetic would name an instant nothing ever published
+          // and understate how far the restart moved the dating.
+          `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
+            `${new Date(notBeforeMs).toISOString()} becomes ${new Date(epoch.atMs).toISOString()}`,
     );
     return epoch;
   }
