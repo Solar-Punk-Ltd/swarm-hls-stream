@@ -274,10 +274,11 @@ function fragmentSecondsOf(raw: string | undefined): number | null {
 
 /** How the pair goes wrong, in the one sentence both directions share. */
 const TWO_CLOCKS =
-  'The uploader dates every segment by its own HLS_FRAGMENT, because #EXT-X-PROGRAM-DATE-TIME steps ' +
-  'by that value from the broadcast start rather than by anything measured, while the engine cuts ' +
-  'segments by its own. So the two disagreeing means the playlist says a segment covers one length ' +
-  'of media and the media covers another, on a stage where every other instrument looks healthy.';
+  'The uploader dates every segment against its own HLS_FRAGMENT, because #EXT-X-PROGRAM-DATE-TIME ' +
+  'steps by that value wherever a segment measures within the tolerance of it, while the engine cuts ' +
+  'segments by its own. So the two disagreeing means the engine is cutting a length the uploader ' +
+  'treats as the configured one, and the playlist says a segment covers one length of media while ' +
+  'the media covers another, on a stage where every other instrument looks healthy.';
 
 /**
  * Why this stage's uploader dates segments by the wrong length, or `null`.

@@ -46,8 +46,8 @@ import {
  * ## ⛔⛔⛔ Two containers work to that one number, and this reads both
  *
  * `HLS_FRAGMENT` is one value in the profile env and it reaches the engine, which CUTS by it, and the
- * uploader, which DATES by it: `#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from
- * the broadcast start. Nothing had ever held one against the other, and on 2026-09-04 an uploader
+ * uploader, which READS every segment against it: `#EXT-X-PROGRAM-DATE-TIME` steps by that many
+ * seconds for every segment measuring within the tolerance of it. Nothing had ever held one against the other, and on 2026-09-04 an uploader
  * running 1.0 sat in front of an SRS cutting 2.0. All ten gates passed. The only thing that noticed
  * was the ABR ladder suite's timeline subtest, mid-sitting, reporting segments dated 1000ms after the
  * one before them on a stage cutting 2s fragments. That is a paid broadcast to learn what two
