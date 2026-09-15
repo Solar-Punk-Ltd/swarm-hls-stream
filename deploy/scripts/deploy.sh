@@ -180,6 +180,39 @@ check_local_bee_uploader() {
 
 check_local_bee_uploader
 
+# `--swap-enable=true` deploys a chequebook, which is an on-chain contract, and the gateway's own
+# `--blockchain-rpc-endpoint` defaults to empty because empty is what makes the node ultra-light. The
+# pair is not a node that runs badly, it is a node that refuses to start, so compose creates it, the
+# deploy reports success and a crash-looping container is what the operator is left with.
+#
+# The compose file states the rule in a comment beside the two flags. Nobody setting one variable in
+# their own .env is reading the compose file, and a sentence in a comment refuses nothing, so the
+# check belongs where the two values first meet.
+#
+# Read out of the env file rather than out of the shell, for the same reason check_stamp does: these
+# two keys reach compose through --env-file alone, nothing in generate_env_overrides writes them, so
+# the file is what the gateway will actually be started with.
+check_gateway_chain() {
+  local deploys_gateway=false
+  for target in $(get_targets); do
+    for svc in $(get_filtered_services_for_target "$target"); do
+      [ "$svc" = "$SVC_BEE_GATEWAY" ] && deploys_gateway=true
+    done
+  done
+  [ "$deploys_gateway" = "true" ] || return 0
+
+  local swap_val endpoint_val
+  swap_val=$(grep -E '^BEE_GATEWAY_SWAP_ENABLE=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')
+  endpoint_val=$(grep -E '^BEE_GATEWAY_RPC_ENDPOINT=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')
+  if [ "$swap_val" = "true" ] && [ -z "$endpoint_val" ]; then
+    log_error "BEE_GATEWAY_SWAP_ENABLE=true needs a chain, and BEE_GATEWAY_RPC_ENDPOINT is empty in $ENV_FILE."
+    log_error "Set BEE_GATEWAY_RPC_ENDPOINT to an RPC endpoint, or leave swap off for an ultra-light gateway."
+    exit 1
+  fi
+}
+
+check_gateway_chain
+
 # --- Build ---
 
 # What `Dockerfile.uploader` COPYs instead of building, so a deployment host needs this and never a
