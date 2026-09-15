@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -49,7 +49,7 @@ describe('G — gateway (viewer-side) outage: uploads unaffected', () => {
 
   after(async () => {
     await publisher?.stop();
-    await host.start(gateway).catch(() => undefined);
+    await host.start(gateway).catch(reportFailedRestore(gateway));
   });
 
   it('keeps uploading segments while the viewer gateway is down', async () => {

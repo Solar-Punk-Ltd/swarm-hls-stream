@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -91,7 +91,7 @@ describe('E — media-engine restart: broadcaster resumes', () => {
   after(async () => {
     await first?.stop();
     await second?.stop();
-    await host.start(mediaContainer).catch(() => undefined);
+    await host.start(mediaContainer).catch(reportFailedRestore(mediaContainer));
   });
 
   it('starts a fresh live stream when the broadcaster reconnects after an engine restart', async () => {

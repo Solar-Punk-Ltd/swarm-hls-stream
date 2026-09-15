@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, containerNameFor, loadConfig } from '../../src/config.js';
-import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { nodesBehind, publisherServices } from '../../src/harness/publishers.js';
@@ -83,7 +83,7 @@ describe('B — bee crash > retry window: the segment is dropped, reported, and 
 
   after(async () => {
     await publisher?.stop();
-    await Promise.all(bees.map((bee) => host.start(bee).catch(() => undefined)));
+    await Promise.all(bees.map((bee) => host.start(bee).catch(reportFailedRestore(bee))));
   });
 
   it('reports the dropped segment and resumes cleanly', async () => {
