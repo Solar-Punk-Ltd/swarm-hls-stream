@@ -186,6 +186,11 @@ check_local_bee_uploader
 # toolchain.
 UPLOADER_DIST="$ROOT_DIR/packages/stream-uploader/dist"
 
+# The file the image runs, and the only honest age of a build. `pnpm build` rewrites the files in
+# place, and a directory's own time moves only when an entry is added or removed, so dating the
+# directory reports a rebuild that happened minutes ago as weeks old.
+UPLOADER_ENTRY="$UPLOADER_DIST/index.js"
+
 build_if_needed() {
   if [ ! -d "$UPLOADER_DIST" ]; then
     log_info "Building packages"
@@ -702,7 +707,8 @@ fi
 # container, which has no pnpm and a checkout with no node_modules: that deploy builds the packages on
 # the operator's machine and rsyncs the result in. So a deploy without pnpm ships the dist it was
 # given rather than dying at `pnpm: command not found` from the middle of a build function, and names
-# how old that dist is, because nothing on this path rebuilt it and a stale one is otherwise silent.
+# when the file the image runs was built, because nothing on this path rebuilt it and a stale dist is
+# otherwise silent.
 if [ "$has_uploader" = "true" ]; then
   if command -v pnpm >/dev/null 2>&1; then
     if [ "$has_remote" = "true" ]; then
@@ -710,8 +716,10 @@ if [ "$has_uploader" = "true" ]; then
     else
       build_if_needed
     fi
+  elif [ -f "$UPLOADER_ENTRY" ]; then
+    log_info "pnpm is not on PATH. Deploying the pre-built packages/stream-uploader/dist, built $(modified_at "$UPLOADER_ENTRY")."
   elif [ -d "$UPLOADER_DIST" ]; then
-    log_info "pnpm is not on PATH. Deploying the pre-built packages/stream-uploader/dist, last modified $(modified_at "$UPLOADER_DIST")."
+    log_warn "pnpm is not on PATH. Deploying packages/stream-uploader/dist, which has no dist/index.js for the image to run."
   else
     log_error "packages/stream-uploader/dist is missing and pnpm is not on PATH to build it."
     log_error "Build where pnpm is (pnpm install && pnpm build) and ship dist, or install pnpm here."
