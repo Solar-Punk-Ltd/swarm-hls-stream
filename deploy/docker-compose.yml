@@ -35,7 +35,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_UPLOADER_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -78,7 +77,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_RUNG_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -104,7 +102,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_RUNG_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -130,7 +127,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_RUNG_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -194,6 +190,11 @@ services:
       # project ever labelled cache-off was measured with the cache on. Left at bee's default so
       # deployments are unchanged; an experiment that needs a cold node every pass sets it false.
       - --cache-retrieval=${BEE_GATEWAY_CACHE_RETRIEVAL:-true}
+      # ⭐ The only Bee node in this file a browser talks to, which is the whole of why it carries
+      # this and the four funded nodes above no longer do. The flag lets a page on any origin read
+      # this node's answers, and on a node holding a postage batch that is a page anywhere reading
+      # the full batch ids off /stamps and spending them. The viewer never reaches those: `deploy.sh`
+      # forces the deployed bundle onto the same-origin /bee proxy, and vite proxies it in dev.
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
