@@ -127,8 +127,18 @@ export const attachQoeTracking = (
   let playbackStartTime: number | null = null;
   let accPlaybackMs = 0;
   let rebufferStart: number | null = null;
+  let accRebufferingMs = 0;
   let recoveryStart: number | null = null;
   let firstPlaying = false;
+
+  // Both totals carry the interval that is still open, not only the ones an event has closed. A
+  // viewer frozen right now has already lost that time, and a broadcast that never comes back never
+  // fires the `playing` that would bank it.
+  const playbackSoFarMs = () =>
+    playbackStartTime === null ? accPlaybackMs : accPlaybackMs + (performance.now() - playbackStartTime);
+
+  const rebufferingSoFarMs = () =>
+    rebufferStart === null ? accRebufferingMs : accRebufferingMs + (performance.now() - rebufferStart);
 
   const flush = () => onUpdate({ ...metrics });
 
@@ -145,8 +155,9 @@ export const attachQoeTracking = (
       metrics.startupTimeMs = performance.now() - sessionStart;
     }
     if (rebufferStart !== null) {
-      metrics.rebufferingDurationMs += performance.now() - rebufferStart;
+      accRebufferingMs += performance.now() - rebufferStart;
       rebufferStart = null;
+      metrics.rebufferingDurationMs = accRebufferingMs;
     }
     if (recoveryStart !== null) {
       metrics.lastRecoveryTimeMs = performance.now() - recoveryStart;
@@ -280,11 +291,11 @@ export const attachQoeTracking = (
   }
 
   const interval = setInterval(() => {
-    let total = accPlaybackMs;
-    if (playbackStartTime !== null) {
-      total += performance.now() - playbackStartTime;
-    }
+    const total = playbackSoFarMs();
     metrics.playbackTimeMs = total;
+
+    const rebuffering = rebufferingSoFarMs();
+    metrics.rebufferingDurationMs = rebuffering;
 
     if (video instanceof HTMLVideoElement && video.videoWidth && video.videoHeight) {
       metrics.resolution = `${video.videoWidth}×${video.videoHeight}`;
@@ -294,8 +305,8 @@ export const attachQoeTracking = (
     // overlap, so dividing by playback alone was not a share of anything and read past 100% on a
     // session that stalled more than it played. Paused time is banked into neither counter and so
     // falls out of both halves, which is why this is not the wall clock the switch rate below uses.
-    const watched = total + metrics.rebufferingDurationMs;
-    metrics.rebufferingRatio = watched > 0 ? metrics.rebufferingDurationMs / watched : 0;
+    const watched = total + rebuffering;
+    metrics.rebufferingRatio = watched > 0 ? rebuffering / watched : 0;
 
     // Elapsed wall clock, not playback time. Denominated in playback time this inflated exactly when
     // the session struggled: down-switches cluster in the rebuffering and paused stretches that
