@@ -148,9 +148,14 @@ A refused run names the one knob. With the ladder on, `engines/srs/entrypoint.sh
 GOP from `HLS_FRAGMENT`, so the fragment IS the segment:
 
 ```bash
-echo 'HLS_FRAGMENT=2.0' >> engines/srs/.env.<profile>
-deploy/scripts/deploy.sh --profile=<profile> [--portSlot=<N>] srs
+echo 'HLS_FRAGMENT=2.0' >> .env.<profile>
+deploy/scripts/deploy.sh --profile=<profile> [--portSlot=<N>] srs stream-uploader
 ```
+
+⛔ **Both halves of those two lines matter.** The profile's own root `.env.<profile>` is where a
+Docker deployment sets this, because both services read it. And a container re-reads it only when it
+is recreated, so a run naming `srs` alone leaves the uploader on its old value and the pair
+disagrees in the other direction, which this gate refuses again.
 
 `any` is for a run that genuinely pins no length, and for OME, whose segmenter config this gate
 cannot read. It is a declaration and is never asked again.
