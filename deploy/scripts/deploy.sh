@@ -182,8 +182,12 @@ check_local_bee_uploader
 
 # --- Build ---
 
+# What `Dockerfile.uploader` COPYs instead of building, so a deployment host needs this and never a
+# toolchain.
+UPLOADER_DIST="$ROOT_DIR/packages/stream-uploader/dist"
+
 build_if_needed() {
-  if [ ! -d "$ROOT_DIR/packages/stream-uploader/dist" ]; then
+  if [ ! -d "$UPLOADER_DIST" ]; then
     log_info "Building packages"
     cd "$ROOT_DIR"
     pnpm install
@@ -196,6 +200,15 @@ build_force() {
   cd "$ROOT_DIR"
   pnpm install
   pnpm build
+}
+
+# BSD `stat` on macOS, GNU or busybox `stat` on a deployment host, and a deploy is run on both.
+modified_at() {
+  local when
+  when=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$1" 2>/dev/null) ||
+    when=$(stat -c '%y' "$1" 2>/dev/null) ||
+    when="an unknown time"
+  echo "${when%%.*}"
 }
 
 # --- Cross-target URL resolution ---
@@ -682,12 +695,27 @@ if [ "$has_any" = "false" ]; then
   exit 0
 fi
 
-# Build once before deploying (only if uploader is being deployed)
+# Build once before deploying (only if uploader is being deployed).
+#
+# A remote target forces a rebuild, so a hand-run deploy always ships a fresh dist, but only where
+# there is a toolchain to do it with. streaming-infra-manager runs this script inside its api
+# container, which has no pnpm and a checkout with no node_modules: that deploy builds the packages on
+# the operator's machine and rsyncs the result in. So a deploy without pnpm ships the dist it was
+# given rather than dying at `pnpm: command not found` from the middle of a build function, and names
+# how old that dist is, because nothing on this path rebuilt it and a stale one is otherwise silent.
 if [ "$has_uploader" = "true" ]; then
-  if [ "$has_remote" = "true" ]; then
-    build_force
+  if command -v pnpm >/dev/null 2>&1; then
+    if [ "$has_remote" = "true" ]; then
+      build_force
+    else
+      build_if_needed
+    fi
+  elif [ -d "$UPLOADER_DIST" ]; then
+    log_info "pnpm is not on PATH. Deploying the pre-built packages/stream-uploader/dist, last modified $(modified_at "$UPLOADER_DIST")."
   else
-    build_if_needed
+    log_error "packages/stream-uploader/dist is missing and pnpm is not on PATH to build it."
+    log_error "Build where pnpm is (pnpm install && pnpm build) and ship dist, or install pnpm here."
+    exit 1
   fi
 fi
 
