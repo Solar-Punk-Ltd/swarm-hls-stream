@@ -331,20 +331,20 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable               | Default   | Description                                                                                                                        |
-| ---------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below               |
-| `API_PORT`             | `3000`    | HTTP API port                                                                                                                      |
-| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                                 |
-| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                                     |
-| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                                        |
-| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                                       |
-| `HLS_FRAGMENT`         | `0.5`     | Nominal seconds per fragment, the grid every `#EXT-X-PROGRAM-DATE-TIME` reads its segments against. Same variable the engine reads |
-| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                                |
-| `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                                         |
-| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                                      |
-| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                           |
-| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                         |
+| Variable               | Default   | Description                                                                                                          |
+| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below |
+| `API_PORT`             | `3000`    | HTTP API port                                                                                                        |
+| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                   |
+| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                       |
+| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                          |
+| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                         |
+| `HLS_FRAGMENT`         | `0.5`     | Nominal seconds per fragment, the grid a segment's date snaps to within one percent. Same variable the engine reads  |
+| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                  |
+| `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                           |
+| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                        |
+| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event             |
+| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                           |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
