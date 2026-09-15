@@ -1820,6 +1820,24 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
     assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${ROOMY_DEPTH}`));
   });
 
+  /**
+   * ⛔ The capacity estimate is a generalised birthday figure, `(k! * buckets ** (k - 1)) ** (1/k)`
+   * for k the first chunk count a bucket cannot hold. k doubles with every level, and computed
+   * directly the intermediate integer passes what a float can carry at depth 22, so the python died
+   * with an OverflowError and print-buy refused with a sentence blaming itself rather than pricing
+   * anything. Every depth from 22 to the ceiling of 32 was unbuyable while the argument parser
+   * accepted all of them.
+   */
+  it('prices a depth whose bucket count overflows a direct factorial', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth=22']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /cost [\d.]+ BZZ/);
+    assert.match(run.stdout, /refus\w+ near \d+ chunks/);
+  });
+
   it('refuses a depth below the smallest batch bee sells', async () => {
     const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
 

@@ -837,8 +837,14 @@ nominal_chunks = 2 ** depth
 # so the question is how many uniformly placed chunks it takes for some bucket to hold one more than
 # it can. That is the generalised birthday problem, (k! * n**(k-1)) ** (1/k) for k the first count
 # that does not fit.
+#
+# ⛔ Evaluated in log space, because k doubles with every level and k! written out is past what a
+# float can carry from depth 22 up. Raising that product to 1/k asked for the conversion, python
+# answered OverflowError, and the whole program died before printing a verdict, so print-buy refused
+# every depth from 22 to the ceiling of 32 with its own empty-answer message, which names this script
+# and not the arithmetic. lgamma is log(k!) taken without ever building k!.
 k = per_bucket + 1
-expected_chunks = int(round((math.factorial(k) * buckets ** (k - 1)) ** (1.0 / k)))
+expected_chunks = int(round(math.exp((math.lgamma(k + 1) + (k - 1) * math.log(buckets)) / k)))
 
 
 def mib(chunks):
