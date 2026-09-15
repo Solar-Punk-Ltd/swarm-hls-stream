@@ -156,7 +156,8 @@ const BITRATE_REFRESH_INTERVAL_MS = 30_000;
  * The admin service and this broadcast's place in it, when `ADMIN_API_URL` is set. Absent is the
  * standalone deployment, where the stream catalog on Swarm is this service's own to write.
  *
- * Its presence changes three things in this class and nothing else:
+ * Its presence changes four things in this class and nothing else, and every one of them follows from
+ * the single fact that the topic is the declaration's rather than this session's:
  *
  * 1. **No catalog write, ever.** Not the live announce, not the VOD flip. The admin owns the list of
  *    streams in admin mode, and a second writer would publish entries nothing reconciles.
@@ -164,6 +165,10 @@ const BITRATE_REFRESH_INTERVAL_MS = 30_000;
  *    the memoization and the ordering the comments here describe go on meaning what they say.
  * 3. **The feed index is resumed from the feed head on start**, because the topic came from the
  *    declaration and outlives the session. See {@link resumeAdminFeedIndex}.
+ * 4. **A replacement session publishes nothing until the session it replaced has finished.** (3) reads
+ *    the head once and latches it, which is only sound once the head has stopped moving — and a
+ *    re-announce leaves the retired session writing its closing and VOD playlists onto this same
+ *    topic. See {@link StreamUploaderOptions.predecessorDrained}.
  */
 interface AdminReporting {
   client: AdminApiClient;
@@ -228,6 +233,22 @@ export interface StreamUploaderOptions {
   metrics?: ServiceMetrics;
   /** The admin service, when the deployment has one. See {@link AdminReporting}. */
   admin?: AdminReporting;
+  /**
+   * The finalize of the session this one replaced under the same stream id, when there was one.
+   *
+   * ⛔ **Admin mode only, and it is what keeps two sessions off one feed.** A re-announce retires the
+   * live session and starts this one in the same synchronous turn, then drains the retired one in the
+   * background. Outside admin mode that is safe because each session mints its own topic. In admin
+   * mode the topic comes from the declaration and both sessions hold it, so the retired session's
+   * closing and VOD manifests are SOC writes onto the feed this one is about to publish into — and
+   * `retire()` does not stop them, it only gives up the recovery entry, the admin report and the
+   * catalog entry.
+   *
+   * Unset means nothing to wait for: a first session on an id, or a standalone deployment.
+   *
+   * See {@link predecessorHasDrained}.
+   */
+  predecessorDrained?: Promise<void>;
 }
 
 export class StreamUploader {
@@ -312,6 +333,13 @@ export class StreamUploader {
   private readonly admin?: AdminReporting;
   /** Whether the feed head has been read for this session. See {@link resumeAdminFeedIndex}. */
   private adminFeedIndexResumed = false;
+  /**
+   * Whether the session this one replaced has finished writing to the shared declared topic.
+   *
+   * True from the start for everything except an admin-mode replacement, which is the only case where
+   * another live uploader holds the same feed. See {@link StreamUploaderOptions.predecessorDrained}.
+   */
+  private predecessorHasDrained = true;
 
   private manifestManager: ManifestManager;
 
@@ -319,6 +347,17 @@ export class StreamUploader {
     this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
     this.metrics = options.metrics;
     this.admin = options.admin;
+    if (options.predecessorDrained) {
+      this.predecessorHasDrained = false;
+      // Settled rather than awaited, so no publish path ever blocks on it and a drain that never
+      // finishes cannot hold this session's manifest queue. `finalizeRetiredSession` answers instead
+      // of throwing, so the catch is a backstop for a rejection no current caller produces.
+      void options.predecessorDrained
+        .catch(() => {})
+        .finally(() => {
+          this.predecessorHasDrained = true;
+        });
+    }
     this.bee = options.bee;
     this.streamSigner = new PrivateKey(options.streamKey);
     this.streamCatalog = options.streamCatalog;
@@ -812,8 +851,25 @@ export class StreamUploader {
    * A re-announce starts the replacement while this uploader is still finalizing, and both carry the
    * same stream id. Everything this one writes to or deletes from the recovery store after that point
    * lands on a broadcast that is still running: a save replaces the live session's state with an
-   * outgoing session's, and the delete at the end of `notifyStop` discards it outright. The published
-   * media is unaffected, since each uploader owns its own feed topic.
+   * outgoing session's, and the delete at the end of `notifyStop` discards it outright.
+   *
+   * ⛔ **What this does NOT stop is the SOC writes, and reading it as though it did is what let two
+   * sessions onto one feed.** It gives up three things and they are all keyed by stream id — the
+   * recovery entry here, the admin state report in {@link reportAdminState}, and the shared ladder
+   * entry in {@link announceRendition}. A retired session goes on publishing manifests to the topic it
+   * was built with, which is the whole point: its closing playlist and its VOD are what give the
+   * broadcast it recorded an ending.
+   *
+   * ⚠️ That was safe for as long as the topic was a per-session `crypto.randomUUID()`, and this doc
+   * said so — "the published media is unaffected, since each uploader owns its own feed topic". Admin
+   * mode removed the premise without removing the sentence. There the topic comes from the declaration
+   * and outlives every session on it, so a retired session and its replacement hold the same feed, and
+   * the retired one's closing and VOD writes race the replacement's live ones for the same indexes.
+   *
+   * What makes it safe again is not this method: the orchestrator hands the replacement the retired
+   * session's finalize, and the replacement publishes nothing until it settles. See
+   * {@link StreamUploaderOptions.predecessorDrained}, and `StreamOrchestrator.startStream`'s
+   * re-announce branch for where the two are tied together.
    */
   public retire(): void {
     this.ownsRecoveryEntry = false;
@@ -908,6 +964,10 @@ export class StreamUploader {
    * so its VOD entry describes a recording nobody else is writing. In admin mode both sessions share
    * one declared stream, so a retired session reporting `vod` would mark the broadcast that replaced
    * it as finished.
+   *
+   * ⛔ This covers the *report* and nothing else. The retired session still publishes manifests to the
+   * declared topic the two of them share, and `ownsRecoveryEntry` does not gate that — what keeps the
+   * two off one feed is the replacement waiting, not this session stopping. See {@link retire}.
    */
   private async reportAdminState(report: AdminStateReport, whatIsLost: string): Promise<void> {
     const admin = this.admin!;
@@ -1048,6 +1108,26 @@ export class StreamUploader {
   }
 
   private async commitManifest(manifestContent: string): Promise<number | null> {
+    // ⛔ Before the head read, because the head is only worth reading once it is final. The session
+    // this one replaced shares the declared topic and is still writing its closing and VOD manifests
+    // onto it; reading past it would hand both sessions the same next index, and its VOD would then
+    // land above this session's live playlist and leave the feed head claiming a live broadcast had
+    // finished.
+    //
+    // Refused rather than awaited, and that is the same asymmetry `resumeAdminFeedIndex` states: the
+    // caller treats a null as a failed manifest publish and re-attempts at the next segment, so the
+    // cost is a stale live playlist for the length of the drain. Waiting here instead would hold the
+    // manifest queue for a drain that may never finish. Segments keep uploading throughout — only
+    // naming them in a playlist waits — so nothing is lost, and a drain that hangs stalls the live
+    // playlist rather than corrupting the recording.
+    if (!this.predecessorHasDrained) {
+      this.logger.warn(
+        `[StreamUploader] Holding the manifest publish for ${this.streamId}: the session it replaced is ` +
+          'still finalizing onto the declared topic they share. Re-attempting at the next segment.',
+      );
+      return null;
+    }
+
     // Ahead of the index arithmetic below rather than at construction, because it is a network read
     // and this is the last moment before the first write, so nothing can be published on a topic
     // whose head has not been established. Answers `true` immediately outside admin mode and after

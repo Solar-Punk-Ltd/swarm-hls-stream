@@ -419,8 +419,15 @@ export class StreamOrchestrator {
       stale.retire();
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
-      this.spawnUploader(streamId, mediatype, claimant, admin);
-      void this.finalizeRetiredSession(streamId, stale);
+      // Started before the replacement rather than after it, so the replacement can be handed the
+      // promise. The drain itself is unchanged and still nobody awaits it here; what is new is that in
+      // admin mode the replacement holds its manifest publishes until this settles. `retire()` gives
+      // up the recovery entry, the admin report and the catalog entry, but not the SOC writes, and in
+      // admin mode both sessions hold the declared topic — so without the gate the retired session's
+      // closing and VOD manifests race the replacement's live ones for the same feed indexes. Outside
+      // admin mode each session owns a topic nothing else writes, so nothing waits.
+      const drained = this.finalizeRetiredSession(streamId, stale);
+      this.spawnUploader(streamId, mediatype, claimant, admin, admin ? drained : undefined);
       return true;
     }
 
@@ -627,7 +634,13 @@ export class StreamOrchestrator {
    * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
    * and a uuid.
    */
-  private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant, admin?: AdminSession): void {
+  private spawnUploader(
+    streamId: string,
+    mediatype: MediaType,
+    claimant: StreamClaimant,
+    admin?: AdminSession,
+    predecessorDrained?: Promise<void>,
+  ): void {
     // Resolved before the uploader is built: the rungs of one ladder publish within milliseconds of
     // each other, and a group id assigned later would let two of them create two groups for one source.
     const match = this.config.ladder?.match(streamId) ?? null;
@@ -641,10 +654,17 @@ export class StreamOrchestrator {
     // ⛔ **Admin mode is the exception, and it owes exactly the debt that comment describes.** There
     // the topic belongs to the declaration: the admin mints it when the stream is created and hands
     // it to viewers before anything has ever published on it, so a second session under one
-    // declaration is precisely the case of "handed the topic it just finished writing". What makes
-    // that safe is that such a session no longer starts with no state to resume from — the uploader
-    // reads the feed head before its first SOC write and continues above it. See
-    // `StreamUploader.resumeAdminFeedIndex`, which is the whole of the answer.
+    // declaration is precisely the case of "handed the topic it just finished writing". Paying that
+    // debt takes two things, and each is useless without the other:
+    //
+    //   1. Such a session no longer starts with no state to resume from. The uploader reads the feed
+    //      head before its first SOC write and continues above it — `StreamUploader.resumeAdminFeedIndex`.
+    //   2. It does not take that reading while the head is still moving. A re-announce leaves the
+    //      retired session writing its closing and VOD playlists to this same topic, and the head read
+    //      is latched for the life of the session, so a reading taken mid-drain is wrong for every
+    //      publish that follows it and the two sessions claim the same indexes. The replacement is
+    //      handed the retired session's finalize and holds its publishes until it settles — see the
+    //      re-announce branch of `startStream` above, and `StreamUploaderOptions.predecessorDrained`.
     const streamTopic = admin?.topic ?? crypto.randomUUID();
 
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
@@ -689,6 +709,7 @@ export class StreamOrchestrator {
       dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
+      predecessorDrained,
     });
 
     this.activeStreams.set(streamId, uploader);

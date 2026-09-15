@@ -17,6 +17,10 @@
  *    list of streams here, so a second writer would publish entries nothing reconciles. The two
  *    reports land at exactly the two moments the catalog's own entries would have, carrying exactly
  *    what those entries would have carried.
+ * 4. **And a replacement session waits for the one it replaced.** (2) reads the head once and latches
+ *    it, which is sound only once the head has stopped moving — and a re-announce leaves the retired
+ *    session writing its own closing and VOD playlists to this same topic. Without the wait the two
+ *    claim the same indexes and the old recording ends up above the live broadcast.
  */
 
 import { Bee } from '@ethersphere/bee-js';
@@ -95,6 +99,8 @@ interface SessionOptions {
   reportOutcome?: (report: AdminStateReport) => StateReportOutcome;
   /** Built without `admin`, which is the standalone deployment this service has always been. */
   standalone?: boolean;
+  /** The finalize of the session this one replaced, when this session is a re-announce's replacement. */
+  predecessorDrained?: Promise<void>;
 }
 
 /**
@@ -147,6 +153,7 @@ function newSession(options: SessionOptions = {}): Session {
     streamTopic: DECLARED_TOPIC,
     mediatype: MEDIA_TYPE_VIDEO,
     admin: options.standalone ? undefined : { client, id: ADMIN_STREAM_ID },
+    predecessorDrained: options.predecessorDrained,
   });
 
   return { uploader, published, catalogEntries, reports, saved };
@@ -404,5 +411,124 @@ describe('the orchestrator in admin mode', () => {
     } finally {
       await orchestrator.cleanup();
     }
+  });
+});
+
+/**
+ * Takeover ordering: the fourth property, and the one the other three quietly assumed.
+ *
+ * A re-announce retires the live session and starts its replacement in the same synchronous turn,
+ * then drains the retired one in the background. Outside admin mode that is safe because each session
+ * mints its own topic and the retired one writes only to its own. Under a declaration both sessions
+ * hold the same topic, and `retire()` does not stop SOC writes — it gives up the recovery entry, the
+ * admin report and the catalog entry, and nothing else. Its doc used to close with the premise admin
+ * mode had already removed, "the published media is unaffected, since each uploader owns its own feed
+ * topic", which is why this went unnoticed; it now says what it does not cover.
+ *
+ * So the retired session's closing and VOD manifests are writes onto the feed the replacement is
+ * about to publish into. Ungated, the replacement reads a head the retired session is still moving:
+ * both then compute the same next index and write over one another, and the retired session's VOD
+ * lands above the replacement's live playlist — leaving the feed head announcing that a broadcast
+ * still running has finished.
+ */
+describe('a replacement session on a declared topic waits for the session it replaced', () => {
+  /** Runs after the microtask queue, so the constructor's own settle callback on the drain has run. */
+  const afterMicrotasks = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  it('publishes nothing, and does not even read the head, while the retired session is finalizing', async () => {
+    let releaseDrain = (): void => {};
+    const drained = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+
+    // Where the retired session has got to, and where it ends up: a closing manifest at 8 and its VOD
+    // at 9, which is exactly what it writes during the window this test holds open.
+    let head = 7;
+    let downloads = 0;
+    const session = newSession({
+      predecessorDrained: drained,
+      feedHead: () => {
+        downloads++;
+        return { index: head, manifest: SOME_PLAYLIST };
+      },
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(
+      session.published.length,
+      0,
+      'a write here would land on an index the retired session is about to claim for its closing manifest',
+    );
+    assert.equal(
+      downloads,
+      0,
+      'and the head must not even be read yet: it is still moving, and the read is latched for the ' +
+        'life of the session, so a reading taken now would be wrong for every publish that follows',
+    );
+
+    head = 9;
+    releaseDrain();
+    await drained;
+    await afterMicrotasks();
+
+    await feedOneSegment(session.uploader, 1);
+
+    assert.deepEqual(
+      session.published.map((write) => write.index),
+      [10],
+      'once the retired session is done the replacement resumes above its VOD, so no index is written ' +
+        'twice and the newest thing on the feed is this session live rather than the old recording',
+    );
+  });
+
+  /**
+   * The latch is on the drain settling, not on the first refusal. A session that refused once has to
+   * publish on its own next segment rather than waiting for a further event, or a broadcast would be
+   * held for its whole life by one early reconnect.
+   */
+  it('is not latched by having refused once', async () => {
+    let releaseDrain = (): void => {};
+    const drained = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const session = newSession({
+      predecessorDrained: drained,
+      feedHead: () => ({ index: 2, manifest: SOME_PLAYLIST }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+    assert.equal(session.published.length, 0);
+
+    releaseDrain();
+    await drained;
+    await afterMicrotasks();
+
+    await feedOneSegment(session.uploader, 1);
+    await feedOneSegment(session.uploader, 2);
+
+    assert.deepEqual(
+      session.published.map((write) => write.index),
+      [3, 4],
+      'the session publishes normally from here',
+    );
+  });
+
+  /**
+   * ⛔ The gate is admin-only, and this is the half that says so. A standalone session owns a topic
+   * nothing else will ever write, so holding its playlist for a drain would buy nothing and cost every
+   * viewer the wait. `StreamOrchestrator` is what passes the promise, and it passes it only when the
+   * announce carried an admin session.
+   */
+  it('does not wait when it was handed no predecessor, which is every session outside a re-announce', async () => {
+    const session = newSession({ feedHead: () => ({ index: 4, manifest: SOME_PLAYLIST }) });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.deepEqual(
+      session.published.map((write) => write.index),
+      [5],
+      'nothing to wait for, so nothing waits',
+    );
   });
 });
