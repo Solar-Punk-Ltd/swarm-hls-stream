@@ -29,7 +29,8 @@
  * Costs 1111 chunk writes, which is a rounding error of postage against a depth-22 batch, and no
  * video at all.
  *
- * RUN IT FROM `e2e`, which is the only workspace package that still declares `cafe-utility`:
+ * RUN IT FROM `e2e`, one of the three workspace packages that declare `cafe-utility` and the one
+ * this file lives in (`packages/shared` and `packages/stream-uploader` declare it too):
  *
  *   docker run --rm --network host -w /repo/e2e -e STAMP=... swarm-hls-bench:latest \
  *     node src/probes/feed-head-scaling.mjs
