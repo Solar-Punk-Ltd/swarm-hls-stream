@@ -997,3 +997,15 @@ current HEAD, produces numbers that cannot distinguish a healthy system from a s
 - Coverage baseline unknown until S0.3.
 - Latency baseline unknown until S5.1.
 - bee-js resolved version and per-call-site break list unverified, see S6.3.
+
+## Correction, 2026-09-15: the gateway's "ultra-light" arms were light nodes with swap off
+
+The LAT-10 row says the funded gateway "moved from bee's `ultra-light` mode to `light`". Under bee's
+actual rule (`pkg/node/node.go`, `isChainEnabled`: `--full-node=false` plus an EMPTY
+`--blockchain-rpc-endpoint` is ultra-light, and `--swap-enable` plays no part) it was `light` both
+times, because the compose gateway always carried an endpoint. Flipping swap changed whether the node
+had a chequebook, never its mode. Every "ultra-light" verification in this repository read
+`/chequebook/balance` answering `405 chain disabled`, which a light node with swap off answers
+identically, so the label could not be caught. The measurements stand as funded against unfunded
+LIGHT node. A true ultra-light gateway has not been measured. Fixed on 2026-09-15: the gateway has its
+own empty `BEE_GATEWAY_RPC_ENDPOINT`, and `unfunded-gateway.sh` reads `/status` `beeMode`.
