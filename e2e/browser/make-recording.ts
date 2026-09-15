@@ -50,6 +50,7 @@
  * recording the hole landed so a report can say which seeks crossed it.
  */
 
+import { requireBenchAuthorised } from '../src/bench/authorisation.js';
 import { envNumber } from '../src/browser/runFiles.js';
 import { containerName, type E2EConfig, loadConfig } from '../src/config.js';
 import { type Host, makeHost, waitForIdle } from '../src/harness/host.js';
@@ -57,7 +58,6 @@ import { announcedLiveStreams, parseUploaderLog } from '../src/harness/logwatch.
 import { startPublisher } from '../src/harness/publisher.js';
 import { lowestRungOf, recordingProgress, recordingSummary, vodFinalizeWaitMs } from '../src/harness/recording.js';
 import { readStageSegmenting } from '../src/harness/stage.js';
-import { requireStageStamps } from '../src/harness/stageStamps.js';
 import { waitFor } from '../src/harness/wait.js';
 import { stageSegmentSeconds } from '../src/segmentLength.js';
 
@@ -105,7 +105,6 @@ const ARM_HOLE = process.env.RECORDING_ARM_DISCONTINUITY !== '0';
 const SEGMENT_WAIT_MS = 600_000;
 /** How often the finalize wait reads the log. Part of the wait's own derivation, so it is named. */
 const VOD_POLL_MS = 3_000;
-const MIN_STAMP_TTL_S = 600;
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -115,12 +114,14 @@ async function main(): Promise<void> {
   const before = envNumber('RECORDING_BEFORE_SEGMENTS', BEFORE_SEGMENTS);
   const after = envNumber('RECORDING_AFTER_SEGMENTS', AFTER_SEGMENTS);
 
-  // ⛔ Every publisher node, the way all 27 suites gate. This read the COORDINATOR's stamp alone and
-  // called the answer the stage's, which since the per-rung split speaks for one node of four: an
-  // expired batch on the 1080p node cleared it every time and turned up mid-recording as a rung that
-  // stopped being produced. This script publishes for minutes and pays for every segment, so the
-  // wrong node's TTL here buys an unusable recording rather than a warning.
-  await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
+  // ⛔ The same three gates the benches run, because this publishes for minutes and pays for every
+  // segment exactly as they do: the owner's authorisation in the spend ledger, every publisher's
+  // chequebook, and every publisher's postage TTL. Until 2026-09-16 this read postage alone, and
+  // before that it read the COORDINATOR's stamp alone and called the answer the stage's, which since
+  // the per-rung split speaks for one node of four: an expired batch on the 1080p node cleared it
+  // every time and turned up mid-recording as a rung that stopped being produced. A wrong reading
+  // here buys an unusable recording rather than a warning. See `src/bench/authorisation.ts`.
+  console.log(`recording: ${await requireBenchAuthorised(host, cfg)}`);
   await waitForIdle(host, cfg);
 
   const segmentSeconds = await stageSegmentLength(host, cfg);
