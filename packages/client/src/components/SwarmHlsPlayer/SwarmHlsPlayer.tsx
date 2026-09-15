@@ -539,7 +539,13 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         }
       }
     };
-  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString, hlsConfigKey, renditionKey, level]);
+    // ⛔ `mediaType` is here although nothing above reads it, and it is not removable. It decides
+    // whether the element below is a `video` or an `audio`, so React swaps the element when it
+    // changes and `videoRef.current` becomes a different node. Without it this effect does not
+    // re-run, and hls.js stays attached to the element React has already removed: a dead player with
+    // no error. Reached by editing /watch/video/... to /watch/audio/... with the same owner and
+    // topic, which is the only navigation that changes the media type and nothing else.
+  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString, mediaType, hlsConfigKey, renditionKey, level]);
 
   const videoEl =
     mediaType === MEDIA_TYPE_VIDEO ? (
