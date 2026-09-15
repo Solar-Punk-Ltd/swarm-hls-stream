@@ -9,9 +9,15 @@
  * reader pass here and fail against the only file it will ever be handed in anger.
  *
  * ⭐ Trimmed rather than padded. The driver also writes `chromeVersion`, `screenshots`, `cost`,
- * `gateway`, `gatewaySamples`, `arm`, `instrumentProofs` and `latencyTarget`, which the reader does
- * not touch. Leaving them out is what shows it does not touch them: a reader that quietly needed one
- * would fail on this fixture rather than on a paid run.
+ * `gateway`, `gatewaySamples`, `arm` and `latencyTarget`, which the reader does not touch. Leaving
+ * them out is what shows it does not touch them: a reader that quietly needed one would fail on this
+ * fixture rather than on a paid run.
+ *
+ * ⛔ `instrumentProofs` was in that list until 2026-09-16 and is now the one trimmed field the reader
+ * does look at, so it has an override below. It stays ABSENT by default, and that is the whole
+ * default's meaning: an absent proof section is a silence about the file, which every artifact
+ * written before 2026-08-12 carries and the reader must still open. A proof that is present and says
+ * the instrument could not have failed is the opposite, and is refused.
  */
 
 /** What a caller wants different about this run. Anything omitted is a clean weeb-3 watch. */
@@ -25,6 +31,11 @@ interface ArmStateOverrides {
   feedStatesSeen?: readonly string[] | undefined;
   byteSource?: Record<string, unknown> | null;
   instrument?: Record<string, unknown>;
+  /**
+   * The falsifiability proofs every driver takes. Null leaves the section out, which is what an
+   * artifact written before the proofs existed looks like and is the default here.
+   */
+  instrumentProofs?: readonly Record<string, unknown>[] | null;
   segmentRequests?: number | undefined;
   backend?: string;
   /**
@@ -78,6 +89,7 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
       settledForMs: 60_000,
     },
     instrument = { sound: true, failures: [], firedChecks: [], soundSamples: SAMPLE_COUNT },
+    instrumentProofs = null,
     segmentRequests = 6,
     recovery = null,
     scenario = null,
@@ -171,6 +183,9 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   if (fragmentRequests !== null) {
     run.fragmentRequests = fragmentRequests;
   }
+  if (instrumentProofs !== null) {
+    run.instrumentProofs = instrumentProofs;
+  }
   if (scenario !== null) {
     run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };
     run.fault = { injectedAtMs: 1_756_377_600_000, liftedAtMs: 1_756_377_620_500, servingAtMs: 1_756_377_627_700 };
@@ -194,6 +209,33 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   }
   return run;
 }
+
+/**
+ * The proofs `proveInstrumentCanFail` writes when both sensors noticed their own degraded page.
+ *
+ * One entry per sensor in `PROVEN_SENSORS`, because a proof of one says nothing about the other and
+ * the reader reports a sensor with no proof by name.
+ */
+export const INSTRUMENT_PROVEN: readonly Record<string, unknown>[] = [
+  {
+    sensor: 'visibilityState',
+    degradation: "document.visibilityState overridden to 'hidden'",
+    rejected: true,
+    firedChecks: ['visibilityState'],
+  },
+  {
+    sensor: 'timerDriftRatio',
+    degradation: 'its main thread blocked for 3000ms',
+    rejected: true,
+    firedChecks: ['timerDriftRatio'],
+  },
+];
+
+/** The same proofs with the timer sensor accepting the page it was meant to reject. */
+export const INSTRUMENT_UNPROVEN: readonly Record<string, unknown>[] = [
+  INSTRUMENT_PROVEN[0],
+  { ...INSTRUMENT_PROVEN[1], rejected: false, firedChecks: [] },
+];
 
 /**
  * The recovery verdict `judgeRecovery` writes, holding the doc's own arm 1.
