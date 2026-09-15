@@ -725,9 +725,9 @@ describe('what the browser arm said about itself', () => {
     'browser: wrote /repo/docs/bench/browser-rung-outage-1.md',
   ].join('\n');
 
-  function captured(stdout: string): string[] {
+  function captured(stdout: string, stderr: string = ''): string[] {
     const lines: string[] = [];
-    reportArmNarration(stdout, (line) => lines.push(line));
+    reportArmNarration({ stdout, stderr }, (line) => lines.push(line));
     return lines;
   }
 
@@ -786,5 +786,53 @@ describe('what the browser arm said about itself', () => {
 
     assert.match(lines[0], /arm said 200 line\(s\), 200 distinct, 140 kind\(s\) not shown/);
     assert.equal(lines.length, 61, 'the heading plus the bound');
+  });
+
+  /**
+   * ⛔⛔⛔ **The stream that had no reader at all.** The arm's `docker run` line carries no `2>&1` and
+   * the caller destructured `stdout` alone, so on an arm that exited zero its stderr went nowhere.
+   * That is exactly where `browser/crash.ts` prints `could not restore <container>` when the
+   * `docker start` putting a stopped gateway or a paused bee node back has failed, and an arm that
+   * leaves the stage broken behind it still exits zero.
+   */
+  it('carries the driver’s own line about a container it could not put back', () => {
+    const lines = captured(ARM_STDOUT, 'could not restore swarm-hls-bee-gateway: Error: ssh exited 255').join('\n');
+
+    assert.ok(lines.includes('could not restore swarm-hls-bee-gateway'), 'a failed restore had no channel');
+    assert.ok(lines.includes('playback started'), 'and the narration is still there beside it');
+  });
+
+  it('counts the stderr lines under their own heading, so the two streams are told apart', () => {
+    const lines = captured('', 'libva error: vaGetDriverNames failed\nlibva error: vaGetDriverNames failed');
+
+    assert.match(lines[0], /arm wrote 2 line\(s\) to stderr, 1 distinct:/);
+    assert.equal(lines.length, 2, 'the heading and the one distinct thing it wrote');
+  });
+
+  /**
+   * Chrome and Xvfb write freely to stderr, so the same bound the narration carries applies here for
+   * the same reason: a repeated warning must not be able to crowd out the one line about the stage.
+   */
+  it('bounds a chatty stderr the way it bounds a chatty narration', () => {
+    const flood = [
+      'could not restore swarm-hls-bee-gateway: Error: ssh exited 255',
+      ...Array.from({ length: 300 }, () => 'libva error: vaGetDriverNames failed'),
+    ].join('\n');
+
+    const lines = captured('', flood);
+
+    assert.ok(
+      lines.some((line) => line.includes('could not restore')),
+      'a flood of one repeated warning buried the one line about the stage',
+    );
+    assert.ok(
+      lines.some((line) => line.includes('(x300)')),
+      'and the flood is counted rather than hidden',
+    );
+    assert.equal(lines.length, 3, 'the heading and the two distinct things it wrote');
+  });
+
+  it('says nothing at all when neither stream said anything', () => {
+    assert.deepEqual(captured('no matching output here', '   \n\n  '), []);
   });
 });
