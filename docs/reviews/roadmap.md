@@ -413,6 +413,10 @@ Flip is one env value and a redeploy: `BEE_GATEWAY_SWAP_ENABLE` in `.env.<profil
 | **L** | `--swap-enable=true`, funded chequebook. What ships today. |
 | **U** | `--swap-enable=false`, no chequebook. bee's ultra-light.   |
 
+⛔ **Label correction, 2026-09-15.** Arm U above was a light node with swap off, not ultra-light: bee decides
+ultra-light on an empty `--blockchain-rpc-endpoint`, and every gateway here carried one. The comparison stands as
+funded against unfunded light node. See the correction note in `docs/bench/light-vs-ultra-light-2026-08-06.md`.
+
 **Interleave L, U, L, U in one sitting.** Two sittings of one configuration have differed by 1.05s,
 which is larger than most effects this project chases, so arms compared across sittings are not
 compared at all.

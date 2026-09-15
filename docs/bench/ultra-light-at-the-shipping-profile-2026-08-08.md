@@ -1,5 +1,15 @@
 # Ultra-light at the profile that ships
 
+> ⛔ **Label correction, 2026-09-15.** Bee decides ultra-light on `--full-node=false` plus an EMPTY
+> `--blockchain-rpc-endpoint` (bee `pkg/node/node.go`, `isChainEnabled`), and `--swap-enable` does not
+> enter that decision. Every gateway in this sitting carried an endpoint, so the arm this report calls
+> ultra-light was a light node with swap off: chain enabled, no chequebook, `beeMode: light`. The
+> measurements stand as a comparison of a funded against an unfunded LIGHT node. A true ultra-light
+> gateway, with no chain at all, has not been measured by this project. The compose gateway's chain
+> endpoint is hard-coded empty since 2026-09-15, under Levi's ruling that a viewer node is always
+> ultra-light, and the readiness check now reads `/status` `beeMode`. Found in Nándor Komlódi's fix
+> branch, verified against bee's source.
+
 **2026-08-08, 02:30 to 04:00 UTC.** Six arms interleaved in one sitting on `latbench`, 720p 2500kbps
 at **0.25s GOP**, watched in Chrome on the deployment host. Three funded, three unfunded, fifteen
 minutes each for the four that count.
