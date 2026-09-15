@@ -4,8 +4,9 @@ import { extractFeedIndex, nextFeedRequest } from '@swarm-hls-stream/shared';
 import { TimedResponse } from '@/utils/fetchWithTimeout';
 
 import { FeedHealthTracker } from './feedState';
-import { isSlotNotWrittenYet, ManifestStateManager } from './ManifestManagement';
+import { ManifestStateManager } from './ManifestManagement';
 import { parseManifest } from './playlist';
+import { isSlotNotWrittenYet } from './refusedSlot';
 
 /**
  * Keeps every rung of a ladder at the live edge, whether or not it is the one playing.

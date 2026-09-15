@@ -12,8 +12,9 @@ import {
   FeedState,
 } from '../src/components/SwarmHlsPlayer/feedState.js';
 import { LadderFeedPoller } from '../src/components/SwarmHlsPlayer/LadderFeedPoller.js';
-import { ManifestFetchError, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
+import { ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
 import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist.js';
+import { ManifestFetchError } from '../src/components/SwarmHlsPlayer/refusedSlot.js';
 import { TimedResponse } from '../src/utils/fetchWithTimeout.js';
 import { RequestJitter } from '../src/utils/requestJitter.js';
 
