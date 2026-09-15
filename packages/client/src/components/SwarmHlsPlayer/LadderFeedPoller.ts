@@ -60,7 +60,12 @@ export class LadderFeedPoller {
   constructor(
     private readonly stateManager: ManifestStateManager,
     private readonly fetchResource: (path: string) => Promise<TimedResponse>,
-    private readonly pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+    /**
+     * This poller's own cadence, and the clock anything waiting on a rung has to be sized against.
+     * Public because {@link ManifestFetcher} bounds its wait for a rung's first playlist in polls
+     * rather than in milliseconds, so a deployment that slows this slows that wait with it.
+     */
+    public readonly pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
     /**
      * Shared with the single-rendition path, so a rung read reaching or losing the gateway records
      * against the same tracker the overlay reads. Defaults to a private tracker so a directly built
