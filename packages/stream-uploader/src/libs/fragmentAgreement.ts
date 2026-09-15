@@ -141,11 +141,12 @@ function asLength(seconds: number): string {
   return seconds.toFixed(3);
 }
 
-/** The two clocks, in the one sentence both messages share. */
-const TWO_CLOCKS =
-  'Every #EXT-X-PROGRAM-DATE-TIME steps by the configured value from the broadcast start rather ' +
-  'than by anything measured, so the playlist says a segment covers one length of media while the ' +
-  'media covers another, and the recording keeps those dates for ever.';
+/** What a stage cutting another length costs, in the one sentence both messages share. */
+const UNDECLARED_LENGTH_COST =
+  'The dates follow the media, so the recording keeps the right clock, but the declared length is ' +
+  'still what every #EXT-X-GAP entry is dated and sized at and what the rung GOP and the segment ' +
+  'budgets are derived from, so a lost segment leaves a hole of the wrong size on a stage that is ' +
+  'not what its configuration says.';
 
 /**
  * What an operator is told when a ladder's segments are not the configured length.
@@ -156,7 +157,7 @@ const TWO_CLOCKS =
 export function fragmentMismatchReport(streamId: string, measuredSeconds: number, stage: FragmentStage): string {
   return (
     `${streamId} is being dated by HLS_FRAGMENT ${stage.configuredSeconds} and its segments measure ` +
-    `${asLength(measuredSeconds)}s of media. ${TWO_CLOCKS} With the ladder on the two cannot ` +
+    `${asLength(measuredSeconds)}s of media. ${UNDECLARED_LENGTH_COST} With the ladder on the two cannot ` +
     'legitimately differ, because every rung is re-encoded with a keyframe every ABR_FPS x ' +
     'HLS_FRAGMENT frames and SRS cuts exactly there. One of the two containers is running an older ' +
     'deploy: HLS_FRAGMENT is one value in the deployment env and it reaches both, so a difference is ' +
@@ -168,7 +169,7 @@ export function fragmentMismatchReport(streamId: string, measuredSeconds: number
 export function fragmentLengthNotice(streamId: string, measuredSeconds: number, stage: FragmentStage): string {
   return (
     `${streamId} is being dated by HLS_FRAGMENT ${stage.configuredSeconds} and its segments measure ` +
-    `${asLength(measuredSeconds)}s of media. ${TWO_CLOCKS} Nothing on this stage transcodes, so the ` +
+    `${asLength(measuredSeconds)}s of media. ${UNDECLARED_LENGTH_COST} Nothing on this stage transcodes, so the ` +
     'segment is the first keyframe at or after HLS_FRAGMENT and the publisher decides it, which ' +
     'makes the configured value a floor rather than the length. Bring the publisher GOP to ' +
     'HLS_FRAGMENT, or turn ABR_ENABLED on, where the fragment sets the segment directly.'
