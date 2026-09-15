@@ -1789,6 +1789,32 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
     assert.match(`${run.stdout}${run.stderr}`, /never ran dry/);
   });
 
+  /**
+   * ⛔ And said again once the arm has finished, not only before it began. The first one is printed
+   * during argument checking, above the heading, above every tick, above the whole of `deploy.sh` and
+   * a compose recreate, so it is the first line a scrollback loses and under `| tee` the operator's
+   * last sight of the run is a plain "the stage is armed". The one thing they most need to carry away
+   * is that this stage will not drain.
+   *
+   * Both lines come out of `log_warn`, which writes to stdout, so their order in that one stream is
+   * the order they were printed in.
+   */
+  it('says it again at the end, where an arm leaves the operator looking', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=${ROOMY_DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    const armed = run.stdout.indexOf('The stage is armed');
+    assert.ok(armed !== -1, `the arm printed no completion line:\n${run.stdout}`);
+    assert.ok(
+      run.stdout.lastIndexOf('never ran dry') > armed,
+      `the depth warning is only above the arm's own output, where a tee scrolls it away:\n${run.stdout}`,
+    );
+  });
+
   it('says nothing about draining when the depth is the drain depth', async () => {
     const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
 

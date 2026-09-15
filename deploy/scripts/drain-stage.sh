@@ -143,6 +143,21 @@ value_of() {
   fi
 }
 
+# That the batch this run names will not run dry, which is a warning rather than a refusal because a
+# depth to stream on is a legitimate thing to arm.
+#
+# ⛔ Said twice on an arm, once before the work and once after it, and one function so the two cannot
+# drift apart. The first is printed while the arguments are still being checked, which puts it above
+# the heading, above every tick, above the whole of deploy.sh and a compose recreate. It is therefore
+# the first line a scrollback loses and the first line a `| tee` buries, and what an operator is left
+# looking at is a plain "the stage is armed" about a stage that will not drain.
+warn_if_not_drain_depth() {
+  if [ "$ARM_DEPTH" = "$DRAIN_DEPTH" ]; then
+    return 0
+  fi
+  log_warn "Depth ${ARM_DEPTH} is not the drain depth ${DRAIN_DEPTH}. A test broadcast cannot fill a batch this size, so a drain sitting on it would report a rung that never ran dry. This is a depth to stream on."
+}
+
 # ⛔ `_lib.sh` requires jq and this script requires python3, which nothing checked. Every reading it
 # takes is parsed by an inline python program, so on a host without a working one each reading came
 # back empty and every subcommand refused with a lone full stop and no reason at all. Run rather than
@@ -206,8 +221,8 @@ fi
 if [ "$ARM_DEPTH" -gt "$MAX_ARM_DEPTH" ]; then
   usage_error "--depth ${ARM_DEPTH} is past ${MAX_ARM_DEPTH}, deeper than anything bought here, so it is read as a slipped digit rather than an ask."
 fi
-if [ "$ARM_DEPTH" != "$DRAIN_DEPTH" ] && { [ "$SUBCOMMAND" = "arm" ] || [ "$SUBCOMMAND" = "print-buy" ]; }; then
-  log_warn "Depth ${ARM_DEPTH} is not the drain depth ${DRAIN_DEPTH}. A test broadcast cannot fill a batch this size, so a drain sitting on it would report a rung that never ran dry. This is a depth to stream on."
+if [ "$SUBCOMMAND" = "arm" ] || [ "$SUBCOMMAND" = "print-buy" ]; then
+  warn_if_not_drain_depth
 fi
 
 require_jq
@@ -961,6 +976,7 @@ do_arm() {
   redeploy_uploader "small batch $(short_id "$BATCH")" "original batch $(short_id "$original")"
   echo ""
   log_warn "The stage is armed. Put it back with the same flags and restore, whatever the sitting reports."
+  warn_if_not_drain_depth
   echo ""
 }
 
