@@ -84,11 +84,18 @@ segment holds, in UTC to the millisecond, decided once as the segment is placed 
 it. The broadcast's first segment takes the anchor itself. An engine restart inside the broadcast
 adds an epoch, described below.
 
-**The media a segment contributes is read against `HLS_FRAGMENT`.** A segment measuring within 5% of
+**The media a segment contributes is read against `HLS_FRAGMENT`.** A segment measuring within 1% of
 the declared length counts as exactly that length, and one outside it counts as itself, rounded to
-the millisecond. That 5% is `FRAGMENT_TOLERANCE` in `src/libs/fragmentAgreement.ts`, the same number
-the fragment agreement check calls a mismatch by, so there is one definition of two segments being
-the same length.
+the millisecond. That 1% is `DATING_SNAP_TOLERANCE` in `src/libs/broadcastDating.ts`. It is the
+rounding band of one keyframe grid seen by several encoders and nothing wider, which is all the
+snapping is for.
+
+⚠️ **It is not `FRAGMENT_TOLERANCE`, the 5% the fragment agreement check uses, and the two are
+different numbers on purpose.** That one asks whether a stage is misconfigured, so it has to survive
+a segment SRS force-closed at `HLS_FRAGMENT x HLS_AOF_RATIO` without calling a healthy deployment
+broken. Dating on that band would read a 2.067 second segment against a configured 2 as 2.000 and
+lose its 67ms every segment, about two minutes an hour, which is the exact live stream this dating
+exists to fix.
 
 ⛔ **Under a ladder every segment is inside that band, so the step is the declared fragment and four
 rungs date one piece of media identically.** `engines/srs/entrypoint.sh` pins a keyframe every

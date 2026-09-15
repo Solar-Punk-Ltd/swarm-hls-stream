@@ -302,7 +302,7 @@ that holds in one and not the other is a finding rather than a flake.
 **Added 2026-09-03, wired live the same day.** Every playlist the uploader writes opens at
 `#EXT-X-MEDIA-SEQUENCE:0` and carries an `#EXT-X-PROGRAM-DATE-TIME` on every segment. Since
 2026-09-15 each stamp is the one in front of it plus the media that entry declares, read as the
-deployment's nominal fragment length wherever the two agree to within 5%, which under a ladder is
+deployment's nominal fragment length wherever the two agree to within 1%, which under a ladder is
 every segment. The contract is described in
 [the uploader's README](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
 

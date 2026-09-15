@@ -46,14 +46,19 @@ const STEP_SLACK_MS = 2;
  * How far an entry's own `#EXTINF` may sit from the declared fragment length and still be read as
  * that length.
  *
- * ⛔ **Mirrored from `FRAGMENT_TOLERANCE` in
- * `packages/stream-uploader/src/libs/fragmentAgreement.ts`, which is where the publisher decides
- * it.** `e2e` does not depend on the uploader package, so the number is copied rather than imported,
- * and a copy that drifted would pass real drift or refuse a correct ladder. `manifestContract.test.ts`
+ * ⛔ **Mirrored from `DATING_SNAP_TOLERANCE` in
+ * `packages/stream-uploader/src/libs/broadcastDating.ts`, which is where the publisher decides it.**
+ * `e2e` does not depend on the uploader package, so the number is copied rather than imported, and a
+ * copy that drifted would pass real drift or refuse a correct ladder. `manifestContract.test.ts`
  * reads that file and refuses a difference, which is the cheapest check that catches either side
  * moving.
+ *
+ * ⚠️ Not `FRAGMENT_TOLERANCE`, which is the publisher's five percent band for deciding whether a
+ * stage is misconfigured. That question is a different one and its answer is five times wider, wide
+ * enough that a 2.067 second segment against a configured 2 sits inside it. The publisher charges
+ * those 67 milliseconds, so this contract has to expect them.
  */
-export const DATING_TOLERANCE = 0.05;
+export const DATING_TOLERANCE = 0.01;
 
 export interface ManifestContract {
   /** Nominal seconds of media per fragment, from `HLS_FRAGMENT` on the deployment under test. */
