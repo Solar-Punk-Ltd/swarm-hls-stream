@@ -42,9 +42,7 @@ export function beeBaseUrlFromTypedAddress(input: string): string {
 }
 
 type GatewayProbeOutcome =
-  /** The address answered the health check the way Bee does. */
   | { kind: 'ok' }
-  /** Something answered with an error status. */
   | { kind: 'rejected'; status: number }
   /**
    * Something answered 2xx and it was not Bee's health document. A web server with a single-page
@@ -52,7 +50,6 @@ type GatewayProbeOutcome =
    * check waves through.
    */
   | { kind: 'not-bee' }
-  /** Something accepted the connection and then stopped answering inside the window. */
   | { kind: 'timed-out' }
   /** No answer at all: connection refused, wrong port, DNS miss, or the node blocked this site. */
   | { kind: 'unreachable' };
@@ -104,16 +101,19 @@ function looksLikeBeeHealth(body: string): boolean {
 /** Both answers a wrong port produces need the same next step, so the sentence is written once. */
 const CHECK_THE_PORT = 'Check the port: the Bee API is usually 1633.';
 
+/** Success is not described. The picker closes on it, so a sentence for it is one no viewer reads. */
+type GatewayProbeFailure = Exclude<GatewayProbeOutcome, { kind: 'ok' }>;
+
 /**
- * What the picker tells a viewer for each outcome, kept beside the rule so a new outcome cannot ship
- * without its copy. Written for someone who runs a node and does not read network logs.
+ * What the picker tells a viewer about each way this can fail, kept beside the rule so a new failure
+ * cannot ship without its copy. The declared return type is what enforces that: a switch that misses
+ * a case returns undefined on it and stops compiling. Written for someone who runs a node and does
+ * not read network logs.
  */
-export function describeProbeOutcome(outcome: GatewayProbeOutcome): string {
-  switch (outcome.kind) {
-    case 'ok':
-      return 'Connected. Streams will now load through this node.';
+export function describeProbeFailure(failure: GatewayProbeFailure): string {
+  switch (failure.kind) {
     case 'rejected':
-      return `Something answered at this address with an error (HTTP ${outcome.status}). ${CHECK_THE_PORT}`;
+      return `Something answered at this address with an error (HTTP ${failure.status}). ${CHECK_THE_PORT}`;
     case 'not-bee':
       return `Something answered at this address, but it is not a Bee node. ${CHECK_THE_PORT}`;
     case 'timed-out':
