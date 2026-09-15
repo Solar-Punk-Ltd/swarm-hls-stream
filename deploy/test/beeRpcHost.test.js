@@ -14,7 +14,9 @@ function blockOf(service) {
   assert.notEqual(start, -1, `service ${service} is not in the compose file`);
   const body = [];
   for (const line of lines.slice(start + 1)) {
-    if (/^ {2}[^ ]/.test(line)) break;
+    if (/^ {2}[^ ]/.test(line)) {
+      break;
+    }
     body.push(line);
   }
   return body.join('\n');
@@ -33,7 +35,7 @@ const RPC_FLAG = '--blockchain-rpc-endpoint';
 const CONFIGURABLE_RPC = '--blockchain-rpc-endpoint=${';
 const HOST_ALIAS = 'host.docker.internal:host-gateway';
 
-describe('a node reaching the chain through an endpoint of the operator\'s own', () => {
+describe("a node reaching the chain through an endpoint of the operator's own", () => {
   // The flag alone is not the test. bee-gateway carries it deliberately EMPTY,
   // which is half of what puts it in ultra-light mode, so it reaches no chain
   // and an operator has nowhere to point it. Only a service whose endpoint is a
