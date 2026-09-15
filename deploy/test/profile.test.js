@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { promisify } from 'node:util';
 
+import { stubCurl } from './helpers/curlStub.js';
 import { makeSandbox, removeSandboxes, runScript, runScriptOk, sourceLib } from './helpers/sandbox.js';
 
 const execFileAsync = promisify(execFile);
@@ -57,6 +58,10 @@ describe('unknown --profile (OPS-4)', () => {
   for (const { script, args } of PROFILE_SCRIPTS.filter(({ script }) => script !== 'deploy.sh')) {
     it(`${script} warns about a profile with no env file and still runs`, async () => {
       const sandbox = makeSandbox({ envFiles: WITH_PROFILE, project: 'streamr1' });
+      // Only `health.sh` reaches a service, and since its exit status started meaning something it
+      // reports a stack that is not up. What is being asserted here is that the missing env file did
+      // not stop the script, so the services answer and a zero still says exactly that.
+      stubCurl(sandbox);
 
       const run = await runScript(sandbox, script, ['--profile=streamr1', ...args]);
 
@@ -67,6 +72,7 @@ describe('unknown --profile (OPS-4)', () => {
 
     it(`${script} passes no --env-file when the profile has none`, async () => {
       const sandbox = makeSandbox({ envFiles: WITH_PROFILE, project: 'streamr1' });
+      stubCurl(sandbox);
 
       await runScript(sandbox, script, ['--profile=streamr1', ...args]);
 
