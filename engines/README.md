@@ -57,8 +57,8 @@ and the dates follow that media rather than the configured 2, so the recording's
 too. What the reason names is a stage cutting longer than the deployment declared, and its gap entries
 are charged the declared length exactly as above. The lever is the publisher: set `HLS_FRAGMENT` to its
 keyframe interval, or turn `ABR_ENABLED` on, where the fragment sets the segment directly. `/health`
-names each such stream under `publisherGopStreams` with both lengths. Neither reason changes a date, refuses a segment or ends a
-broadcast.
+names each such stream under `publisherGopStreams` with both lengths. Neither reason changes a date,
+refuses a segment or ends a broadcast.
 
 The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
 naming the four rung feeds, on a topic that _is_ the ladder's group id. The catalog entry points at
