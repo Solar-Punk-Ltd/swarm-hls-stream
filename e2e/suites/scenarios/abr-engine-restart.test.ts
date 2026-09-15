@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { type AnnouncedRung, announcedRungs, ladderRungs, segmentUploads } from '../../src/harness/logwatch.js';
 import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
@@ -98,7 +98,7 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
   after(async () => {
     await publisher?.stop();
     // Left running whatever happened above, or every later suite inherits a stopped engine.
-    await host.start(mediaContainer).catch(() => undefined);
+    await host.start(mediaContainer).catch(reportFailedRestore(mediaContainer));
   });
 
   /**

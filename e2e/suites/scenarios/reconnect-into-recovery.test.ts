@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   maxSegmentIndexByStream,
@@ -200,7 +200,7 @@ describe('M — the uploader dies while its engine restarts, then the broadcaste
     // gone. Started once more here only if the kill was the last thing that happened to it.
     await publisher?.stop();
     if (!(await host.isRunning(uploader))) {
-      await host.start(uploader).catch(() => undefined);
+      await host.start(uploader).catch(reportFailedRestore(uploader));
     }
   });
 

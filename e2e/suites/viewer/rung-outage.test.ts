@@ -7,7 +7,7 @@ import { resumeAllTranscodesCommand } from '../../src/browser/rungTranscode.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { ladderResolutionRefusal, MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/browserVerdict.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import {
@@ -95,7 +95,9 @@ describe('V3 — a viewer whose rung goes quiet moves to one that has not', { sk
     // timeout between the stop and the resume. A stopped transcode has NOT exited, so SRS never
     // spawns a replacement and nothing in the deployment reports it, and that rung would then be
     // silent for every later broadcast on this host with the next suite blaming its own fault.
-    await host.run(resumeAllTranscodesCommand(containerName(cfg, cfg.engine))).catch(() => undefined);
+    await host
+      .run(resumeAllTranscodesCommand(containerName(cfg, cfg.engine)))
+      .catch(reportFailedRestore(containerName(cfg, cfg.engine)));
   });
 
   it('ends the outage on a living rung, still watching, and never told the broadcast ended', async () => {
