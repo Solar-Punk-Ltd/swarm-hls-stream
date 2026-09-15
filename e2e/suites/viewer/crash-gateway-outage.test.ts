@@ -14,7 +14,7 @@ import {
   frozenOverlayRefusal,
   resumeRefusal,
 } from '../../src/harness/crashArm.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -116,7 +116,7 @@ describe('V6 — a viewer whose gateway is taken away, and given back', { skip }
     // ⛔ The driver puts the gateway back itself, from a `finally` that runs inside the browser
     // container. An arm killed by the harness timeout never reaches it, and this deployment is shared
     // with everything else the project measures, so a stopped gateway would outlive the run.
-    await host.start(broken).catch(() => undefined);
+    await host.start(broken).catch(reportFailedRestore(broken));
   });
 
   it('plays out its buffer, says why it stopped, and comes back on its own', async () => {

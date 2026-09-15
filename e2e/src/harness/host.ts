@@ -564,6 +564,37 @@ export function chequebookBalance(host: Host, port: number): Promise<ChequebookB
 }
 
 /**
+ * The handler a scenario's own put-it-back attempt is caught with, so a failed restore is named.
+ *
+ * ⛔⛔⛔ **This used to be `.catch(() => undefined)` in all four crash suites, which is the one shape
+ * that can leave a shared deployment broken and say nothing.** The suites break a service on purpose
+ * and the browser driver puts it back from a `finally` inside its own container, so this backstop
+ * exists for the arm the harness timeout killed before that `finally` ran. When the backstop itself
+ * failed, on a dropped ssh master connection for instance, it swallowed the failure: the suite went
+ * red naming the product, every later suite in the serial run failed against a gateway that was
+ * still stopped, and on the writer-node scenarios a bee node stayed paused holding the postage batch
+ * every measurement on this host is paid for with. Nothing in the whole log said which container was
+ * never restarted.
+ *
+ * ⛔ It must not throw, whatever happens. It is called from an `after` hook, and a hook that throws
+ * replaces the test's own result with its own, so a suite that told the truth about the product
+ * would report the cleanup instead.
+ *
+ * Written to stderr because it is a fault in the harness rather than a reading from the run.
+ */
+export function reportFailedRestore(
+  container: string,
+  log: (line: string) => void = console.error,
+): (error: unknown) => void {
+  return (error: unknown): void => {
+    log(
+      `⛔ could not restore ${container} after the scenario, so this deployment is left with it down ` +
+        `and every later run reads a broken stage: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  };
+}
+
+/**
  * Block until the uploader reports no active streams. The scenarios share one live path on one
  * profile and must run serially (--test-concurrency=1); this guards each test's start against the
  * previous test's stream still draining, which would otherwise be rejected as "already active".
