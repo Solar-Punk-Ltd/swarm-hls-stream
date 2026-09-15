@@ -2020,6 +2020,43 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
     assert.doesNotMatch(run.stderr, /unbound variable/);
   });
 
+  /**
+   * ⛔ A depth written with a leading zero is the same depth. The guards around it are numeric and
+   * agreed, but the warning asks whether the run's depth is the drain depth as a STRING, so `017`
+   * armed the drain depth while being told it was a size no broadcast could fill. The operator is
+   * then warned off the one batch that does what the sitting needs.
+   *
+   * ⛔⛔ And the normalisation cannot be plain arithmetic. A shell reads a leading zero as octal, so
+   * `$((017))` is 15: the fix for a cosmetic warning would have quietly priced and armed two levels
+   * down. The buy url below is where that shows, because it carries the depth the owner spends
+   * against.
+   */
+  it('reads a zero-padded depth as the number it is, rather than as a different one', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`, `--depth=0${DEPTH}`], {
+      HOME: sandbox.root,
+    });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /never ran dry/);
+    assert.equal(publishersOf(sandbox)[RUNG], SMALL_BATCH, 'the rung was not pointed at the armed batch');
+  });
+
+  it('prices a zero-padded depth at that depth, not at the octal reading of it', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', `--depth=0${DEPTH}`]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${DEPTH}\\?`));
+    assert.match(run.stdout, new RegExp(`depth ${DEPTH}, `));
+    assert.ok(
+      run.stdout.includes(`cost ${costInBzz(DEPTH)} BZZ`),
+      `the zero-padded depth was priced at some other depth:\n${run.stdout}`,
+    );
+  });
+
   it('refuses --depth on a subcommand that neither buys nor arms', async () => {
     const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
 

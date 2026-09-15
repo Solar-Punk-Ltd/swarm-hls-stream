@@ -215,6 +215,16 @@ fi
 case "$ARM_DEPTH" in
   '' | *[!0-9]*) usage_error "--depth takes a whole number of levels, and this run passed ${ARM_DEPTH}." ;;
 esac
+# The number rather than the digits it was typed as, so that 017 and 17 are one depth from here on.
+# Everything downstream compares numerically except the drain-depth warning, which compares strings
+# and so warned that a zero-padded 17 was a size no broadcast could fill, which is the one thing it
+# is not.
+#
+# ⛔ `10#` and never a bare `$((ARM_DEPTH))`. A shell reads a leading zero as octal, measured here:
+# `$((017))` is 15. So the plain form would have answered a cosmetic warning by moving the depth two
+# levels down, and 030 would have priced and armed depth 24 without a word. Safe after the guard
+# above, which is what proves there is nothing in the string but digits.
+ARM_DEPTH=$((10#$ARM_DEPTH))
 if [ "$ARM_DEPTH" -lt "$DRAIN_DEPTH" ]; then
   usage_error "--depth ${ARM_DEPTH} is under ${DRAIN_DEPTH}, the smallest batch bee sells, so there is no such batch to price or to arm."
 fi
