@@ -72,8 +72,25 @@ function readEpochs(epochs: unknown): BroadcastEpoch[] {
  */
 export class LadderGroupStore {
   private logger = Logger.getInstance();
+  private saveFailedAt: number | null = null;
 
   constructor(private filePath: string) {}
+
+  /**
+   * How long this file has been failing to update, or null when the last write landed.
+   *
+   * The third of the three stores that write into `STATE_DIR`, and it was the only one with no
+   * alarm. Swallowing it is the quietest failure of the three, because nothing is wrong while the
+   * process runs: the mapping is in memory and every rung finds its ladder. The damage arrives at
+   * the next crash near finalize, which is the one case this file exists for, and it arrives as a
+   * second catalog entry for one broadcast, each paid for in its own postage and neither reachable
+   * from the other.
+   *
+   * See `StreamOrchestrator.getMsSinceStatePersistFailed`, which folds this in with the other two.
+   */
+  public getMsSinceSaveFailed(): number | null {
+    return this.saveFailedAt === null ? null : Date.now() - this.saveFailedAt;
+  }
 
   /**
    * The ladder this source's rungs were last publishing under, or null for one nothing remembers.
@@ -144,7 +161,9 @@ export class LadderGroupStore {
       const tmpPath = `${this.filePath}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(groups));
       fs.renameSync(tmpPath, this.filePath);
+      this.saveFailedAt = null;
     } catch (error) {
+      this.saveFailedAt ??= Date.now();
       this.logger.error(`[LadderGroupStore] Failed to save ${this.filePath}:`, error);
     }
   }

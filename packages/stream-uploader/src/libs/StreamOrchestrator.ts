@@ -1507,15 +1507,25 @@ export class StreamOrchestrator {
 
   /**
    * How long this service has been unable to write the state it needs to survive a restart, from the
-   * oldest unresolved failure across both stores. `null` while every write is landing.
+   * oldest unresolved failure across all three stores. `null` while every write is landing.
    *
-   * One signal for two stores because it is one fact: they write into the same `STATE_DIR`, so a full
-   * disk, a read-only mount or a permissions change takes out both, and the operator's next move is
-   * the same either way. What follows a restart differs, a stream resuming from stale segments versus
-   * a catalog feed forked at an occupied index, and neither is visible until the restart happens.
+   * One signal for three stores because it is one fact: they write into the same `STATE_DIR`, so a
+   * full disk, a read-only mount or a permissions change takes out all of them, and the operator's
+   * next move is the same whichever it was. What follows a restart differs, a stream resuming from
+   * stale segments, a catalog feed forked at an occupied index, or a broadcast handed a second
+   * ladder group and therefore a second catalog entry, and none of it is visible until the restart
+   * happens.
+   *
+   * The ladder groups joined this in 2026-09-16, having been the one store with no alarm. A
+   * directory with mixed ownership is the realistic way to lose that one alone, and a container job
+   * running as root is how a state directory acquires one.
    */
   public getMsSinceStatePersistFailed(): number | null {
     let oldest = this.streamCatalog.getMsSinceIndexSaveFailed();
+    const ladderGroups = this.config.ladderGroupStore?.getMsSinceSaveFailed() ?? null;
+    if (ladderGroups !== null && (oldest === null || ladderGroups > oldest)) {
+      oldest = ladderGroups;
+    }
     for (const uploader of this.activeStreams.values()) {
       const age = uploader.getMsSinceStatePersistFailed();
       if (age !== null && (oldest === null || age > oldest)) {
