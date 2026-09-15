@@ -220,13 +220,20 @@ UPLOADER_DIST="$ROOT_DIR/packages/stream-uploader/dist"
 # directory reports a rebuild that happened minutes ago as weeks old.
 UPLOADER_ENTRY="$UPLOADER_DIST/index.js"
 
+# The entry file rather than the directory, for the reason above and for one more: an interrupted
+# build, or a `tsc` run that got as far as writing `.tsbuildinfo`, leaves the directory there with
+# nothing the image can run. Testing the directory called that built, skipped the build, and handed
+# compose a container that exits on `Cannot find module '/app/dist/index.js'` and restarts. The
+# pnpm-absent path below has read the entry file since 2026-09-16 and this one had not been told.
 build_if_needed() {
-  if [ ! -d "$UPLOADER_DIST" ]; then
+  if [ ! -f "$UPLOADER_ENTRY" ]; then
     log_info "Building packages"
     cd "$ROOT_DIR"
     pnpm install
     pnpm build
+    return
   fi
+  log_info "packages/stream-uploader/dist/index.js is already built, $(modified_at "$UPLOADER_ENTRY"). Not rebuilding."
 }
 
 build_force() {
