@@ -381,13 +381,30 @@ OBS/FFmpeg ──SRT──> SRS (port 10080)
 
 ## Services
 
-| Service           | Image                            | Description                                          |
-| ----------------- | -------------------------------- | ---------------------------------------------------- |
-| `bee-uploader`    | `ethersphere/bee:2.8.2`          | Bee node for uploading to Swarm                      |
-| `bee-gateway`     | `ethersphere/bee:2.8.2`          | Bee node for reading (paired with `client`)          |
-| `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm                  |
-| `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS segmenting (no transcode)            |
-| `client`          | Built from `Dockerfile.client`   | React viewer (nginx) — proxies `/bee/` → bee-gateway |
+| Service              | Image                              | Description                                            |
+| -------------------- | ---------------------------------- | ------------------------------------------------------ |
+| `bee-uploader`       | `ethersphere/bee:2.8.2`            | Bee node for uploading to Swarm, and the 360p rung     |
+| `bee-uploader-480p`  | `ethersphere/bee:2.8.2`            | The 480p rung's own Bee node. Disabled by default      |
+| `bee-uploader-720p`  | `ethersphere/bee:2.8.2`            | The 720p rung's own Bee node. Disabled by default      |
+| `bee-uploader-1080p` | `ethersphere/bee:2.8.2`            | The 1080p rung's own Bee node. Disabled by default     |
+| `bee-gateway`        | `ethersphere/bee:2.8.2`            | Bee node for reading (paired with `client`)            |
+| `stream-uploader`    | Built from `Dockerfile.uploader`   | Receives segments, uploads to Swarm                    |
+| `srs`                | `ossrs/srs:6`                      | SRT/RTMP to HLS segmenting (no transcode)              |
+| `ome`                | `airensoft/ovenmediaengine:latest` | SRT ingest, uploader pulls HLS over HTTP               |
+| `client`             | Built from `Dockerfile.client`     | React viewer (nginx), proxies `/bee/` to `bee-gateway` |
+
+Those nine names are every key `config.json` accepts. A service the file does not mention runs, with
+four exceptions that stay off until it names them: `ome` and the three per-rung Bee nodes.
+`config.sample.json` names `ome` as `localhost` and the three rung nodes as `false`, so a fresh copy
+of it runs OME and no rung node.
+
+Running the four-rung ladder one Bee node per rung takes both halves: the three rung services enabled
+here, and `BEE_PUBLISHERS` in the root `.env` pointing at them. A rung node enabled and left out of
+`BEE_PUBLISHERS` is a node nothing publishes through, and the reverse refuses at startup, because
+`ChequebookGate` reads every publisher's chequebook before the first broadcast and a URL with no node
+behind it cannot answer. `bee-uploader` is the 360p rung as well as the shared default, so the
+catalog and every ladder master go through it. Their ports, data directories and what each one has to
+hold are in [.env.sample](../.env.sample) under "Per-rung Bee nodes".
 
 ### Viewer stack (`client` + `bee-gateway`)
 

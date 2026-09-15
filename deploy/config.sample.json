@@ -4,6 +4,9 @@
     "ome": "localhost",
     "stream-uploader": "localhost",
     "bee-uploader": "localhost",
+    "bee-uploader-480p": false,
+    "bee-uploader-720p": false,
+    "bee-uploader-1080p": false,
     "bee-gateway": "localhost",
     "client": "localhost"
   }
