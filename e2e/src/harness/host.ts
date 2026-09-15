@@ -273,18 +273,18 @@ export class Host {
     return this.isLocal ? this.localHostAddress : DEFAULT_LOCAL_HOST_ADDRESS;
   }
 
-  /** curl a service port on the host and parse JSON (uploader /health, bee /stamps, …). */
-  async localJson<T>(port: number, path: string, timeoutS: number = 5): Promise<T> {
-    return this.curlJson<T>('GET', port, path, timeoutS);
-  }
-
   /**
-   * POST to a service port and parse the JSON reply. On-chain bee calls (e.g. chequebook deposit)
-   * can take far longer than a read, hence the generous default timeout. Not idempotent: `run` may
-   * retry the underlying ssh on a transport drop, so callers must tolerate at-least-once delivery.
+   * curl a service port on the host and parse JSON (uploader /health, bee /stamps, …).
+   *
+   * ⛔ **Reads only, and there is deliberately no POST alongside it.** `localPost` stood here until
+   * 2026-09-16 with no caller anywhere in the package, left behind when the owner ruled on
+   * 2026-08-03 that the funding preflight must report a shortfall and print the command rather than
+   * deposit it. A harness that is not allowed to move money should not carry the one method whose
+   * own docstring explained how, so the method and the `-X POST` under it went together. A later
+   * spend-capable call is a decision to take to the owner, not a parameter to put back.
    */
-  async localPost<T>(port: number, path: string, timeoutS: number = 120): Promise<T> {
-    return this.curlJson<T>('POST', port, path, timeoutS);
+  async localJson<T>(port: number, path: string, timeoutS: number = 5): Promise<T> {
+    return this.curlJson<T>(port, path, timeoutS);
   }
 
   /**
@@ -295,26 +295,25 @@ export class Host {
    * {@link localJson} would throw on it.
    */
   async localText(port: number, path: string, timeoutS: number = 5): Promise<string> {
-    const { stdout } = await this.curl('GET', port, path, timeoutS);
+    const { stdout } = await this.curl(port, path, timeoutS);
     return stdout;
   }
 
-  private async curlJson<T>(method: 'GET' | 'POST', port: number, path: string, timeoutS: number): Promise<T> {
-    const { stdout } = await this.curl(method, port, path, timeoutS);
+  private async curlJson<T>(port: number, path: string, timeoutS: number): Promise<T> {
+    const { stdout } = await this.curl(port, path, timeoutS);
     const text = stdout.trim();
     try {
       return JSON.parse(text) as T;
     } catch {
-      throw new Error(`non-JSON from ${method} :${port}${path} → ${text.slice(0, 200)}`);
+      throw new Error(`non-JSON from GET :${port}${path} → ${text.slice(0, 200)}`);
     }
   }
 
-  private async curl(method: 'GET' | 'POST', port: number, path: string, timeoutS: number): Promise<RunResult> {
-    const methodFlag = method === 'POST' ? '-X POST ' : '';
+  private async curl(port: number, path: string, timeoutS: number): Promise<RunResult> {
     // Keep the ssh run bound above curl's own deadline so --max-time is what fires first on a slow reply.
     const runTimeoutMs = Math.max(DEFAULT_RUN_TIMEOUT_MS, (timeoutS + 5) * 1_000);
     const url = `http://${this.serviceAddress}:${port}${path}`;
-    return this.run(`curl -s ${methodFlag}--max-time ${timeoutS} ${url}`, runTimeoutMs);
+    return this.run(`curl -s --max-time ${timeoutS} ${url}`, runTimeoutMs);
   }
 }
 
