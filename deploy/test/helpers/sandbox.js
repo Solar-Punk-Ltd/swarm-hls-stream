@@ -206,6 +206,32 @@ function pathWithoutPnpm() {
 }
 
 /**
+ * The only names a sandboxed script inherits from the machine running the suite.
+ *
+ * ⛔ Not the whole of `process.env`, which is what this was. `load_env_file` in `_lib.sh` treats every
+ * line of an env file as a DEFAULT and skips a key the caller already exported, and a sandbox writes
+ * the whole of its case into that file. So an operator, a login shell or a `.envrc` exporting
+ * `LOCAL_BEE_UPLOADER`, `BEE_URL`, `STAMP`, `HLS_AOF_RATIO` or `RPC_ENDPOINT` silently replaced what
+ * the test wrote, and a case then passed or failed for a reason no assertion could name. On a
+ * deployment host every one of those is exported.
+ *
+ * `HOME` and `TMPDIR` are here because the scripts read both, and the locale and terminal names
+ * because the tools they call do. Anything else a case needs it passes in itself, which is what makes
+ * the case say what it depends on.
+ */
+const INHERITED_ENV = ['HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM'];
+
+function sandboxEnv(sandbox, env = {}) {
+  const inherited = {};
+  for (const name of INHERITED_ENV) {
+    if (process.env[name] !== undefined) {
+      inherited[name] = process.env[name];
+    }
+  }
+  return { ...inherited, ...env, PATH: sandbox.path };
+}
+
+/**
  * Runs one of the real deploy scripts inside a sandbox whose `docker` and `ssh` are stubs, and
  * reports how it exited instead of throwing. Half of what these scripts are asked to prove is that
  * they refuse, so the exit code is an assertion rather than an error.
@@ -213,7 +239,7 @@ function pathWithoutPnpm() {
 export async function runScript(sandbox, name, args = [], env = {}) {
   try {
     const ok = await execFileAsync('bash', [sandbox.scriptPath(name), ...args], {
-      env: { ...process.env, ...env, PATH: sandbox.path },
+      env: sandboxEnv(sandbox, env),
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {
@@ -232,7 +258,7 @@ export async function sourceLib(sandbox, snippet) {
 async function runShell(sandbox, script) {
   try {
     const ok = await execFileAsync('bash', ['-c', script], {
-      env: { ...process.env, PATH: sandbox.path },
+      env: sandboxEnv(sandbox),
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {

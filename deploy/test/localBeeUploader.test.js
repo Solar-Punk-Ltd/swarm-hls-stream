@@ -97,6 +97,31 @@ describe('LOCAL_BEE_UPLOADER deciding whether the uploader gets a local Bee addr
   });
 
   /**
+   * ⛔ The decoy. Every case in this file states its intent in the sandbox's own env file, and
+   * `load_env_file` treats that file as DEFAULTS: a key the caller already exported wins over it. The
+   * sandbox used to hand each script the whole of the suite's environment, so an operator, a login
+   * shell or a `.envrc` exporting this key decided the run and the file did not. On a deployment host
+   * it is exported, which is where these tests are most likely to be run and least likely to be read.
+   *
+   * The ambient value here is the opposite of the file's, so a leak cannot look like a pass.
+   */
+  it('lets the sandbox env file decide even when the machine exports the opposite', async () => {
+    const ambient = process.env.LOCAL_BEE_UPLOADER;
+    process.env.LOCAL_BEE_UPLOADER = 'true';
+    try {
+      const sandbox = await deployUploader(CONFIG_WITH_BEE, ['LOCAL_BEE_UPLOADER=false']);
+
+      assert.equal(effectiveBeeUrl(sandbox), EXTERNAL_BEE);
+    } finally {
+      if (ambient === undefined) {
+        delete process.env.LOCAL_BEE_UPLOADER;
+      } else {
+        process.env.LOCAL_BEE_UPLOADER = ambient;
+      }
+    }
+  });
+
+  /**
    * A bare `deploy.sh` and an older manager write no such key, and neither may change behaviour.
    * Both halves of the old rule are stated, because "absent decides as before" is a claim about
    * `is_enabled` in both directions rather than only about the branch this fix was written for.
