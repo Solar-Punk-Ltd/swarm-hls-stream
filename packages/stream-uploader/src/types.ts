@@ -46,8 +46,8 @@ export interface StreamState {
  *
  * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`. It is the grid the
  * media is read against rather than a step taken blind: a segment measuring within
- * `FRAGMENT_TOLERANCE` of it is dated as exactly this length, so a ladder whose rungs are cut on one
- * keyframe grid dates one piece of media identically on all four. A segment outside the tolerance is
+ * `DATING_SNAP_TOLERANCE` of it is dated as exactly this length, so a ladder whose rungs are cut on
+ * one keyframe grid dates one piece of media identically on all four. A segment outside the tolerance is
  * dated by what it really held, because a single rendition's segment is decided by the publisher's
  * own keyframe interval and dating a 10 second one as 2 leaves the recording's clock behind its
  * media for ever. It is never persisted with the broadcast, so a redeployment under a new

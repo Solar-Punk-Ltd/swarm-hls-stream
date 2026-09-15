@@ -95,7 +95,7 @@ function datedPlaylist(entries: readonly DatedEntry[]): string {
 }
 
 /** Where the tolerance this contract reads is really decided. */
-const FRAGMENT_AGREEMENT_PATH = '../../packages/stream-uploader/src/libs/fragmentAgreement.ts';
+const BROADCAST_DATING_PATH = '../../packages/stream-uploader/src/libs/broadcastDating.ts';
 
 describe('the timeline a playlist declares', () => {
   it('passes a playlist that opens at zero and steps by the fragment', () => {
@@ -282,9 +282,9 @@ describe('the timeline a playlist declares', () => {
    */
   it('reads a measurement inside the tolerance as the declared length, so a ladder still passes', () => {
     const rung = datedPlaylist([
-      { holds: 2.04, atMs: STARTED_AT_MS },
-      { holds: 1.98, atMs: STARTED_AT_MS + 2_000 },
-      { holds: 2.067, atMs: STARTED_AT_MS + 4_000 },
+      { holds: 2.015, atMs: STARTED_AT_MS },
+      { holds: 1.99, atMs: STARTED_AT_MS + 2_000 },
+      { holds: 2.005, atMs: STARTED_AT_MS + 4_000 },
     ]);
 
     assert.deepEqual(manifestContractFailures(rung, CONTRACT), []);
@@ -318,10 +318,10 @@ describe('the timeline a playlist declares', () => {
    * this reads the publisher's own source rather than trusting the copy to have kept up.
    */
   it('reads the same tolerance the publisher dates by', () => {
-    const source = readFileSync(join(import.meta.dirname, FRAGMENT_AGREEMENT_PATH), 'utf8');
-    const declared = /export const FRAGMENT_TOLERANCE = ([\d.]+);/.exec(source);
+    const source = readFileSync(join(import.meta.dirname, BROADCAST_DATING_PATH), 'utf8');
+    const declared = /export const DATING_SNAP_TOLERANCE = ([\d.]+);/.exec(source);
 
-    assert.ok(declared, `could not read a numeric FRAGMENT_TOLERANCE out of ${FRAGMENT_AGREEMENT_PATH}`);
+    assert.ok(declared, `could not read a numeric DATING_SNAP_TOLERANCE out of ${BROADCAST_DATING_PATH}`);
     assert.equal(Number(declared![1]), DATING_TOLERANCE);
   });
 

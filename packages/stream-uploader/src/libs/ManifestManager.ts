@@ -144,9 +144,9 @@ function gapUri(sequence: number): string {
  * switch would land that far off.
  *
  * ⭐ **The date follows the media, and a ladder's rungs still agree because of the snapping.** A
- * segment measuring within `FRAGMENT_TOLERANCE` of `HLS_FRAGMENT` is dated as exactly that length,
- * and under a ladder every segment is, because the engine pins a keyframe every
- * `ABR_FPS x HLS_FRAGMENT` frames. On a single rendition the publisher's own keyframe interval
+ * segment measuring within `DATING_SNAP_TOLERANCE` of `HLS_FRAGMENT` is dated as exactly that
+ * length, and under a ladder every segment is, because the engine pins a keyframe every
+ * `ABR_FPS x HLS_FRAGMENT` frames and only tick rounding separates the rungs' readings. On a single rendition the publisher's own keyframe interval
  * decides the segment: it measured 2.067 to 10.033 seconds against a configured 2 on 2026-09-15,
  * and dating every one of those at 2.000 put the recording's clock further behind its own media with
  * every segment, permanently. See `broadcastDating.ts`.

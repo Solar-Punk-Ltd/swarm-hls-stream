@@ -146,8 +146,8 @@ segment's `#EXT-X-PROGRAM-DATE-TIME` reads its media against.** Set it once in t
 and both services read the same value. Set it for the engine alone and the uploader falls back to
 `0.5`, which dates a recording against a fragment length nothing produced. Under a ladder the
 declared length is also the real one, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT`, so
-every segment is inside the 5% the dating treats as that length and the stamps step by it exactly.
-On a single-rendition stream the publisher's own GOP decides the segment, and a segment past that 5%
+every segment is inside the 1% the dating treats as that length and the stamps step by it exactly.
+On a single-rendition stream the publisher's own GOP decides the segment, and a segment past that 1%
 moves the next stamp by what it really held rather than by the declared length. See
 [the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
 

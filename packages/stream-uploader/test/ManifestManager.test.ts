@@ -1052,16 +1052,18 @@ describe('every segment carries a program date-time derived from the broadcast a
    */
   it('dates a single rendition by what its segments really held', () => {
     const manager = anchored();
-    const held = [2.067, 2.4, 10.033, 2];
+    const held = [2.067, 2.015, 2.4, 10.033, 2];
     held.forEach((duration, index) => manager.addSegment(index, duration, ref(index)));
 
     assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
       TEST_ANCHOR.startedAtMs,
-      // ⚠️ 2.067 sits inside the 100ms the tolerance allows a 2s fragment, so it is dated as 2.000
-      // and its overrun is not corrected. Only the segments past that band move their successor.
-      TEST_ANCHOR.startedAtMs + 2_000,
-      TEST_ANCHOR.startedAtMs + 2_000 + 2_400,
-      TEST_ANCHOR.startedAtMs + 2_000 + 2_400 + 10_033,
+      // ⛔ The smallest of the live readings, and the one a five percent band would have swallowed.
+      // Nothing on a ladder produces a 67ms spread, so this is real media and it is charged as such.
+      TEST_ANCHOR.startedAtMs + 2_067,
+      // 2.015 is tick rounding on the configured grid, so it is read as the configured 2.
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_000,
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_000 + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_067 + 2_000 + 2_400 + 10_033,
     ]);
   });
 
@@ -1145,8 +1147,10 @@ describe('every segment carries a program date-time derived from the broadcast a
     const tall = anchored();
     const short = anchored();
 
+    // The spread one keyframe grid really produces across rungs: 90kHz tick rounding at a frame rate
+    // that does not divide it, a fraction of a percent. Both readings are dated as the configured 2.
     feed(tall, 0, 5, 2);
-    feed(short, 0, 5, 1.98);
+    feed(short, 0, 5, 1.995);
 
     assert.deepEqual(programDateTimesOf(tall.buildLiveManifest()), programDateTimesOf(short.buildLiveManifest()));
   });

@@ -34,7 +34,7 @@ and the uploader gets four feeds it groups back into one ladder.
 
 `HLS_FRAGMENT` is the same two-container shape, and it bites harder because the two containers can
 disagree rather than one of them simply being off. SRS cuts segments at it, and the uploader reads
-every segment against it: a segment within 5% of the declared length is dated as exactly that length,
+every segment against it: a segment within 1% of the declared length is dated as exactly that length,
 and one outside it by what it really held. So an uploader on 0.5 behind an engine on 1.0 reads every
 1.0 second segment as half that, dates each one half a second early, cumulatively, and the recording
 keeps those dates for ever. A container re-reads the variable only when it is recreated, so **recreate both

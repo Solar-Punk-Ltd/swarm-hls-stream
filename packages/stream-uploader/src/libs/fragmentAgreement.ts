@@ -3,8 +3,9 @@
  *
  * ⛔⛔⛔ **`HLS_FRAGMENT` is one variable that two containers read, and only one of them is
  * restarted when it changes.** The engine cuts segments with it. The uploader reads every segment
- * against it: a segment measuring within {@link FRAGMENT_TOLERANCE} of this number is dated as
- * exactly this length, which is what keeps four rungs stamping one piece of media identically. Both
+ * against it: a segment measuring within `DATING_SNAP_TOLERANCE` of this number is dated as exactly
+ * this length, which is what keeps four rungs stamping one piece of media identically. That band is
+ * its own number in `broadcastDating.ts` and deliberately narrower than the one below. Both
  * containers read the variable from one env file and both re-read it only when they are recreated,
  * and the operator's control plane recreates the engine alone on a segment length change. So an
  * uploader believing 0.5 can sit behind an engine cutting 1.0, which is what this deployment was
