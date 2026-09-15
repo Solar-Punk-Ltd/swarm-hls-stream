@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BEE_PROBE_PATH,
   beeBaseUrlFromTypedAddress,
-  describeProbeOutcome,
+  describeProbeFailure,
   gatewayLabel,
   isDefaultGateway,
   probeGateway,
@@ -127,24 +127,24 @@ describe('probeGateway', () => {
   });
 });
 
-describe('describeProbeOutcome', () => {
+describe('describeProbeFailure', () => {
   it('tells an unreachable viewer about CORS, because a browser hides that cause behind a failed fetch', () => {
-    expect(describeProbeOutcome({ kind: 'unreachable' })).toContain('cors-allowed-origins');
+    expect(describeProbeFailure({ kind: 'unreachable' })).toContain('cors-allowed-origins');
   });
 
   it('sends a viewer whose node never answered to the node rather than to its CORS settings', () => {
-    const timedOut = describeProbeOutcome({ kind: 'timed-out' });
+    const timedOut = describeProbeFailure({ kind: 'timed-out' });
 
     expect(timedOut).not.toContain('cors-allowed-origins');
-    expect(timedOut).not.toBe(describeProbeOutcome({ kind: 'unreachable' }));
+    expect(timedOut).not.toBe(describeProbeFailure({ kind: 'unreachable' }));
   });
 
   it('names the status when something answered with an error', () => {
-    expect(describeProbeOutcome({ kind: 'rejected', status: 502 })).toContain('502');
+    expect(describeProbeFailure({ kind: 'rejected', status: 502 })).toContain('502');
   });
 
   it('says plainly that the thing answering is not a Bee node', () => {
-    expect(describeProbeOutcome({ kind: 'not-bee' })).toContain('not a Bee node');
+    expect(describeProbeFailure({ kind: 'not-bee' })).toContain('not a Bee node');
   });
 });
 
