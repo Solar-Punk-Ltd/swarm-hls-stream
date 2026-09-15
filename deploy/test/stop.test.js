@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { ALL_REMOTE, makeSandbox, removeSandboxes, runScript, runScriptOk } from './helpers/sandbox.js';
 
 after(removeSandboxes);
+
+const COMPOSE = join(dirname(dirname(fileURLToPath(import.meta.url))), 'docker-compose.yml');
 
 function composeCalls(calls) {
   return calls.filter((call) => call.startsWith('compose '));
@@ -139,5 +144,49 @@ describe('stop.sh service filter (OPS-3)', () => {
 
     assert.deepEqual(sandbox.calls(), [], 'a native service produced a docker call');
     assert.match(run.stdout, /No services to stop/);
+  });
+});
+
+/** Docker's own default, and what every service on this stack gets unless the file says otherwise. */
+const DEFAULT_GRACE_SECONDS = 10;
+
+/**
+ * One service block of the compose file, as text, walked by indentation for the reason
+ * `imageNames.test.js` and `uploaderEnv.test.js` both give: adding a YAML parser to a check that
+ * exists to catch a missing line means the check and the deployment no longer read the file the same
+ * way. Two levels, both fixed by the file's own style, a service name at two spaces and its keys at
+ * four.
+ */
+function serviceBlock(compose, service) {
+  const lines = compose.split('\n');
+  const start = lines.indexOf(`  ${service}:`);
+  assert.notEqual(start, -1, `${service} is not in the compose file`);
+  const after = lines.slice(start + 1).findIndex((line) => /^ {2}\S/.test(line));
+  return lines.slice(start + 1, after === -1 ? undefined : start + 1 + after).join('\n');
+}
+
+/**
+ * ⛔ Every stop of the uploader is a drain, and docker kills a drain at ten seconds.
+ *
+ * SIGTERM runs `ServiceLifecycle.shutdown` into `StreamOrchestrator.cleanup`, which finalizes every
+ * live stream over the network, one `stopStream` per rung. Killed halfway, some rungs are finalized
+ * and the rest hold recovery entries that nothing clears until a replacement container starts
+ * successfully and picks them up a minute later. `docker compose up -d` recreating the service is the
+ * everyday way into that, so a deploy was routinely cutting its own drain, and `stop.sh` is the other
+ * way in.
+ */
+describe('the uploader is given time to finish its drain', () => {
+  it('declares a stop_grace_period long enough for a four-rung finalize', () => {
+    const uploader = serviceBlock(readFileSync(COMPOSE, 'utf8'), 'stream-uploader');
+    const grace = /^ {4}stop_grace_period: (\d+)s$/m.exec(uploader);
+
+    assert.ok(
+      grace,
+      `the uploader takes docker's ${DEFAULT_GRACE_SECONDS}s default, which SIGKILLs a drain in progress`,
+    );
+    assert.ok(
+      Number(grace[1]) > DEFAULT_GRACE_SECONDS,
+      `${grace[1]}s is no more than the default this line exists to raise`,
+    );
   });
 });

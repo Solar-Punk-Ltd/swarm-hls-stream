@@ -179,6 +179,20 @@ services:
       dockerfile: deploy/Dockerfile.uploader
     profiles: ['stream-uploader']
     restart: unless-stopped
+    # SIGTERM starts a drain here, and docker's default gives it ten seconds before SIGKILL. This is
+    # the only service on the stack for which that is far too short: `ServiceLifecycle.shutdown` calls
+    # `StreamOrchestrator.cleanup`, which finalizes every live stream over the network, one `stopStream`
+    # per rung, and a four-rung ladder is four finalizes. Killed halfway, some rungs are finalized and
+    # the rest are left holding recovery entries that nothing clears until a replacement container
+    # starts successfully and picks them up a minute later. `docker compose up -d` recreating this
+    # service is the everyday way into that, so a deploy was routinely cutting its own drain.
+    #
+    # 120s rather than the five minutes of DRAIN_TIMEOUT_MS in StreamOrchestrator.ts. That five
+    # minutes is the deadline for a drain that has gone wrong, and waiting it out on every deploy
+    # would make one stuck stream hold a deploy for five minutes. A healthy four-rung finalize is well
+    # inside two, and a drain that has not finished by then is one the uploader's own deadline is
+    # about to give up on anyway.
+    stop_grace_period: 120s
     logging: *default-logging
     ports:
       - '${API_PORT:-3000}:${API_PORT:-3000}'
