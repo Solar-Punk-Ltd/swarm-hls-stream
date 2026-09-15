@@ -8,16 +8,28 @@ import { ALL_REMOTE, makeSandbox, removeSandboxes, runScript, runScriptOk } from
 after(removeSandboxes);
 
 /**
- * Old enough that naming it is the difference between deploying a build and deploying whatever the
- * tree was last left holding. A local time, because that is what `stat` prints.
+ * When the build last wrote the file the image runs. Old enough that naming it is the difference
+ * between deploying a build and deploying whatever the tree was last left holding. A local time,
+ * because that is what `stat` prints.
  */
-const DIST_MODIFIED = new Date('2026-01-02T03:04:05');
+const DIST_BUILT = new Date('2026-01-02T03:04:05');
 
-function seedDist(sandbox) {
+/**
+ * Later, and on the directory rather than on the build output, because the two move apart and only
+ * one of them is the build's age. `pnpm build` rewrites `dist/index.js` in place and a directory's
+ * time follows entries being added or removed, so a line that dates the directory reports a fresh
+ * rebuild as old. This value is here so that line cannot pass.
+ */
+const DIST_DIR_TOUCHED = new Date('2026-06-07T08:09:10');
+
+function seedDist(sandbox, { entry = true } = {}) {
   const dist = join(sandbox.root, 'packages', 'stream-uploader', 'dist');
   mkdirSync(dist, { recursive: true });
-  writeFileSync(join(dist, 'index.js'), '');
-  utimesSync(dist, DIST_MODIFIED, DIST_MODIFIED);
+  if (entry) {
+    writeFileSync(join(dist, 'index.js'), '');
+    utimesSync(join(dist, 'index.js'), DIST_BUILT, DIST_BUILT);
+  }
+  utimesSync(dist, DIST_DIR_TOUCHED, DIST_DIR_TOUCHED);
 }
 
 /**
@@ -31,7 +43,7 @@ function seedDist(sandbox) {
  * would be the first run to report `pnpm: command not found` from inside a build function.
  */
 describe('a deploy on a host without pnpm', () => {
-  it('ships the dist that is there and names how old it is', async () => {
+  it('ships the dist that is there and names when it was built', async () => {
     const sandbox = makeSandbox({ config: ALL_REMOTE, pnpm: false });
     seedDist(sandbox);
 
@@ -40,6 +52,17 @@ describe('a deploy on a host without pnpm', () => {
     assert.deepEqual(sandbox.pnpmCalls(), [], 'a host with no pnpm was asked to run one');
     assert.match(run.stdout, /packages\/stream-uploader\/dist/);
     assert.match(run.stdout, /2026-01-02 03:04:05/, 'the dist was deployed without saying how stale it is');
+    assert.doesNotMatch(run.stdout, /2026-06-07/, 'the line dates the dist directory rather than the build');
+  });
+
+  it('names a dist that has no index.js rather than dating the directory', async () => {
+    const sandbox = makeSandbox({ config: ALL_REMOTE, pnpm: false });
+    seedDist(sandbox, { entry: false });
+
+    const run = await runScriptOk(sandbox, 'deploy.sh', ['stream-uploader']);
+
+    assert.match(run.stdout, /no dist\/index\.js/, 'a dist the image cannot run was deployed silently');
+    assert.doesNotMatch(run.stdout, /2026-06-07/, 'the line dates the dist directory rather than the build');
   });
 
   it('refuses with a pointer when there is no dist either', async () => {
