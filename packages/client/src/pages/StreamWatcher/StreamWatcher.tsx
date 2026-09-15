@@ -4,7 +4,8 @@ import { Button, ButtonVariant } from '@/components/Button/Button';
 import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
 import { useAppContext } from '@/providers/App';
 import { ROUTES } from '@/routes';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
+import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED } from '@/types/stream';
+import { scheduledStartLabel } from '@/utils/scheduledStart';
 
 import './StreamWatcher.scss';
 
@@ -42,9 +43,24 @@ export function StreamWatcher() {
   // it keeps a deep link from starting single-rendition and rebuilding a second later.
   const stream = streamList.find((entry) => entry.owner === owner && entry.topic === topic);
 
+  /**
+   * An announced broadcast has no manifest feed under its topic yet, so mounting the player would
+   * start a poll loop against a slot nobody has written and show a viewer a loading player that can
+   * never finish loading. Only an entry the catalog says is scheduled takes this path: a deep link
+   * to a topic this catalog does not list still plays, because nothing here knows better.
+   */
+  const isScheduled = stream?.state === STREAM_STATUS_SCHEDULED;
+  const startsAt = scheduledStartLabel(stream?.scheduledStartTime);
+
   return (
     <div className="stream-item-page">
-      {isStreamListLoaded && (
+      {isStreamListLoaded && isScheduled && (
+        <div className="stream-not-started">
+          <p>This stream has not started yet.</p>
+          {startsAt && <p className="stream-not-started-time">Scheduled for {startsAt}</p>}
+        </div>
+      )}
+      {isStreamListLoaded && !isScheduled && (
         <SwarmHlsPlayer
           owner={owner}
           topicString={topic}

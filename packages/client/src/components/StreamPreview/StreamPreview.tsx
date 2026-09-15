@@ -14,19 +14,20 @@ import Pqueue from 'p-queue';
 
 import playIcon from '@/assets/icons/playIcon.png';
 import DefaultPreviewImage from '@/assets/images/defaultPreviewImage.png';
+import { previewMode, thumbnailImageUrl } from '@/components/StreamPreview/previewMode';
 import { previewSourceFrom } from '@/components/StreamPreview/previewSource';
 import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
 import { isMasterPlaylist, masterVariants, parseManifest } from '@/components/SwarmHlsPlayer/playlist';
 import { useAppContext } from '@/providers/App';
-import { MediaType, StreamState } from '@/types/stream';
+import { MediaType, STREAM_STATUS_LIVE, STREAM_STATUS_SCHEDULED, StreamState } from '@/types/stream';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 import { formatDuration } from '@/utils/format';
+import { scheduledStartLabel } from '@/utils/scheduledStart';
 import { previewSegmentUrl, thumbnailManifestUrl } from '@/utils/thumbnailManifest';
 
 import './StreamPreview.scss';
 
 const thumbnailQueue = new Pqueue({ concurrency: 1 });
-const STREAM_STATE_LIVE: StreamState = 'live';
 
 /**
  * The manifest a preview takes its frame from, following one level of indirection.
@@ -76,19 +77,53 @@ interface StreamPreviewProps {
   title: string;
   /** The SOC index of this stream's final manifest, published by the uploader on a finished stream. */
   index?: number;
+  /** A Swarm reference to a still image the publisher uploaded. Absent or '' when there is none. */
+  thumbnail?: string;
+  /** Only ever set on a scheduled entry, and null there until a time is fixed. */
+  scheduledStartTime?: string | null;
 }
 
 /** The preview plays one segment, so the target duration only has to be at least that long. */
 const PREVIEW_TARGET_DURATION_SECONDS = 10;
 
-export const StreamPreview = ({ owner, topic, state, duration, mediatype, title, index }: StreamPreviewProps) => {
+export const StreamPreview = ({
+  owner,
+  topic,
+  state,
+  duration,
+  mediatype,
+  title,
+  index,
+  thumbnail,
+  scheduledStartTime,
+}: StreamPreviewProps) => {
   const navigate = useNavigate();
   const { gatewayUrl } = useAppContext();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isDataAvailable, setIsDataAvailable] = useState(false);
+  /**
+   * Set when the browser cannot load the referenced image, which demotes this card out of `image`
+   * mode. Held in state rather than handled in the `onError` branch directly, so the decision stays
+   * in `previewMode` — a scheduled card must not fall back to a probe, and that rule lives in one
+   * place with a test rather than in two handlers.
+   */
+  const [imageFailed, setImageFailed] = useState(false);
+
+  const mode = previewMode({ thumbnail, state, imageFailed });
+  const isScheduled = state === STREAM_STATUS_SCHEDULED;
+  const startsAt = scheduledStartLabel(scheduledStartTime);
 
   useEffect(() => {
+    // The card already knows what it is showing, so nothing is fetched and no queue slot is taken.
+    // This is the whole saving for a scheduled stream: its manifest feed does not exist, and ten
+    // announced broadcasts used to mean ten serial misses before a live card could get its frame.
+    if (mode !== 'probe') {
+      setIsLoading(false);
+      return;
+    }
+    setIsLoading(true);
+
     const abort = new AbortController();
     let hls: Hls | null = null;
     let blobUrl: string | null = null;
@@ -191,7 +226,7 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title,
         blobUrl = null;
       }
     };
-  }, [owner, topic, gatewayUrl, index]);
+  }, [owner, topic, gatewayUrl, index, mode]);
 
   return (
     <div className="stream-preview" onClick={() => navigate(`/watch/${mediatype}/${owner}/${topic}`)}>
@@ -200,23 +235,46 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title,
           <div className="spinner"></div>
         </div>
       )}
-      <video ref={videoRef} className="stream-preview-video" controls={false} muted playsInline />
+      {/*
+        The picture, from exactly one of the three sources `previewMode` names. The video element is
+        mounted only for a probe: `videoRef` is what the effect attaches hls.js to, so rendering it
+        beside an image would hand the card a second, black layer for no reason.
+      */}
+      {mode === 'image' && thumbnail && (
+        <img
+          className="stream-preview-image"
+          src={thumbnailImageUrl(gatewayUrl, thumbnail)}
+          alt=""
+          onError={() => setImageFailed(true)}
+        />
+      )}
+      {mode === 'probe' && <video ref={videoRef} className="stream-preview-video" controls={false} muted playsInline />}
+      {(mode === 'placeholder' || (mode === 'probe' && !isLoading && !isDataAvailable)) && (
+        <div className="stream-preview-error">
+          <img src={DefaultPreviewImage} alt="" />
+        </div>
+      )}
 
-      {!isLoading && isDataAvailable && (
+      {/*
+        The caption belongs to the card, not to the frame. It used to render only when a frame had
+        been captured, so a stream whose preview failed — and every scheduled stream, which has no
+        frame to capture — showed an untitled picture nobody could identify.
+      */}
+      {!isLoading && (
         <div className="stream-preview-button-wrapper">
-          <img src={playIcon} alt="play-icon" />
+          {/* Nothing to play yet on an announced broadcast, so the card does not promise one. */}
+          {!isScheduled && <img src={playIcon} alt="play-icon" />}
           <div className="stream-preview-button">
             <span className="stream-preview-button-title">{title}</span>
-            {state === STREAM_STATE_LIVE && <span className="stream-preview-button-state">{state}</span>}
+            {state === STREAM_STATUS_LIVE && <span className="stream-preview-button-state">{state}</span>}
+            {isScheduled && (
+              <span className="stream-preview-button-state stream-preview-button-state-scheduled">Upcoming</span>
+            )}
+            {isScheduled && startsAt && <span className="stream-preview-button-schedule">{startsAt}</span>}
             {duration && (
               <span className="stream-preview-button-duration">{formatDuration(Number.parseFloat(duration))}</span>
             )}
           </div>
-        </div>
-      )}
-      {!isLoading && !isDataAvailable && (
-        <div className="stream-preview-error">
-          <img src={DefaultPreviewImage} alt="" />
         </div>
       )}
     </div>
