@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { after, describe, it } from 'node:test';
 
+import { LadderGroupStore } from '../src/libs/LadderGroupStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
-import { MEDIA_TYPE_VIDEO, PRESSURE_HIGH, PRESSURE_LOW, PRESSURE_MEDIUM, QueuePressure } from '../src/types.js';
+import {
+  HEALTH_REASON_STATE_NOT_PERSISTED,
+  MEDIA_TYPE_VIDEO,
+  PRESSURE_HIGH,
+  PRESSURE_LOW,
+  PRESSURE_MEDIUM,
+  QueuePressure,
+} from '../src/types.js';
+import { deriveHealthStatus } from '../src/utils/health.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import { makeFakeCatalog, makeFakeRecoveryStore, makeTestOrchestrator, neverSettles } from './helpers/fakes.js';
@@ -211,6 +223,40 @@ describe('StreamOrchestrator state persist age', () => {
       orch.getMsSinceStatePersistFailed(),
       5_000,
       'a healthy stream reads null, and folding that in would answer `nothing is wrong` for a store that cannot write',
+    );
+  });
+
+  /**
+   * ⛔ The third store that writes into `STATE_DIR`, and the only one that used to fail into nothing.
+   * A full disk or a read-only mount takes out all three, which is why the other two held this at a
+   * plausible rather than a likely failure, but a directory with mixed ownership loses this one
+   * alone. What it costs is a broadcast handed a second ladder group at its next crash near finalize,
+   * which is a second catalog entry for one recording, each paid for in its own postage.
+   */
+  it('reports the ladder groups file, and degrades on it with every other store writing fine', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-ladder-groups-'));
+    after(() => fs.rmSync(root, { recursive: true, force: true }));
+    // A path whose parent is an ordinary file, so `mkdirSync` fails with ENOTDIR. No permission bit
+    // is involved, which is what keeps this red for a container job running as root.
+    const blocker = path.join(root, 'blocker');
+    fs.writeFileSync(blocker, 'not a directory');
+    const ladderGroupStore = new LadderGroupStore(path.join(blocker, 'ladder', 'groups.json'));
+    const orch = makeTestOrchestrator({ ladderGroupStore });
+
+    const { error } = console;
+    console.error = () => {};
+    try {
+      ladderGroupStore.remember('live/demo', { group: 'group-1', startedAtMs: Date.now() });
+    } finally {
+      console.error = error;
+    }
+
+    assert.notEqual(orch.getMsSinceStatePersistFailed(), null, 'the third store has to reach the signal at all');
+    assert.ok(
+      deriveHealthStatus(orch.getHealthSignals(), orch.getSegmentStallMs()).reasons.includes(
+        HEALTH_REASON_STATE_NOT_PERSISTED,
+      ),
+      'a ladder identity that stopped reaching disk has to wake somebody, the way the other two stores do',
     );
   });
 });

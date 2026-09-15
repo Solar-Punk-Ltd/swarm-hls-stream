@@ -178,4 +178,64 @@ describe('LadderGroupStore', () => {
 
     assert.equal(lines.length, 1, `a refused write must be reported exactly once, got ${lines.length} line(s)`);
   });
+
+  /**
+   * ⛔ An error line is not an alarm. Three stores write into `STATE_DIR` and this was the only one
+   * whose failures reached nothing further: `CatalogIndexStore.save` and
+   * `StreamUploader.persistState` both keep an age, and both surface through
+   * `StreamOrchestrator.getMsSinceStatePersistFailed` as the `state_not_persisted` reason.
+   *
+   * Losing this one is quiet by construction, which is the point. The mapping is in memory, every
+   * rung finds its ladder, and the service is healthy and stays healthy. What it costs arrives at
+   * the next crash near finalize, which is the one case this file exists for, and it arrives as a
+   * second catalog entry for one broadcast, each paid for in its own postage and neither reachable
+   * from the other.
+   */
+  describe('how long it has been failing to write', () => {
+    it('reports nothing before anything has been written', () => {
+      const { store } = storeIn(makeTempRoot());
+
+      assert.equal(store.getMsSinceSaveFailed(), null);
+    });
+
+    it('reports an age once a write is refused', () => {
+      const store = new LadderGroupStore(unwritablePath(makeTempRoot()));
+
+      const before = Date.now();
+      capturingErrors(() => store.remember(BASE, LADDER));
+      const age = store.getMsSinceSaveFailed();
+
+      assert.ok(age !== null, 'a ladder identity that is not being persisted must be reportable');
+      // Bounded by the wall time the write took, because an unbounded positive number is also what a
+      // raw clock reading is, and that is the shape this report must never have.
+      assert.ok(age >= 0 && age <= Date.now() - before, `an age, not a clock reading, got ${age}`);
+    });
+
+    it('reports a write refused after earlier ones landed', () => {
+      const root = makeTempRoot();
+      const { store, filePath } = storeIn(root);
+      store.remember(BASE, LADDER);
+      assert.equal(store.getMsSinceSaveFailed(), null, 'the first write has to land for this to mean anything');
+
+      // The file's own name becomes a directory under it, so the rename is refused by the shape of
+      // the filesystem rather than by a permission bit, which root would ignore.
+      fs.rmSync(filePath);
+      fs.mkdirSync(filePath);
+      capturingErrors(() => store.remember(OTHER_BASE, OTHER_LADDER));
+
+      assert.notEqual(store.getMsSinceSaveFailed(), null, 'a mapping that stopped being persisted must be reportable');
+    });
+
+    it('clears the report once a write lands', () => {
+      const store = new LadderGroupStore(unwritablePath(makeTempRoot()));
+      capturingErrors(() => store.remember(BASE, LADDER));
+      assert.notEqual(store.getMsSinceSaveFailed(), null, 'the failure has to be recorded for this to mean anything');
+
+      const { store: writable } = storeIn(makeTempRoot());
+      writable.remember(BASE, LADDER);
+
+      assert.equal(writable.getMsSinceSaveFailed(), null);
+      assert.deepEqual(writable.load(BASE), LADDER, 'a write that reports success must have actually landed');
+    });
+  });
 });
