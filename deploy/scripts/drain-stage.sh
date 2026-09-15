@@ -890,7 +890,13 @@ answer(
   echo ""
   echo "  Then arm the batch id it answers with:"
   echo ""
-  echo "    deploy/scripts/drain-stage.sh --profile=${PROFILE} --portSlot=${PORT_SLOT} --rung=${RUNG} arm --batch=<that id>"
+  # ⛔ --depth always, including when it is the default. This line is the whole instruction an
+  # operator pastes, and `arm` falls back to the drain depth rather than to whatever was priced here,
+  # so a purchase at any other depth was followed by an arm refusing the batch that purchase had just
+  # bought. Printed unconditionally rather than only when the run named one, because then the line
+  # says what was priced whatever the default is, and a runbook holding a copy of it keeps arming that
+  # same depth if the default ever moves.
+  echo "    deploy/scripts/drain-stage.sh --profile=${PROFILE} --portSlot=${PORT_SLOT} --rung=${RUNG} arm --batch=<that id> --depth=${ARM_DEPTH}"
   echo ""
 }
 

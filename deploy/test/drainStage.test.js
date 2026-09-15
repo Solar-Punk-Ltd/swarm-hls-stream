@@ -1821,6 +1821,26 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
   });
 
   /**
+   * ⛔ The last line print-buy prints is the whole instruction an operator pastes, and `arm` defaults
+   * to the drain depth. Without the flag on it, a purchase priced at any other depth was followed by
+   * an arm refusing the very batch that purchase had just bought, over a depth mismatch the operator
+   * never introduced.
+   *
+   * Scoped to the arm line rather than to the output, because the depth is in the buy url two lines
+   * above and a match against the whole of stdout passes on that alone.
+   */
+  it('carries the depth it priced into the arm command it prints', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', `--depth=${ROOMY_DEPTH}`]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    const armLine = run.stdout.split('\n').find((line) => line.includes('arm --batch='));
+    assert.ok(armLine, `print-buy printed no arm command at all:\n${run.stdout}`);
+    assert.match(armLine, new RegExp(`--depth=${ROOMY_DEPTH}`));
+  });
+
+  /**
    * ⛔ The capacity estimate is a generalised birthday figure, `(k! * buckets ** (k - 1)) ** (1/k)`
    * for k the first chunk count a bucket cannot hold. k doubles with every level, and computed
    * directly the intermediate integer passes what a float can carry at depth 22, so the python died
