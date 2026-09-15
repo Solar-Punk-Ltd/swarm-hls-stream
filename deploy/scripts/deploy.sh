@@ -167,6 +167,18 @@ check_engine
 # the old rule, because falling through is indistinguishable from the key working: a profile with
 # an external node and LOCAL_BEE_UPLOADER=flase would quietly get the compose service back and
 # crash-loop exactly as it did before the key existed.
+# Whether this invocation brings up the stream-uploader, which is the only service in the compose
+# file that reads BEE_URL.
+deploys_uploader() {
+  local target svc
+  for target in $(get_targets); do
+    for svc in $(get_filtered_services_for_target "$target"); do
+      [ "$svc" = "$SVC_UPLOADER" ] && return 0
+    done
+  done
+  return 1
+}
+
 check_local_bee_uploader() {
   case "${LOCAL_BEE_UPLOADER:-}" in
     true | false | '') ;;
@@ -176,6 +188,23 @@ check_local_bee_uploader() {
       exit 1
       ;;
   esac
+
+  # `false` leaves BEE_URL in .env.<profile> as the only address the uploader has, and an empty one
+  # is not an address. The compose file reads `${BEE_URL:-http://bee-uploader:1633}`, and `:-`
+  # substitutes its default for an EMPTY value as well as for an unset one, so a half-configured
+  # profile hands the uploader the very compose service this key exists to keep it away from. That
+  # is the `getaddrinfo ENOTFOUND bee-uploader` crash loop named above, arriving by the one route
+  # the key did not close.
+  #
+  # Refused here rather than left to `assert-started.sh`, which does catch it: what it can report is
+  # a container that fell over, and the cause is a default in a file the operator never edited and
+  # that appears in neither the env file nor the guard.
+  if [ "${LOCAL_BEE_UPLOADER:-}" = "false" ] && [ -z "${BEE_URL:-}" ] && deploys_uploader; then
+    log_error "LOCAL_BEE_UPLOADER=false and BEE_URL is empty in $ENV_FILE."
+    log_error "A deployment that runs no Bee node of its own has to name the one it publishes through."
+    log_error "Set BEE_URL=http://<host>:<port> in $ENV_FILE, or LOCAL_BEE_UPLOADER=true to run a node here."
+    exit 1
+  fi
 }
 
 check_local_bee_uploader
