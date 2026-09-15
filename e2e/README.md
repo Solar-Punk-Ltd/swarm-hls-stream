@@ -655,9 +655,10 @@ Publishes a real stream, follows it through the feed a viewer reads, and reports
 that viewer is and split across segment duration, upload, feed write, propagation and fetch, plus the
 player's own configured buffer. Writes a markdown report and its JSON to `docs/bench/`.
 
-Nothing else in this repository can measure that, which is why `liveSyncDuration` is still 10: every
-other LAT row asks for an improvement, and Sprint 5 grades them against a baseline that has to exist
-first.
+Nothing else in this repository can measure that. `liveSyncDuration` was 10 when this bench was written
+and the client ships 6 today (`LIVE_SYNC_DURATION_S` in `packages/client/src/components/SwarmHlsPlayer/playerConfig.ts`),
+so a report is read against the value the client carried on the day. Every other LAT row asks for an
+improvement, and Sprint 5 grades them against a baseline that has to exist first.
 
 **How the picture is timed.** ffmpeg publishes with `-use_wallclock_as_timestamps 1 -copyts`, so each
 frame carries the bench machine's clock, and the segment fetched at the far end is handed to ffprobe
