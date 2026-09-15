@@ -143,12 +143,14 @@ shipped as `[0.5, 2.5]`, is either rounded up or force-cut without a keyframe.
 
 ⛔ **`HLS_FRAGMENT` now reaches the stream-uploader as well as the engine, and it is the grid every
 segment's `#EXT-X-PROGRAM-DATE-TIME` reads its media against.** Set it once in the profile's `.env`
-and both services read the same value. Set it for the engine alone and the uploader falls back to
-`0.5`, which dates a recording against a fragment length nothing produced. Under a ladder the
-declared length is also the real one, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT`, so
-every segment is inside the 1% the dating treats as that length and the stamps step by it exactly.
-On a single-rendition stream the publisher's own GOP decides the segment, and a segment past that 1%
-moves the next stamp by what it really held rather than by the declared length. See
+and both services read the same value. A pair that disagrees still dates every recording by the media
+it holds, so the clock is right, and what goes wrong is everything built on the declared length:
+every `#EXT-X-GAP` entry is dated and sized at a length nothing is cutting, so a lost segment leaves
+a hole of the wrong size. Under a ladder the declared length is also the real one, because each rung
+is re-GOPed at `ABR_FPS x HLS_FRAGMENT`, so every segment is inside the 1% the dating treats as that
+length and the stamps step by it exactly. On a single-rendition stream the publisher's own GOP
+decides the segment, and a segment past that 1% moves the next stamp by what it really held rather
+than by the declared length. See
 [the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
 
 ## Scripts

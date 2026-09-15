@@ -114,20 +114,22 @@ at would disagree by their upload jitter, and hls.js reads that disagreement as 
 different media. The millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5`
 a whole-second stamp would give two consecutive segments the same instant.
 
-⚠️ **It is therefore nominal, and the operating rule that keeps it honest is about the source's
-keyframe interval.** Decided by the owner on 2026-09-03: accepted as it is, with this rule and no
-code change.
+⚠️ **It was therefore nominal when this rule was written, and the operating rule that keeps it
+honest is about the source's keyframe interval.** Decided by the owner on 2026-09-03: accepted as it
+is, with this rule and no code change. What "nominal" covers narrowed on 2026-09-15, and the
+paragraph below says to what.
 
-The drift that rule was written against is gone. `HLS_FRAGMENT` is a floor on the segment rather than
-the segment, because the engine cuts at the first keyframe at or after it, so a source whose GOP does
-not divide it produces segments longer than the declared length. Until 2026-09-15 the stamps stepped
-by the declared length anyway and fell behind by that excess on every segment, without bound over a
-long broadcast. They step by the media now, so a recording of such a stage keeps the right clock. What
-is still wrong there is every `#EXT-X-GAP` entry, which is dated and sized at the declared length, so
-a lost segment leaves a hole of the wrong size. Under the ABR ladder neither arises, because the
-engine transcodes every rung with a GOP that divides the fragment (`ABR_FPS × HLS_FRAGMENT`). **A
-single-rendition deployment must set the broadcaster's keyframe interval to divide `HLS_FRAGMENT`**,
-and nothing in this service can make it do so. See [deploy/README.md](../../deploy/README.md).
+The stamp is nominal inside that 1% band now and no wider, so the drift that rule was written against
+is gone. `HLS_FRAGMENT` is a floor on the segment rather than the segment, because the engine cuts at
+the first keyframe at or after it, so a source whose GOP does not divide it produces segments longer
+than the declared length. Until 2026-09-15 the stamps stepped by the declared length anyway and fell
+behind by that excess on every segment, without bound over a long broadcast. They step by the media
+now, so a recording of such a stage keeps the right clock. What is still wrong there is every
+`#EXT-X-GAP` entry, which is dated and sized at the declared length, so a lost segment leaves a hole
+of the wrong size. Under the ABR ladder neither arises, because the engine transcodes every rung with
+a GOP that divides the fragment (`ABR_FPS × HLS_FRAGMENT`). **A single-rendition deployment must set
+the broadcaster's keyframe interval to divide `HLS_FRAGMENT`**, and nothing in this service can make
+it do so. See [deploy/README.md](../../deploy/README.md).
 
 The e2e preflight gate that checks the stage cuts at the configured length would catch a misaligned
 stage on a sitting. In production `/health` names one under `fragment_publisher_gop`, with the
