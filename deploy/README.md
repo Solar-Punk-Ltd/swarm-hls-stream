@@ -187,7 +187,7 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 
 #### --portSlot
 
-`--portSlot=<N>` (integer 1-99) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-8), so two profiles can never collide on a port. When the flag is given it is **authoritative** — any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
+`--portSlot=<N>` (integer 1-99) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-9), so two profiles can never collide on a port. When the flag is given it is **authoritative** — any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
 
 99 is the ceiling because the slot arithmetic owns a second block: the per-rung bee nodes take 11001 to 11006 at slot 0, shifted the same way, and slot 100 would put `API_PORT` at 11000 and the rest of the first block straight on top of them. Anything above 99 is refused with that named as the reason.
 
@@ -202,6 +202,7 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 | BEE_UPLOADER_P2P_PORT | 10006 |          10016 |          10026 |           10996 |
 | BEE_GATEWAY_API_PORT  | 10007 |          10017 |          10027 |           10997 |
 | BEE_GATEWAY_P2P_PORT  | 10008 |          10018 |          10028 |           10998 |
+| SRS_HTTP_API_PORT     | 10009 |          10019 |          10029 |           10999 |
 
 The **Base** column is the slot arithmetic's starting point, not what you get with no flag. Without `--portSlot`, values already set in the env files win and only the unset ones fall back to this column, so the SRS ports in a stock local setup are `SRS_SRT_PORT=10080` from `engines/srs/.env.sample` and `SRS_RTMP_PORT=1935` / `SRS_HTTP_PORT=8080` from the compose file's own defaults, not 10001 through 10003.
 
