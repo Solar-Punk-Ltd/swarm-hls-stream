@@ -6,18 +6,33 @@ import { makeSandbox, removeSandboxes, runScript } from './helpers/sandbox.js';
 after(removeSandboxes);
 
 /**
- * The settle window, set to nothing so the suite does not wait it out.
+ * The watch, driven fast enough that the suite does not wait it out.
  *
- * The real default gives a container a few seconds to fall over before the deploy calls it started,
- * which is the whole mechanism: an uploader that throws at config import exits within about a second
- * and compose has already returned success by then. Zero is safe here because the stub answers from
- * a fixed inventory rather than from a daemon that needs time to settle.
+ * The real defaults give a service with no healthcheck five seconds to fall over and one with a
+ * healthcheck thirty, which is the whole mechanism: the uploader's two startup gates read every bee
+ * node and every batch in turn before the API ever listens, and compose returned success long
+ * before. Here a look costs a twentieth of a second and the window is half a second, so a test can
+ * state what happens on the third look and still finish in the time the old fixed sleep took.
+ *
+ * The stub answers from a fixed inventory rather than from a daemon, so nothing is being hurried.
  */
-const NO_SETTLE = { DEPLOY_SETTLE_SECONDS: '0' };
+const FAST_WATCH = {
+  DEPLOY_SETTLE_SECONDS: '0',
+  DEPLOY_WATCH_INTERVAL_SECONDS: '0.05',
+  DEPLOY_READY_TIMEOUT_SECONDS: '0.5',
+};
 
 function deploy(services, env = {}) {
   const sandbox = makeSandbox();
-  return { sandbox, run: runScript(sandbox, 'deploy.sh', services, { ...NO_SETTLE, ...env }) };
+  return { sandbox, run: runScript(sandbox, 'deploy.sh', services, { ...FAST_WATCH, ...env }) };
+}
+
+/**
+ * How many times the watch looked at one service's container, which is what tells a watch that ended
+ * early from one that ran its window out. The id is the inventory's `c-<service>`.
+ */
+function looks(sandbox, service) {
+  return sandbox.calls().filter((call) => call.startsWith('inspect ') && call.endsWith(` c-${service}`)).length;
 }
 
 /**
@@ -43,9 +58,10 @@ describe('a deploy reports whether the services it started are up', () => {
     // The success path has to be the answer to a question, not the absence of one. Without this a
     // check that never ran passes this case exactly as well as a check that ran and was satisfied.
     assert.ok(
-      sandbox.calls().some((call) => call.includes('status=running') && call.includes('service=stream-uploader')),
-      `nothing asked docker whether the service was running: ${sandbox.calls().join(' | ')}`,
+      sandbox.calls().some((call) => call.startsWith('inspect ') && call.includes('RestartCount')),
+      `nothing asked docker how the service was doing: ${sandbox.calls().join(' | ')}`,
     );
+    assert.ok(looks(sandbox, 'stream-uploader') >= 1, 'something was looked at, but not the service that was named');
   });
 
   it('refuses when the service is not running, and names it', async () => {
@@ -79,5 +95,97 @@ describe('a deploy reports whether the services it started are up', () => {
     assert.notEqual(finished.exitCode, 0);
     assert.match(output, /stream-uploader/);
     assert.match(output, /bee-uploader/, 'stopped at the first service that was down');
+  });
+});
+
+/**
+ * That the deploy watches for as long as its services can take to refuse, rather than looking once.
+ *
+ * ⛔⛔⛔ A five second look cannot see either of the two gates it was written for. The uploader runs
+ * `ChequebookGate.assertFunded` and then `PostageGate.assertUsable` before the API listens, one HTTP
+ * read per bee node and per batch, each bounded by BEE_REQUEST_TIMEOUT_MS at 4000ms, and only then
+ * does `StreamCatalog.init` look a feed up on a node that may be cold. On the four-node ABR pool the
+ * refusal lands half a minute in. At five seconds the container is `running` with its node process
+ * inside an HTTP call, the deploy prints its success line, and the container exits 1 and loops
+ * unwatched.
+ *
+ * The second half is the same blindness in one instant rather than over time: a crash loop spends
+ * most of its life `running`, because `restarting` is the brief moment between attempts. So a look
+ * that asks what state a container is in NOW reports a looping container as up, whatever the timing.
+ * The restart count is the evidence that does not depend on catching the right moment.
+ */
+describe('a deploy watches until its services have earned their green', () => {
+  it('refuses a container that is running at first and falls over inside the window', async () => {
+    const reason = 'ChequebookGate: bee-uploader has 0.0 BZZ in its chequebook, below the 0.5 floor';
+    const { run } = deploy(['stream-uploader'], {
+      // Running and unrestarted for the first two looks, restarted once from the third. The shape of
+      // every startup gate in this repository: the container is up while it is deciding.
+      DOCKER_STUB_RESTARTS: 'stream-uploader:1:2',
+      DOCKER_STUB_HEALTH: 'stream-uploader:starting',
+      DOCKER_STUB_LOG_LINE: reason,
+    });
+    const finished = await run;
+    const output = `${finished.stdout}${finished.stderr}`;
+
+    assert.notEqual(finished.exitCode, 0, 'a deploy whose container fell over inside the window reported success');
+    assert.match(output, /stream-uploader/);
+    // Docker never reported it as `restarting` here, which is the point: the refusal came from the
+    // restart count rather than from catching the container between attempts.
+    assert.match(output, /restart/i, `the refusal does not say what was wrong: ${output}`);
+    assert.match(output, new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the reason was not carried');
+  });
+
+  it('stops looking as soon as a healthcheck reports healthy', async () => {
+    const { sandbox, run } = deploy(['stream-uploader'], {
+      // `starting` for two looks, `healthy` from the third, which is a container whose gates cleared.
+      DOCKER_STUB_HEALTH: 'stream-uploader:healthy:2',
+    });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, `${finished.stdout}${finished.stderr}`);
+    // The window holds eleven looks. Ending on the one that answered is what keeps the watch off the
+    // critical path of a deploy that is fine, which is the whole cost this check adds.
+    assert.equal(
+      looks(sandbox, 'stream-uploader'),
+      3,
+      'the watch did not stop at the look that answered, so every good deploy pays the whole window',
+    );
+  });
+
+  it('accepts a service that never reports healthy, and says so', async () => {
+    const { sandbox, run } = deploy(['stream-uploader'], { DOCKER_STUB_HEALTH: 'stream-uploader:starting' });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, `a running container that had not restarted was refused: ${finished.stderr}`);
+    assert.match(finished.stderr, /never reported healthy/, `nothing said the window ran out: ${finished.stderr}`);
+    assert.match(finished.stderr, /starting/, 'the note does not say what the healthcheck actually said');
+    assert.ok(looks(sandbox, 'stream-uploader') > 1, 'the window was never waited out');
+  });
+
+  /**
+   * ⛔ `unhealthy` is not "did not start". The uploader answers /health with a 503 while it is
+   * degraded, and one dropped segment on a recovered stream is enough to do it, so refusing a deploy
+   * on `unhealthy` would refuse on media that was already lost before the deploy began.
+   */
+  it('does not refuse a container whose healthcheck is failing, only one that fell over', async () => {
+    const { run } = deploy(['stream-uploader'], { DOCKER_STUB_HEALTH: 'stream-uploader:unhealthy' });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, `a degraded but running service was refused: ${finished.stderr}`);
+    assert.match(finished.stderr, /unhealthy/, 'the deploy passed without saying the service is unhealthy');
+  });
+
+  it('waits no longer than the settle for a service that declares no healthcheck', async () => {
+    const { sandbox, run } = deploy(['bee-uploader']);
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, `${finished.stdout}${finished.stderr}`);
+    // The old behaviour, kept: a service with no startup gates in front of it has nothing further to
+    // report, so there is nothing to wait for once it has held for the settle.
+    assert.equal(
+      looks(sandbox, 'bee-uploader'),
+      1,
+      'a service with no healthcheck was watched past its settle, which every deploy would now pay',
+    );
   });
 });

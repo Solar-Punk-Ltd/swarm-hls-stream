@@ -309,6 +309,10 @@ fs.appendFileSync(${JSON.stringify(journal)}, process.argv.slice(2).join(' ') + 
  * Answers `ps -aq` from a fixed inventory, honouring both label filters, and records every call.
  * Honouring the service label is what lets the same stub tell a scoped sweep from a project-wide
  * one: a stub that ignored it would report success for either.
+ *
+ * `inspect` is answered too, from env, and it is the one answer here that may CHANGE between calls:
+ * see the handler below for why a container that falls over on its fourth second is a thing a test
+ * has to be able to state.
  */
 function dockerStub(defaultJournal, project) {
   return `const fs = require('fs');
@@ -325,6 +329,8 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
+const inventory = ${JSON.stringify(INVENTORY)};
+
 // A failing service's own output, which is the only place the reason for a refusal exists. Empty
 // unless a test asked for one, so every other test's deploy prints nothing extra.
 if (argv[0] === 'logs') {
@@ -334,13 +340,58 @@ if (argv[0] === 'logs') {
   process.exit(0);
 }
 
-if (argv[0] !== 'ps' && argv[0] !== 'volume') {
+// One service's spec out of a comma separated list of \`<service>:<value>[:<after>]\`, where \`after\`
+// is how many looks answer the starting value before \`value\` takes over. Without that third field a
+// stub can only state what a container is, and every question here is about what it BECOMES: a
+// container that falls over on its fourth second, a healthcheck that goes green on its third probe.
+function stubSpec(raw, service) {
+  for (const entry of (raw || '').split(',').filter(Boolean)) {
+    const [name, value, after] = entry.split(':');
+    if (name === service) {
+      return { value, after: Number(after || 0) };
+    }
+  }
+  return undefined;
+}
+
+// \`docker inspect\`, which is where the watch reads the two things \`docker ps\` cannot answer: how
+// many times docker has restarted this container, and what its healthcheck says. A crash loop spends
+// most of its time \`running\`, so a status filter alone reports one as up.
+//
+// DOCKER_STUB_RESTARTS=<service>:<count>[:<after>] and DOCKER_STUB_HEALTH=<service>:<status>[:<after>].
+// A service named by neither has no healthcheck at all, which is what most of this stack is and what
+// \`{{if .State.Health}}\` prints \`none\` for.
+if (argv[0] === 'inspect') {
+  const id = argv[argv.length - 1];
+  const container = inventory.find((entry) => entry.id === id);
+  const service = container ? container.service : '';
+
+  // Which look this is, counted out of the journal every call above already appended to. A counter
+  // file of its own would be a second piece of state to keep in step with the record of what was
+  // actually asked.
+  const looks = fs
+    .readFileSync(journal, 'utf8')
+    .split('\\n')
+    .filter((line) => line.startsWith('inspect ') && line.endsWith(' ' + id)).length;
+
+  const restarts = stubSpec(process.env.DOCKER_STUB_RESTARTS, service);
+  const health = stubSpec(process.env.DOCKER_STUB_HEALTH, service);
+  const down = stubSpec(process.env.DOCKER_STUB_DOWN, service);
+
+  const count = restarts && looks > restarts.after ? restarts.value : '0';
+  const status = health ? (looks > health.after ? health.value : 'starting') : 'none';
+  // A down service defaults to \`restarting\`, which is what a crash loop looks like and what the
+  // ps filter above answers for it. \`<service>:exited\` is the container that is not coming back.
+  const state = down ? down.value || 'restarting' : 'running';
+
+  console.log(count + ' ' + state + ' ' + status);
   process.exit(0);
 }
 
-const inventory = ${JSON.stringify(INVENTORY)};
+if (argv[0] !== 'ps' && argv[0] !== 'volume') {
+  process.exit(0);
+}
 const wanted = {};
-let status;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] !== '--filter' || !argv[i + 1]) {
     continue;
@@ -348,9 +399,6 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i + 1].startsWith('label=')) {
     const [key, value] = argv[i + 1].slice('label='.length).split('=');
     wanted[key] = value;
-  }
-  if (argv[i + 1].startsWith('status=')) {
-    status = argv[i + 1].slice('status='.length);
   }
 }
 
@@ -365,19 +413,13 @@ if (argv[0] === 'volume') {
   process.exit(0);
 }
 
-// Services whose container fell over, so a test can ask what a deploy does when one did not come
-// up. A container that is down exists and is not running, which is what a crash loop looks like to
-// docker ps, so it answers a restarting status filter and not a running one.
-const down = (process.env.DOCKER_STUB_DOWN || '').split(',').filter(Boolean);
+// Every container of the service, whatever state it is in, which is what \`ps --all\` answers and
+// what a watch needs before it can inspect one. Which of them fell over is DOCKER_STUB_DOWN's answer
+// to \`inspect\` above and not this call's: a crash-looping container is listed here throughout, and
+// a stub that hid it would model the one blindness the watch exists to close.
 const service = wanted[${JSON.stringify(SERVICE_LABEL)}];
 for (const container of inventory) {
   if (service !== undefined && container.service !== service) {
-    continue;
-  }
-  if (status === 'running' && down.includes(container.service)) {
-    continue;
-  }
-  if (status === 'restarting' && !down.includes(container.service)) {
     continue;
   }
   console.log(container.id);
