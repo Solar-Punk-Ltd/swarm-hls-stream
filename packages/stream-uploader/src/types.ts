@@ -416,13 +416,14 @@ export interface HealthSignals {
    * this has to choose between bringing the publisher's keyframe interval to the configured value and
    * turning the ladder on, and both of those are decided by how far apart the two numbers are.
    *
-   * ⛔ **The damage is the same as {@link fragmentMismatchStreams} and the cause is not.** Nothing
-   * here is mis-deployed: `HLS_FRAGMENT` is a floor without a ladder and the stage is working as
-   * designed. But every `#EXT-X-PROGRAM-DATE-TIME` is still arithmetic on the configured value, so the
-   * recording's clock runs at a different rate from its media and keeps those dates for ever. A live
-   * single-rendition stream was measured on 2026-09-15 cutting 2.067 to 10.033 seconds against a
-   * configured 2, and nothing said so. Latched for the life of each stream, since the next broadcast
-   * is a new publisher. See `libs/fragmentAgreement.ts`.
+   * ⛔ **The consequence is the same as {@link fragmentMismatchStreams} and the cause is not.**
+   * Nothing here is mis-deployed: `HLS_FRAGMENT` is a floor without a ladder and the stage is working
+   * as designed. The dates follow the media, so the recording keeps the right clock either way. What
+   * both reasons name is a stage cutting a length the deployment never declared, and the declared
+   * length is still what every `#EXT-X-GAP` entry is dated and sized at, so a lost segment leaves a
+   * hole of the wrong size. A live single-rendition stream was measured on 2026-09-15 cutting 2.067
+   * to 10.033 seconds against a configured 2, and nothing said so. Latched for the life of each
+   * stream, since the next broadcast is a new publisher. See `libs/fragmentAgreement.ts`.
    */
   publisherGopStreams: PublisherGopStream[];
   /**

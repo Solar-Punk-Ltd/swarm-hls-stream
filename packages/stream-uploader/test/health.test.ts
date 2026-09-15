@@ -555,7 +555,8 @@ describe('deriveHealthStatus publisher gop', () => {
   /**
    * No threshold, for the reason `fragment_mismatch` has none: a stream reaches this list only after
    * eight of its measured segments have missed the configured length. The cause is legitimate and the
-   * damage is not, because the dates are arithmetic on the configured value either way.
+   * consequence is not, because a stage cutting a length nobody declared sizes every gap entry wrong
+   * either way.
    */
   it('degrades on the first stream the publisher is segmenting', () => {
     const report = deriveHealthStatus(signals({ publisherGopStreams: MEASURED_LONG }), STALL_MS);

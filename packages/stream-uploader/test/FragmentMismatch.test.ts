@@ -177,12 +177,11 @@ describe('a rung whose segments are not the length this uploader dates by', () =
 
 describe('a single rendition whose publisher cuts longer than the configured length', () => {
   /**
-   * The same damage from a cause nothing is doing wrong, which is why it is its own reason rather
-   * than a second trigger for `fragment_mismatch`. Measured live on 2026-09-15: segments of 2.067 to
-   * 10.033 seconds against a configured 2, and nothing on `/health` said so. The recording is dated
-   * by arithmetic on the configured length either way, so a legitimately longer segment corrupts its
-   * clock exactly as a stale container does, and the operator's lever here is the publisher rather
-   * than a redeploy.
+   * The same consequence from a cause nothing is doing wrong, which is why it is its own reason
+   * rather than a second trigger for `fragment_mismatch`. Measured live on 2026-09-15: segments of
+   * 2.067 to 10.033 seconds against a configured 2, and nothing on `/health` said so. The dates
+   * follow the media either way, so what both reasons name is a stage cutting a length the deployment
+   * never declared, and the operator's lever here is the publisher rather than a redeploy.
    */
   it('raises fragment_publisher_gop on /health, with the configured length beside the measured one', async () => {
     await withCapturedLog(async (lines, levels) => {

@@ -63,8 +63,9 @@ const DEFAULT_STAMP_MAX_UTILIZATION = 0.9;
  * ⚠️ It is what the deployment **asks** the engine to cut at, never what a segment measured. Under
  * a ladder the two agree, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT` and SRS then
  * cuts exactly there. On a single-rendition stream the publisher's own keyframe interval decides the
- * segment and this is only a floor, so a broadcaster sending a longer GOP produces longer segments
- * than the wall clock derived from this steps by. See `deploy/README.md`.
+ * segment and this is only a floor, so a broadcaster sending a longer GOP produces segments longer
+ * than this. Those are dated by what they really held, and it is the gap entries and the budgets
+ * derived from this that then describe a stage nobody is running. See `deploy/README.md`.
  *
  * The bounds are the range SRS itself will work in: below a frame the entrypoint refuses the GOP
  * arithmetic outright, and an hour is `isUsableDuration`'s own ceiling on a segment.
