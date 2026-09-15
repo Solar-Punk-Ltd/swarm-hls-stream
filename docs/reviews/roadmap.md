@@ -219,6 +219,16 @@ themselves are the check on it.
 
 ## Phase 0.6 ✅ MEASURED AT BOTH PROFILES — light against ultra-light
 
+⛔⛔ **Levi ruled the other way on 2026-09-15 and nothing in this section was rewritten.**
+`deploy/docker-compose.yml` hard-codes the viewer gateway as ultra-light and unfunded now, on that
+ruling, with the cost stated beside it as LAT-10: such a node has no chequebook, lives on the free
+bandwidth allowance alone, and a viewer polling it sees the feed freeze 30 to 48s at a time. So
+everything below is the answer as it stood before that ruling, and a reader of this section alone
+would conclude the shipped gateway is funded. The label correction that goes with it is about 170
+lines down, under "Label correction, 2026-09-15": arm U was a light node with swap off rather than
+an ultra-light one, because bee decides ultra-light on an empty `--blockchain-rpc-endpoint` and
+every gateway measured here carried one.
+
 ⛔ **The standing answer: do not ship an unfunded viewer gateway.** Not because it breaks every time,
 it does not, but because the margin is thin and the variation an operator cannot control is wider
 than the margin.
