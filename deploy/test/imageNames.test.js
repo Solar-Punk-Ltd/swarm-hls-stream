@@ -42,7 +42,10 @@ describe('the images this repo builds are named after the deployment', () => {
     it(`builds ${service} without an image name, so its tag belongs to one project`, () => {
       const keys = serviceKeys(compose, service);
       assert.ok(keys.includes('build'), `${service} is expected to be built from a Dockerfile`);
-      assert.ok(!keys.includes('image'), `${service} names an image, so every deployment on the host shares that one tag`);
+      assert.ok(
+        !keys.includes('image'),
+        `${service} names an image, so every deployment on the host shares that one tag`,
+      );
     });
   }
 });
