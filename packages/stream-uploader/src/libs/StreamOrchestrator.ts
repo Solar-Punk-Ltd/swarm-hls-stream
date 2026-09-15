@@ -1964,8 +1964,20 @@ export class StreamOrchestrator {
   private async performDrain(streamId: string): Promise<void> {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
-      this.logger.warn(`[StreamOrchestrator] No uploader found for ${streamId}`);
-      this.recoveryStore.remove(streamId);
+      // ⛔⛔⛔ Nothing on disk is touched here, and that is the whole point of this branch. The only
+      // recovery entry it can reach belongs to a session that has already drained, and a drain whose
+      // finalize failed keeps its entry deliberately: `drainUploader` retires the uploader so the
+      // file survives for the next boot to publish the recording from. Removing it here threw that
+      // recording away on the second stop of an id, which is an ordinary event rather than a rare
+      // one, since OME sends its closing after the puller has already stopped the stream, SRS sends
+      // `on_unpublish` for a session that outlived a reap, and an operator reading `failed` from
+      // `GET /stream/status` retries the stop. The media it stranded was bought and paid for, the
+      // catalog entry stays `live` for ever, and no health reason fires, because the entry was
+      // deleted rather than quarantined.
+      this.logger.warn(
+        `[StreamOrchestrator] Stop of ${streamId} found no live session, so any recovery entry on ` +
+          'disk is left for the next boot',
+      );
       this.releaseLadder(streamId);
       return;
     }

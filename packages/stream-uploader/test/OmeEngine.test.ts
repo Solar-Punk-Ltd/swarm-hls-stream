@@ -989,7 +989,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
   // What a drain of an already-retired stream leaves behind, from `StreamOrchestrator.performDrain`.
   // It is the only outward trace of the second stop, because the first one took the puller and the
   // uploader with it, so nothing else about the process looks different afterwards.
-  const DRAIN_OF_A_RETIRED_STREAM = 'No uploader found for';
+  const DRAIN_OF_A_RETIRED_STREAM = 'found no live session';
 
   // The two sockets the live capture recorded, kept as the real numbers so the fixture cannot drift
   // into a shape OME does not produce.
