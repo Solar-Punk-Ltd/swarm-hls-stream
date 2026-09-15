@@ -634,6 +634,14 @@ looked exactly like runs configured for the gateway.
 
 ## The latency bench (LAT-1)
 
+From a workstation, which is the supported way and the one `bench/longrun.ts` already names:
+
+```bash
+deploy/scripts/bench-on-host.sh --script bench:latency
+```
+
+On the deployment host itself, where the publisher and the gateway are already the same machine:
+
 ```bash
 pnpm bench:latency
 ```
@@ -664,7 +672,8 @@ whether the engine reports itself correctly, it just no longer depends on the an
 over HTTP rather than through ssh, so no clock skew enters the total. That is also the path a real
 viewer takes. It does mean the gateway has to be reachable from wherever you run this: set
 `BENCH_GATEWAY_URL`, or forward the port with `ssh -L`. The run refuses to start otherwise rather than
-publishing first and failing after.
+publishing first and failing after. Launched through `bench-on-host.sh` the run happens on the
+deployment host over loopback, so there is nothing to forward and nothing to set.
 
 **It checks itself before it spends anything.** The first thing a run does is publish to a local file,
 probe it, and recover the capture instants, the whole chain, offline, in about fifteen seconds. If
@@ -673,6 +682,14 @@ for free, instead of producing a number that becomes a baseline. It also checks 
 something the spans never touched: consecutive segments are contiguous, so each one's measured media
 has to reach exactly as far as the next one's first frame. Checking them against the segment duration
 the check was configured with would compare the instrument to its own input.
+
+**And it refuses before it spends.** Publishing costs real postage and real bandwidth, so after the
+free checks and before the first frame the run reads the owner's authorisation in `.spend-ledger.env`,
+every publisher node's SWAP chequebook and every publisher's postage TTL, and stops on the first no.
+Those are the three gates a scenario suite runs, in the same words, because the bench calls the same
+helpers (`src/bench/authorisation.ts`). A missing ledger is a refusal rather than an unlimited
+allowance. `bench-on-host.sh` still puts the whole preflight directory in front of a run launched
+through it, which asks a good deal more than these three, so the wrapper stays worth using.
 
 **What it refuses to guess.** A media engine may rebase timestamps when it repackages. If it does, the
 arithmetic still yields a plausible-looking number, so the reading is bounded by the two things that
