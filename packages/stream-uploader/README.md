@@ -79,14 +79,33 @@ read the same value however far apart they were admitted, and it outlives every 
 broadcast: it rides with the group in `state/ladder/groups.json` and in each rung's recovery entry,
 so a rung rebuilt after a crash keeps it rather than re-dating the recording at the restart.
 
-**`#EXT-X-PROGRAM-DATE-TIME`** is `anchor + sequence × HLS_FRAGMENT`, in UTC to the millisecond. An
-engine restart inside the broadcast adds an epoch to that arithmetic, described below.
+**`#EXT-X-PROGRAM-DATE-TIME`** is the instant of the segment in front of it plus the media that
+segment holds, in UTC to the millisecond, decided once as the segment is placed and then stored on
+it. The broadcast's first segment takes the anchor itself. An engine restart inside the broadcast
+adds an epoch, described below.
 
-⛔ It is derived and never observed. It is not the time the segment arrived, and it does not follow
-the segment's own `#EXTINF`. Four rung uploaders stamping their own arrival times would disagree by
-their upload jitter, and hls.js reads that disagreement as the rungs covering different media. The
-millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5` a whole-second
-stamp would give two consecutive segments the same instant.
+**The media a segment contributes is read against `HLS_FRAGMENT`.** A segment measuring within 5% of
+the declared length counts as exactly that length, and one outside it counts as itself, rounded to
+the millisecond. That 5% is `FRAGMENT_TOLERANCE` in `src/libs/fragmentAgreement.ts`, the same number
+the fragment agreement check calls a mismatch by, so there is one definition of two segments being
+the same length.
+
+⛔ **Under a ladder every segment is inside that band, so the step is the declared fragment and four
+rungs date one piece of media identically.** `engines/srs/entrypoint.sh` pins a keyframe every
+`ABR_FPS × HLS_FRAGMENT` frames and SRS cuts exactly there, so a rung's segment holds the configured
+length to within 90kHz tick rounding. Two rungs can only be dated apart by measuring one segment more
+than the tolerance apart, which is the mismatch that check already names.
+
+⛔ **On a single rendition the publisher's own keyframe interval decides the segment**, and
+`HLS_FRAGMENT` is a floor rather than the length. A stage measured on 2026-09-15 cut segments from
+2.067 to 10.033 seconds against a configured 2 while every date stepped exactly 2.000, so the
+recording's wall clock fell further behind its own media with every segment and kept those dates for
+ever. That is what the media term fixes.
+
+⛔ It is still never an arrival time. Four rung uploaders stamping the clock they received a segment
+at would disagree by their upload jitter, and hls.js reads that disagreement as the rungs covering
+different media. The millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5`
+a whole-second stamp would give two consecutive segments the same instant.
 
 ⚠️ **It is therefore nominal, and the operating rule that keeps it honest is about the source's
 keyframe interval.** Decided by the owner on 2026-09-03: accepted as it is, with this rule and no
@@ -198,10 +217,9 @@ and nothing bounded that. A broadcast's dating is a list of epochs now, in `Broa
 - The media published before the restart keeps the dates it went out with. Those segments are in a
   window a viewer is holding, and re-dating them would move media that has already been served.
 - The first segment after the restart is dated at the wall clock it arrived at, and the segments
-  after it step one fragment from there.
-- An epoch dates every sequence at or above its own `fromSequence`, so `#EXT-X-PROGRAM-DATE-TIME` is
-  `epoch + (sequence − epoch.fromSequence) × HLS_FRAGMENT` under the newest epoch that reaches the
-  segment. The broadcast's start is the implicit first epoch.
+  after it carry on from the media each one holds.
+- The first segment placed at or above an epoch's `fromSequence` takes that epoch's instant, under
+  the newest epoch that reaches it. The broadcast's start is the implicit first epoch.
 
 ⛔ **The re-anchoring is minted once for the whole ladder**, by whichever rung crosses the restart
 first, and every other rung lands on that same line rather than taking its own reading of the clock.
@@ -302,20 +320,20 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable               | Default   | Description                                                                                                          |
-| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
-| `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below |
-| `API_PORT`             | `3000`    | HTTP API port                                                                                                        |
-| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                   |
-| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                       |
-| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                          |
-| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                         |
-| `HLS_FRAGMENT`         | `0.5`     | Nominal seconds per fragment, which every `#EXT-X-PROGRAM-DATE-TIME` steps by. Same variable the engine reads        |
-| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                  |
-| `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                           |
-| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                        |
-| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event             |
-| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                           |
+| Variable               | Default   | Description                                                                                                                        |
+| ---------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below               |
+| `API_PORT`             | `3000`    | HTTP API port                                                                                                                      |
+| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                                 |
+| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                                     |
+| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                                        |
+| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                                       |
+| `HLS_FRAGMENT`         | `0.5`     | Nominal seconds per fragment, the grid every `#EXT-X-PROGRAM-DATE-TIME` reads its segments against. Same variable the engine reads |
+| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                                |
+| `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                                         |
+| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                                      |
+| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                           |
+| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                         |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -469,19 +487,19 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
 
-| Reason                   | Meaning                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `segment_upload_failure` | A segment reached the uploader and was never stored, either because its upload retry window was spent or because bee refused it with a status the uploader does not retry, which is a postage batch filling up, so that data is gone                                                                                                                                               |
-| `segment_loss`           | A segment never reached the uploader: the engine could not obtain it from its origin, or it skipped the index and never posted it at all. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it                                                                                                         |
-| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                                                                                                                                                               |
-| `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                                                                                                                                                                     |
-| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                                                                                                                                                                          |
-| `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                                                                                                                                                                   |
-| `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying                                                                                                                                               |
-| `unrecoverable_stream`   | A recovery entry could not be parsed at boot, so a broadcast that was live when this service last died cannot be finalized: its recording stays unsealed and its catalog entry says `live`. The entry is kept as `<id>.json.corrupt` for repair rather than deleted. Latched for the life of the process, since only an operator clears it                                         |
-| `fragment_mismatch`      | A rung's segments are not the length `HLS_FRAGMENT` says they are, so every `#EXT-X-PROGRAM-DATE-TIME` derived from it drifts, cumulatively, and the recording keeps those dates. Raised only under `ABR_ENABLED`, once eight measured segments of a stream miss the configured length by over 5%. One of the two containers is running an older deploy, so redeploy the stale one |
-| `fragment_publisher_gop` | Segments longer than `HLS_FRAGMENT` with no ladder running. Nothing transcodes there, so the publisher's own keyframe interval decides the segment and the configured value is a floor. Raised once eight measured segments run over it by over 5%. Nothing is stale and the dates drift as above. Set `HLS_FRAGMENT` to the publisher's keyframe interval, or turn the ladder on  |
-| `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                       |
+| Reason                   | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `segment_upload_failure` | A segment reached the uploader and was never stored, either because its upload retry window was spent or because bee refused it with a status the uploader does not retry, which is a postage batch filling up, so that data is gone                                                                                                                                                                                                                                                              |
+| `segment_loss`           | A segment never reached the uploader: the engine could not obtain it from its origin, or it skipped the index and never posted it at all. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it                                                                                                                                                                                                                        |
+| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                                                                                                                                                                                                                                                                                    |
+| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                                                                                                                                                                                                                                                                                  |
+| `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying                                                                                                                                                                                                                                                              |
+| `unrecoverable_stream`   | A recovery entry could not be parsed at boot, so a broadcast that was live when this service last died cannot be finalized: its recording stays unsealed and its catalog entry says `live`. The entry is kept as `<id>.json.corrupt` for repair rather than deleted. Latched for the life of the process, since only an operator clears it                                                                                                                                                        |
+| `fragment_mismatch`      | A rung's segments are not the length `HLS_FRAGMENT` says they are, so the dating reads them against a grid the engine is not cutting to and the recording keeps those dates. Raised only under `ABR_ENABLED`, once eight measured segments of a stream miss the configured length by over 5%. One of the two containers is running an older deploy, so redeploy the stale one                                                                                                                     |
+| `fragment_publisher_gop` | Segments longer than `HLS_FRAGMENT` with no ladder running. Nothing transcodes there, so the publisher's own keyframe interval decides the segment and the configured value is a floor. Raised once eight measured segments run over it by over 5%. Nothing is stale, and the dating follows the media so the recording's clock stays right. What it names is a stage cutting longer than the deployment declared: set `HLS_FRAGMENT` to the publisher's keyframe interval, or turn the ladder on |
+| `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                                                                                                                                      |
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
