@@ -125,15 +125,24 @@ function sandboxFor(plan) {
   return { sandbox, markerPath };
 }
 
+/**
+ * Publishes the way the six drivers do, which is with the money gates already satisfied.
+ *
+ * These cases are about telling a teardown this project asked for apart from a publisher that died.
+ * A sandbox has no chequebook and no spend ledger, so without the caller's declaration the gates
+ * would refuse every one of them before a container was ever started, and this file would be proving
+ * a gate `publishClock.test.js` already has its own cases for.
+ */
 async function publish({ sandbox, markerPath }, { staleMarker = false } = {}) {
   if (staleMarker) {
     writeFileSync(markerPath, 'left behind by an earlier sitting\n');
   }
-  const run = await runScript(sandbox, 'publish-clock.sh', [
-    '--host=localhost',
-    '--seconds=1',
-    `--stop-file=${markerPath}`,
-  ]);
+  const run = await runScript(
+    sandbox,
+    'publish-clock.sh',
+    ['--host=localhost', '--seconds=1', `--stop-file=${markerPath}`],
+    { PUBLISH_GATES_ALREADY_RAN: '1' },
+  );
   return { ...run, output: `${run.stdout}${run.stderr}`, markerPath };
 }
 

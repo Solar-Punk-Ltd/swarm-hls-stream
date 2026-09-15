@@ -217,7 +217,7 @@ start_publisher() {
   stop_publisher
   (
     cd "${BENCH_REPO}" || exit 1
-    deploy/scripts/publish-clock.sh \
+    PUBLISH_GATES_ALREADY_RAN=1 deploy/scripts/publish-clock.sh \
       "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" --host=localhost \
       "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${gop}" \
       "--stop-file=${PUBLISHER_STOP_FILE}"
