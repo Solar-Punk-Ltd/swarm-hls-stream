@@ -63,6 +63,22 @@ const RECORD = `.drain-stage.${PROFILE}.env`;
 const CHAIN_PRICE = 84370;
 const MINIMUM_VALIDITY_BLOCKS = 17280;
 
+/** PLUR in one BZZ, the conversion the script carries, so a cost row can be predicted from above. */
+const PLUR_PER_BZZ = 10 ** 16;
+
+/**
+ * The BZZ figure print-buy prints for a depth, derived from the chain state this suite serves rather
+ * than written down. Postage is charged per chunk, so a batch costs its per-chunk amount once for
+ * every chunk it could hold, and the amount is the price per block over the days of life bought.
+ *
+ * @param {number} depth
+ * @param {number} [days] The default `print-buy` buys, which is what the cases below leave alone.
+ * @returns {string} Four decimal places, as the script formats it.
+ */
+function costInBzz(depth, days = 2) {
+  return ((2 ** depth * CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * days) / PLUR_PER_BZZ).toFixed(4);
+}
+
 /** The smallest depth bee accepts, which is the only depth this script arms. */
 const DEPTH = 17;
 
@@ -1767,6 +1783,9 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
   const ROOMY_DEPTH = 20;
   const ROOMY = { ...ARMABLE, depth: ROOMY_DEPTH };
 
+  /** `MAX_ARM_DEPTH` in the script, the deepest batch it will price or arm. */
+  const MAX_DEPTH = 32;
+
   it('arms a batch at the depth the run named', async () => {
     const sandbox = localSandbox({ readings: { stamps: [ROOMY] } });
 
@@ -1826,6 +1845,16 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
     assert.doesNotMatch(`${run.stdout}${run.stderr}`, /never ran dry/);
   });
 
+  /**
+   * ⛔ That refusal carries a reason, and which reason is true depends on whether the run named the
+   * depth or took the default. This case and the one under it pin one branch each.
+   *
+   * Here the run named 20 and the node holds 17, so nothing is being said about what a broadcast can
+   * fill. The batch is simply not the one this run was told to arm. Reading the run's own depth as
+   * the default, or swapping the two sentences, leaves a refusal that still refuses and still names
+   * both numbers while telling the operator the opposite of what is wrong, which is the shape a
+   * count of failures cannot see.
+   */
   it('refuses a batch that is not the depth the run named, naming both', async () => {
     const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
 
@@ -1834,9 +1863,30 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
     assert.notEqual(run.exitCode, 0, 'a depth-17 batch was armed for a run that asked for depth 20');
     assert.match(run.stderr, new RegExp(`depth ${DEPTH}`));
     assert.match(run.stderr, new RegExp(String(ROOMY_DEPTH)));
+    assert.match(run.stderr, /this run named that depth itself/);
+    assert.doesNotMatch(run.stderr, /never drained/);
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten anyway');
   });
 
+  /** The other branch: the run named no depth, so the default is what the roomier batch misses. */
+  it('refuses a roomier batch under the default depth as one a broadcast cannot drain', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ROOMY] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a depth-20 batch was armed for a run that asked for the drain depth');
+    assert.match(run.stderr, /never drained/);
+    assert.doesNotMatch(run.stderr, /named that depth itself/);
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten anyway');
+  });
+
+  /**
+   * ⛔ The two rows the python prints, and not only the buy url. That url is assembled by the shell
+   * out of the same variable the argument parser set, so it says what the parser read and nothing
+   * about what was priced. The depth reaching the parser and the depth reaching the pricing program
+   * are two separate hops, and quoting the drain depth while printing a url for depth 20 passes a
+   * check that reads the url alone, which is what the operator would then spend against.
+   */
   it('prices the purchase at the depth the run named', async () => {
     const sandbox = remoteSandbox();
 
@@ -1844,6 +1894,11 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
 
     assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
     assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${ROOMY_DEPTH}`));
+    assert.match(run.stdout, new RegExp(`depth ${ROOMY_DEPTH}, `));
+    assert.ok(
+      run.stdout.includes(`cost ${costInBzz(ROOMY_DEPTH)} BZZ`),
+      `the cost row is not what this depth prices at against the fixture's chain state:\n${run.stdout}`,
+    );
   });
 
   /**
@@ -1901,6 +1956,68 @@ describe('drain-stage arms the depth the run asks for, and 17 is only the defaul
 
     assert.notEqual(run.exitCode, 0, 'a depth of 200 was priced');
     assert.match(run.stderr, /--depth/);
+  });
+
+  /**
+   * The digit guard, which no case reached before this one. Every other depth refusal here is a
+   * comparison, and a comparison in `[` on a value that is not a number is a fatal shell error
+   * rather than a refusal, so the guard in front of them is the whole reason a typo comes back as a
+   * sentence about `--depth` instead of `integer expression expected`.
+   */
+  it('refuses a depth that is not a whole number, which is a typo rather than an ask', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth=2o']);
+
+    assert.equal(run.exitCode, 2, `a depth of 2o was not refused as a usage error: ${run.stdout}${run.stderr}`);
+    assert.match(run.stderr, /--depth/);
+    assert.match(run.stderr, /2o/);
+    assert.doesNotMatch(run.stderr, /integer expression expected/);
+  });
+
+  /**
+   * Both sides of the ceiling, because a guard is only a guard at its own edge. The case above uses
+   * 200, which a boundary off by one still refuses.
+   *
+   * ⛔ The accepting half also prices, which means the estimate has to survive a k of 65537. That is
+   * the depth the direct factorial died at hardest, so this case is the ceiling and the arithmetic
+   * at once.
+   */
+  it('prices the deepest depth the guard allows and refuses the first one past it', async () => {
+    const atCeiling = await drainStage(remoteSandbox(), ['print-buy', `--depth=${MAX_DEPTH}`]);
+
+    assert.equal(atCeiling.exitCode, 0, `the ceiling depth itself was refused: ${atCeiling.stdout}${atCeiling.stderr}`);
+    assert.match(atCeiling.stdout, new RegExp(`depth ${MAX_DEPTH}, `));
+
+    const pastCeiling = await drainStage(remoteSandbox(), ['print-buy', `--depth=${MAX_DEPTH + 1}`]);
+
+    assert.notEqual(pastCeiling.exitCode, 0, `depth ${MAX_DEPTH + 1} was priced`);
+    assert.match(pastCeiling.stderr, /--depth/);
+    assert.match(pastCeiling.stderr, new RegExp(String(MAX_DEPTH)));
+  });
+
+  /** The flag has two forms and the parser has two branches, so both are exercised. */
+  it('takes the depth as a separate word as well as after an equals sign', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth', String(ROOMY_DEPTH)]);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`depth ${ROOMY_DEPTH}, `));
+  });
+
+  /**
+   * A `--depth` with nothing after it. Without the arity check the parser would shift past the end of
+   * argv under `set -u`, which is an unbound variable and a crash rather than a usage error.
+   */
+  it('refuses a --depth at the end of the command line, rather than reading past it', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy', '--depth']);
+
+    assert.equal(run.exitCode, 2, `a --depth with no value was not refused as a usage error: ${run.stderr}`);
+    assert.match(run.stderr, /--depth/);
+    assert.doesNotMatch(run.stderr, /unbound variable/);
   });
 
   it('refuses --depth on a subcommand that neither buys nor arms', async () => {
