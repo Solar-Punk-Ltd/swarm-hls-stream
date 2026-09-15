@@ -6,9 +6,23 @@ import { exposeFetchBackendForInstrumentation } from '@/components/SwarmHlsPlaye
 import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { Stream } from '@/types/stream';
 import { CatalogFeedReader } from '@/utils/catalogFeed';
+import { nextStreamList } from '@/utils/catalogList';
 import { config } from '@/utils/config';
 
 import { exposeGatewayForInstrumentation } from './gatewayTestHandle';
+
+/**
+ * One catalog read, carrying the gateway it went to.
+ *
+ * ⛔ The gateway travels with the body rather than being read again when the body lands, because a
+ * viewer can switch node while a poll is in flight. Attributing the answer to whichever gateway is
+ * selected by the time it arrives is how another node's catalog came to be shown as this node's.
+ */
+export interface CatalogRead {
+  gateway: string;
+  /** The parsed catalog, or null when the gateway had nothing newer to give. */
+  streams: unknown;
+}
 
 type AppContextState = {
   streamList: Stream[];
@@ -18,13 +32,32 @@ type AppContextState = {
    * A stream's ABR ladder lives in the catalog, so a page opened directly on /watch knows nothing
    * about it until this flips. Mounting the player before then would start it as single-rendition
    * and rebuild it the moment the ladder arrived, losing playback position on every deep link.
+   *
+   * ⛔ Not reset by a gateway switch, and that is deliberate. The ladder belongs to the broadcast
+   * rather than to the node serving it, and the watch page has no catalog poll of its own, so
+   * clearing this there would unmount the player and leave nothing to bring it back.
    */
   isStreamListLoaded: boolean;
-  setNewStreamList: (data: any) => void;
-  fetchAppState: () => Promise<any>;
+  /**
+   * Whether {@link streamList} came from the gateway now selected.
+   *
+   * False from the moment a viewer switches node until that node's own answer lands. The browse page
+   * then says it is still looking rather than showing another node's streams, and the watch page
+   * keeps the ladder it has, which is a property of the broadcast and not of the gateway.
+   */
+  isStreamListFromCurrentGateway: boolean;
+  setNewStreamList: (read: CatalogRead) => void;
+  fetchAppState: () => Promise<CatalogRead>;
   gatewayUrl: string;
   setGatewayUrl: (url: string) => void;
 };
+
+/** The streams on screen and the gateway that served them, held together so they cannot disagree. */
+interface StreamCatalog {
+  streams: Stream[];
+  /** Null before any read has landed. */
+  gateway: string | null;
+}
 
 const AppContext = createContext<AppContextState | undefined>(undefined);
 
@@ -58,7 +91,7 @@ function loadGatewayUrl(): string {
 }
 
 export const AppContextProvider = ({ children }: Props) => {
-  const [streamList, setStreamList] = useState<Stream[]>([]);
+  const [catalog, setCatalog] = useState<StreamCatalog>({ streams: [], gateway: null });
   const [isStreamListLoaded, setIsStreamListLoaded] = useState(false);
   const [gatewayUrl, setGatewayUrlState] = useState<string>(() => {
     const url = loadGatewayUrl();
@@ -68,6 +101,17 @@ export const AppContextProvider = ({ children }: Props) => {
 
   const gatewayRef = useRef(gatewayUrl);
 
+  /**
+   * Point every subsequent read at another node.
+   *
+   * ⛔ **The stream list is not cleared here, and that is the fix rather than an omission.** What a
+   * switch changes is whose answer the list is, which the gateway held beside it already records, so
+   * the browse page stops showing it from this moment without anything being thrown away. Clearing
+   * it would reach the watch page too, where a player is mounted on a ladder read out of it and
+   * nothing polls the catalog to put one back: the viewer's own node would cost them the ladder, the
+   * playback position, or the whole player. It would also break the instrumentation handle's one
+   * promise, that a switch repoints every fetch without remounting anything.
+   */
   const setGatewayUrl = useCallback((url: string) => {
     const trimmed = url.replace(/\/+$/, '');
     gatewayRef.current = trimmed;
@@ -93,35 +137,37 @@ export const AppContextProvider = ({ children }: Props) => {
   const catalogReader = useRef(new CatalogFeedReader(config.appOwner, Topic.fromString(config.rawAppTopic)));
 
   /**
-   * Null when nothing is newer than the last poll, which both callers already treat as no change.
+   * A read that landed, carrying a null body when nothing was newer than the last poll.
    *
    * The head is resolved once, on the first call, and every call after asks for the slot after the
    * one it holds. See `CatalogFeedReader` for why that is worth about a thousand times at the median.
    */
-  const fetchAppState = useCallback(async () => {
-    const body = await catalogReader.current.read(gatewayRef.current);
-    return body === null ? null : JSON.parse(body);
+  const fetchAppState = useCallback(async (): Promise<CatalogRead> => {
+    const gateway = gatewayRef.current;
+    const body = await catalogReader.current.read(gateway);
+    return { gateway, streams: body === null ? null : JSON.parse(body) };
   }, []);
 
-  const setNewStreamList = (data: any) => {
-    if (!Array.isArray(data) || data.length === 0) {
-      return;
-    }
-
-    const latestFetched = data[data.length - 1];
-    const latestExisting = streamList?.[streamList.length - 1];
-
-    if (!latestExisting || latestFetched.timestamp > latestExisting.timestamp) {
-      setStreamList(data);
-    }
-  };
+  /**
+   * Stable, and applied through the state it is updating rather than through a captured copy.
+   *
+   * ⛔ A new function on every render is what let a poll be applied twice: the browse page's effect
+   * depends on this, so it re-ran on every render of this provider and handed the previous poll's
+   * body back in, which would put a gateway's streams back on screen right after a switch cleared
+   * them.
+   */
+  const setNewStreamList = useCallback((read: CatalogRead) => {
+    setCatalog((held) => ({
+      streams:
+        nextStreamList({ held: held.streams, fetched: read.streams, isSameGateway: held.gateway === read.gateway }) ??
+        held.streams,
+      gateway: read.gateway,
+    }));
+  }, []);
 
   const initAppState = useCallback(async () => {
     try {
-      const data = await fetchAppState();
-      if (Array.isArray(data)) {
-        setStreamList(data);
-      }
+      setNewStreamList(await fetchAppState());
     } catch (error) {
       console.error('Failed to fetch app state:', error);
     } finally {
@@ -129,7 +175,7 @@ export const AppContextProvider = ({ children }: Props) => {
       // forever, and a stream deep-linked without its ladder still plays as a single rendition.
       setIsStreamListLoaded(true);
     }
-  }, [fetchAppState]);
+  }, [fetchAppState, setNewStreamList]);
 
   useEffect(() => {
     initAppState();
@@ -152,7 +198,15 @@ export const AppContextProvider = ({ children }: Props) => {
 
   return (
     <AppContext.Provider
-      value={{ streamList, isStreamListLoaded, setNewStreamList, fetchAppState, gatewayUrl, setGatewayUrl }}
+      value={{
+        streamList: catalog.streams,
+        isStreamListLoaded,
+        isStreamListFromCurrentGateway: catalog.gateway === gatewayUrl,
+        setNewStreamList,
+        fetchAppState,
+        gatewayUrl,
+        setGatewayUrl,
+      }}
     >
       {children}
     </AppContext.Provider>
