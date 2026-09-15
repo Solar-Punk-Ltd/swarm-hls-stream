@@ -272,13 +272,14 @@ function fragmentSecondsOf(raw: string | undefined): number | null {
   return Number.parseFloat(value);
 }
 
-/** How the pair goes wrong, in the one sentence both directions share. */
-const TWO_CLOCKS =
-  'The uploader dates every segment against its own HLS_FRAGMENT, because #EXT-X-PROGRAM-DATE-TIME ' +
-  'steps by that value wherever a segment measures within the tolerance of it, while the engine cuts ' +
-  'segments by its own. So the two disagreeing means the engine is cutting a length the uploader ' +
-  'treats as the configured one, and the playlist says a segment covers one length of media while ' +
-  'the media covers another, on a stage where every other instrument looks healthy.';
+/** What the pair disagreeing costs, in the one sentence every refusal here shares. */
+const UNDECLARED_LENGTH_COST =
+  'HLS_FRAGMENT is the length the engine cuts segments at and the grid the uploader reads every ' +
+  'segment against, and it is one value that has to reach both. The dates follow the media, so the ' +
+  'two disagreeing puts no wrong clock on the recording, but it does mean the deployment is not ' +
+  'what its configuration says: the declared length is still what every #EXT-X-GAP entry is dated ' +
+  'and sized at and what the rung GOP and the segment budgets are derived from, so a lost segment ' +
+  'leaves a hole of the wrong size on a stage where every other instrument looks healthy.';
 
 /**
  * Why this stage's uploader dates segments by the wrong length, or `null`.
@@ -308,7 +309,7 @@ export function uploaderDatingRefusal({ profile, needed, uploader, engine }: Dat
       return (
         `The ${who} container of this stage declares HLS_FRAGMENT ` +
         `${raw === undefined ? 'not at all' : `as '${raw}'`}, so the length it works to is unknown, ` +
-        `and this run needs ${needed}s segments. ${TWO_CLOCKS} Redeploy through ` +
+        `and this run needs ${needed}s segments. ${UNDECLARED_LENGTH_COST} Redeploy through ` +
         'deploy/scripts/deploy.sh, which supplies the variable to both containers from one value in ' +
         'the profile env, rather than reading an unset one as the default somebody happened to compile.'
       );
@@ -318,7 +319,7 @@ export function uploaderDatingRefusal({ profile, needed, uploader, engine }: Dat
   if (dated !== null && cut !== null && Math.abs(dated - cut) > EPSILON) {
     return (
       `The uploader of this stage was started with HLS_FRAGMENT ${dated} and the engine with ` +
-      `${cut}. ${TWO_CLOCKS} One of the two containers is running an older deploy: the variable is ` +
+      `${cut}. ${UNDECLARED_LENGTH_COST} One of the two containers is running an older deploy: the variable is ` +
       'one value in the profile env and it reaches both, so a difference is a container that was ' +
       'never restarted on the current one. Redeploy the stale one.'
     );
@@ -327,7 +328,7 @@ export function uploaderDatingRefusal({ profile, needed, uploader, engine }: Dat
   if (dated !== null && Math.abs(dated - needed) > EPSILON) {
     return (
       `Run profile '${profile}' needs ${needed}s segments and both containers of this stage were ` +
-      `started with HLS_FRAGMENT ${dated}. ${TWO_CLOCKS} Set HLS_FRAGMENT=${needed} in the profile ` +
+      `started with HLS_FRAGMENT ${dated}. ${UNDECLARED_LENGTH_COST} Set HLS_FRAGMENT=${needed} in the profile ` +
       'env and redeploy the engine and the uploader together, because the pair has to agree whatever ' +
       'the number is.'
     );
