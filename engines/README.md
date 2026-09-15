@@ -26,9 +26,13 @@ The plugin registers engine-specific HTTP routes on the uploader's server. No se
 ## ABR ladder (SRS only)
 
 Set `ABR_ENABLED=true` in the root `.env` and SRS produces four renditions instead of one. The
-uploader and SRS both read this knob, and for a Docker deployment only the root `.env` reaches
-both, because compose interpolates each service's copy from it. Setting it in `engines/srs/.env`
-turns the ladder on for SRS while the uploader keeps it off and publishes four unrelated streams.
+uploader and SRS both read this knob, and compose interpolates each service's copy from the root
+`.env`. Setting it in `engines/srs/.env` instead reaches both as well, because `deploy.sh` writes
+every key of the enabled engines' env files into the override file it hands compose as a second
+`--env-file`. The root wins wherever both name a knob, so the root `.env` is the one place to set it
+and a value left behind in the engine file changes nothing. What does leave the pair disagreeing is
+recreating one container and not the other, and on this knob that is SRS producing four renditions
+while the uploader publishes four unrelated streams. The paragraph below carries the rule.
 Each rung is a stream in its own right, so the flow above is unchanged, it just happens four times,
 and the uploader gets four feeds it groups back into one ladder.
 
