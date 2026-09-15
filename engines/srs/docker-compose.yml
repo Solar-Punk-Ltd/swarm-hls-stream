@@ -66,7 +66,10 @@ services:
       # settled length by that constant before ramping back down. At 2.1 the common 2.0s GOP was
       # force-closed intermittently. 0.5 * 5.0 = 2.5s, the ceiling latbench has always run.
       HLS_FRAGMENT: ${HLS_FRAGMENT:-0.5}
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
+      # In seconds, and derived into SRS's own ratio by the entrypoint. Set HLS_AOF_RATIO to drive
+      # that ratio directly instead, which the deploy/scripts probes do.
+      HLS_SEGMENT_MAX: ${HLS_SEGMENT_MAX:-2.5}
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
       # The ABR ladder, read by this entrypoint. Off by default.

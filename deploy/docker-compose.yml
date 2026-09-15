@@ -413,7 +413,10 @@ services:
       # mode 2.117 and spread 1.861-2.219 against a clean 2.000 with room. 5.0 gives **2.5s**, which
       # is the ceiling latbench has run all along. See
       # `docs/bench/shipped-fragment-validation-2026-08-12.md`.
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
+      # In seconds, and derived into SRS's own ratio by the entrypoint. Set HLS_AOF_RATIO to drive
+      # that ratio directly instead, which the deploy/scripts probes do.
+      HLS_SEGMENT_MAX: ${HLS_SEGMENT_MAX:-2.5}
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
       # The ABR ladder, read by the SRS entrypoint. Off by default.

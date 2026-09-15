@@ -120,11 +120,49 @@ require_rung_name() {
 # which is only the same number when the fragment is 1.0 and is double the intent at 0.5.
 require_number HLS_FRAGMENT "${HLS_FRAGMENT:-0.5}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
-# 2.1 is SRS's own default, so naming it here changes no deployment that does not set it.
-require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-5.0}"
 HLS_FRAGMENT="${HLS_FRAGMENT:-0.5}"
 HLS_WINDOW="${HLS_WINDOW:-15}"
-HLS_AOF_RATIO="${HLS_AOF_RATIO:-5.0}"
+
+# How long a segment may run before SRS closes it without a keyframe, in seconds.
+#
+# ⛔ SRS's own knob is a RATIO, `hls_aof_ratio`, and it force-closes at `HLS_FRAGMENT * ratio`. A
+# ratio is the wrong thing for anyone to hold, because what the ceiling has to clear is a number of
+# seconds: the segment the publisher's GOP actually produces, plus the ~0.135s constant overshoot
+# measured on 2026-08-12. Held as a ratio it scaled with `HLS_FRAGMENT`, which an operator edits from
+# the settings drawer, so the shipped 0.5 x 5.0 = 2.5s became 10s the moment the segment length was
+# set to 2 and nothing in the product said so. Levi hit that on 2026-09-15: a stream asking for 2s
+# segments produced 2.067s to 10.033s. The ratio is now derived from this and the fragment, so this
+# number stays what it says whatever the fragment becomes.
+#
+# `HLS_AOF_RATIO` still wins when it is set, because deploy/scripts probes drive it directly.
+HLS_SEGMENT_MAX="${HLS_SEGMENT_MAX:-2.5}"
+require_number HLS_SEGMENT_MAX "$HLS_SEGMENT_MAX"
+if [ -n "${HLS_AOF_RATIO:-}" ]; then
+  require_number HLS_AOF_RATIO "$HLS_AOF_RATIO"
+fi
+
+aof_ratio_for() {
+  ratio_fragment="$1"
+  ratio_ceiling="$2"
+  ratio_explicit="${3:-}"
+  if [ -n "$ratio_explicit" ]; then
+    printf '%s' "$ratio_explicit"
+    return 0
+  fi
+  awk -v f="$ratio_fragment" -v c="$ratio_ceiling" 'BEGIN {
+    if (f + 0 <= 0) {
+      print "HLS_FRAGMENT must be above zero, got " f > "/dev/stderr"
+      exit 1
+    }
+    if (c + 0 < f + 0) {
+      print "HLS_SEGMENT_MAX (" c "s) is below HLS_FRAGMENT (" f "s), so every segment would be force-closed before a keyframe could end one." > "/dev/stderr"
+      exit 1
+    }
+    printf "%.6g", c / f
+  }'
+}
+
+HLS_AOF_RATIO="$(aof_ratio_for "$HLS_FRAGMENT" "$HLS_SEGMENT_MAX" "${HLS_AOF_RATIO:-}")"
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.
 #

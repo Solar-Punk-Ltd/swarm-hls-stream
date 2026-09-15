@@ -125,10 +125,11 @@ describe('the SRS latency knobs', () => {
     // rather than the segment, so it has to sit at or below the GOP broadcasters are told to
     // publish, or their request is silently rounded up.
     assert.match(conf, /hls_fragment\s+0\.5;/);
-    // 5.0 gives a 2.5s ceiling at the 0.5s fragment. It was 4.2 for one commit, chosen to hold the
-    // product at SRS's own 2.1s, and 2.1 turned out to be 35ms short of what a 2.0s GOP needs. See
-    // the overshoot test below.
-    assert.match(conf, /hls_aof_ratio\s+5\.0;/);
+    // The ceiling is 2.5s, and it is set in seconds now rather than as the ratio SRS takes, so what
+    // is asserted is the product. It was 2.1s for weeks, which turned out to be 35ms short of what a
+    // 2.0s GOP needs. See the overshoot test below.
+    const shippedRatio = Number(conf.match(/hls_aof_ratio\s+([\d.]+);/)[1]);
+    assert.equal(Number((0.5 * shippedRatio).toFixed(3)), 2.5);
     assert.match(conf, /hls_window\s+15;/);
     assert.match(conf, /latency\s+200;/);
   });
