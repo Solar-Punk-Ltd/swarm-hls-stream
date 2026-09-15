@@ -17,6 +17,7 @@ import {
   PRESSURE_HIGH,
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
+  PublisherGopStream,
   QueuePressure,
   RECOVERY_ENTRY_MISSING,
   RECOVERY_ENTRY_UNREADABLE,
@@ -866,6 +867,21 @@ export class StreamOrchestrator {
       }
     }
     return mismatched;
+  }
+
+  /**
+   * The same streams on a stage with no ladder, where the publisher's keyframe interval decides the
+   * segment, named with both lengths because the gap between them is what picks the remedy.
+   */
+  private getPublisherGopStreams(): PublisherGopStream[] {
+    const { configuredSeconds } = this.fragmentStage();
+    const segmentedByPublisher: PublisherGopStream[] = [];
+    for (const [streamId, watch] of this.fragmentWatches) {
+      if (watch.verdict.kind === FRAGMENT_PUBLISHER_GOP) {
+        segmentedByPublisher.push({ streamId, configuredSeconds, measuredSeconds: watch.verdict.measuredSeconds });
+      }
+    }
+    return segmentedByPublisher;
   }
 
   /**
@@ -1734,6 +1750,7 @@ export class StreamOrchestrator {
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
       quarantinedRecoveryEntries: this.recoveryStore.listQuarantined().length,
       fragmentMismatchStreams: this.getFragmentMismatchStreams(),
+      publisherGopStreams: this.getPublisherGopStreams(),
       // Read off the latch itself rather than off the rendered list below it, so a refusal recorded
       // against a publisher the routing no longer names still turns this service degraded. The signal
       // must never under-report, and a payload that cannot place one is the lesser failure.

@@ -42,6 +42,17 @@ The uploader now measures its first eight segments and reports `fragment_mismatc
 they are not the length it was told, which is a signal after the fact rather than a substitute for
 redeploying the pair.
 
+With the ladder **off** the same measurement reports `fragment_publisher_gop` instead, and it is a
+different fault with the same damage. Nothing transcodes there, so SRS closes a segment at the first
+keyframe at or after `HLS_FRAGMENT` and the publisher's own keyframe interval decides the length, which
+makes the configured value a floor. A live single-rendition stream was measured on 2026-09-15 cutting
+2.067 to 10.033 seconds against a configured 2. No container is stale and no redeploy fixes it, but the
+dates are arithmetic on the configured value either way, so the recording's clock runs at a different
+rate from its media. The lever is the publisher: set `HLS_FRAGMENT` to its keyframe interval, or turn
+`ABR_ENABLED` on, where the fragment sets the segment directly. `/health` names each such stream under
+`publisherGopStreams` with both lengths. Neither reason changes a date, refuses a segment or ends a
+broadcast.
+
 The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
 naming the four rung feeds, on a topic that _is_ the ladder's group id. The catalog entry points at
 that, so one URL yields the whole ladder. It is rewritten whenever a rung's measured bandwidth

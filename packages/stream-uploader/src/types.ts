@@ -214,6 +214,7 @@ export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
 export const HEALTH_REASON_INGEST_REFUSED = 'ingest_refused' as const;
 export const HEALTH_REASON_UNRECOVERABLE_STREAM = 'unrecoverable_stream' as const;
 export const HEALTH_REASON_FRAGMENT_MISMATCH = 'fragment_mismatch' as const;
+export const HEALTH_REASON_FRAGMENT_PUBLISHER_GOP = 'fragment_publisher_gop' as const;
 export const HEALTH_REASON_POSTAGE_REFUSED = 'postage_refused' as const;
 
 export type HealthReason =
@@ -227,6 +228,7 @@ export type HealthReason =
   | typeof HEALTH_REASON_INGEST_REFUSED
   | typeof HEALTH_REASON_UNRECOVERABLE_STREAM
   | typeof HEALTH_REASON_FRAGMENT_MISMATCH
+  | typeof HEALTH_REASON_FRAGMENT_PUBLISHER_GOP
   | typeof HEALTH_REASON_POSTAGE_REFUSED;
 
 export const RECOVERY_ENTRY_MISSING = 'missing' as const;
@@ -245,6 +247,18 @@ export type RecoveryEntry =
   | { kind: typeof RECOVERY_ENTRY_MISSING }
   | { kind: typeof RECOVERY_ENTRY_LOADED; state: StreamState }
   | { kind: typeof RECOVERY_ENTRY_UNREADABLE };
+
+/**
+ * One stream the publisher rather than `HLS_FRAGMENT` is segmenting, with both lengths in seconds.
+ *
+ * `measuredSeconds` is the median of the first {@link FRAGMENT_SAMPLE_COUNT} segments whose own
+ * timestamps were readable, never a duration an engine declared.
+ */
+export interface PublisherGopStream {
+  streamId: string;
+  configuredSeconds: number;
+  measuredSeconds: number;
+}
 
 export interface HealthSignals {
   activeStreams: number;
@@ -380,6 +394,23 @@ export interface HealthSignals {
    * is a new measurement. See `libs/fragmentAgreement.ts`.
    */
   fragmentMismatchStreams: number;
+  /**
+   * Live streams whose segments measure longer than `HLS_FRAGMENT` on a stage carrying one rendition,
+   * where the publisher's keyframe interval rather than the configured value decides the segment.
+   *
+   * The two lengths rather than a count, because the count alone names no lever. An operator reading
+   * this has to choose between bringing the publisher's keyframe interval to the configured value and
+   * turning the ladder on, and both of those are decided by how far apart the two numbers are.
+   *
+   * ⛔ **The damage is the same as {@link fragmentMismatchStreams} and the cause is not.** Nothing
+   * here is mis-deployed: `HLS_FRAGMENT` is a floor without a ladder and the stage is working as
+   * designed. But every `#EXT-X-PROGRAM-DATE-TIME` is still arithmetic on the configured value, so the
+   * recording's clock runs at a different rate from its media and keeps those dates for ever. A live
+   * single-rendition stream was measured on 2026-09-15 cutting 2.067 to 10.033 seconds against a
+   * configured 2, and nothing said so. Latched for the life of each stream, since the next broadcast
+   * is a new publisher. See `libs/fragmentAgreement.ts`.
+   */
+  publisherGopStreams: PublisherGopStream[];
   /**
    * Publishers, meaning a Bee node and the postage batch a rung spends on it, that have answered a
    * paid write with a status the upload policy will not retry. Counted for this process's lifetime.

@@ -2,6 +2,7 @@ import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_FRAGMENT_MISMATCH,
+  HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
   HEALTH_REASON_INGEST_REFUSED,
   HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
@@ -124,6 +125,14 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   // in the dates, and every segment published from here carries it into a recording that keeps it.
   if (signals.fragmentMismatchStreams > 0) {
     reasons.push(HEALTH_REASON_FRAGMENT_MISMATCH);
+  }
+
+  // The same reading with the ladder off, where it is the publisher's keyframe interval rather than a
+  // stale container, and its own reason rather than a second trigger for the one above, because the
+  // two send an operator to different levers. Reported at all because the damage does not depend on
+  // the cause: the dates are arithmetic on the configured length whoever chose the real one.
+  if (signals.publisherGopStreams.length > 0) {
+    reasons.push(HEALTH_REASON_FRAGMENT_PUBLISHER_GOP);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;
