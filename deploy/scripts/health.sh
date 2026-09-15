@@ -22,36 +22,51 @@ load_env
 load_engine_envs
 apply_port_slot
 
+# What the exit status at the bottom is made of.
+#
+# ⛔ Nothing kept these until 2026-09-16, and the last command in the file was an `echo`, so this
+# command exited 0 whether every service answered or none of them did. `deploy.sh` ends by telling
+# the operator to run it and `deploy/README.md` documents it as the way to check a stack, so the
+# reader is as likely to be a scheduled job or a wrapper as a person, and a status is all either of
+# those gets. The five red crosses on the terminal were correct the whole time.
+SERVICES_CHECKED=0
+SERVICES_FAILED=0
+
 check_service() {
   local name="$1"
   local url="$2"
+
+  SERVICES_CHECKED=$((SERVICES_CHECKED + 1))
 
   local response
   if response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null); then
     if [ "$response" = "200" ]; then
       log_ok "$name ($url)"
       return 0
-    else
-      log_warn "$name ($url) — HTTP $response"
-      return 1
     fi
+    log_warn "$name ($url) — HTTP $response"
   else
     log_error "$name ($url) — unreachable"
-    return 1
   fi
+
+  SERVICES_FAILED=$((SERVICES_FAILED + 1))
+  return 1
 }
 
 check_service_reachable() {
   local name="$1"
   local url="$2"
 
+  SERVICES_CHECKED=$((SERVICES_CHECKED + 1))
+
   if curl -s -o /dev/null --max-time 5 "$url" 2>/dev/null; then
     log_ok "$name ($url)"
     return 0
-  else
-    log_error "$name ($url) — unreachable"
-    return 1
   fi
+
+  log_error "$name ($url) — unreachable"
+  SERVICES_FAILED=$((SERVICES_FAILED + 1))
+  return 1
 }
 
 check_target() {
@@ -120,3 +135,21 @@ for target in $(get_targets); do
 done
 
 echo ""
+
+# An empty run is its own answer and it is not a good one. This file has no `set -e`, so a
+# `config.json` that is present but is not valid JSON does not stop anything: `get_target`'s jq
+# fails, every target comes back empty, `get_targets` prints nothing, this loop never runs, and a
+# stack nobody looked at used to be indistinguishable from a healthy one.
+if [ "$SERVICES_CHECKED" -eq 0 ]; then
+  log_error "Nothing was checked, so this says nothing about the stack."
+  echo "  Either every service is disabled in $CONFIG_FILE, or that file could not be read."
+  echo "  Check it with: jq . $CONFIG_FILE"
+  exit 1
+fi
+
+if [ "$SERVICES_FAILED" -gt 0 ]; then
+  log_error "$SERVICES_FAILED of $SERVICES_CHECKED services are unhealthy."
+  exit 1
+fi
+
+log_ok "All $SERVICES_CHECKED services are healthy."
