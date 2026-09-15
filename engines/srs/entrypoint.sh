@@ -26,14 +26,6 @@ else
 fi
 # --- end config source ---
 
-# Substitute passphrase or remove SRT encryption lines if empty
-if [ -n "$SRT_PASSPHRASE" ]; then
-  sed -i "s/PASSPHRASE_PLACEHOLDER/$SRT_PASSPHRASE/" "$CONF"
-else
-  sed -i '/PASSPHRASE_PLACEHOLDER/d' "$CONF"
-  sed -i '/pbkeylen/d' "$CONF"
-fi
-
 # Refuse rather than splice. These values land inside a `sed` s/// expression, where a `/` aborts the
 # substitution and `&` expands to the whole match, so a typo would either crash-loop the container
 # under `restart: unless-stopped` or silently write a corrupt config.
@@ -65,6 +57,40 @@ require_rung_name() {
     '' | *[!a-zA-Z0-9.-]*) echo "$1 must match [a-zA-Z0-9.-]+ (no underscore), got '$2'" >&2; exit 1 ;;
   esac
 }
+
+# The credentials land in the same expressions, and `&` is the one that does damage quietly: sed
+# expands a bare `&` to the whole match, so a token of `ab&cd` is written into the config as
+# `abSRS_WEBHOOK_TOKEN_PLACEHOLDERcd`. SRS then starts perfectly and the uploader rejects every
+# webhook as unauthorised, with nothing in any log saying the token was mangled and the symptom
+# pointing at the wrong component. `/` is this file's delimiter and ends the substitution early, `|`
+# is OME's, and a backslash escapes whatever follows it. `openssl rand -hex 32`, which this file
+# already tells the operator to use, produces none of the four. `openssl rand -base64 32`, which is
+# the other reflex, usually produces two.
+#
+# Only those four are refused, so a secret an operator is already running that happens to carry a `+`
+# or a `=` keeps working. The value is never echoed back, unlike the numbers above, because it is a
+# credential and this message goes to the container log.
+require_secret() {
+  case "$2" in
+    *'/'* | *"\\"* | *'&'* | *'|'*)
+      echo "$1 must not contain / \\ & or |, which sed reads as syntax where this value is written into the config. Generate it with openssl rand -hex 32." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Empty passes here, because an empty passphrase means no SRT encryption and an empty webhook token
+# has its own refusal further down that says what it costs.
+require_secret SRT_PASSPHRASE "${SRT_PASSPHRASE:-}"
+require_secret SRS_WEBHOOK_TOKEN "${SRS_WEBHOOK_TOKEN:-}"
+
+# Substitute passphrase or remove SRT encryption lines if empty
+if [ -n "$SRT_PASSPHRASE" ]; then
+  sed -i "s/PASSPHRASE_PLACEHOLDER/$SRT_PASSPHRASE/" "$CONF"
+else
+  sed -i '/PASSPHRASE_PLACEHOLDER/d' "$CONF"
+  sed -i '/pbkeylen/d' "$CONF"
+fi
 
 # Segment length, and how much of it the playlist keeps.
 #
