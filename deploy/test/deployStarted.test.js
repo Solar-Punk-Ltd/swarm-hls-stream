@@ -175,6 +175,47 @@ describe('a deploy watches until its services have earned their green', () => {
     assert.match(finished.stderr, /unhealthy/, 'the deploy passed without saying the service is unhealthy');
   });
 
+  /**
+   * ⛔ A restart count is a lifetime total and not this deploy's.
+   *
+   * Measured on docker 29.8.0: a container that exited once and recovered reads `1 running` and is
+   * perfectly well, and `docker compose up -d` on a service whose image and config have not moved
+   * leaves that same container in place, count and all. So refusing on any non-zero count refuses a
+   * re-deploy of a healthy stack for a crash it recovered from days ago, complete with DEPLOY
+   * REFUSED and a line saying nothing was rolled back.
+   */
+  it('accepts a container that carries an older restart and holds steady', async () => {
+    const { sandbox, run } = deploy(['stream-uploader'], {
+      // Restarted once before this deploy ever looked, and not again while it watched. `starting`
+      // keeps the watch running, which is what makes "did not rise" a claim about the whole window
+      // rather than about one look.
+      DOCKER_STUB_RESTARTS: 'stream-uploader:1',
+      DOCKER_STUB_HEALTH: 'stream-uploader:starting',
+    });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, `a stack that had already recovered was refused: ${finished.stderr}`);
+    assert.doesNotMatch(finished.stderr, /DEPLOY REFUSED/);
+    assert.ok(looks(sandbox, 'stream-uploader') > 1, 'the window was never waited out, so nothing was watched');
+  });
+
+  it('refuses a container whose older restart count rises again inside the window', async () => {
+    const reason = 'PostageGate: batch 0xabc has 0.4h of TTL left, below the 1h floor';
+    const { run } = deploy(['stream-uploader'], {
+      // The same older restart as above for two looks, and then another one. This is the half that
+      // the baseline must not swallow: a count that was already 1 still has to refuse when it moves.
+      DOCKER_STUB_RESTARTS: 'stream-uploader:2:2:1',
+      DOCKER_STUB_HEALTH: 'stream-uploader:starting',
+      DOCKER_STUB_LOG_LINE: reason,
+    });
+    const finished = await run;
+    const output = `${finished.stdout}${finished.stderr}`;
+
+    assert.notEqual(finished.exitCode, 0, 'a container that fell over again during the deploy was accepted');
+    assert.match(output, /1 to 2/, `the refusal does not say the count moved, only what it is: ${output}`);
+    assert.match(output, new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the reason was not carried');
+  });
+
   it('waits no longer than the settle for a service that declares no healthcheck', async () => {
     const { sandbox, run } = deploy(['bee-uploader']);
     const finished = await run;

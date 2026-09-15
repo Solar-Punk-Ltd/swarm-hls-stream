@@ -340,15 +340,17 @@ if (argv[0] === 'logs') {
   process.exit(0);
 }
 
-// One service's spec out of a comma separated list of \`<service>:<value>[:<after>]\`, where \`after\`
-// is how many looks answer the starting value before \`value\` takes over. Without that third field a
-// stub can only state what a container is, and every question here is about what it BECOMES: a
-// container that falls over on its fourth second, a healthcheck that goes green on its third probe.
+// One service's spec out of a comma separated list of \`<service>:<value>[:<after>[:<before>]]\`.
+// \`after\` is how many looks answer \`before\` first, and then \`value\` takes over. Without those two
+// fields a stub can only state what a container IS, and every question here is about what it
+// BECOMES: a container that falls over on its fourth second, a healthcheck that goes green on its
+// third probe, a restart count that was already 1 when the deploy arrived and climbs to 2 while it
+// watches.
 function stubSpec(raw, service) {
   for (const entry of (raw || '').split(',').filter(Boolean)) {
-    const [name, value, after] = entry.split(':');
+    const [name, value, after, before] = entry.split(':');
     if (name === service) {
-      return { value, after: Number(after || 0) };
+      return { value, after: Number(after || 0), before };
     }
   }
   return undefined;
@@ -378,8 +380,10 @@ if (argv[0] === 'inspect') {
   const health = stubSpec(process.env.DOCKER_STUB_HEALTH, service);
   const down = stubSpec(process.env.DOCKER_STUB_DOWN, service);
 
-  const count = restarts && looks > restarts.after ? restarts.value : '0';
-  const status = health ? (looks > health.after ? health.value : 'starting') : 'none';
+  // A count starts at 0 and a healthcheck at \`starting\` unless the spec's fourth field says the
+  // container already had a history when the deploy first looked at it.
+  const count = restarts ? (looks > restarts.after ? restarts.value : restarts.before || '0') : '0';
+  const status = health ? (looks > health.after ? health.value : health.before || 'starting') : 'none';
   // A down service defaults to \`restarting\`, which is what a crash loop looks like and what the
   // ps filter above answers for it. \`<service>:exited\` is the container that is not coming back.
   const state = down ? down.value || 'restarting' : 'running';
