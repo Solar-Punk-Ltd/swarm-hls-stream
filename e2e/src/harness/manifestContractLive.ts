@@ -164,10 +164,11 @@ const PLAYLIST_MARKER = '#EXTM3U';
  * The step a playlist's dates must take, out of what the run declared, or null where it declared
  * none.
  *
- * ⛔ The run's declaration and never a measurement. `#EXT-X-PROGRAM-DATE-TIME` is derived from
- * `HLS_FRAGMENT` and a segment count rather than from any segment's own `#EXTINF`, precisely so the
- * rungs of one ladder agree about the same media, and checking a nominal step against an observation
- * would pass exactly the drift the derivation exists to prevent.
+ * ⛔ The run's declaration and never a measurement taken here. This is the grid the publisher reads
+ * its own segments against, so the contract has to be handed the same number the deployment set in
+ * `HLS_FRAGMENT`: it decides which readings are close enough to be dated as that length and which
+ * are dated as themselves. Taking it off the playlist instead would let a stage that is dating by
+ * the wrong number agree with itself, which is the fault `segmentLength.ts` exists to catch.
  *
  * `E2E_EXPECT_SEGMENT_S=any` is a declaration rather than a gap, the way
  * `suites/preflight/segment-length.test.ts` treats it, so it reads as null here and

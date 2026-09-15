@@ -131,8 +131,9 @@ loses rungs, or the ceiling is understood and raised, 0.5 is the value to come b
 | `any`                  | the check stands down, and the preflight prints that it did                                                                      |
 
 ⛔⛔⛔ **Two containers work to that one number, and the gate reads both.** `HLS_FRAGMENT` is one value
-in the profile env. The engine **cuts** segments by it, and the uploader **dates** them by it, because
-`#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from the broadcast start. On
+in the profile env. The engine **cuts** segments by it, and the uploader **reads** them against it, because
+`#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds for every segment that measures within the
+tolerance of it. On
 2026-09-04 an uploader running 1.0 sat in front of an SRS cutting 2.0, all ten gates passed, and the
 only thing that noticed was the ABR ladder suite's timeline subtest mid-sitting. The gate now refuses
 a pair that disagrees, and a pair that agrees on a length the run cannot use.

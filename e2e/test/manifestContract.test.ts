@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
+  DATING_TOLERANCE,
   type ManifestContract,
   manifestContractFailures,
   mediaSequenceOf,
@@ -57,6 +60,42 @@ function playlist(
     '',
   ].join('\n');
 }
+
+/** One entry of a playlist, stating both halves the contract compares. */
+interface DatedEntry {
+  /** The `#EXTINF` it declares, in seconds. */
+  holds: number;
+  /** The `#EXT-X-PROGRAM-DATE-TIME` it carries. */
+  atMs: number;
+  lost?: boolean;
+}
+
+/**
+ * A playlist whose media and dates are each stated outright, so a case can put the two at odds.
+ *
+ * The other builder derives every stamp from `sequence * FRAGMENT_SECONDS` and writes a constant
+ * `#EXTINF`, which cannot express the defect at all: a playlist whose dates step by the declared
+ * length while its media ran longer reads there exactly like a correct one.
+ */
+function datedPlaylist(entries: readonly DatedEntry[]): string {
+  return [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:11',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '',
+    ...entries.flatMap((entry, sequence) => [
+      ...(entry.lost ? ['#EXT-X-GAP'] : []),
+      `#EXT-X-PROGRAM-DATE-TIME:${new Date(entry.atMs).toISOString()}`,
+      `#EXTINF:${entry.holds},`,
+      entry.lost ? `gap-${sequence}` : ref(sequence),
+    ]),
+    '',
+  ].join('\n');
+}
+
+/** Where the tolerance this contract reads is really decided. */
+const FRAGMENT_AGREEMENT_PATH = '../../packages/stream-uploader/src/libs/fragmentAgreement.ts';
 
 describe('the timeline a playlist declares', () => {
   it('passes a playlist that opens at zero and steps by the fragment', () => {
@@ -190,7 +229,7 @@ describe('the timeline a playlist declares', () => {
     const failures = manifestContractFailures(reanchoredPlaylist(false), CONTRACT);
 
     assert.equal(failures.length, 1);
-    assert.match(failures[0], /not a whole number of 2s fragments/);
+    assert.match(failures[0], /neither the 2000ms of media/);
   });
 
   /**
@@ -205,11 +244,93 @@ describe('the timeline a playlist declares', () => {
   });
 
   /**
-   * The stamp is nominal, so a step of half a fragment means it was taken from something other than
-   * the anchor: an arrival time, or a measured `#EXTINF`. That is the defect the derivation exists to
-   * prevent, and a suite that let it through would be watching four rungs drift apart.
+   * ⛔ The rule this holds a publisher to, and the one it used to get wrong. A date is the one in
+   * front of it plus the media that entry declares, so on a single rendition, where the publisher's
+   * own keyframe interval decides the segment, the step is whatever that segment really held. The
+   * old rule wanted the declared fragment length whatever the media did, and a stream measured live
+   * on 2026-09-15 cutting 2.4 and 10.033 second segments against a configured 2 passed it while its
+   * recording fell further behind its own media with every segment.
    */
-  it('refuses a step that is not a whole number of fragments', () => {
+  it('accepts a single rendition whose dates follow the media its entries declare', () => {
+    const led = datedPlaylist([
+      { holds: 2.4, atMs: STARTED_AT_MS },
+      { holds: 10.033, atMs: STARTED_AT_MS + 2_400 },
+      { holds: 2, atMs: STARTED_AT_MS + 2_400 + 10_033 },
+    ]);
+
+    assert.deepEqual(manifestContractFailures(led, CONTRACT), []);
+  });
+
+  it('refuses a playlist still stepping by the declared length while its media ran longer', () => {
+    const onTheGrid = datedPlaylist([
+      { holds: 2.4, atMs: STARTED_AT_MS },
+      { holds: 10.033, atMs: STARTED_AT_MS + 2_000 },
+      { holds: 2, atMs: STARTED_AT_MS + 4_000 },
+    ]);
+
+    const failures = manifestContractFailures(onTheGrid, CONTRACT);
+
+    assert.equal(failures.length, 2, failures.join('\n'));
+    assert.match(failures[0], /2000ms after the one before it/);
+  });
+
+  /**
+   * ⛔ The half that must not move. Under a ladder every rung is re-encoded with a keyframe every
+   * `ABR_FPS x HLS_FRAGMENT` frames, so each rung's readings sit a tick either side of the declared
+   * length and every one of them is read as that length. The dates then step by exactly the declared
+   * fragment, which is what the four rungs agree on and what this contract has always accepted.
+   */
+  it('reads a measurement inside the tolerance as the declared length, so a ladder still passes', () => {
+    const rung = datedPlaylist([
+      { holds: 2.04, atMs: STARTED_AT_MS },
+      { holds: 1.98, atMs: STARTED_AT_MS + 2_000 },
+      { holds: 2.067, atMs: STARTED_AT_MS + 4_000 },
+    ]);
+
+    assert.deepEqual(manifestContractFailures(rung, CONTRACT), []);
+  });
+
+  it('charges a gap entry the declared length, after the media that really ran', () => {
+    const holed = datedPlaylist([
+      { holds: 2.4, atMs: STARTED_AT_MS },
+      { holds: 2, atMs: STARTED_AT_MS + 2_400, lost: true },
+      { holds: 2, atMs: STARTED_AT_MS + 2_400 + 2_000 },
+    ]);
+
+    assert.deepEqual(manifestContractFailures(holed, CONTRACT), []);
+  });
+
+  it('still refuses a hole nothing says, counted past the media that really ran', () => {
+    const silent = datedPlaylist([
+      { holds: 2.4, atMs: STARTED_AT_MS },
+      { holds: 2, atMs: STARTED_AT_MS + 2_400 + 2_000 },
+    ]);
+
+    const failures = manifestContractFailures(silent, CONTRACT);
+
+    assert.equal(failures.length, 1, failures.join('\n'));
+    assert.match(failures[0], /no #EXT-X-GAP entries/);
+  });
+
+  /**
+   * ⛔ The tolerance is the publisher's, mirrored here because `e2e` does not depend on the uploader
+   * package. A contract reading a different band would pass real drift or refuse a correct ladder, so
+   * this reads the publisher's own source rather than trusting the copy to have kept up.
+   */
+  it('reads the same tolerance the publisher dates by', () => {
+    const source = readFileSync(join(import.meta.dirname, FRAGMENT_AGREEMENT_PATH), 'utf8');
+    const declared = /export const FRAGMENT_TOLERANCE = ([\d.]+);/.exec(source);
+
+    assert.ok(declared, `could not read a numeric FRAGMENT_TOLERANCE out of ${FRAGMENT_AGREEMENT_PATH}`);
+    assert.equal(Number(declared![1]), DATING_TOLERANCE);
+  });
+
+  /**
+   * The stamp is derived rather than read off a clock, so a step that is neither the media the entry
+   * in front declares nor that plus whole fragments of lost media was taken from something else: an
+   * arrival time, or a rounding nothing accounts for.
+   */
+  it('refuses a step that is neither the media held nor a whole number of fragments past it', () => {
     const drifting = [
       '#EXTM3U',
       '#EXT-X-MEDIA-SEQUENCE:0',
@@ -223,7 +344,7 @@ describe('the timeline a playlist declares', () => {
       '',
     ].join('\n');
 
-    assert.match(manifestContractFailures(drifting, CONTRACT)[0], /not a whole number of 2s fragments/);
+    assert.match(manifestContractFailures(drifting, CONTRACT)[0], /neither the 2000ms of media/);
   });
 
   it('absorbs the publisher’s own millisecond rounding on a fragment that is not a whole second', () => {
