@@ -24,7 +24,9 @@ function aofRatioFor(fragment, ceiling, explicit = '') {
   assert.notEqual(end, -1, 'aof_ratio_for is not closed at the start of a line');
   const definition = script.slice(start, end + 3);
 
-  const call = `${definition}\naof_ratio_for ${JSON.stringify(fragment)} ${JSON.stringify(ceiling)} ${JSON.stringify(explicit)}`;
+  const call = `${definition}\naof_ratio_for ${JSON.stringify(fragment)} ${JSON.stringify(ceiling)} ${JSON.stringify(
+    explicit,
+  )}`;
   return execFileSync('bash', ['-c', `set -e\n${call}`], { encoding: 'utf8' }).trim();
 }
 
