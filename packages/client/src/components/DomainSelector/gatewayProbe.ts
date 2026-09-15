@@ -8,8 +8,13 @@
  */
 import { FetchTimeoutError, fetchWithTimeout } from '@/utils/fetchWithTimeout';
 
-/** Long enough for a cold local node, short enough that a wrong port does not feel like a hang. */
-const PROBE_TIMEOUT_MS = 5_000;
+/**
+ * Long enough for a cold local node, short enough that a wrong port does not feel like a hang.
+ *
+ * Exported so the test asserts the window the picker actually uses. Asserting only that it is above
+ * zero passes for ten minutes, which is a picker held open rather than a bounded wait.
+ */
+export const PROBE_TIMEOUT_MS = 5_000;
 
 /**
  * Bee answers this on its API port with `{"status":"ok",...}` in every version this project has
