@@ -325,7 +325,7 @@ describe('holding a playlist to the contract', () => {
     const failures = readingOf(feed, rungPlaylist([0, 1, 3, 4]), FIRST_PLAYLIST).failures;
 
     assert.equal(failures.length, 1, failures.join('\n'));
-    assert.match(failures[0], /entry 2 is dated 2 fragments after/);
+    assert.match(failures[0], /entry 2 is dated 1 fragment past/);
   });
 
   it('asks per rung whether the window still starts at the broadcast’s first segment', () => {

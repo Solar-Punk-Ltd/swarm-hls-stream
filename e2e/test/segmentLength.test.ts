@@ -386,8 +386,8 @@ describe('refusing to pretend a stage it cannot read was checked', () => {
  * ⛔⛔⛔ One variable reaches two containers, and until 2026-09-04 nothing held one against the other.
  *
  * `HLS_FRAGMENT` is a single value in the profile env. The engine CUTS segments by it. The uploader
- * DATES them by it, because `#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from
- * the broadcast start rather than by anything measured. An uploader on 1.0 in front of an SRS cutting
+ * READS them against it, because `#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds for every
+ * segment measuring within the tolerance of it. An uploader on 1.0 in front of an SRS cutting
  * 2.0 passed all ten gates, and the only thing that caught it was the ABR ladder suite's timeline
  * subtest, mid-sitting, reporting segments dated 1000ms after the one before them. A gate that reads
  * both containers costs two `docker inspect` calls and no broadcast.
