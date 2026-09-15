@@ -508,7 +508,14 @@ export class ManifestManager {
     this.sequenceHasBeenPublished = this.segments.length > 0;
 
     if (this.segments.length > 0) {
-      this.targetDuration = Math.ceil(Math.max(...this.segments.map((s) => s.duration)));
+      // Folded rather than spread. `segments` holds every segment the broadcast ever published, so a
+      // spread passes them all as arguments at once and throws `RangeError: Maximum call stack size
+      // exceeded` somewhere past 110,000 of them, which is about 15 hours at the shipping
+      // half-second profile. The throw reached the orchestrator's error handler, so a broadcast that
+      // long simply failed to recover: its recording was never sealed, its catalog entry stayed
+      // `live`, and no health reason fired, because the entry parses perfectly well and was
+      // therefore never quarantined. Every later boot read it, threw, and moved on.
+      this.targetDuration = Math.ceil(this.segments.reduce((longest, seg) => Math.max(longest, seg.duration), 0));
     }
 
     this.logger.info(`[ManifestManager] Restored state with ${this.segments.length} segments`);
