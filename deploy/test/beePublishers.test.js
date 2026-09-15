@@ -34,28 +34,63 @@ const STACK_ROOT = resolve(HERE, '..', '..');
  * The stack carries this threshold in two shell defaults, in the uploader's compiled default, in the
  * compose fallback and in the sample an operator copies. All of them have to agree, because a
  * deployment reads whichever one its own path reaches and the rest are invisible from there.
+ *
+ * ⛔ Every pattern is the whole definition line, anchored at both ends and global. These files
+ * discuss these very constants in their own comment blocks, and a pattern that can match anywhere
+ * reads the prose instead of the definition: a sentence naming the floor as 1, above a value that
+ * still says 24, kept this check green and every file "agreeing" on a number no deployment used.
  */
 const MIN_TTL_SOURCES = [
-  { file: 'deploy/scripts/bee-publishers.sh', pattern: /^readonly DEFAULT_MIN_TTL_HOURS=(\S+)$/m },
-  { file: 'deploy/scripts/drain-stage.sh', pattern: /^readonly DEFAULT_MIN_TTL_HOURS=(\S+)$/m },
-  { file: 'packages/stream-uploader/src/utils/config.ts', pattern: /DEFAULT_STAMP_MIN_TTL_HOURS = ([\d.]+)/ },
-  { file: 'deploy/docker-compose.yml', pattern: /\$\{STAMP_MIN_TTL_HOURS:-([\d.]+)\}/ },
-  { file: '.env.sample', pattern: /^STAMP_MIN_TTL_HOURS=([\d.]+)$/m },
+  { file: 'deploy/scripts/bee-publishers.sh', pattern: /^readonly DEFAULT_MIN_TTL_HOURS=([\d.]+)$/gm },
+  { file: 'deploy/scripts/drain-stage.sh', pattern: /^readonly DEFAULT_MIN_TTL_HOURS=([\d.]+)$/gm },
+  {
+    file: 'packages/stream-uploader/src/utils/config.ts',
+    pattern: /^const DEFAULT_STAMP_MIN_TTL_HOURS = ([\d.]+);$/gm,
+  },
+  {
+    file: 'deploy/docker-compose.yml',
+    pattern: /^[ \t]*STAMP_MIN_TTL_HOURS: \$\{STAMP_MIN_TTL_HOURS:-([\d.]+)\}$/gm,
+  },
+  { file: '.env.sample', pattern: /^STAMP_MIN_TTL_HOURS=([\d.]+)$/gm },
 ];
 
 /** The ceiling, same rule. `drain-stage.sh` carries no copy of this one, so it is not listed. */
 const MAX_UTILIZATION_SOURCES = [
-  { file: 'deploy/scripts/bee-publishers.sh', pattern: /^readonly DEFAULT_MAX_UTILIZATION=(\S+)$/m },
-  { file: 'packages/stream-uploader/src/utils/config.ts', pattern: /DEFAULT_STAMP_MAX_UTILIZATION = ([\d.]+)/ },
-  { file: 'deploy/docker-compose.yml', pattern: /\$\{STAMP_MAX_UTILIZATION:-([\d.]+)\}/ },
-  { file: '.env.sample', pattern: /^STAMP_MAX_UTILIZATION=([\d.]+)$/m },
+  { file: 'deploy/scripts/bee-publishers.sh', pattern: /^readonly DEFAULT_MAX_UTILIZATION=([\d.]+)$/gm },
+  {
+    file: 'packages/stream-uploader/src/utils/config.ts',
+    pattern: /^const DEFAULT_STAMP_MAX_UTILIZATION = ([\d.]+);$/gm,
+  },
+  {
+    file: 'deploy/docker-compose.yml',
+    pattern: /^[ \t]*STAMP_MAX_UTILIZATION: \$\{STAMP_MAX_UTILIZATION:-([\d.]+)\}$/gm,
+  },
+  { file: '.env.sample', pattern: /^STAMP_MAX_UTILIZATION=([\d.]+)$/gm },
 ];
 
+/**
+ * The one number each file names, refusing anything this check cannot read as exactly one number.
+ *
+ * ⛔ Counted rather than taken first. `exec` returns the earliest match of however many there are and
+ * says nothing about the rest, so a second definition further down the file, which is the state a
+ * half-finished edit leaves, was invisible to the reader and decisive for whatever reads that file.
+ *
+ * ⛔ And checked for a number before it is compared. A capture accepting anything turned a value
+ * written as a variable rather than a literal into NaN, and `assert.strictEqual` compares with
+ * Object.is, where NaN equals NaN. So two files this check could not read at all reported agreement,
+ * which is the one answer a threshold check must never give.
+ */
 function valuesNamed(sources) {
   return sources.map((source) => {
-    const found = source.pattern.exec(readFileSync(join(STACK_ROOT, source.file), 'utf8'));
-    assert.ok(found, `${source.file} no longer names this threshold in the shape this check reads`);
-    return { file: source.file, value: Number(found[1]) };
+    const found = [...readFileSync(join(STACK_ROOT, source.file), 'utf8').matchAll(source.pattern)];
+    assert.equal(
+      found.length,
+      1,
+      `${source.file} names this threshold on ${found.length} lines in the shape this check reads, and one is the only readable answer`,
+    );
+    const value = Number(found[0][1]);
+    assert.ok(Number.isFinite(value), `${source.file} names this threshold as ${found[0][1]}, which is not a number`);
+    return { file: source.file, value };
   });
 }
 
