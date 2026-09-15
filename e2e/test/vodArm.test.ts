@@ -15,7 +15,13 @@ import {
   wholeLadderRefusal,
 } from '../src/harness/vodArm.js';
 
-import { armState, lastSegmentRefFor, PLAYED_THE_WHOLE_LADDER, vodArmState } from './helpers/browserArmFixtures.js';
+import {
+  armState,
+  INSTRUMENT_UNPROVEN,
+  lastSegmentRefFor,
+  PLAYED_THE_WHOLE_LADDER,
+  vodArmState,
+} from './helpers/browserArmFixtures.js';
 
 /**
  * The questions a finished recording is asked when a real player opens it.
@@ -31,6 +37,18 @@ const cameBack = (overrides: Partial<VodResult>): VodResult => ({ ...PLAYED, ...
 describe('whether a run is a player opening a finished recording', () => {
   it('passes an arm that opened one', () => {
     assert.equal(vodArmRefusal(parseBrowserArmState(vodArmState())), null);
+  });
+
+  /**
+   * ⛔⛔⛔ The other half of the instrument check, which read nothing until 2026-09-16. Both sensors
+   * pass on the subject page by construction, so a proof the driver took and wrote into the artifact
+   * is the only thing that says the "sound" above could have come out the other way. The three live
+   * arms gained this guard together and this one was left out, so it is pinned here on its own.
+   */
+  it('refuses a run whose instrument was never shown able to report a failure', () => {
+    const unproven = parseBrowserArmState(vodArmState({ instrumentProofs: INSTRUMENT_UNPROVEN }));
+
+    assert.match(String(vodArmRefusal(unproven)), /restatement of the launch flags rather than evidence/);
   });
 
   /** ⛔ A live watch produces a full report about a stream that was never finished. */
