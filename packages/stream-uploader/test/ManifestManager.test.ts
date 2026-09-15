@@ -1230,6 +1230,48 @@ describe('every segment carries a program date-time derived from the broadcast a
       TEST_ANCHOR.startedAtMs + STEP_MS,
     ]);
   });
+
+  /**
+   * ⛔ **The seam a deploy during a live broadcast leaves in one playlist, described here rather
+   * than discovered later.** An entry written before the instant was persisted carries no
+   * `presentedAtMs`, and `presentedAtMsOf` falls back to the anchor's own arithmetic for it. That is
+   * not a guess: it is the very date that entry went out with, and republishing it is the point,
+   * because a viewer is holding those dates and moving them would move media that has already been
+   * handed out.
+   *
+   * What it means is that one published window can hold both rules at once. The restored entries are
+   * `HLS_FRAGMENT` apart while each declares the media it really held, and the first arrival after
+   * them steps by that media instead. On the 2026-09-15 stage, segments of 10.033 seconds against a
+   * configured 2, the run of restored entries is 2000ms apart declaring 10.033s each, and the new one
+   * lands 10033ms after the last of them.
+   *
+   * ⛔ The e2e manifest contract that shipped in the same landing reads every such pair as a failure:
+   * `heldMs` is 10033 against a `gapMs` of 2000, a residual of 33ms against a 2ms slack, once per
+   * pair, for the remaining life of that broadcast and in its recording. Nothing here is wrong and
+   * no date a viewer holds is lost. Whether the contract should skip a pair whose earlier entry
+   * carries no instant belongs to whoever owns `manifestContract.ts`.
+   */
+  it('keeps the grid a recovery entry written before the instant went out with, and steps the segment after it by the media that entry held', () => {
+    // What the single-rendition stage of 2026-09-15 really cut against a configured 2.
+    const MEASURED_SECONDS = 10.033;
+    const MEASURED_MS = 10_033;
+    const manager = anchored();
+
+    manager.restoreState(
+      [
+        { index: 11, duration: MEASURED_SECONDS, ref: ref(11) },
+        { index: 12, duration: MEASURED_SECONDS, ref: ref(12) },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+    manager.addSegment(13, MEASURED_SECONDS, ref(13));
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs + STEP_MS + MEASURED_MS,
+    ]);
+  });
 });
 
 /**
