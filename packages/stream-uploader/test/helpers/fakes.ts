@@ -219,6 +219,7 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     fragmentMismatchStreams: 0,
+    publisherGopStreams: [],
     postageRefusedPublishers: 0,
     ...overrides,
   };

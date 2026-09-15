@@ -127,6 +127,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'segmentsNeverNamed',
         'quarantinedRecoveryEntries',
         'fragmentMismatchStreams',
+        'publisherGopStreams',
         'postageRefusedPublishers',
         'refusedPublishers',
         'queueBacklogSeconds',

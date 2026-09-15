@@ -5,6 +5,7 @@ import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_FRAGMENT_MISMATCH,
+  HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
   HEALTH_REASON_INGEST_REFUSED,
   HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
@@ -47,6 +48,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     fragmentMismatchStreams: 0,
+    publisherGopStreams: [],
     postageRefusedPublishers: 0,
     ...overrides,
   };
@@ -182,6 +184,7 @@ describe('health wire contract', () => {
         HEALTH_REASON_INGEST_REFUSED,
         HEALTH_REASON_UNRECOVERABLE_STREAM,
         HEALTH_REASON_FRAGMENT_MISMATCH,
+        HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
         HEALTH_REASON_POSTAGE_REFUSED,
       ],
       [
@@ -195,6 +198,7 @@ describe('health wire contract', () => {
         'ingest_refused',
         'unrecoverable_stream',
         'fragment_mismatch',
+        'fragment_publisher_gop',
         'postage_refused',
       ],
     );
@@ -535,6 +539,47 @@ describe('deriveHealthStatus fragment mismatch', () => {
     );
 
     assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_MISMATCH]);
+  });
+});
+
+describe('deriveHealthStatus publisher gop', () => {
+  /** One stream measured long, with the two lengths an operator needs to pick the lever. */
+  const MEASURED_LONG = [{ streamId: 'live/one', configuredSeconds: 2, measuredSeconds: 10.033 }];
+
+  it('is ok while every publisher is cutting at the configured length', () => {
+    const report = deriveHealthStatus(signals({ publisherGopStreams: [] }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  /**
+   * No threshold, for the reason `fragment_mismatch` has none: a stream reaches this list only after
+   * eight of its measured segments have missed the configured length. The cause is legitimate and the
+   * damage is not, because the dates are arithmetic on the configured value either way.
+   */
+  it('degrades on the first stream the publisher is segmenting', () => {
+    const report = deriveHealthStatus(signals({ publisherGopStreams: MEASURED_LONG }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_PUBLISHER_GOP]);
+  });
+
+  it('is a reason of its own, so a stage with no ladder is never read as a stale container', () => {
+    const report = deriveHealthStatus(
+      signals({ publisherGopStreams: MEASURED_LONG, fragmentMismatchStreams: 0 }),
+      STALL_MS,
+    );
+
+    assert.equal(report.reasons.includes(HEALTH_REASON_FRAGMENT_MISMATCH), false);
+  });
+
+  it('stays degraded on a stream that is otherwise entirely healthy', () => {
+    const report = deriveHealthStatus(
+      signals({ publisherGopStreams: MEASURED_LONG, maxConsecutiveSegmentFailures: 0, queueBacklogSeconds: 0 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_PUBLISHER_GOP]);
   });
 });
 
