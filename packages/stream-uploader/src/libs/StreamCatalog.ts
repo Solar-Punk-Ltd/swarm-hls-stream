@@ -302,11 +302,11 @@ export class StreamCatalog {
       this.feedIndex = data.feedIndex;
       this.logger.info(`[StreamCatalog] Loaded feed at index ${data.feedIndex.toString()}`);
     } catch (error) {
-      // ⚠️ 503 belongs here and does NOT belong on the uploader's recovered-finalize read, which
-      // uses its own `isFeedNeverWritten`. The asymmetry is not an oversight: boot has no prior
-      // knowledge of this feed, so "topic exists, no update yet" really is an empty catalog, while
-      // that read runs only over a feed the stream has already written to. Answering "empty" to a
-      // 503 there republishes a recording.
+      // ⚠️ An absent feed is an answer here and is no answer at all on the uploader's
+      // recovered-finalize read, which retries both of these statuses instead. The asymmetry is not
+      // an oversight: boot has no prior knowledge of this feed, so "topic exists, no update yet"
+      // really is an empty catalog, while that read runs only over a feed the stream has already
+      // written to. Answering "empty" to either status there republishes a recording.
       if (isFeedAbsent(error)) {
         if (persisted !== null) {
           this.resumeFromPersisted(persisted, 'Boot lookup found no feed');

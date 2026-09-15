@@ -76,21 +76,49 @@ function isFinishedRecording(manifest: string): boolean {
 }
 
 /**
- * The one answer that means this stream's manifest feed was never written to.
+ * Bee's not-found for a feed read, which on the recovered-finalize path says nothing about whether
+ * the feed holds a recording.
+ *
+ * ⛔⛔⛔ **Named for what bee answered and not for what it means, because here it means the opposite
+ * of what it means everywhere else.** It was called `isFeedNeverWritten` until 2026-09-15 and the
+ * name was load-bearing: the caller read a 404 as an empty feed and published a second recording
+ * over one that may already have been bought. The caller reaches this read only with a non-null
+ * `socIndex`, which is an index this stream wrote itself, so the feed is KNOWN non-empty and a 404
+ * is a chunk that will not retrieve right now. See {@link FeedHeadNotRetrievedError} for what is
+ * done with it instead.
  *
  * ⛔⛔ **Deliberately narrower than `isFeedAbsent`, which also takes 503, and the difference is a
  * recording.** The two predicates answer different questions. `isFeedAbsent` answers "is this feed
  * empty" for a reader with no other information, and bee says 503 when a topic exists with no update
- * on it, so taking 503 there is right. This one is asked on the recovered-finalize path, where the
- * feed is already KNOWN non-empty: the caller reaches the read only with a non-null `socIndex`, which
- * is an index this stream wrote. A 503 there cannot mean an empty feed. It is a warming or busy node,
- * it is retryable, and short-circuiting the retry window on it answers "nothing was published" to a
- * question that was never asked, which republishes a recording that is already in the feed and paid
- * for. Left retryable it ends in the deferring throw, which costs an unfinalized interval and nothing
- * that cannot be undone.
+ * on it, so taking 503 there is right. A 503 here cannot mean an empty feed. It is a warming or busy
+ * node, it is retryable already, and short-circuiting the retry window on it answers "nothing was
+ * published" to a question that was never asked. Left retryable it ends in the deferring throw,
+ * which costs an unfinalized interval and nothing that cannot be undone.
  */
-function isFeedNeverWritten(error: unknown): boolean {
+function isFeedHeadNotFound(error: unknown): boolean {
   return error instanceof BeeResponseError && error.status === 404;
+}
+
+/**
+ * The head of a feed this stream has written to came back 404, which is inconclusive rather than an
+ * answer.
+ *
+ * ⛔⛔⛔ **Carries no HTTP status, and that absence is the whole mechanism.** `nonRetryableStatus`
+ * puts 404 outside `RETRYABLE_HTTP_STATUSES`, which is right for every other reader in this service:
+ * a 404 from a feed that may never have been written is settled on the first attempt, and retrying
+ * it only spends a window learning what that attempt already said. This one read knows better, per
+ * {@link isFeedHeadNotFound}. Re-thrown with no status of its own it reads as retryable, so
+ * {@link retryUntilDeadlineAsync} gives the chunk the rest of the window to turn up, and the
+ * retryable set stays as it is for the uploads, the catalog and the master feed that share it.
+ *
+ * Bee's own words are carried rather than the status alone, because a 404 that outlasts the window
+ * is the one shape here an operator has to diagnose by hand.
+ */
+class FeedHeadNotRetrievedError extends Error {
+  constructor(error: unknown) {
+    super(`the head of a feed this stream has written to answered 404: ${beeAnswer(error)}`);
+    this.name = 'FeedHeadNotRetrievedError';
+  }
 }
 
 /**
@@ -602,20 +630,21 @@ export class StreamUploader {
     }
 
     const head = await this.readManifestFeedHead();
-    return head !== null && isFinishedRecording(head.manifest) ? head.index : null;
+    return isFinishedRecording(head.manifest) ? head.index : null;
   }
 
   /**
-   * The playlist currently at the head of this stream's manifest feed, or null when the feed holds
-   * nothing at all.
+   * The playlist currently at the head of this stream's manifest feed.
    *
-   * ⛔ Throws rather than answering null when the read fails, and the asymmetry is the point. An
-   * empty feed is an answer: nothing was published, so publish. A read that did not complete is not
-   * one, and taking it for an empty feed reinstates the double publish this exists to prevent, on
-   * exactly the node that was already having trouble. Failing instead defers the finalize: the drain
-   * records it as failed and retires the uploader, which leaves the recovery entry on disk, so the
-   * next boot recovers the stream and asks again. That costs a broadcast an unfinalized interval
-   * and costs nothing that cannot be undone, where the other way round pays twice for one recording.
+   * ⛔ Throws rather than answering "there is nothing there" when the read fails, and it has no
+   * "nothing there" to answer: the caller reaches it only for a stream holding an index it wrote
+   * itself, so the feed is non-empty by construction and a read that did not complete says only
+   * that it did not complete. Taking one for an empty feed reinstates the double publish this exists
+   * to prevent, on exactly the node that was already having trouble. Failing instead defers the
+   * finalize: the drain records it as failed and retires the uploader, which leaves the recovery
+   * entry on disk, so the next boot recovers the stream and asks again. That costs a broadcast an
+   * unfinalized interval and costs nothing that cannot be undone, where the other way round pays
+   * twice for one recording.
    *
    * ⛔⛔ **Two calls, and neither is redundant.** The index has to be asked for, because
    * `this.socIndex` is persisted **after** the SOC write it describes, so a crash in that gap leaves
@@ -627,7 +656,7 @@ export class StreamUploader {
    * this whole guard off. Both shapes are the ones `StreamCatalog` already runs in production:
    * `init` takes the index this way and `fetchCurrentState` takes the payload this way.
    */
-  private async readManifestFeedHead(): Promise<{ index: number; manifest: string } | null> {
+  private async readManifestFeedHead(): Promise<{ index: number; manifest: string }> {
     const owner = this.streamSigner.publicKey().address();
     const feedReader = this.bee.makeFeedReader(Topic.fromString(this.streamRawTopic), owner);
 
@@ -636,23 +665,16 @@ export class StreamUploader {
         try {
           return await feedReader.downloadPayload();
         } catch (error) {
-          // Inside the retried function deliberately: a 404 is settled on the first attempt, and
-          // asked outside the retry it would spend the whole window before answering what that
-          // attempt already knew. 404 alone, never `isFeedAbsent`: see {@link isFeedNeverWritten}.
-          if (isFeedNeverWritten(error)) {
-            return null;
-          }
-          throw error;
+          // Wrapped inside the retried function because this is the only place the read's own
+          // failure is still visible. Most refused slots on this deployment clear within a poll, so
+          // the window turns the common transient into a finalize rather than a deferred broadcast.
+          throw isFeedHeadNotFound(error) ? new FeedHeadNotRetrievedError(error) : error;
         }
       });
 
-      if (head === null) {
-        return null;
-      }
-
-      // No absent-feed branch here, deliberately. The index above says something is at this index,
-      // so a 404 now is a chunk that will not retrieve rather than a feed with nothing in it, and
-      // answering "nothing was published" to that is the mistake this method exists to refuse.
+      // No absent-feed branch here either. The index above says something is at this index, so a 404
+      // now is a chunk that will not retrieve rather than a feed with nothing in it, and answering
+      // "nothing was published" to that is the mistake this method exists to refuse.
       const update = await this.readWithinWindow(() => feedReader.downloadPayload({ index: head.feedIndex }));
 
       return { index: Number(head.feedIndex.toBigInt()), manifest: update.payload.toUtf8() };
@@ -661,7 +683,8 @@ export class StreamUploader {
         `Cannot tell whether stream ${this.streamId} published its recording before the crash, because its ` +
           `manifest feed head did not read within ${FEED_HEAD_READ_WINDOW_MS}ms: ${getErrorMessage(error)}. ` +
           'Leaving the broadcast unfinalized for the next boot to retry, rather than publishing a second ' +
-          'recording over one that may already be in the feed',
+          'recording over one that may already be in the feed. Where the feed has been established by hand ' +
+          "to hold nothing, clearing socIndex in this stream's recovery entry makes the next boot publish afresh",
       );
     }
   }
