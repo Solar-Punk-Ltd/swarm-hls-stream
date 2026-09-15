@@ -31,11 +31,31 @@ after(() => {
 
 const PLUR_PER_BZZ = 10n ** 16n;
 
+/**
+ * The stack's compose file, which is a different checkout from the one this driver is synced into.
+ *
+ * ⛔ The arms of this sitting are one line in the env file, so compose has to be the thing that reads
+ * that line. It stopped on 2026-09-15, when the gateway's mode became two hard-coded flags, and a
+ * sitting run after that would have flipped a key nothing reads and drawn its contrast between two
+ * identical runs. `composeReadsSwap: false` is that stack, and it is the shipped one.
+ */
+function composeFile(readsSwap) {
+  return [
+    'services:',
+    '  bee-gateway:',
+    '    command:',
+    '      - --blockchain-rpc-endpoint=',
+    `      - --swap-enable=${readsSwap ? '${BEE_GATEWAY_SWAP_ENABLE:-false}' : 'false'}`,
+    '',
+  ].join('\n');
+}
+
 function stubHost({
   availableBzz = 500,
   utilization = 254,
   ttlSeconds = 941760,
   swapEnable = true,
+  composeReadsSwap = true,
   // ⭐ 12 BZZ rather than the 2.4 the other drivers' tests use, because this sitting is far bigger
   // than any of them: two proving arms and four full arms at the defaults is TOTAL_MINUTES=142 and a
   // projection of 3.37 BZZ. A 2.4 BZZ authorisation is genuinely too small for it, so a smaller
@@ -46,6 +66,10 @@ function stubHost({
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
   const bin = join(out, 'bin');
   mkdirSync(bin, { recursive: true });
+
+  const stack = join(out, 'stack');
+  mkdirSync(join(stack, 'deploy'), { recursive: true });
+  writeFileSync(join(stack, 'deploy', 'docker-compose.yml'), composeFile(composeReadsSwap));
 
   const plur = ((BigInt(Math.round(availableBzz * 1000)) * PLUR_PER_BZZ) / 1000n).toString();
   const stamps = {
@@ -114,29 +138,41 @@ if (argv[0] === 'inspect' && argv.includes('-f')) {
     ].join('\n'),
   );
 
-  return { out, bin, ledger };
+  return { out, bin, ledger, stack };
 }
 
+/**
+ * ⛔ Both streams are returned, and standard error is the one that matters here. This harness used to
+ * keep `failure.code` and the log alone, and the whole of the compose-reads guard's failure was one
+ * `require_compose_reads: command not found` line on standard error: a call to a function this script
+ * never sources, under `set -u` and no `set -e`, which returns 127 and lets the sitting carry on. The
+ * driver passed every case in this file throughout.
+ */
 async function preflight(options = {}) {
   const host = stubHost(options);
 
   let code = 0;
+  let stdout = '';
+  let stderr = '';
   try {
-    await run('bash', [SCRIPT], {
+    const ok = await run('bash', [SCRIPT], {
       env: {
         ...process.env,
         PATH: `${host.bin}:${process.env.PATH}`,
         OUT_DIR: host.out,
+        STACK_DIR: host.stack,
         SPEND_LEDGER: host.ledger,
         PREFLIGHT_ONLY: '1',
         ...(options.margin === undefined ? {} : { FUNDS_MARGIN_PERCENT: options.margin }),
       },
       encoding: 'utf8',
     });
+    ({ stdout, stderr } = ok);
   } catch (failure) {
     code = failure.code;
+    ({ stdout, stderr } = failure);
   }
-  return { code, log: readFileSync(join(host.out, 'phase06.log'), 'utf8') };
+  return { code, stdout, stderr, log: readFileSync(join(host.out, 'phase06.log'), 'utf8') };
 }
 
 /** What the preflight said the uploader needs, in BZZ. */
@@ -200,6 +236,37 @@ describe('the light-against-ultra-light preflight', () => {
 
     // 254 of 512, not of the 256 a depth-24 assumption would have used and called 99% full.
     assert.match(log, /254\/512 buckets \(50%\)/);
+  });
+});
+
+/**
+ * The control this sitting cannot run without.
+ *
+ * Both arms are one line in the stack's env file, `BEE_GATEWAY_SWAP_ENABLE`, and compose stopped
+ * reading that line on 2026-09-15 when the gateway's mode became two hard-coded flags. On such a
+ * stack the two arms are the same run, the contrast comes out at zero, and zero reads as the finding
+ * "funding makes no difference to a viewer" rather than as a control that is connected to nothing.
+ *
+ * Restoring the variable does not repair it either, which is why the refusal says so: an empty
+ * `--blockchain-rpc-endpoint` is the whole of what makes the node ultra-light, and bee refuses to
+ * start with swap asked for and no chain at all.
+ */
+describe('the arms this driver flips', () => {
+  it('refuses when the stack compose no longer reads the key the arms are written to', async () => {
+    const { code, log } = await preflight({ composeReadsSwap: false });
+
+    assert.equal(code, 1);
+    assert.match(log, /REFUSING TO START: docker-compose\.yml no longer reads \$\{BEE_GATEWAY_SWAP_ENABLE\}/);
+    assert.match(log, /blockchain-rpc-endpoint/);
+  });
+
+  it('refuses through its own guard rather than through one it cannot reach', async () => {
+    const refused = await preflight({ composeReadsSwap: false });
+    const allowed = await preflight();
+
+    for (const run of [refused, allowed]) {
+      assert.doesNotMatch(run.stderr, /command not found/, run.stderr);
+    }
   });
 });
 

@@ -77,7 +77,21 @@ say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 CONTAINER="${COMPOSE_PROJECT}-bee-gateway-1"
 CACHE_KEY=BEE_GATEWAY_CACHE_CAPACITY
 
-require_compose_reads BEE_GATEWAY_SWAP_ENABLE
+# This probe sets the arm both its windows run on by writing the env file, so the compose file has to
+# read that key. Once it stopped, the node runs on whatever compose hard-codes and nothing else here
+# reads the node's mode, so every row of the TSV is filed under a setting the node never had. That is
+# worse than a wrong number, because the label is what a later reading is compared against.
+#
+# Inlined rather than called from `_lib.sh`, because this file is copied to the measurement host on
+# its own and a bare call to a function that is not there is a `command not found` line and a probe
+# that carries on regardless.
+if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${COMPOSE_DIR}/docker-compose.yml"; then
+  echo "ERROR: docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so writing it into the env file changes nothing." >&2
+  echo "The gateway there is hard-coded ultra-light: --blockchain-rpc-endpoint is empty, and an empty endpoint is the whole of what makes a node ultra-light. --swap-enable takes no part in that decision." >&2
+  echo "So this probe cannot set the arm it names, and every sample would be filed under a mode the node never had." >&2
+  echo "Putting the swap variable back would NOT repair it. This probe has to be reworked to flip --blockchain-rpc-endpoint through a compose override, and that rework is not done." >&2
+  exit 1
+fi
 BASELINE_SWAP="$(grep '^BEE_GATEWAY_SWAP_ENABLE=' "${ENV_FILE}" | cut -d= -f2)"
 if grep -q "^${CACHE_KEY}=" "${ENV_FILE}"; then
   CACHE_WAS_PRESENT=1
