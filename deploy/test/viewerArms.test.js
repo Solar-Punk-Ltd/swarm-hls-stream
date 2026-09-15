@@ -174,6 +174,7 @@ async function runArms({
   arms,
   rounds,
   bzz = 500,
+  minutes = '1',
   preflightOnly = false,
   margin = '10',
   cold = '',
@@ -246,7 +247,7 @@ exit 0
     ...(warmupRounds === undefined ? {} : { WARMUP_ROUNDS: warmupRounds }),
     GATEWAY_READY_TIMEOUT_S: '5',
     ROUNDS: String(rounds),
-    MINUTES: '1',
+    MINUTES: minutes,
     // The stubbed health endpoint always reports a live stream, so wait_for_quiet would sit out its
     // whole budget on every arm. What this measures is the order the arms ran in, not the timeouts.
     STREAM_TIMEOUT_S: '5',
@@ -610,5 +611,47 @@ describe('the spend ceiling, which this driver did not have', () => {
     const result = await runArms({ arms: ARMS, rounds: 1 });
 
     assert.ok(result.gops.length > 0, 'nothing published here either, so the refusal proves nothing');
+  });
+});
+
+/**
+ * ⛔⛔⛔ THE FUNDING CHECK WAS OFF FOR EVERY SITTING OVER EIGHT AND A HALF HOURS, AND SAID "ok".
+ *
+ * `need` used to be `(minutes * burn + broadcasts * setup) * FUNDS_MARGIN_PERCENT / 100`, which
+ * multiplies before it divides. At 507 minutes that product passes 9.2e18, the largest number a
+ * signed 64-bit integer holds, so bash wrapped it to a negative. `[ "${have}" -lt "${need}" ]` is
+ * then false for every balance there can be, and the log read `uploader has 0.500 BZZ, needs -9.219
+ * BZZ for 720 min, ok` on a node that could pay for none of it.
+ *
+ * ⭐ The length of the sitting is the whole likelihood, and the owner's standing rule is to size a
+ * sitting from the question rather than from the balance, so long sittings are the encouraged shape.
+ * Four sibling drivers already divided first. These two cases are the same driver either side of the
+ * ceiling, so a number that wraps again is caught by the pair rather than by reading the arithmetic.
+ */
+describe('the funding check holds past the 64-bit ceiling', () => {
+  it('refuses a twelve-hour sitting on a drained node, where the old order wrapped to a negative', async () => {
+    const { code, gops, log } = await runArms({ arms: 'soak:0.5', rounds: 1, minutes: '720', bzz: 0.5 });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'a sitting published on a node that could not pay for it');
+    assert.match(log, /REFUSING TO START: this sitting cannot pay for itself/);
+    assert.match(log, /for 720 min SHORT/, 'the node was reported as able to pay for twelve hours');
+    assert.doesNotMatch(log, /needs -/, 'the requirement came out negative, which is the wrap itself');
+  });
+
+  it('still passes a five-hour sitting the balance covers, so the refusal above is the length', async () => {
+    // 300 minutes costs 5.460 BZZ on the uploader and 4.494 on the gateway at the 140% margin.
+    const { code, gops, log } = await runArms({
+      arms: 'soak:0.5',
+      rounds: 1,
+      minutes: '300',
+      bzz: 8,
+      ceilingPlur: 10n ** 17n,
+      preflightOnly: true,
+    });
+
+    assert.equal(code, 0, log);
+    assert.deepEqual(gops, []);
+    assert.match(log, /for 300 min, ok/);
   });
 });
