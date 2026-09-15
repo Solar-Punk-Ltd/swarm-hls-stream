@@ -39,7 +39,7 @@ import {
 import { type QualitySwitchVerdict } from '../browser/qualitySwitch.js';
 
 import { type BrowserArmResult } from './browser.js';
-import { byteSourceArmRefusal } from './browserVerdict.js';
+import { byteSourceArmRefusal, unprovenInstrumentRefusal } from './browserVerdict.js';
 
 /**
  * The driver's own windows, restated here because a suite cannot import the driver.
@@ -104,6 +104,11 @@ export function qualityArmRefusal(result: BrowserArmResult, expectation: Quality
       'the browser was not a usable instrument for this run, so a rung that did or did not move is as ' +
       `likely to be the harness as the connection: ${result.instrumentFailures.join('; ') || 'no reason recorded'}`
     );
+  }
+
+  const unproven = unprovenInstrumentRefusal(result);
+  if (unproven !== null) {
+    return unproven;
   }
 
   // ⛔⛔ Before the verdict itself. A viewer already on the bottom rung has nowhere to step down to,

@@ -24,6 +24,7 @@ import {
 import {
   armState,
   ASKED_FOR_A_CHEAPER_RUNG,
+  INSTRUMENT_UNPROVEN,
   qualityArmState,
   STEPPED_DOWN_AND_BACK,
 } from './helpers/browserArmFixtures.js';
@@ -91,6 +92,20 @@ describe('whether a run is a viewer whose connection was squeezed', () => {
     );
 
     assert.match(String(qualityArmRefusal(degraded, CLEAN_ARM)), /timer drift 61x the interval/);
+  });
+
+  /**
+   * ⛔⛔⛔ The other half of the instrument check, which read nothing until 2026-09-16. Both sensors
+   * pass on the subject page by construction, so a proof the driver took and wrote into the artifact
+   * is the only thing that says the "sound" above could have come out the other way.
+   */
+  it('refuses a run whose instrument was never shown able to report a failure', () => {
+    const unproven = parseBrowserArmState(qualityArmState({ instrumentProofs: INSTRUMENT_UNPROVEN }));
+
+    assert.match(
+      String(qualityArmRefusal(unproven, CLEAN_ARM)),
+      /restatement of the launch flags rather than evidence/,
+    );
   });
 
   /**

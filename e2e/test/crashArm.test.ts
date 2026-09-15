@@ -26,7 +26,7 @@ import {
   UPLOAD_RETRY_WINDOW_MS,
 } from '../src/harness/crashArm.js';
 
-import { armState, crashArmState, GATEWAY_OUTAGE_RECOVERY } from './helpers/browserArmFixtures.js';
+import { armState, crashArmState, GATEWAY_OUTAGE_RECOVERY, INSTRUMENT_UNPROVEN } from './helpers/browserArmFixtures.js';
 
 /**
  * How long a crash arm needs, and the questions a crash scenario asks of the one it got.
@@ -184,6 +184,17 @@ describe('whether a crash arm is a viewer who was watching when the fault landed
     );
 
     assert.match(String(crashArmRefusal(degraded, CLEAN_ARM)), /timer drift 61x the interval/);
+  });
+
+  /**
+   * ⛔⛔⛔ The other half of the instrument check, which read nothing until 2026-09-16. Both sensors
+   * pass on the subject page by construction, so a proof the driver took and wrote into the artifact
+   * is the only thing that says the "sound" above could have come out the other way.
+   */
+  it('refuses a run whose instrument was never shown able to report a failure', () => {
+    const unproven = parseBrowserArmState(crashArmState({ instrumentProofs: INSTRUMENT_UNPROVEN }));
+
+    assert.match(String(crashArmRefusal(unproven, CLEAN_ARM)), /restatement of the launch flags rather than evidence/);
   });
 
   /**

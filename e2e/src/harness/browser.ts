@@ -46,6 +46,7 @@ import {
   type FragmentSettleReading,
   type FragmentSettleState,
 } from '../browser/fragmentRequests.js';
+import { describeProofs, type InstrumentProof, PROVEN_SENSORS, type ProvenSensor } from '../browser/instrument.js';
 import { type QualityPhase, type QualitySwitchVerdict, type RungTimeline } from '../browser/qualitySwitch.js';
 import { type E2EConfig, runProfile } from '../config.js';
 
@@ -441,6 +442,22 @@ export interface BrowserArmResult {
    */
   instrumentSound: boolean;
   instrumentFailures: readonly string[];
+  /**
+   * Why {@link instrumentSound} above is not evidence on this run, one sentence per sensor. Empty
+   * where every sensor was shown able to report a failure.
+   *
+   * ⛔⛔⛔ **A guard that cannot fail is not evidence, and until 2026-09-16 nothing that could fail a
+   * run ever read this.** The drivers take the proof, write it into the artifact and render it into
+   * the markdown, and the arm refusals could not see it, so a run that had proved its own instrument
+   * incapable of failing passed the assertion every viewer suite opens with. That is not
+   * hypothetical here: `proveVisibilityCanFail` shipped broken once and was found twenty minutes
+   * into a paid broadcast, and the two sensors both pass on the subject page by construction,
+   * because Playwright forces focus and unthrottles timers.
+   *
+   * ⛔ Empty is also what an artifact that names no proofs at all gives, and that is a silence about
+   * the FILE rather than about the run. See {@link readInstrumentProofs}.
+   */
+  instrumentUnproven: readonly string[];
   samples: number;
 }
 
@@ -527,6 +544,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
   const latency = asObject(summary.latency, 'run.summary.latency');
   const network = asObject(run.network, 'run.network');
   const instrument = asObject(run.instrument, 'run.instrument');
+  const proofs = readInstrumentProofs(run);
 
   const feedStatesSeen = asArray(summary.feedStatesSeen, 'run.summary.feedStatesSeen').map((state, i) =>
     asFeedState(state, `run.summary.feedStatesSeen[${i}]`),
@@ -559,6 +577,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
     ),
+    instrumentUnproven: proofs === null ? [] : describeProofs(proofs),
     samples: asNumber(summary.samples, 'run.summary.samples'),
   };
 }
@@ -591,6 +610,49 @@ function readProof(value: unknown): BrowserArmProof {
  * so is the scenario beside it: a fault verdict that does not say which fault it is could have one
  * scenario's thresholds applied to another scenario's run.
  */
+/**
+ * The falsifiability proofs the driver took, or null where the artifact names none.
+ *
+ * ⛔ **Null is a silence about the FILE and not about the run**, which is the same distinction
+ * `fragmentRequests` above carries and it is the reason this is not simply handed to
+ * {@link describeProofs}. That function reports an absent proof as an untested verdict, which is the
+ * right thing for a report being rendered and the wrong thing for a reader that has to open every
+ * artifact ever written: every driver here has recorded `instrumentProofs` since 2026-08-12, so a
+ * file without one came from a browser image older than the proof itself, and a reader that refused
+ * it could not re-derive the archive it exists to re-derive.
+ *
+ * ⛔ A file that HAS the field and says the instrument could not have failed is the opposite case. It
+ * is a fault in the run, it is the one E4 of the 2026-09-16 review describes, and
+ * {@link parseBrowserArmState} turns it into sentences the arm refusals read.
+ */
+function readInstrumentProofs(run: Record<string, unknown>): readonly InstrumentProof[] | null {
+  if (run.instrumentProofs === undefined || run.instrumentProofs === null) {
+    return null;
+  }
+  return asArray(run.instrumentProofs, 'run.instrumentProofs').map((value, i) => {
+    const at = `run.instrumentProofs[${i}]`;
+    const proof = asObject(value, at);
+    return {
+      sensor: asProvenSensor(proof.sensor, `${at}.sensor`),
+      degradation: asString(proof.degradation, `${at}.degradation`),
+      rejected: asBoolean(proof.rejected, `${at}.rejected`),
+      firedChecks: asArray(proof.firedChecks, `${at}.firedChecks`).map((check, n) =>
+        asString(check, `${at}.firedChecks[${n}]`),
+      ),
+    };
+  });
+}
+
+function asProvenSensor(value: unknown, at: string): ProvenSensor {
+  if (!PROVEN_SENSORS.includes(value as ProvenSensor)) {
+    throw new Error(
+      `the arm's state has no sensor this harness proves at ${at}, got ${shownValue(value)}. The ` +
+        'instrument gained a sensor, or the file was written by a driver this reader does not match.',
+    );
+  }
+  return value as ProvenSensor;
+}
+
 function readCrashRecovery(run: Record<string, unknown>): CrashRecoveryResult | null {
   if (run.recovery === undefined || run.recovery === null) {
     return null;

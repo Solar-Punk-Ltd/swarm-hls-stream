@@ -13,7 +13,7 @@ import {
   weeb3ArmRefusal,
 } from '../src/harness/browserVerdict.js';
 
-import { armState } from './helpers/browserArmFixtures.js';
+import { armState, INSTRUMENT_PROVEN, INSTRUMENT_UNPROVEN } from './helpers/browserArmFixtures.js';
 
 /**
  * The two questions a viewer scenario asks, kept out of the suites so their rules are covered by the
@@ -55,6 +55,62 @@ describe('whether a viewer actually watched the broadcast', () => {
     });
 
     assert.match(String(viewerPlaybackRefusal(degradedAndStalled)), /hidden page/);
+  });
+
+  /**
+   * ⛔⛔⛔ The other half of the check above, which gated nothing until 2026-09-16. Both sensors pass
+   * on the subject page by construction, because Playwright forces focus and unthrottles timers, so
+   * the drivers degrade a throwaway page and require the instrument to notice. That proof was written
+   * into the artifact and rendered into the markdown, and nothing that could fail a run read it.
+   * `proveVisibilityCanFail` has already shipped broken once, and was found twenty minutes into a
+   * paid broadcast.
+   */
+  it('refuses a run whose instrument was never shown able to report a failure', () => {
+    const unproven = parseBrowserArmState(armState({ instrumentProofs: INSTRUMENT_UNPROVEN }));
+
+    assert.match(String(viewerPlaybackRefusal(unproven)), /restatement of the launch flags rather than evidence/);
+    assert.match(String(viewerPlaybackRefusal(unproven)), /main thread blocked for 3000ms/);
+  });
+
+  it('passes a run whose every sensor rejected its own degraded page', () => {
+    assert.equal(viewerPlaybackRefusal(parseBrowserArmState(armState({ instrumentProofs: INSTRUMENT_PROVEN }))), null);
+  });
+
+  /**
+   * ⛔ A proof that fired by another check has demonstrated that other check. Without this a
+   * visibility proof taken on a page that happened to also stall would read as visibility working.
+   */
+  it('refuses a proof that was rejected by a check other than the one it claims', () => {
+    const wrongReason = parseBrowserArmState(
+      armState({
+        instrumentProofs: [{ ...INSTRUMENT_PROVEN[0], firedChecks: ['timerDriftRatio'] }, INSTRUMENT_PROVEN[1]],
+      }),
+    );
+
+    assert.match(String(viewerPlaybackRefusal(wrongReason)), /rather than by visibilityState/);
+  });
+
+  it('refuses a run that proved one sensor and left the other unmentioned', () => {
+    const halfProven = parseBrowserArmState(armState({ instrumentProofs: [INSTRUMENT_PROVEN[1]] }));
+
+    assert.match(String(viewerPlaybackRefusal(halfProven)), /visibilityState check was never shown able to fail/);
+  });
+
+  /**
+   * ⛔ A file with no proof section at all is a silence about the FILE, not about the run: every
+   * artifact written before 2026-08-12 has none, and a reader that refused them could not re-derive
+   * the archive it exists to re-derive. The markdown still says the verdict is untested.
+   */
+  it('still opens an artifact written before the proofs existed', () => {
+    assert.deepEqual(parseBrowserArmState(armState()).instrumentUnproven, []);
+    assert.equal(viewerPlaybackRefusal(parseBrowserArmState(armState())), null);
+  });
+
+  it('refuses a proof naming a sensor this harness does not know, rather than ignoring it', () => {
+    assert.throws(
+      () => parseBrowserArmState(armState({ instrumentProofs: [{ ...INSTRUMENT_PROVEN[0], sensor: 'colourDepth' }] })),
+      /no sensor this harness proves at run.instrumentProofs\[0\]\.sensor/,
+    );
   });
 
   it('refuses a player that raised a fatal error, which is a viewer whose picture stopped for good', () => {

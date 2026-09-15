@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   describeProofs,
+  instrumentIsEvidence,
   type InstrumentProof,
   type InstrumentReading,
   judgeInstrument,
@@ -160,5 +161,33 @@ describe('reporting whether the guard could have failed', () => {
       assert.equal(caveats.length, 1);
       assert.match(caveats[0], /untested/);
     }
+  });
+
+  /**
+   * ⛔⛔⛔ The rule `pnpm browser:selfcheck` exits on, which printed the caveats above as a warning
+   * and exited 0 until 2026-09-16. That entry point is the free run, the one a paid arm is only ever
+   * launched after, so an instrument that could not have failed passed the one check that costs
+   * nothing to repeat. Named here because the whole of that file needs a real Chrome.
+   */
+  describe('whether a sound verdict may be reported as a result', () => {
+    const SOUND_VERDICT = { sound: true, failures: [], firedChecks: [] };
+
+    it('is evidence when the browser was sound and both sensors rejected their degraded page', () => {
+      assert.equal(instrumentIsEvidence(SOUND_VERDICT, [TIMER, VISIBILITY]), true);
+    });
+
+    it('is not evidence when a sensor accepted the page it was meant to reject', () => {
+      assert.equal(instrumentIsEvidence(SOUND_VERDICT, [{ ...TIMER, rejected: false }, VISIBILITY]), false);
+    });
+
+    it('is not evidence when no proof was taken at all', () => {
+      assert.equal(instrumentIsEvidence(SOUND_VERDICT, undefined), false);
+    });
+
+    it('is not evidence when the browser was not sound, however well proven it was', () => {
+      const void_ = { sound: false, failures: ['the page reported hidden'], firedChecks: ['visibilityState'] };
+
+      assert.equal(instrumentIsEvidence(void_, [TIMER, VISIBILITY]), false);
+    });
   });
 });
