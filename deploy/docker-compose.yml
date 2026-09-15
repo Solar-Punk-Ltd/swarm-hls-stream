@@ -18,6 +18,11 @@ services:
       # P2P stays on every interface: that is how the node reaches Swarm.
       - '${BEE_UPLOADER_API_BIND:-0.0.0.0}:${BEE_UPLOADER_API_PORT:-1633}:${BEE_UPLOADER_API_PORT:-1633}'
       - '${BEE_UPLOADER_P2P_PORT:-1634}:${BEE_UPLOADER_P2P_PORT:-1634}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_UPLOADER_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader}:/home/bee/.bee
     command:
@@ -59,6 +64,11 @@ services:
     ports:
       - '${BEE_RUNG_480P_API_BIND:-0.0.0.0}:${BEE_RUNG_480P_API_PORT:-11001}:${BEE_RUNG_480P_API_PORT:-11001}'
       - '${BEE_RUNG_480P_P2P_PORT:-11002}:${BEE_RUNG_480P_P2P_PORT:-11002}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_RUNG_480P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-480p}:/home/bee/.bee
     command:
@@ -80,6 +90,11 @@ services:
     ports:
       - '${BEE_RUNG_720P_API_BIND:-0.0.0.0}:${BEE_RUNG_720P_API_PORT:-11003}:${BEE_RUNG_720P_API_PORT:-11003}'
       - '${BEE_RUNG_720P_P2P_PORT:-11004}:${BEE_RUNG_720P_P2P_PORT:-11004}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_RUNG_720P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-720p}:/home/bee/.bee
     command:
@@ -101,6 +116,11 @@ services:
     ports:
       - '${BEE_RUNG_1080P_API_BIND:-0.0.0.0}:${BEE_RUNG_1080P_API_PORT:-11005}:${BEE_RUNG_1080P_API_PORT:-11005}'
       - '${BEE_RUNG_1080P_P2P_PORT:-11006}:${BEE_RUNG_1080P_P2P_PORT:-11006}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_RUNG_1080P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-1080p}:/home/bee/.bee
     command:
@@ -124,6 +144,11 @@ services:
       # interface the client proxies from rather than to every address the host answers on.
       - '${BEE_GATEWAY_API_BIND:-0.0.0.0}:${BEE_GATEWAY_API_PORT:-1733}:${BEE_GATEWAY_API_PORT:-1733}'
       - '${BEE_GATEWAY_P2P_PORT:-1734}:${BEE_GATEWAY_P2P_PORT:-1734}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_GATEWAY_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-gateway}:/home/bee/.bee
     command:
