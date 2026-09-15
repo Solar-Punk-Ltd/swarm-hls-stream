@@ -32,6 +32,16 @@ turns the ladder on for SRS while the uploader keeps it off and publishes four u
 Each rung is a stream in its own right, so the flow above is unchanged, it just happens four times,
 and the uploader gets four feeds it groups back into one ladder.
 
+`HLS_FRAGMENT` is the same two-container shape, and it bites harder because the two containers can
+disagree rather than one of them simply being off. SRS cuts segments at it, and the uploader derives
+every `#EXT-X-PROGRAM-DATE-TIME` from it rather than measuring one, so an uploader on 0.5 behind an
+engine on 1.0 dates every segment half a second early, cumulatively, and the recording keeps those
+dates for ever. A container re-reads the variable only when it is recreated, so **recreate both
+after changing it**, which `deploy/scripts/deploy.sh` does and recreating the engine alone does not.
+The uploader now measures its first eight segments and reports `fragment_mismatch` on `/health` when
+they are not the length it was told, which is a signal after the fact rather than a substitute for
+redeploying the pair.
+
 The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
 naming the four rung feeds, on a topic that _is_ the ladder's group id. The catalog entry points at
 that, so one URL yields the whole ladder. It is rewritten whenever a rung's measured bandwidth
