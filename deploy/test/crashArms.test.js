@@ -155,6 +155,7 @@ const HEALTHY_BATCH = {
 async function runCrashArms({
   arms,
   bzz = 500,
+  minutes = '1',
   preflightOnly = false,
   ceilingPlur = 24n * 10n ** 15n,
   crashFails = false,
@@ -210,7 +211,7 @@ exit 0
     // stubbed health check carries the arm forward, exactly as viewerArms.test.js arranges it.
     BENCH_REPO: out,
     ...(arms === undefined ? {} : { ARMS: arms }),
-    MINUTES: '1',
+    MINUTES: minutes,
     STREAM_TIMEOUT_S: '5',
     QUIET_TIMEOUT_S: '5',
     PUBLISHER_MARGIN_S: '10',
@@ -361,5 +362,41 @@ describe('a crash sitting labels every arm and refuses before it publishes', () 
 
     assert.equal(arms.length, 2, 'a failed arm stopped the sitting');
     assert.match(state[0], /BROWSER-FAILED/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ THE FUNDING CHECK WAS OFF FOR EVERY SITTING OVER EIGHT AND A HALF HOURS, AND SAID "ok".
+ *
+ * `need` used to be `(minutes * burn + broadcasts * setup) * FUNDS_MARGIN_PERCENT / 100`, which
+ * multiplies before it divides. At 507 minutes that product passes 9.2e18, the largest number a
+ * signed 64-bit integer holds, so bash wrapped it to a negative and every balance there can be
+ * cleared it. The same line was in three drivers and the ordering that avoids it was already in four
+ * others. These two cases are the same driver either side of the ceiling.
+ */
+describe('the funding check holds past the 64-bit ceiling', () => {
+  it('refuses a twelve-hour sitting on a drained node, where the old order wrapped to a negative', async () => {
+    const { code, arms, log } = await runCrashArms({ arms: 'uploader-crash:weeb3', minutes: '720', bzz: 0.5 });
+
+    assert.equal(code, 1);
+    assert.equal(arms.length, 0, 'a sitting published on a node that could not pay for it');
+    assert.match(log, /REFUSING TO START: this sitting cannot pay for itself/);
+    assert.match(log, /for 720 min SHORT/, 'the node was reported as able to pay for twelve hours');
+    assert.doesNotMatch(log, /needs -/, 'the requirement came out negative, which is the wrap itself');
+  });
+
+  it('still passes a five-hour sitting the balance covers, so the refusal above is the length', async () => {
+    // 300 minutes costs 5.460 BZZ on the uploader and 4.494 on the gateway at the 140% margin.
+    const { code, arms, log } = await runCrashArms({
+      arms: 'uploader-crash:weeb3',
+      minutes: '300',
+      bzz: 8,
+      ceilingPlur: 10n ** 17n,
+      preflightOnly: true,
+    });
+
+    assert.equal(code, 0, log);
+    assert.equal(arms.length, 0);
+    assert.match(log, /for 300 min, ok/);
   });
 });

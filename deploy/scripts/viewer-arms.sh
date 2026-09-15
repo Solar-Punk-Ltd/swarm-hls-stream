@@ -156,7 +156,14 @@ can_afford() {
     who="$(echo "${pair}" | cut -d: -f1)"; port="$(echo "${pair}" | cut -d: -f2)"
     burn="$(echo "${pair}" | cut -d: -f3)"; setup="$(echo "${pair}" | cut -d: -f4)"
     have="$(available_plur "${port}")"
-    need=$(((minutes * burn + broadcasts * setup) * FUNDS_MARGIN_PERCENT / 100))
+    # ⛔ Divided before the margin is applied, one term at a time, rather than the sum multiplied
+    # first. The other order reaches 1.3e19 at 720 minutes, past the 9.2e18 a signed 64-bit integer
+    # holds, so bash wrapped `need` NEGATIVE and every possible balance cleared it. The check then
+    # printed a confident "ok" for a node that could not pay, and only ever for sittings long enough
+    # to matter. The truncation this ordering costs is twelve orders of magnitude below anything
+    # decidable.
+    # shellcheck disable=SC2017
+    need=$((minutes * burn / 100 * FUNDS_MARGIN_PERCENT + broadcasts * setup / 100 * FUNDS_MARGIN_PERCENT))
     if [ -z "${have}" ]; then
       say "  ${who} chequebook on ${port} did not answer, so funding is unknown"
       short=1
