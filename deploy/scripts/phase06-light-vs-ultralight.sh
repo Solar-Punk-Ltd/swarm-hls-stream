@@ -566,6 +566,9 @@ if [ -z "${BASELINE_SPEC}" ]; then
   say "REFUSING TO START: ${GATEWAY_CONTAINER} could not be inspected, so there is nothing to restore to."
   exit 1
 fi
+# The arms of this comparison are set by writing the env file, so the compose file has to be the
+# thing that reads it. The gateway command below carries --swap-enable either way.
+require_compose_reads BEE_GATEWAY_SWAP_ENABLE
 case "${BASELINE_SPEC}" in
   *'--swap-enable=true'*) BASELINE_SWAP=true ;;
   *'--swap-enable=false'*) BASELINE_SWAP=false ;;

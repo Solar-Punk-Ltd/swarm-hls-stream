@@ -77,6 +77,7 @@ say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 CONTAINER="${COMPOSE_PROJECT}-bee-gateway-1"
 CACHE_KEY=BEE_GATEWAY_CACHE_CAPACITY
 
+require_compose_reads BEE_GATEWAY_SWAP_ENABLE
 BASELINE_SWAP="$(grep '^BEE_GATEWAY_SWAP_ENABLE=' "${ENV_FILE}" | cut -d= -f2)"
 if grep -q "^${CACHE_KEY}=" "${ENV_FILE}"; then
   CACHE_WAS_PRESENT=1

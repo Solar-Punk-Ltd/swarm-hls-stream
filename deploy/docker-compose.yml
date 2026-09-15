@@ -156,18 +156,17 @@ services:
       - --api-addr=${BEE_GATEWAY_API_LISTEN:-}:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      # Both flags together are bee's `ultra-light` mode: a light node with no chequebook, so it
+      # owns no way to pay a peer and cannot be made to spend. Levi ruled on 2026-09-15 that a
+      # viewer node is always this, so neither is a variable any more. What that costs is LAT-10:
+      # such a node lives on the free bandwidth allowance alone, and a viewer polling it sees the
+      # feed freeze 30 to 48s at a time. Paying peers would need swap on, a reachable RPC endpoint
+      # and a funded wallet at the address `/addresses` reports as `chain_address`, which is a
+      # deliberate change to this file rather than a setting anything can reach. The variables
+      # this replaced were reachable from neither .env.sample nor the manager's key spec, so no
+      # deployment path could set them and none is lost.
       - --full-node=false
-      # false here plus --full-node=false is bee's `ultra-light` mode, which has no chequebook and
-      # so no way to pay a peer for bandwidth. LAT-10: such a node lives on the free allowance
-      # alone, and a viewer polling it sees the feed freeze 30 to 48s at a time. Turning this on
-      # needs a reachable RPC endpoint and a funded wallet at the address `/addresses` reports as
-      # `chain_address`, so it stays off by default and is opt-in per profile.
-      - --swap-enable=${BEE_GATEWAY_SWAP_ENABLE:-false}
-      # In PLUR, so a whole BZZ is 1e16. Bee's own default is 0, which deploys a chequebook that
-      # can back no cheque at all, so swap-enable alone leaves the node just as unable to pay.
-      # Only read when the chequebook is first deployed: changing it later moves nothing, and a
-      # deployed chequebook is topped up through the node's /chequebook/deposit instead.
-      - --swap-initial-deposit=${BEE_GATEWAY_SWAP_INITIAL_DEPOSIT:-0}
+      - --swap-enable=false
       # ⛔⛔ ZERO IS THE ONE VALUE THAT GUARANTEES A THRASH LOOP, so read this before changing it and
       # before quoting any cache figure gathered at it. Bee's cache Putter never tests capacity, so
       # chunks enter regardless; eviction triggers whenever size exceeds capacity, which at 0 is every
