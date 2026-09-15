@@ -22,9 +22,13 @@ function serviceKeys(compose, service) {
   assert.notEqual(start, -1, `service ${service} is not in the compose file`);
   const keys = [];
   for (const line of lines.slice(start + 1)) {
-    if (/^  [^ ]/.test(line)) break;
-    const key = /^    ([a-z_]+):/.exec(line);
-    if (key) keys.push(key[1]);
+    if (/^ {2}[^ ]/.test(line)) {
+      break;
+    }
+    const key = /^ {4}([a-z_]+):/.exec(line);
+    if (key) {
+      keys.push(key[1]);
+    }
   }
   return keys;
 }
@@ -86,6 +90,8 @@ describe('clean.sh removes the images a whole-project clean built', () => {
     const calls = await runClean(makeSandbox(), ['srs']);
 
     assert.ok(calls.length > 0, 'no compose call at all was issued');
-    for (const call of calls) assert.doesNotMatch(call, /--rmi/, `a service clean removed images: ${call}`);
+    for (const call of calls) {
+      assert.doesNotMatch(call, /--rmi/, `a service clean removed images: ${call}`);
+    }
   });
 });
