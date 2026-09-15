@@ -40,11 +40,13 @@ pnpm client:start                  # start client dev server (localhost:5173)
 pnpm uploader:start                # start stream-uploader locally
 pnpm srs:host                      # start SRS on the host network
 pnpm ome:host                      # or start OME instead, the stack runs one engine
-pnpm verify                        # lint, typecheck, test and format check in one go
+pnpm verify                        # lint, typecheck, build, test and format check in one go
 ```
 
 `pnpm verify` stops at the first failing stage, so a lint error hides later test
-results. CI runs the same four checks as separate jobs and reports all of them.
+results. CI does the same: its `verify` job runs typecheck, lint, build and test
+as four steps of one job, and a failing step ends the job. Only the format check
+runs as a job of its own, so it reports whatever the other four did.
 
 Two CI jobs are deliberately outside `pnpm verify`, so the local loop needs
 neither a registry nor a docker daemon: `pnpm audit:check` for dependency
