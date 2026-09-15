@@ -36,6 +36,11 @@ function stubHost({
   utilization = 254,
   ttlSeconds = 941760,
   swapEnable = true,
+  // The gateway's own endpoint, empty on the ultra-light node this stack ships, and the stack's
+  // shared one, which is what the L arm borrows. They are separate keys because bee decides the mode
+  // on the gateway's, and the paying nodes need the shared one whatever the gateway is doing.
+  gatewayRpc = '',
+  sharedRpc = 'https://rpc.example.test',
   // ⭐ 12 BZZ rather than the 2.4 the other drivers' tests use, because this sitting is far bigger
   // than any of them: two proving arms and four full arms at the defaults is TOTAL_MINUTES=142 and a
   // projection of 3.37 BZZ. A 2.4 BZZ authorisation is genuinely too small for it, so a smaller
@@ -89,7 +94,7 @@ const argv = process.argv.slice(2);
 if (argv[0] === 'inspect' && argv.includes('-f')) {
   process.stdout.write('STAMP=${BATCH}\\n');
 } else if (argv[0] === 'inspect') {
-  process.stdout.write('CMD=["start","--swap-enable=${swapEnable}"] MOUNTS=/d:/home/bee/.bee PORTS={} NET=host\\n');
+  process.stdout.write('CMD=["start","--blockchain-rpc-endpoint=${gatewayRpc}","--swap-enable=${swapEnable}"] MOUNTS=/d:/home/bee/.bee PORTS={} NET=host\\n');
 }
 `,
   );
@@ -114,12 +119,15 @@ if (argv[0] === 'inspect' && argv.includes('-f')) {
     ].join('\n'),
   );
 
+  // The stack's own env file, which the script reads for the chain the L arm borrows and writes both
+  // arm keys into. Pointing STACK_DIR here is what keeps a test off the real deployment's file.
+  writeFileSync(join(out, '.env'), `RPC_ENDPOINT=${sharedRpc}\nBEE_GATEWAY_SWAP_ENABLE=${swapEnable}\n`);
+
   return { out, bin, ledger };
 }
 
-async function preflight(options = {}) {
-  const host = stubHost(options);
-
+/** Takes the host apart from the run, for a case that has to alter a stub before the script sees it. */
+async function runPreflight(host, options = {}) {
   let code = 0;
   try {
     await run('bash', [SCRIPT], {
@@ -127,6 +135,7 @@ async function preflight(options = {}) {
         ...process.env,
         PATH: `${host.bin}:${process.env.PATH}`,
         OUT_DIR: host.out,
+        STACK_DIR: host.out,
         SPEND_LEDGER: host.ledger,
         PREFLIGHT_ONLY: '1',
         ...(options.margin === undefined ? {} : { FUNDS_MARGIN_PERCENT: options.margin }),
@@ -137,6 +146,10 @@ async function preflight(options = {}) {
     code = failure.code;
   }
   return { code, log: readFileSync(join(host.out, 'phase06.log'), 'utf8') };
+}
+
+async function preflight(options = {}) {
+  return runPreflight(stubHost(options), options);
 }
 
 /** What the preflight said the uploader needs, in BZZ. */
@@ -200,6 +213,60 @@ describe('the light-against-ultra-light preflight', () => {
 
     // 254 of 512, not of the 256 a depth-24 assumption would have used and called 99% full.
     assert.match(log, /254\/512 buckets \(50%\)/);
+  });
+});
+
+/**
+ * That the L arm has a chain to deploy its chequebook on, asked before anything is touched.
+ *
+ * Bee decides the mode on `--blockchain-rpc-endpoint` and never on `--swap-enable`, so since the
+ * gateway got an endpoint of its own the two arms are two flags rather than one. Swap on with an
+ * empty endpoint is not a light node, it is a container that exits at startup, and an arm that
+ * cannot start is a lost night rather than a result. The endpoint comes from the stack's shared
+ * RPC_ENDPOINT, which the uploader and the rungs already need, so a stack that has one needs nothing
+ * added and a stack that does not says so before the first broadcast.
+ */
+describe('the chain the funded arm needs', () => {
+  it('refuses when the stack has no shared endpoint, having changed nothing', async () => {
+    const host = stubHost({ sharedRpc: '' });
+    const before = readFileSync(join(host.out, '.env'), 'utf8');
+
+    const finished = await runPreflight(host);
+
+    assert.equal(finished.code, 1);
+    assert.match(finished.log, /REFUSING TO START: arm L needs a chain/);
+    // The env file itself rather than the restore line, because this refusal comes before the trap
+    // is installed and so has nothing to restore. Untouched is the claim, and this is it.
+    assert.equal(readFileSync(join(host.out, '.env'), 'utf8'), before);
+  });
+
+  it('refuses a gateway whose command carries no endpoint flag, since its mode cannot be read', async () => {
+    const host = stubHost({});
+    // The one shape the substitution cannot survive: with no flag to replace, a restore would put
+    // back a command that still names the arm's endpoint and nobody would be told.
+    writeFileSync(
+      join(host.bin, 'docker'),
+      `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv[0] === 'inspect' && argv.includes('-f')) {
+  process.stdout.write('STAMP=${BATCH}\\n');
+} else if (argv[0] === 'inspect') {
+  process.stdout.write('CMD=["start","--swap-enable=true"] MOUNTS=/d:/home/bee/.bee PORTS={} NET=host\\n');
+}
+`,
+    );
+    chmodSync(join(host.bin, 'docker'), 0o755);
+
+    const finished = await runPreflight(host);
+
+    assert.equal(finished.code, 1);
+    assert.match(finished.log, /has no --blockchain-rpc-endpoint/);
+  });
+
+  it('starts against the ultra-light gateway this stack ships, which has no endpoint set', async () => {
+    const { code, log } = await preflight({ gatewayRpc: '', swapEnable: false });
+
+    assert.equal(code, 0, log);
   });
 });
 
