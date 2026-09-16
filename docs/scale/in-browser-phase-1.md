@@ -1,5 +1,7 @@
 # In-browser viewer nodes, phase 1: what weeb-3 is, and what it does to the scaling model
 
+**Frozen at hand-over, 2026-08-16.** Nothing here has been updated since. Later findings and corrections live in [`docs/bench/INDEX.md`](../bench/INDEX.md), including the 2026-09-15 correction that the arms labelled ultra-light were light nodes with swap off.
+
 > ## ⛔⛔⛔ WHAT THE CLIENT UNDER TEST ACTUALLY WAS, AND WHO CHOSE IT
 >
 > The `weeb3` arms here fetch **segment bytes only** from the in-tab node. The feed and every
