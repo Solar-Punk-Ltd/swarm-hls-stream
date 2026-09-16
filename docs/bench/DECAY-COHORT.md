@@ -3,6 +3,8 @@
 **Seeded 2026-08-11 from a broadcast whose content was verified healthy the same hour** (8/8, see
 `fresh-vs-decayed-2026-08-11.md`). Costs nothing to run and nothing to maintain.
 
+**Status 2026-09-16: stale, and the question stays open.** The log below stops at the sixth read, about 113 hours in, so the reads that could separate the outcomes, at 168 and 216 hours, were never taken. Nothing has read the cohort since about 2026-08-16.
+
 ## The question
 
 Content we uploaded on 2026-08-03 went from retrievable, to 2/10, to 0/8 over about a week, while its
