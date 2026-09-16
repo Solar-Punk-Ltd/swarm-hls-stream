@@ -2,6 +2,8 @@
 
 Branch `feature/uploader-hardening` @ `f146588`. Audit date 2026-07-29.
 
+**Historical, marked 2026-09-16.** This is the findings register of the July 2026 hardening sprint, which closed in August. Its file paths, script names and line numbers are those of `f146588`, and many have moved or gone since (`engines/ome.ts` and `engines/srs.ts` live under `packages/stream-uploader/src/engines/`, the CLI under `packages/cli/`, and `pnpm audit`, `srs:up` and `start:uploader` are no longer scripts). Read it as the record of what was found and decided, never as a map of the tree.
+
 Ten parallel read-only audits covering: core write-path concurrency, the two engine plugins, API and
 security surface, the React client, CLI and deploy shell, test quality, docs correctness,
 Swarm and hls.js library capability, architecture and patterns, and silent failures.
