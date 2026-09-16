@@ -13,7 +13,7 @@
 > that Abel's live page did **not** reach playback in the observed window.
 
 
-**153 tracked finding documents.** This index exists because they sat flat in one directory with no
+**131 named finding documents, and 90 tracked run reports linked from them (counted 2026-09-16).** This index exists because they sat flat in one directory with no
 map, and a 2026-08-15 audit found claims that had been retired years-of-corpus-time earlier still
 reading as live because nobody landing on the file could tell.
 
@@ -38,6 +38,8 @@ The player, the buffer, and what a person watching sees.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-09-06 | [A viewer watching through a rung whose postage runs dry never decodes the drained rung, keeps advancing at real time, rebuffers zero times and sees the master rewritten without a reload, on both byte sources](viewer-through-a-drained-rung-2026-09-06.md) |  |
+| 2026-08-30 | [ABR watched at a real viewer for the first time: the gateway viewer switches quality, the in-tab viewer switched only after the window a viewer suffers in (n=3), and the two profiles are two stages, never an arm and its control](abr-at-a-viewer-2026-08-30.md) | ⚠️ superseded on the in-tab half: V2 is green on both byte sources since 2026-09-04, see `docs/e2e-coverage.md` |
 | 2026-08-12 | [A stall costs at most one #EXT-X-TARGETDURATION, so 1.0s at the shipped 0.5s GOP, but it ratchets to 3.0s permanently after one force-close](stall-penalty-and-the-runtime-sweep-2026-08-12.md) |  |
 | 2026-08-12 | [A viewer never trims its manifest: 0.76ms and 774KB at 1 hour, 13.90ms and 7.6MB at 10 hours, priced by segment count not segment length](manifest-growth-2026-08-12.md) |  |
 | 2026-08-12 | [The 6s player buffer can be cut to 2s for nothing, and 1.5s costs on both axes: latency turns back up from 2.03s to 2.52s.](buffer-sweep-2026-08-12.md) |  |
@@ -109,6 +111,7 @@ A viewer that retrieves for itself instead of asking a gateway.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-08-28 | [The first browser on the ladder: the in-tab viewer rides 1080p where the gateway viewer gets 360p on the same broadcast, and a ladder broadcast burns about 0.042 BZZ a minute, 2.5x the single-rendition model the gates project with](first-browser-on-the-ladder-2026-08-28.md) |  |
 | 2026-09-04 | [✅✅✅✅ THE FULL SUITE IS GREEN ON BOTH BYTE SOURCES, ON ONE AFTERNOON, WITH NO RERUNS. Head bc9df49 on the 2.0 s ladder stage: 10 of 10 gates and 36 of 36 suites through the in-tab node (06:48Z to 07:50Z), then 10 of 10 and 36 of 36 through the gateway (07:50Z to 08:52Z), every crash scenario A to K, every service suite and V1 to V10 in both. The first full green with every fix of 09-01 to 09-04 inside it, and the first with the quality switch, the rung failover and the segment-loss gap all asserted in one run. 1.946 BZZ in-tab, 2.515 through the gateway, of which the gateway node's own retrievals were 0.620, against 0.619 the day before. The next run needs a fresh ledger, two deposits landed mid-pair.](full-suite-both-byte-sources-2026-09-04.md) | [V2 in-tab](browser-quality-2026-09-04T07-36-20-147Z.md) [V2 gateway](browser-quality-2026-09-04T08-37-56-626Z.md) [V4 in-tab](browser-vod-2026-09-04T07-48-38-891Z.md) [V4 gateway](browser-vod-2026-09-04T08-50-21-822Z.md) |
 | 2026-09-03 | [✅ SEQUENCE ZERO AND TIMESTAMPS PROVEN LIVE. Every broadcast's playlists open at MEDIA-SEQUENCE 0 whatever SRS's counter reads (its muxer counter resets only when the live source is reaped, read in the 6.0release source), and every segment carries a PROGRAM-DATE-TIME from one anchor per ladder stepping exactly one fragment. Run 1 stamped 1970 because the anchor came from the monotonic clock, caught on the stage and fixed the same hour; run 2 holds the contract on the first live playlist and the 61-segment recording. About 0.25 BZZ per run](sequence-zero-and-timestamps-2026-09-03.md) |  |
 | 2026-09-03 | [✅ V4 GREEN IN BOTH BYTE SOURCES, after three harness defects were found and fixed in one night. A two-minute four-rung recording played through in the in-tab node and through the gateway, offered all four rungs, and every rung ends at the exact last segment the uploader published (61/60/61/61 segments, 120 to 121 s, read from the player for the rung it played and from each rung's own feed for the rest). The defects: a segment count times a nominal length held against a real recording inside 2 s, a gateway proof window opening 60 s into a 30 s recording, and a watch that began after a 30 s recording had ended and read a paused element as a frozen picture. None was the product. 0.24 BZZ for the pair](browser-vod-2026-09-03T01-48-32-483Z.md) | [gateway](browser-vod-2026-09-03T01-52-47-117Z.md) |
@@ -216,6 +219,8 @@ What breaks, and what a viewer sees while it does.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-09-05 | [One rung's postage batch fills, bee refuses the rung, the other three keep publishing and the master stops offering the dead one, proven live](one-rung-runs-dry-2026-09-05.md) |  |
+| 2026-08-27 | [Every crash reading before this day was a gateway reading, because two of the three viewer drivers never read the byte-source flag: the first six crash arms with the segment bytes fetched inside the tab](crash-at-an-in-tab-viewer-2026-08-27.md) |  |
 | 2026-08-13 | [The same 3283.77s recording plays and all three seeks land in 171-219ms with resume in 335-354ms, on a 60.95s buffer-ahead.](browser-vod-2026-08-13T10-06-40-691Z.md) |  |
 | 2026-08-13 | [The same 3283.77s recording plays and all three seeks land in 230-596ms with resume in 326-345ms, on a 19.99s buffer-ahead.](browser-vod-2026-08-13T10-02-21-787Z.md) |  |
 | 2026-08-13 | [A 3283.77s recording plays with both source buffers built and all three seeks land, the backward one included, in 166-203ms.](browser-vod-2026-08-13T09-55-22-502Z.md) |  |
@@ -257,6 +262,8 @@ Defects in the measuring apparatus itself.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-08-29 | [The e2e suite checks correctness and never performance, the owner's rule of this day, and the first live run under it on the four rung ladder](e2e-correctness-2026-08-29.md) |  |
+| 2026-08-28 | [The suite's first full runs under the in-browser and light-client profiles, and the first time V1 and V5 opened a real browser](e2e-profile-runs-2026-08-28.md) |  |
 | 2026-08-15 | [The rig's 267ms tables are between exactly right and 5.5 points pessimistic, because a 0.5s GOP doubles the budget AND the segment, and this corrects my own correction from the same morning](rig-budget-vs-shipped-budget-2026-08-15.md) | ✏️ |
 | 2026-08-15 | [A 14-agent audit of all 147 documents: 28 candidates, 9 killed by skeptics, 19 confirmed and fixed, and retraction leakage was the highest-yield lens by a distance](corpus-audit-2026-08-15.md) | ✏️ |
 | 2026-08-14 | [Neither byte-source driver ever called start_sampler, so the mid-arm floor check polled a file nothing wrote, and its test could not fail](the-sampler-that-never-ran-2026-08-14.md) |  |
@@ -272,7 +279,7 @@ Defects in the measuring apparatus itself.
 reading the corpus again. A new finding should be added by hand to the section it belongs in, with
 its claim written as the claim rather than as a topic.
 
-⚠️ **`docs/bench` also holds 261 untracked markdown files and hundreds of json.** Those are per-run
+⚠️ **`docs/bench` also holds 613 untracked markdown files and hundreds of json (counted 2026-09-16).** Those are per-run
 harness output, matched by the `docs/bench/*` rules in `.gitignore`, and are not part of this corpus.
 Only what `git ls-files 'docs/bench/*.md'` returns is.
 
