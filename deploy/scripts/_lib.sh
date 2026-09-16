@@ -1001,7 +1001,7 @@ print_services() {
     echo "Host override: $HOST_OVERRIDE  (config.json targets ignored for enabled services)"
   fi
   if [ "$PORT_SLOT" != "0" ]; then
-    echo "Port slot: $PORT_SLOT (defaults shifted by slot*10; authoritative, env values ignored)"
+    echo "Port slot: $PORT_SLOT (defaults shifted by slot*10, authoritative, env values ignored)"
     echo "  bee-uploader  api=${BEE_UPLOADER_API_PORT:-?}  p2p=${BEE_UPLOADER_P2P_PORT:-?}"
     echo "  bee-gateway   api=${BEE_GATEWAY_API_PORT:-?}  p2p=${BEE_GATEWAY_P2P_PORT:-?}"
     echo "  stream-uplder api=${API_PORT:-?}"
