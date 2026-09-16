@@ -182,7 +182,7 @@ A profile is a deployment instance: same topology (from `config.json`), separate
 - **Env file** at `<repo-root>/.env.<profile>`: required when `--profile` is given (no silent fallback to `.env`).
 - **Engine env files** at `engines/<engine>/.env.<profile>` for each enabled engine: created automatically on first deploy (copied from the engine's `.env`, or its `.env.sample`). Engine ports (`OME_SRT_PORT`, `OME_HLS_PORT`, ...) are **not** shifted by `--portSlot`, so review the generated file when running multiple instances on one host.
 - **Bee data dir** (set `BEE_UPLOADER_DATA_DIR=./data/bee-uploader-<profile>` etc. in the profile env).
-- **Host ports**: see `--portSlot` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
+- **Host ports**: see `--portSlot` below for the easy way, or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
 - **Remote dir** when targets are SSH hosts: `~/swarm-hls-stream-<profile>`.
 
 #### --portSlot
