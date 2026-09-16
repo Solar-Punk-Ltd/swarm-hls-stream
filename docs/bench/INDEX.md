@@ -196,7 +196,7 @@ What a broadcast costs, and what an unfunded node does differently.
 | 2026-08-08 | [Funding is a switch at zero: 0.05 BZZ performs like 6.4 (43ms, 0.1% late) and an empty chequebook is an unfunded node (109ms, 10.6% late)](the-funding-cliff-is-at-zero-2026-08-08.md) |  |
 | 2026-08-08 | [Across eleven identical unfunded arms the late share ranged 1.9% to 19.5%, and neither idle, debt level nor arm order accounts for it.](eleven-unfunded-arms-2026-08-08.md) |  |
 | 2026-08-07 | [At a 1.0s GOP an unfunded gateway delivers the same picture as a funded one, only because a 1.0s segment budget absorbs the transfer penalty](light-vs-ultra-light-at-a-viewer-2026-08-07.md) |  |
-| 2026-08-06 | [At 0.25s an ultra-light gateway doubles median segment transfer, 65-91ms to 156-172ms, and costs 3 and 17 rebuffers where light costs zero](light-vs-ultra-light-2026-08-06.md) |  |
+| 2026-08-06 | [At 0.25s an unfunded light gateway (labelled ultra-light at the time, corrected 2026-09-15 inside the file) doubles median segment transfer, 65-91ms to 156-172ms, and costs 3 and 17 rebuffers where light costs zero](light-vs-ultra-light-2026-08-06.md) |  |
 
 ## The feed
 
