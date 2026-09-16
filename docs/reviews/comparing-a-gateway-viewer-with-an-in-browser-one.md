@@ -5,6 +5,8 @@ produced a rich viewer report. The in-browser node has never been measured that 
 what it would take, why the obvious shortcut is the mistake that was already made once, and what the
 sitting costs.
 
+**Status 2026-09-16: the sitting this asks for was built.** `deploy/scripts/byte-source-arms.sh` runs the gateway and the in-tab byte source as counterbalanced arms of one broadcast, first on 2026-08-14 (`docs/bench/byte-source-replicate-2026-08-14.md`) and on the ladder on 2026-08-28 (`docs/bench/first-browser-on-the-ladder-2026-08-28.md`). The reasoning below stands as the record of why the shortcut was refused.
+
 ## ⛔ The problem, stated exactly
 
 There are two harnesses and they do not measure the same thing.
