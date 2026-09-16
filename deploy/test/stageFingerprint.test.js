@@ -171,7 +171,7 @@ describe('stage-fingerprint and the ABR ladder', () => {
     writeFileSync(b, playlist(0.501, 12));
 
     // Judged with a rung per playlist, because a ladder config is not something a single-rung run may
-    // pass any more — that is the refusal in the test below. Agreeing vhosts still must not trigger
+    // pass any more. That is the refusal in the test below. Agreeing vhosts still must not trigger
     // the ambiguity refusal, which is what this asserts.
     const { code } = await run(GATE, [
       '--gop',

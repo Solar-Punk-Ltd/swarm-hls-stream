@@ -17,8 +17,8 @@ Config-driven deployment for the Swarm HLS Stream stack.
 
 Creates `config.json`, `.env`, and builds packages. Then edit both files:
 
-- **config.json** — set where each service runs
-- **.env** — set `STREAM_KEY`, `BEE_UPLOADER_NAT_ADDR`, ports, etc.
+- **config.json**: set where each service runs
+- **.env**: set `STREAM_KEY`, `BEE_UPLOADER_NAT_ADDR`, ports, etc.
 
 ## Configuration
 
@@ -26,12 +26,12 @@ Creates `config.json`, `.env`, and builds packages. Then edit both files:
 
 Each service maps to a target:
 
-| Value         | Meaning                                                         |
-| ------------- | --------------------------------------------------------------- |
-| `"localhost"` | Run in Docker on this machine                                   |
-| `"user@host"` | Deploy via SSH + rsync to a remote server                       |
-| `"native"`    | Service runs as a host process outside Docker — deploy skips it |
-| `false`       | Disabled, not deployed                                          |
+| Value         | Meaning                                                        |
+| ------------- | -------------------------------------------------------------- |
+| `"localhost"` | Run in Docker on this machine                                  |
+| `"user@host"` | Deploy via SSH + rsync to a remote server                      |
+| `"native"`    | Service runs as a host process outside Docker, deploy skips it |
+| `false`       | Disabled, not deployed                                         |
 
 ```json
 {
@@ -67,7 +67,7 @@ The deploy script will skip stream-uploader and configure SRS to reach it via `h
 
 ### .env
 
-Single `.env` in monorepo root for core options, shared by dev and deploy — see [.env.sample](../.env.sample). **Engine-specific options live in `engines/<name>/.env`** (samples: [engines/srs/.env.sample](../engines/srs/.env.sample), [engines/ome/.env.sample](../engines/ome/.env.sample)), loaded at runtime for the engine selected via `ENGINE`. `setup.sh` creates them from the samples for engines enabled in `config.json`. `deploy.sh` loads the enabled engines' env files too (below the root env — root values win on duplicate keys, matching the native uploader's dotenv order) and feeds them into compose interpolation.
+Single `.env` in monorepo root for core options, shared by dev and deploy. See [.env.sample](../.env.sample). **Engine-specific options live in `engines/<name>/.env`** (samples: [engines/srs/.env.sample](../engines/srs/.env.sample), [engines/ome/.env.sample](../engines/ome/.env.sample)), loaded at runtime for the engine selected via `ENGINE`. `setup.sh` creates them from the samples for engines enabled in `config.json`. `deploy.sh` loads the enabled engines' env files too (below the root env, so root values win on duplicate keys, matching the native uploader's dotenv order) and feeds them into compose interpolation.
 
 ### What the broadcaster's encoder must send
 
@@ -176,18 +176,18 @@ deploy.sh --host=user@server                        # ignore config.json targets
 
 #### Profiles
 
-A profile is a deployment instance — same topology (from `config.json`), separate identity. Each profile gets its own:
+A profile is a deployment instance: same topology (from `config.json`), separate identity. Each profile gets its own:
 
-- **Docker compose project name** (`-p <profile>`) — namespaces containers and named volumes (`streamer1-bee-uploader-1`, `streamer1_srs-media`, ...).
-- **Env file** at `<repo-root>/.env.<profile>` — required when `--profile` is given (no silent fallback to `.env`).
-- **Engine env files** at `engines/<engine>/.env.<profile>` for each enabled engine — created automatically on first deploy (copied from the engine's `.env`, or its `.env.sample`). Engine ports (`OME_SRT_PORT`, `OME_HLS_PORT`, ...) are **not** shifted by `--portSlot`, so review the generated file when running multiple instances on one host.
+- **Docker compose project name** (`-p <profile>`): namespaces containers and named volumes (`streamer1-bee-uploader-1`, `streamer1_srs-media`, ...).
+- **Env file** at `<repo-root>/.env.<profile>`: required when `--profile` is given (no silent fallback to `.env`).
+- **Engine env files** at `engines/<engine>/.env.<profile>` for each enabled engine: created automatically on first deploy (copied from the engine's `.env`, or its `.env.sample`). Engine ports (`OME_SRT_PORT`, `OME_HLS_PORT`, ...) are **not** shifted by `--portSlot`, so review the generated file when running multiple instances on one host.
 - **Bee data dir** (set `BEE_UPLOADER_DATA_DIR=./data/bee-uploader-<profile>` etc. in the profile env).
-- **Host ports** — see `--portSlot` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
+- **Host ports**: see `--portSlot` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
 - **Remote dir** when targets are SSH hosts: `~/swarm-hls-stream-<profile>`.
 
 #### --portSlot
 
-`--portSlot=<N>` (integer 1-99) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-9), so two profiles can never collide on a port. When the flag is given it is **authoritative** — any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
+`--portSlot=<N>` (integer 1-99) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-9), so two profiles can never collide on a port. When the flag is given it is **authoritative**: any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
 
 99 is the ceiling because the slot arithmetic owns a second block: the per-rung bee nodes take 11001 to 11006 at slot 0, shifted the same way, and slot 100 would put `API_PORT` at 11000 and the rest of the first block straight on top of them. Anything above 99 is refused with that named as the reason.
 
@@ -208,14 +208,14 @@ The **Base** column is the slot arithmetic's starting point, not what you get wi
 
 `SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
 
-`--portSlot=0` (the default) is a no-op — defaults flow through compose as before.
+`--portSlot=0` (the default) is a no-op: defaults flow through compose as before.
 
 #### --host
 
 `--host=<target>` ignores the per-service targets in `config.json` and sends every **enabled** service to `<target>`. `<target>` can be:
 
-- `localhost` — run everything in Docker on this machine.
-- `user@host` or an SSH alias from `~/.ssh/config` — deploy via SSH + rsync to that host.
+- `localhost`: run everything in Docker on this machine.
+- `user@host` or an SSH alias from `~/.ssh/config`: deploy via SSH + rsync to that host.
 
 Services set to `false` in `config.json` stay disabled. The flag is handy for one-shot deploys to a host that isn't your committed topology (e.g. validating a remote server, or moving a profile to localhost without editing `config.json`):
 
@@ -234,7 +234,7 @@ $EDITOR .env.streamer1   # set STAMP + STREAM_KEY + *_DATA_DIR
 deploy.sh --profile=streamer1 --portSlot=1
 ```
 
-Without `--profile` everything works exactly as before — implicit `default` profile, `.env`, unprefixed `~/swarm-hls-stream`, no port shift.
+Without `--profile` everything works exactly as before: implicit `default` profile, `.env`, unprefixed `~/swarm-hls-stream`, no port shift.
 
 ### clean.sh
 
@@ -342,7 +342,7 @@ pnpm stamp:setup                             # 5. buy stamp, writes STAMP to .en
 ./deploy/scripts/deploy.sh
 ```
 
-Safe to run — skips bee node init if already initialized, `docker compose up` is idempotent.
+Safe to run: skips bee node init if already initialized, `docker compose up` is idempotent.
 
 ### Clean restart
 
@@ -360,7 +360,7 @@ Safe to run — skips bee node init if already initialized, `docker compose up` 
 ## How It Works
 
 - `config.json` determines topology, scripts route services to targets
-- Each service has a Docker Compose [profile](https://docs.docker.com/compose/how-tos/profiles/) — only activated profiles start
+- Each service has a Docker Compose [profile](https://docs.docker.com/compose/how-tos/profiles/): only activated profiles start
 - Cross-target URLs are resolved automatically (e.g. `BEE_URL=http://<remote-ip>:1633` when bee is on a different host)
 - Remote deploy: rsync files + start Docker Compose via SSH
 - `COMPOSE_NETWORK=host` activates `docker-compose.host.yml` override for host network mode

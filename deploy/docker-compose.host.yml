@@ -32,7 +32,7 @@ services:
   ome:
     network_mode: host
 
-  # The client deliberately stays on the bridge — it is an nginx serving static files and needs a
+  # The client deliberately stays on the bridge: it is an nginx serving static files and needs a
   # published port, not the host's whole network stack. What that costs is the compose DNS name its
   # proxy was pointed at: every service it could have resolved `bee-gateway` through has just moved
   # off the bridge, so nginx refuses to start with `host not found in upstream "bee-gateway"` and the

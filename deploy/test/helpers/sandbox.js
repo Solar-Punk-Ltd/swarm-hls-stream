@@ -501,7 +501,7 @@ for (const container of inventory) {
  *
  * `bash -c "$*"` is not a shortcut, it is the fidelity that makes SEC-21 visible. Real ssh joins its
  * remaining arguments into one string and hands it to the far side's LOGIN SHELL, which word-splits
- * and evaluates it — which is why an unquoted interpolation into an ssh command line is a command
+ * and evaluates it, which is why an unquoted interpolation into an ssh command line is a command
  * injection rather than a quoting nit. A stub that exec'd an argv would model something ssh does not
  * do and would report the injection as safe. The `bash -s` callers keep working through the same
  * line: stdin is inherited, so their heredoc still reaches the shell they asked for.

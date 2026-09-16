@@ -27,7 +27,7 @@ const BATCH = 'a'.repeat(64);
  *
  * ⛔⛔⛔ THE FAILURE THIS FILE EXISTS FOR PRODUCES A COMPLETE, PLAUSIBLE, WRONG RESULT. If both arms
  * end up reading the same gateway, every metric agrees, the tables fill, nothing errors, and the
- * report concludes that **funding makes no difference to a viewer** — which is exactly what an
+ * report concludes that **funding makes no difference to a viewer**, which is exactly what an
  * optimist expects, so nothing about it invites a second look. There is no signal anywhere in the
  * viewer-facing output that would give it away. Every case here is about that.
  *

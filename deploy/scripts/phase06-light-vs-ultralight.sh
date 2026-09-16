@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Phase 0.6 — a viewer's gateway, funded against unfunded, measured in a browser.
+# Phase 0.6: a viewer's gateway, funded against unfunded, measured in a browser.
 #
 # ## The question
 #

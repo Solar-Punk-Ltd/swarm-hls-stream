@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared constants and helpers for deploy scripts.
-# Source this file — do not execute directly.
+# Source this file, do not execute directly.
 
 # --- Service names ---
 readonly SVC_SRS="srs"
@@ -42,7 +42,7 @@ readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 # Set by parse_profile_args; defaults to "default".
 # - PROFILE         logical name, used as docker compose project name
 # - ENV_FILE        $ROOT_DIR/.env for default; $ROOT_DIR/.env.<profile> otherwise.
-#                   The non-default file is REQUIRED — parse_profile_args errors if it is
+#                   The non-default file is REQUIRED: parse_profile_args errors if it is
 #                   missing so a typo in --profile= doesn't silently deploy the wrong stack.
 # - REMOTE_BASE     ~/swarm-hls-stream for default, ~/swarm-hls-stream-<profile> otherwise
 # - PORT_SLOT       integer slot id (0-99). 0 = no slot, env values win.
@@ -307,7 +307,7 @@ PORT_OVERRIDES_TEXT=""
 # Rule:
 #   - PORT_SLOT=0 (no --portSlot flag): keep env values; only fill the
 #     unset ports with their built-in default.
-#   - PORT_SLOT=1-99: AUTHORITATIVE — every port becomes default + slot*10,
+#   - PORT_SLOT=1-99: AUTHORITATIVE, every port becomes default + slot*10,
 #     regardless of any value in .env.<profile>. This avoids surprises where a
 #     hand-edited port in the env file silently survives the slot shift.
 #
@@ -343,7 +343,7 @@ apply_port_slot() {
     PORT_OVERRIDES_TEXT+="${name}=${shifted}\n"
   done
 
-  # SRS webhook target — mirrors the resolved API port (env or prefixed default).
+  # SRS webhook target: mirrors the resolved API port (env or prefixed default).
   if [ -n "${API_PORT:-}" ]; then
     export SRS_ADAPTER_PORT="$API_PORT"
     PORT_OVERRIDES_TEXT+="SRS_ADAPTER_PORT=${API_PORT}\n"
@@ -353,10 +353,10 @@ apply_port_slot() {
 # Emit one KEY=VALUE line for each per-deployment parameter override that was
 # supplied on the command line. Empty overrides are skipped so the .env value
 # wins. Mapping (CLI flag → docker .env key):
-#   --feed-owner   → VITE_APP_OWNER       (0x prefix stripped — viewer build expects raw hex)
+#   --feed-owner   → VITE_APP_OWNER       (0x prefix stripped, viewer build expects raw hex)
 #   --feed-topic   → STREAM_LIST_TOPIC, VITE_APP_RAW_TOPIC
 #   --private-key  → STREAM_KEY
-#   --stamp-id     → STAMP                (0x prefix stripped — bee expects raw hex)
+#   --stamp-id     → STAMP                (0x prefix stripped, bee expects raw hex)
 #
 # Single-quoted through `shell_quote`, for the reason engine_env_overrides_text gives further down in
 # this file: the file these lines land in is `source`d as well as read by compose, so an unquoted
@@ -515,7 +515,7 @@ host_from_target() {
   fi
 
   # If host looks like an IP or FQDN, use it directly.
-  # Otherwise it's an SSH alias — resolve via ssh -G.
+  # Otherwise it's an SSH alias, so resolve via ssh -G.
   if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$host" == *.* ]]; then
     echo "$host"
   else
@@ -527,7 +527,7 @@ host_from_target() {
 
 # --- Service grouping ---
 
-# Get unique enabled Docker targets from config (excludes "native" — those run outside compose).
+# Get unique enabled Docker targets from config (excludes "native", since those run outside compose).
 get_targets() {
   local seen=()
   for svc in "${ALL_SERVICES[@]}"; do
@@ -634,7 +634,7 @@ build_compose_files() {
   echo "$flags"
 }
 
-# Compose project flag (-p <profile>) — namespaces containers/volumes per profile.
+# Compose project flag (-p <profile>): namespaces containers/volumes per profile.
 compose_project_flag() {
   echo "-p $PROFILE"
 }
@@ -642,7 +642,7 @@ compose_project_flag() {
 # --- Env helpers ---
 
 # Load KEY=VALUE lines from a file into the current shell. Each value is
-# treated as a DEFAULT — anything already exported by the caller wins.
+# treated as a DEFAULT. Anything already exported by the caller wins.
 load_env_file() {
   local _env_file="$1"
   if [ -f "$_env_file" ]; then
@@ -669,7 +669,7 @@ load_env_file() {
       if declare -p "$_env_key" &>/dev/null; then
         continue
       fi
-      # Take the value literally (no eval — secrets may contain $, !, #, ...).
+      # Take the value literally (no eval: secrets may contain $, !, #, ...).
       # Quoted values run to the closing quote; unquoted values end at an
       # inline comment (whitespace + #, dotenv-style) with whitespace trimmed.
       _env_value="${_env_line#*=}"
@@ -857,7 +857,7 @@ engine_env_file() {
   fi
 }
 
-# Create the current profile's engine env when missing — copied from the base
+# Create the current profile's engine env when missing, copied from the base
 # engines/<engine>/.env (falling back to .env.sample). Engine ports are NOT
 # shifted by --portSlot, so the new copy needs a manual review.
 ensure_engine_env() {
@@ -874,11 +874,11 @@ ensure_engine_env() {
   else
     return 0
   fi
-  log_warn "Created ${file#"$ROOT_DIR"/} for profile '$PROFILE' — review its ports/secrets (engine ports are not shifted by --portSlot)."
+  log_warn "Created ${file#"$ROOT_DIR"/} for profile '$PROFILE'. Review its ports/secrets (engine ports are not shifted by --portSlot)."
 }
 
 # Load the env file of every enabled engine as defaults. Runs after load_env so
-# the root env wins on duplicate keys — the same order the natively-run uploader
+# the root env wins on duplicate keys, the same order the natively-run uploader
 # uses (dotenv loads <root>/.env first, then engines/<engine>/.env).
 load_engine_envs() {
   local engine
@@ -907,8 +907,8 @@ load_engine_envs_present() {
 }
 
 # Emit resolved KEY=VALUE\n lines for every key in the enabled engines' env
-# files. Values are read from the current shell — i.e. after the
-# load_env / load_engine_envs / apply_port_slot precedence has been applied —
+# files. Values are read from the current shell, i.e. after the
+# load_env / load_engine_envs / apply_port_slot precedence has been applied,
 # and land in the .env.deploy.<profile> override file so per-profile engine
 # settings reliably reach compose interpolation (same reason PORT_OVERRIDES_TEXT
 # exists), locally and on remote targets.
@@ -926,7 +926,7 @@ engine_env_overrides_text() {
       if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         continue
       fi
-      # Single-quote the value — the override file is both `source`d and parsed by compose, and
+      # Single-quote the value: the override file is both `source`d and parsed by compose, and
       # secrets may contain $, !, #, ... Through `shell_quote` rather than repeating the escape,
       # because the copy that used to live here was the same expression that is wrong on bash 3.2:
       # an engine env value containing an apostrophe wrote an unbalanced line, and the `source` of
@@ -964,7 +964,7 @@ validate_config() {
     fi
   fi
 
-  # client and bee-gateway must be co-located — the client's nginx proxies /bee/
+  # client and bee-gateway must be co-located: the client's nginx proxies /bee/
   # to the bee-gateway service via docker DNS, which only resolves within the same
   # compose project / network.
   if is_enabled "$client_target" && is_enabled "$gateway_target"; then
@@ -1001,7 +1001,7 @@ print_services() {
     echo "Host override: $HOST_OVERRIDE  (config.json targets ignored for enabled services)"
   fi
   if [ "$PORT_SLOT" != "0" ]; then
-    echo "Port slot: $PORT_SLOT (defaults shifted by slot*10; authoritative — env values ignored)"
+    echo "Port slot: $PORT_SLOT (defaults shifted by slot*10; authoritative, env values ignored)"
     echo "  bee-uploader  api=${BEE_UPLOADER_API_PORT:-?}  p2p=${BEE_UPLOADER_P2P_PORT:-?}"
     echo "  bee-gateway   api=${BEE_GATEWAY_API_PORT:-?}  p2p=${BEE_GATEWAY_P2P_PORT:-?}"
     echo "  stream-uplder api=${API_PORT:-?}"

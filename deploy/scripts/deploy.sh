@@ -23,10 +23,10 @@ usage() {
   echo "Services: ${ALL_SERVICES[*]}"
   echo "Targets read from config.json."
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
-  echo "Engine env files are per-profile too: engines/<engine>/.env.<profile> — created"
+  echo "Engine env files are per-profile too: engines/<engine>/.env.<profile>, created"
   echo "automatically from the engine's .env (or .env.sample) on first deploy."
   echo "--portSlot=<N> (1-99) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
-  echo "When set, the slot is authoritative — port lines in .env.<profile> are ignored."
+  echo "When set, the slot is authoritative: port lines in .env.<profile> are ignored."
   echo "--host=<target> ignores per-service targets in config.json and sends every enabled"
   echo "service to <target> (\"localhost\" or any host reachable via ~/.ssh/config)."
   echo "Disabled services (\"false\" in config.json) remain disabled."
@@ -44,7 +44,7 @@ set -- "${REST_ARGS[@]}"
 require_env
 load_env
 
-# Engine env files are per-profile too (engines/<engine>/.env.<profile>) —
+# Engine env files are per-profile too (engines/<engine>/.env.<profile>),
 # created from the base engine .env / .env.sample when missing, then loaded
 # as defaults below the root env (so .env.<profile> wins on duplicate keys).
 for engine in "${ENGINE_SERVICES[@]}"; do
@@ -96,7 +96,7 @@ check_stamp() {
     publishers_val=$(grep -E '^BEE_PUBLISHERS=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')
     stamp_val=$(grep -E '^STAMP=' "$ENV_FILE" | cut -d= -f2-)
     if [ -z "$publishers_val" ] && [ -z "$stamp_val" ]; then
-      log_warn "STAMP is empty in .env — stream-uploader needs a valid postage stamp."
+      log_warn "STAMP is empty in .env: stream-uploader needs a valid postage stamp."
       log_warn "Run: pnpm stamp:setup, or name one batch per rung in BEE_PUBLISHERS."
       # Nobody is there to answer on a deploy the manager runs: it spawns a script with standard
       # input closed, so `read` reaches end of file and the empty answer reads as a refusal. The
@@ -123,7 +123,7 @@ check_stamp
 # --- Engine guard ---
 
 # ENGINE selects the uploader's engine plugin. Warn when the matching engine
-# service is disabled in config.json — the uploader would wait on webhooks /
+# service is disabled in config.json: the uploader would wait on webhooks /
 # poll an HLS URL that nothing serves.
 check_engine() {
   local deploys_uploader=false
@@ -255,7 +255,7 @@ modified_at() {
 # --- Cross-target URL resolution ---
 
 # When bee-uploader is on a different host than stream-uploader,
-# the uploader can't use the docker service name — it needs the real IP.
+# the uploader can't use the docker service name: it needs the real IP.
 resolve_bee_url() {
   # A profile that runs no Bee node of its own has no local address to compute, so the BEE_URL in
   # .env.<profile> is both the only answer available and a deliberate one.
@@ -286,23 +286,23 @@ resolve_bee_url() {
   uploader_target=$(get_target "$SVC_UPLOADER")
 
   if ! is_enabled "$bee_target"; then
-    # bee-uploader disabled — use whatever BEE_URL is in .env
+    # bee-uploader disabled: use whatever BEE_URL is in .env
     return
   fi
 
   if [ "$bee_target" = "$uploader_target" ]; then
     local bee_port="${BEE_UPLOADER_API_PORT:-$DEFAULT_BEE_UPLOADER_PORT}"
     if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
-      # Host network — no docker DNS, use localhost
+      # Host network: no docker DNS, use localhost
       echo "http://localhost:${bee_port}"
     else
-      # Bridge network — docker service name works
+      # Bridge network: docker service name works
       echo "http://bee-uploader:${bee_port}"
     fi
     return
   fi
 
-  # Different targets — use the bee host's IP
+  # Different targets: use the bee host's IP
   local bee_host
   bee_host=$(host_from_target "$bee_target")
   local bee_port="${BEE_UPLOADER_API_PORT:-$DEFAULT_BEE_UPLOADER_PORT}"
@@ -337,7 +337,7 @@ resolve_adapter_host() {
   fi
 }
 
-# The dockerized uploader can't use the OME_HLS_URL from .env — that value is
+# The dockerized uploader can't use the OME_HLS_URL from .env: that value is
 # written for native dev (http://localhost:8081) and would point at the
 # uploader container itself. Resolve the URL the same way as resolve_bee_url.
 # Prints nothing when OME is disabled (keep whatever the env says).
@@ -354,13 +354,13 @@ resolve_ome_hls_url() {
     if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
       echo "http://localhost:${OME_HLS_PORT:-8081}"
     else
-      # Bridge network — docker DNS, container-internal port.
+      # Bridge network: docker DNS, container-internal port.
       echo "http://ome:8081"
     fi
     return
   fi
 
-  # Different targets — use OME's published port on its host.
+  # Different targets: use OME's published port on its host.
   local ome_host
   ome_host=$(host_from_target "$ome_target")
   echo "http://${ome_host}:${OME_HLS_PORT:-8081}"
@@ -497,7 +497,7 @@ sync_to_remote() {
     # The client consumes `@swarm-hls-stream/shared` as TypeScript and vite compiles it into the
     # bundle, so `Dockerfile.client` COPYs the package twice: its manifest for the install layer, and
     # its sources for the build. Neither is reachable unless it is synced, and the failure is a build
-    # that never starts — `failed to compute cache key: "/packages/shared": not found` — rather than
+    # that never starts, `failed to compute cache key: "/packages/shared": not found`, rather than
     # anything the deploy itself reports. The uploader block above sends the manifest for its own
     # reason and never these sources: the shared code it runs is the copy `vendor-shared.mjs`
     # compiled into `dist/node_modules`, which rides along in the dist sync.
@@ -575,7 +575,7 @@ generate_env_overrides() {
   # Start with the resolved engine env values (engines/<engine>/.env.<profile>),
   # then the slot-resolved port lines (apply_port_slot populates this). All of it
   # needs to land in the override file passed to docker compose so the values
-  # actually reach interpolation — `--env-file=<.env.profile>` alone causes shell
+  # actually reach interpolation: `--env-file=<.env.profile>` alone causes shell
   # exports to be ignored in some Compose versions for vars not present in that file.
   # Engine lines go FIRST: on duplicate keys the later lines win, so slot ports and
   # the auto-resolved keys below (BEE_URL, OME_HLS_URL, *_ADAPTER_HOST) take over.
@@ -615,7 +615,7 @@ generate_env_overrides() {
     fi
   done
 
-  # printf '%b' interprets backslash escapes in $overrides — and unlike `echo -e`
+  # printf '%b' interprets backslash escapes in $overrides, and unlike `echo -e`
   # it works under POSIX `sh` too (so `sh deploy.sh` doesn't write a literal "-e").
   printf '%b' "$overrides"
 
