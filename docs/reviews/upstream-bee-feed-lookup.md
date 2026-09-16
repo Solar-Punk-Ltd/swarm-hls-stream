@@ -3,6 +3,8 @@
 **Ready to file against [ethersphere/bee](https://github.com/ethersphere/bee). Written to stand alone,
 so it repeats context a maintainer would not otherwise have. Measured against `v2.8.1`.**
 
+**Status 2026-09-16: not filed.** Nothing in this repository files anything upstream, that is the owner's alone, and this page is the draft he would file from. It is not ethersphere/bee#5561, which is a different report about the overdraft back-off metric.
+
 ---
 
 ## Summary
