@@ -1,5 +1,7 @@
 # Running a high-scale streaming event on Swarm
 
+**Frozen at hand-over, 2026-08-16.** Nothing here has been updated since. Later findings and corrections live in [`docs/bench/INDEX.md`](../bench/INDEX.md), including the 2026-09-15 correction that the arms labelled ultra-light were light nodes with swap off.
+
 **A handover from `swarm-hls-stream` to whoever is building the load simulation. 2026-08-08.**
 
 This document exists so that a second repository can run thousands of viewers against a live Swarm
