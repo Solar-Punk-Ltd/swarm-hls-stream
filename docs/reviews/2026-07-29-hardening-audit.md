@@ -524,7 +524,7 @@ reason R5 built a register instead of trusting the timeline.
 **A row closes when a later round runs that lens on the same surface**, which is the next pull request
 touching it. **The S3 gate on 2026-08-01 is the first sprint exit this project has reached**, and it
 cleared the only open row. **An open row here fails the sprint exit gate**, which is enumerated in
-[the handoff](./2026-07-29-hardening-handoff.md) as its single home.
+the handoff, `2026-07-29-hardening-handoff.md`, as its single home. That file was removed on 2026-09-16 with the sprint long over, and git history keeps it.
 
 | PR  | Lens            | Surface                        | Deferred on | Cleared by                                    |
 | --- | --------------- | ------------------------------ | ----------- | --------------------------------------------- |
@@ -971,7 +971,7 @@ fails YAGNI here.
 
 Reworks feed back into a re-audit with real acceptance criteria. **The procedure lives in exactly one
 place:** the working protocol and the sprint exit gate in
-[`2026-07-29-hardening-handoff.md`](./2026-07-29-hardening-handoff.md). Follow it there.
+`2026-07-29-hardening-handoff.md`, removed on 2026-09-16 with the sprint over and kept in git history.
 
 This section used to carry its own copy of both, which is how they drifted. The sprint exit gate gained
 the full-catalogue deep run as a fifth condition and this copy stayed at four, while still naming Copilot
