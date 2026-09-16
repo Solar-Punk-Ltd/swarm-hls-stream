@@ -44,9 +44,9 @@ check_service() {
       log_ok "$name ($url)"
       return 0
     fi
-    log_warn "$name ($url) — HTTP $response"
+    log_warn "$name ($url): HTTP $response"
   else
-    log_error "$name ($url) — unreachable"
+    log_error "$name ($url): unreachable"
   fi
 
   SERVICES_FAILED=$((SERVICES_FAILED + 1))
@@ -64,7 +64,7 @@ check_service_reachable() {
     return 0
   fi
 
-  log_error "$name ($url) — unreachable"
+  log_error "$name ($url): unreachable"
   SERVICES_FAILED=$((SERVICES_FAILED + 1))
   return 1
 }
