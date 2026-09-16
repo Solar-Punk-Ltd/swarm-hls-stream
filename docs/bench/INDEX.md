@@ -262,7 +262,7 @@ Defects in the measuring apparatus itself.
 | 2026-08-14 | [Neither byte-source driver ever called start_sampler, so the mid-arm floor check polled a file nothing wrote, and its test could not fail](the-sampler-that-never-ran-2026-08-14.md) |  |
 | 2026-08-13 | [retrieveBytes returns the Swarm span with the 8-byte prefix a gateway strips, and twelve stubbed tests passed over the corrupt stream](weeb3-fetch-backend-2026-08-13.md) |  |
 | 2026-08-12 | [Of three contaminations found in the corpus, only decay invalidated numbers; the other two broke only the sentence explaining them.](corpus-audit-2026-08-12.md) | 📋 plan |
-| 2026-08-11 | [The corpus tags the encoder axes and not the retrieval axes, and that hand reconstruction is where every mixing error came from.](DATA-AUDIT-PLAN.md) | 📋 plan |
+| 2026-08-11 | [The corpus tags the encoder axes and not the retrieval axes, and that hand reconstruction is where every mixing error came from.](DATA-AUDIT-PLAN.md) | ⚠️ superseded by this index, marked 2026-09-16 |
 | 2026-08-07 | [overallAdvanceRatio counted recovery seeks as watched media, so a viewer through an uploader crash scored 0.992 where the truth is 0.603.](advance-ratio-excludes-seeks-2026-08-07.md) |  |
 | 2026-08-05 | [Identical settings measure 1.05s apart on different nights, ten times the within-session spread, and all of it lands on feedPropagation and fetch.](between-session-drift.md) |  |
 
