@@ -1,6 +1,6 @@
 # What the e2e suite covers, and what it does not
 
-**As of 2026-09-05.** A living map from product functionality to the live end-to-end scenarios that
+**As of 2026-09-16, and the newest live run recorded below is of 2026-09-07.** A living map from product functionality to the live end-to-end scenarios that
 exercise it, and to when each one was last green against a real deployment. It is here so that
 "is that tested" has one answer rather than a search, and so that a gap is written down as a gap
 instead of being inferred from a suite nobody wrote.
