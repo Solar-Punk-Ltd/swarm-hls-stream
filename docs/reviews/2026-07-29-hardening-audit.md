@@ -158,7 +158,7 @@ not on this path.
 
 ### Three rules that keep it from growing back
 
-1. **`review-gate.md` is frozen.** No edits unless a pull request is actually blocked by it. A protocol
+1. **`review-gate.md` is frozen** (and removed on 2026-09-16 on the owner's word, once its branch was merged and gone). No edits unless a pull request is actually blocked by it. A protocol
    defect gets one archived row and the session moves on. It is a control, and a control that needs
    continuous maintenance is not controlling anything.
 2. **A protocol finding is capped at MEDIUM**, unless it lets a production defect through undetected.
@@ -514,7 +514,7 @@ residual harm is a two second overlay flash.
 ## Deferred lenses
 
 A lens the surface selected, that did not run before the merge, under
-[what blocks a merge](./review-gate.md#what-blocks-a-merge-and-what-only-files-a-row). **Exactly two
+what blocks a merge in `review-gate.md`, the gate document removed on 2026-09-16 on the owner's word and kept in git history. **Exactly two
 lenses may appear here, mutation triage and test integrity.** Anything else in this table is a rule
 violation rather than a deferral.
 
