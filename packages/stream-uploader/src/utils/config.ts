@@ -116,6 +116,17 @@ const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
 const DEFAULT_START_GATE_TIMEOUT_MS = 20_000;
 
 /**
+ * Ten minutes, and a ceiling rather than decoration.
+ *
+ * A chain-backed read that has not answered in ten minutes is a node that is not answering, and since
+ * decision D16 this budget is spent per node per attempt of a wait that retries for as long as it
+ * takes. A stray zero on a sensible 200000 buys 26 minutes of silence per pass instead, with the
+ * service listening and `/health` saying nothing has been read yet, which looks exactly like a node
+ * that is down. `CHEQUEBOOK_MIN_BZZ` has a maximum for the same reason: a typo must not be a setting.
+ */
+const MAX_START_GATE_TIMEOUT_MS = 600_000;
+
+/**
  * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.
  *
  * Parsed eagerly and allowed to throw, for the same reason ABR_LADDER is: a publisher list that
@@ -161,7 +172,10 @@ export const config = {
    * cannot see, which is the shape it exists to catch.
    */
   startGateMode: parseStartGateMode(optional('UPLOADER_START_GATES', START_GATE_WARN)),
-  startGateTimeoutMs: optionalInt('START_GATE_TIMEOUT_MS', DEFAULT_START_GATE_TIMEOUT_MS, { min: 1 }),
+  startGateTimeoutMs: optionalInt('START_GATE_TIMEOUT_MS', DEFAULT_START_GATE_TIMEOUT_MS, {
+    min: 1,
+    max: MAX_START_GATE_TIMEOUT_MS,
+  }),
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
     max: MAX_CHEQUEBOOK_MIN_BZZ,
