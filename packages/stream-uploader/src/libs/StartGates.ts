@@ -154,6 +154,12 @@ export interface GateRefusal {
  */
 export type GateReading = 'answered' | 'unreadable';
 
+/**
+ * What a gate establishes about one node, before it knows which rung and which url to file it under.
+ * The rest of a {@link GateRefusal} is the caller's own context rather than anything the read found.
+ */
+export type GateFinding = Pick<GateRefusal, 'message' | 'reading'>;
+
 /** Where a gate puts a refusal instead of throwing it. Absent, the gate throws at the first one. */
 export type GateCollector = (refusal: GateRefusal) => void;
 

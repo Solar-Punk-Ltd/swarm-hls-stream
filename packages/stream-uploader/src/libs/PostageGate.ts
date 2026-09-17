@@ -4,7 +4,7 @@ import { safeUrl, shortBatchId } from './BeePublisherPool.js';
 import { gateReadingOfError } from './gateReadingOfError.js';
 import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
-import { GateCollector, GateReading } from './StartGates.js';
+import { GateCollector, GateFinding } from './StartGates.js';
 
 /**
  * Read every postage batch this stage pays with before the uploader touches anything paid, and refuse
@@ -107,7 +107,7 @@ export class PostageGate {
    * 2026-08-31, so bee-js throws instead of returning something with `exists: false` on it. There is
    * no field to read for absence, and looking for one is what this gate used to do.
    */
-  private async refusalFor(publisher: StampedPublisher): Promise<BatchRefusal | null> {
+  private async refusalFor(publisher: StampedPublisher): Promise<GateFinding | null> {
     let body: PostageBatch;
     try {
       body = await publisher.bee.getPostageBatch(publisher.stamp);
@@ -182,12 +182,6 @@ export class PostageGate {
       'STAMP_MAX_UTILIZATION moves the ceiling.'
     );
   }
-}
-
-/** What a batch earns when it cannot carry a broadcast: the sentence, and which kind of fact it is. */
-interface BatchRefusal {
-  readonly message: string;
-  readonly reading: GateReading;
 }
 
 /** One rung's node and the batch it spends. `BeePublisher` satisfies this. */

@@ -2,7 +2,7 @@ import { safeUrl } from './BeePublisherPool.js';
 import { gateReadingOfError } from './gateReadingOfError.js';
 import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
-import { GateCollector, GateReading } from './StartGates.js';
+import { GateCollector, GateFinding } from './StartGates.js';
 
 /**
  * Read every Bee node's chequebook before the uploader touches anything paid, and refuse or warn
@@ -103,7 +103,7 @@ export class ChequebookGate {
    * {@link gateReadingOfError} decides. This gate warns under the shipped mode whichever it is, and
    * the fact belongs to the gate that established it rather than to whoever acts on it.
    */
-  private async refusalFor(node: ChequebookNode): Promise<ChequebookRefusal | null> {
+  private async refusalFor(node: ChequebookNode): Promise<GateFinding | null> {
     let body: unknown;
     try {
       body = await node.bee.getChequebookBalance();
@@ -150,12 +150,6 @@ export class ChequebookGate {
       `is on. The floor is ${plurToBzz(this.floorPlur)} BZZ.`
     );
   }
-}
-
-/** What a node earns when it cannot pay: the sentence, and which kind of fact it is. */
-interface ChequebookRefusal {
-  readonly message: string;
-  readonly reading: GateReading;
 }
 
 /** 1 BZZ = 1e16 PLUR. PLUR is bee's integer base unit, and every balance it reports is denominated in it. */
