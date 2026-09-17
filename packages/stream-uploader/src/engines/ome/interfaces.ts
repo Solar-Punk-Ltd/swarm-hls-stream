@@ -106,6 +106,11 @@ export interface OmeEngineOptions {
    * See `engines/adminGate.ts`.
    */
   adminApi?: AdminApiClient;
+  /**
+   * The address this service signs its feeds with. Read only in admin mode, where the gate refuses a
+   * declaration owned by another feed key. See `EngineFactoryDeps.signerOwner`.
+   */
+  signerOwner?: string;
   failOpen?: boolean;
   /** Passed straight to every puller this engine starts. See `PullerOptions.fetchTimeoutMs`. */
   fetchTimeoutMs?: number;

@@ -54,7 +54,7 @@ function readEpochs(epochs: unknown): BroadcastEpoch[] {
  * Which ladder each source's rungs belong to and when its broadcast started, kept where a restart of
  * this process can find them.
  *
- * The group is the identity a broadcast's single catalog entry is written under. Four rungs fold
+ * The group is the identity a broadcast's single catalog entry is written under. Four rungs merge
  * into one entry keyed by `(owner, group)`, and `StreamCatalog` replaces an entry only when the
  * group matches, so a source handed a second group is not a cosmetic slip: it is the same broadcast
  * listed twice for viewers, each copy paid for in its own postage and neither reachable from the
@@ -67,7 +67,7 @@ function readEpochs(epochs: unknown): BroadcastEpoch[] {
  * carries the identity across that gap.
  *
  * A record is retired the moment the ladder's last rung stops, which is when its recording is
- * complete. Keeping it any longer would fold the next broadcast on that source into a finished
+ * complete. Keeping it any longer would merge the next broadcast on that source into a finished
  * recording, which is the same defect pointing the other way.
  */
 export class LadderGroupStore {

@@ -325,7 +325,7 @@ describe('the admin API client, reporting one rung of a ladder', () => {
   };
 
   /** The merged ladder as the contract states it, so `asRenditionReport` accepts it. */
-  const FOLDED = {
+  const MERGED = {
     stream: { id: ADMIN_STREAM_ID },
     renditions: [RUNG],
     ladder: { finished: false, flippedToFinished: false, duration: null },
@@ -333,7 +333,7 @@ describe('the admin API client, reporting one rung of a ladder', () => {
   };
 
   it('posts the contract path and the rung as its body, and reads the merged ladder back', async () => {
-    await withAdmin(always(200, FOLDED), async ({ client, received }) => {
+    await withAdmin(always(200, MERGED), async ({ client, received }) => {
       const report = await client.reportRendition(ADMIN_STREAM_ID, RUNG);
 
       assert.equal(received.length, 1);
@@ -348,7 +348,7 @@ describe('the admin API client, reporting one rung of a ladder', () => {
 
   it('reads the flip and the duration back off a ladder that finished', async () => {
     const finished = {
-      ...FOLDED,
+      ...MERGED,
       renditions: [{ ...RUNG, index: 9, duration: 12 }],
       ladder: { finished: true, flippedToFinished: true, duration: 12 },
     };
@@ -361,22 +361,36 @@ describe('the admin API client, reporting one rung of a ladder', () => {
     });
   });
 
+  /**
+   * ⛔ The one number that orders answers the way the admin merged them. Four rungs report concurrently
+   * and their answers can arrive in another order; without this the registry would write whichever merge
+   * landed last, and an older one landing last takes a rung off the master. See `AdminLadderRegistry.adopt`.
+   */
+  it('reads the catalog write index off the reply, and answers null for a body that carries none', async () => {
+    await withAdmin(always(200, MERGED), async ({ client }) => {
+      assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.feedIndex, 7);
+    });
+    await withAdmin(always(200, { ...MERGED, feed: undefined }), async ({ client }) => {
+      assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.feedIndex, null);
+    });
+  });
+
   it('reads the stream′s status off the reply, and answers null for a body that carries none', async () => {
-    await withAdmin(always(200, { ...FOLDED, stream: { id: ADMIN_STREAM_ID, status: 'live' } }), async ({ client }) => {
+    await withAdmin(always(200, { ...MERGED, stream: { id: ADMIN_STREAM_ID, status: 'live' } }), async ({ client }) => {
       assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.streamStatus, 'live');
     });
-    await withAdmin(always(200, FOLDED), async ({ client }) => {
+    await withAdmin(always(200, MERGED), async ({ client }) => {
       assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.streamStatus, null);
     });
   });
 
-  it('retries a 502 and folds the rung once the admin comes back', async () => {
+  it('retries a 502 and merges the rung once the admin comes back', async () => {
     await withAdmin(
       (_req, res, call) =>
-        call === 1 ? res.status(502).json({ error: 'publish_failed' }) : res.status(200).json(FOLDED),
+        call === 1 ? res.status(502).json({ error: 'publish_failed' }) : res.status(200).json(MERGED),
       async ({ client, received, sleeps }) => {
         assert.notEqual(await client.reportRendition(ADMIN_STREAM_ID, RUNG), null);
-        assert.equal(received.length, 2, 'the fold is idempotent, so repeating the whole report is safe');
+        assert.equal(received.length, 2, 'the merge is idempotent, so repeating the whole report is safe');
         assert.deepEqual(sleeps, [STATE_REPORT_BACKOFF_MS[0]]);
       },
     );
@@ -410,11 +424,11 @@ describe('the admin API client, reporting one rung of a ladder', () => {
    * tag hls.js parses, and both are broadcasts that publish and cannot be played.
    */
   for (const [name, body] of [
-    ['a rendition missing its topic', { ...FOLDED, renditions: [{ ...RUNG, topic: undefined }] }],
-    ['a rendition whose bandwidth is not a number', { ...FOLDED, renditions: [{ ...RUNG, bandwidth: 'fast' }] }],
-    ['a rendition carrying an index with no duration', { ...FOLDED, renditions: [{ ...RUNG, index: 9 }] }],
-    ['no ladder state at all', { ...FOLDED, ladder: undefined }],
-    ['renditions that are not a list', { ...FOLDED, renditions: { '720p': RUNG } }],
+    ['a rendition missing its topic', { ...MERGED, renditions: [{ ...RUNG, topic: undefined }] }],
+    ['a rendition whose bandwidth is not a number', { ...MERGED, renditions: [{ ...RUNG, bandwidth: 'fast' }] }],
+    ['a rendition carrying an index with no duration', { ...MERGED, renditions: [{ ...RUNG, index: 9 }] }],
+    ['no ladder state at all', { ...MERGED, ladder: undefined }],
+    ['renditions that are not a list', { ...MERGED, renditions: { '720p': RUNG } }],
     ['a body that is not an object', 'a merged ladder'],
   ] as const) {
     it(`answers null for ${name}`, async () => {
@@ -423,6 +437,41 @@ describe('the admin API client, reporting one rung of a ladder', () => {
       });
     });
   }
+});
+
+/**
+ * The boot-time half of the owner check. Both services have to sign as one address or the admin's
+ * catalog entries point viewers at feeds nobody writes, and nothing on the wire says so: every report
+ * answers 200. So boot reads the admin's public config and compares. Never throws, because an admin
+ * that is not up yet is a deploy ordering and the publish gate compares each declaration's owner anyway.
+ */
+describe('the admin API client, reading the feed owner', () => {
+  const CONFIG = { feed: { owner: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', topic: 't', topicHex: '00' } };
+
+  it('reads the owner off the public config', async () => {
+    await withAdmin(always(200, CONFIG), async ({ client, received }) => {
+      assert.equal(await client.fetchFeedOwner(), CONFIG.feed.owner);
+      assert.equal(received[0].method, 'GET');
+      assert.equal(received[0].url, '/api/config');
+    });
+  });
+
+  for (const [name, handle] of [
+    ['the admin answers 5xx', always(503)],
+    ['the body carries no feed owner', always(200, { feed: { topic: 't' } })],
+    ['the body is not an object', always(200, 'nope')],
+  ] as const) {
+    it(`answers null, and does not throw, when ${name}`, async () => {
+      await withAdmin(handle, async ({ client }) => {
+        assert.equal(await client.fetchFeedOwner(), null);
+      });
+    });
+  }
+
+  it('answers null when the admin cannot be reached at all', async () => {
+    const client = new AdminApiClient({ baseUrl: 'http://127.0.0.1:1', token: TOKEN, lookupTimeoutMs: 200 });
+    assert.equal(await client.fetchFeedOwner(), null);
+  });
 });
 
 describe('the admin API token', () => {

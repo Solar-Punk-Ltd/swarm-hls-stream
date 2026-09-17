@@ -14,6 +14,11 @@ import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
  */
 export interface EngineFactoryDeps {
   adminApi?: AdminApiClient;
+  /**
+   * The address this service signs its feeds with, for the admin publish gate to compare against each
+   * declaration's owner. Read only when `adminApi` is set. See `resolveAdminPublish`.
+   */
+  signerOwner?: string;
 }
 
 export interface EnginePlugin {

@@ -49,10 +49,21 @@ const LEGACY_KEY = derivePublishKey(LEGACY_PUBLISH_SECRET, STREAM_ID);
 /** The key the admin minted for this declaration. The only one that admits anybody in admin mode. */
 const DECLARED_KEY = 'declared-publish-key-0123456789';
 
+/** The address the admin signs its catalog with, as its rows spell it: forty hex digits, lower case. */
+const FEED_OWNER = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+/**
+ * The same address as this deployment spells it. Deliberately prefixed and upper-cased: the two
+ * services print one address two ways, and a compare that read the spelling would refuse every
+ * correctly configured deployment.
+ */
+const DEPLOYMENT_SIGNS_AS = `0x${FEED_OWNER.toUpperCase()}`;
+/** A declaration made under some other feed key. */
+const SOMEBODY_ELSES_OWNER = 'ffffffffffffffffffffffffffffffffffffffff';
+
 const DRAFT: AdminStreamDraft = {
   id: 'str_01HZY',
   topic: 'declared-topic-0001',
-  owner: '0xowner',
+  owner: FEED_OWNER,
   mediaType: MEDIA_TYPE_VIDEO,
   title: 'A declared broadcast',
   status: 'draft',
@@ -173,6 +184,7 @@ function withSrs(lookup: LookupAnswer, drive: Drive): Promise<void> {
         // configured it could not tell "ignored" from "absent".
         publishKeySecret: LEGACY_PUBLISH_SECRET,
         adminApi,
+        signerOwner: DEPLOYMENT_SIGNS_AS,
       }),
       announce: async (baseUrl, prefix, ingestApp, address, query) => {
         const response = await fetch(`${baseUrl}${prefix}/streams?token=${SRS_TOKEN}`, {
@@ -201,6 +213,7 @@ function withOme(lookup: LookupAnswer, drive: Drive): Promise<void> {
         admissionSecret: OME_SECRET,
         publishKeySecret: LEGACY_PUBLISH_SECRET,
         adminApi,
+        signerOwner: DEPLOYMENT_SIGNS_AS,
       }),
       announce: async (baseUrl, prefix, ingestApp, address, query) => {
         const reply = await postAdmission(
@@ -318,6 +331,27 @@ for (const [name, withThisEngine] of ENGINES) {
           orchestrator.getMetricsSnapshot().authRejectionsTotal,
           0,
           'the caller proved the key for the stream it named, so this is a misconfigured publisher and not an unauthorised one',
+        );
+      });
+    });
+
+    /**
+     * ⛔ A deployment fault, not a broadcaster's. The admin's entry points viewers at `owner/topic` and
+     * every feed this service writes there is signed with `STREAM_KEY`; with the two keys apart every
+     * report answers 200 and every viewer resolves a feed nobody wrote. Refused after the key check, so
+     * a caller who has not proved the declaration learns nothing about it, and not counted on /health
+     * as an authentication rejection, because nothing the caller did caused it. The fixture's own owner
+     * is spelled two ways on the two sides, so every admitting case above is also the proof that the
+     * compare reads the address and not its spelling.
+     */
+    it('refuses a declaration owned by another feed key, and does not count it as an auth rejection', async () => {
+      await withThisEngine(answersDraft({ owner: SOMEBODY_ELSES_OWNER }), async ({ announce, orchestrator }) => {
+        assert.equal(await announce(BROADCASTER, `?key=${DECLARED_KEY}`), false);
+        assert.equal(orchestrator.getActiveStreamCount(), 0);
+        assert.equal(
+          orchestrator.getMetricsSnapshot().authRejectionsTotal,
+          0,
+          'two keys of one deployment disagreeing is nothing the caller did',
         );
       });
     });

@@ -1,14 +1,14 @@
 import { Rendition } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
-import { ADMIN_STATE_VOD, AdminApiClient } from './AdminApiClient.js';
+import { ADMIN_STATE_VOD, AdminApiClient, RenditionReportResponse } from './AdminApiClient.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
-import { LadderIdentity, LadderSink, RenditionAnnouncement } from './LadderSink.js';
+import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter } from './MasterFeedWriter.js';
 import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
 
-export interface AdminLadderSinkOptions {
+export interface AdminLadderRegistryOptions {
   client: AdminApiClient;
   masterWriter: MasterFeedWriter;
   /**
@@ -19,13 +19,13 @@ export interface AdminLadderSinkOptions {
 }
 
 /**
- * The ladder sink admin mode uses: the admin holds the merge state, and this writes the master.
+ * The ladder registry admin mode uses: the admin holds the merge state, and this writes the master.
  *
  * ## What moves, and what does not
  *
- * Standalone, `StreamCatalog` holds one entry per ladder on the stream list feed, folds each rung's
- * record into it, and writes the master from the folded result. Admin mode moves the fold into the
- * admin's database — each rung posts its own record, the admin folds it by exactly the rule
+ * Standalone, `StreamCatalog` holds one entry per ladder on the stream list feed, merges each rung's
+ * record into it, and writes the master from the merged result. Admin mode moves the merge into the
+ * admin's database — each rung posts its own record, the admin merges it by exactly the rule
  * `StreamCatalog.keepingWhatFinished` states, stores it, writes `renditions` into its own catalog
  * entry, and answers with the merged ladder. What does NOT move is the master: the ladder's
  * multivariant playlist is still a Swarm feed this service signs and writes, and the feed's topic is
@@ -33,29 +33,30 @@ export interface AdminLadderSinkOptions {
  *
  * ⛔ **It holds no catalog and no catalog feed writer, and that is structural rather than a
  * convention.** The one rule admin mode has never been allowed to break is that this service writes
- * no stream catalog entry; a sink that could reach one is a sink a later change can make write one.
+ * no stream catalog entry; a registry that could reach one is a registry a later change can make
+ * write one.
  * The only feed it can address at all is the master's.
  *
  * ## Why `recordRungDelivered` never asks the admin
  *
  * A rung dying is not an announce — nothing reports it, and that is the whole of the ⛔⛔⛔ note on
  * `StreamCatalog.republishIfLadderShapeChanged`. The correction is a master rewritten from renditions
- * that are already known, so it needs no fold and no round trip: the merged ladder is held from the
+ * that are already known, so it needs no merge and no round trip: the merged ladder is held from the
  * last report and the rewrite is a single feed write. Asking the admin per delivery would put a
  * request per segment per rung onto it for the length of every broadcast.
  *
  * ## Why the flip is read off the stream's status as well as off `flippedToFinished`
  *
- * The admin flips `flippedToFinished` once, on the report that completed the fold, and
- * {@link upsertRendition} throws if the master write behind that report does not land. The fold has
- * already been committed by then — the master is built from what the fold returns, so it cannot be
+ * The admin flips `flippedToFinished` once, on the report that completed the merge, and
+ * {@link upsertRendition} throws if the master write behind that report does not land. The merge has
+ * already been committed by then — the master is built from what the merge returns, so it cannot be
  * the other way round — and the retry that follows is answered with a ladder that is already finished
  * and no flip. Handed back as-is, that is a broadcast that stays `live` in the admin's list for good.
  * So a finished ladder whose stream the admin does not yet hold as `vod` is reported as a flip too:
  * the admin accepts `vod -> vod`, so saying it twice costs a round trip, and saying it never costs the
  * recording its listing.
  */
-export class AdminLadderSink implements LadderSink {
+export class AdminLadderRegistry implements LadderRegistry {
   private readonly logger = Logger.getInstance();
   private readonly client: AdminApiClient;
   private readonly masterWriter: MasterFeedWriter;
@@ -65,16 +66,21 @@ export class AdminLadderSink implements LadderSink {
   private readonly liveness = new Map<string, LadderLiveness>();
 
   /**
-   * The ladder the admin last returned, by group.
+   * The ladder the admin last merged, by group.
    *
-   * ⛔ The admin's fold and never this process's own accumulation. Four rungs report concurrently and
-   * each is answered with the whole ladder as it stood after its own report, so the newest answer is
+   * ⛔ The admin's merge and never this process's own accumulation. Four rungs report concurrently and
+   * each is answered with the whole ladder as it stood after its own report, so the newest merge is
    * the closest thing to the truth any of them can hold — and a rung rewriting the master from a
    * ladder it assembled itself would name only the rungs that happen to share its process.
+   *
+   * ⛔ Newest by the admin's own write index, never by arrival. See {@link adopt}.
    */
   private readonly merged = new Map<string, Rendition[]>();
 
-  constructor(options: AdminLadderSinkOptions) {
+  /** The catalog write index behind {@link merged}, by group, and absent while no answer carried one. */
+  private readonly newestFeedIndex = new Map<string, number>();
+
+  constructor(options: AdminLadderRegistryOptions) {
     this.client = options.client;
     this.masterWriter = options.masterWriter;
     this.rewrites = new MasterRewriteSchedule(options.now ?? (() => performance.now()));
@@ -91,7 +97,7 @@ export class AdminLadderSink implements LadderSink {
    * behaviour a ladder announce has always had, and neither survives this answering quietly.
    *
    * The report goes first and the master second, which is the one ordering available: the master names
-   * every rung of the ladder and only the fold knows what they are. The admin's entry already points
+   * every rung of the ladder and only the merge knows what they are. The admin's entry already points
    * a viewer at this feed — it is the declared topic — so no entry is ever repointed, and there is no
    * window in which one resolves somewhere else.
    */
@@ -114,9 +120,9 @@ export class AdminLadderSink implements LadderSink {
       );
     }
 
-    this.merged.set(identity.group, report.renditions);
+    const ladder = this.adopt(identity.group, rendition.name, report);
 
-    const advertised = advertisableRenditions(report.renditions, this.livenessOf(identity.group));
+    const advertised = advertisableRenditions(ladder, this.livenessOf(identity.group));
     const published = await this.masterWriter.publish(identity.group, advertised);
     if (published) {
       // Only what the feed took, for the reason {@link MasterRewriteSchedule} states: a shape recorded
@@ -135,6 +141,36 @@ export class AdminLadderSink implements LadderSink {
       flippedToFinished: report.ladder.flippedToFinished || finishedButUnreported,
       duration: report.ladder.duration,
     };
+  }
+
+  /**
+   * Take an answer as the ladder this process holds for a group, unless a newer one has already been
+   * taken, and say which ladder the master is to be written from.
+   *
+   * ⛔ Ordered by the admin's catalog write index and never by arrival. Four rungs report concurrently,
+   * the admin merges them in one order, and their answers can land here in another. Writing each master
+   * from its own answer let an older merge arriving last publish a master missing a rung a newer answer
+   * had already named — a quality gone from the ladder until the next announce, which a steady
+   * broadcast can go its whole length without producing. An answer carrying no index is taken as it
+   * comes, which is what every answer was before the index was read.
+   */
+  private adopt(group: string, rung: string, report: RenditionReportResponse): Rendition[] {
+    const newest = this.newestFeedIndex.get(group);
+    if (report.feedIndex !== null && newest !== undefined && report.feedIndex < newest) {
+      const held = this.merged.get(group);
+      if (held !== undefined) {
+        this.logger.log(
+          `[AdminLadderRegistry] The answer to ${rung} of ladder ${group} is an older merge (catalog index ` +
+            `${report.feedIndex}) than one already applied (${newest}); the master is written from the newer ladder`,
+        );
+        return held;
+      }
+    }
+    this.merged.set(group, report.renditions);
+    if (report.feedIndex !== null) {
+      this.newestFeedIndex.set(group, report.feedIndex);
+    }
+    return report.renditions;
   }
 
   public recordRungDelivered(group: string, rung: string): void {
@@ -170,14 +206,14 @@ export class AdminLadderSink implements LadderSink {
     try {
       // ⛔ The ladder as it stands when the write runs, never the one it stood at when this rewrite was
       // scheduled. A rewrite is queued from a segment and settles turns later, so a sibling rung's
-      // announce can land a newer fold in between — and writing the older one over the master that
+      // announce can land a newer merge in between — and writing the older one over the master that
       // announce just published would take a rung back off the ladder until something else moved.
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
       const advertised = advertisableRenditions(this.merged.get(group) ?? [], this.livenessOf(group));
       const published = await this.masterWriter.publish(group, advertised);
       if (published) {
         this.logger.log(
-          `[AdminLadderSink] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,
+          `[AdminLadderRegistry] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,
         );
         this.rewrites.rewriteLanded(group, shape);
         return;
@@ -189,7 +225,7 @@ export class AdminLadderSink implements LadderSink {
     } catch (error) {
       this.rewrites.holdOff(group);
       this.logger.error(
-        `[AdminLadderSink] Could not rewrite the master for ${group} after its rungs changed: ${getErrorMessage(
+        `[AdminLadderRegistry] Could not rewrite the master for ${group} after its rungs changed: ${getErrorMessage(
           error,
         )}`,
       );
