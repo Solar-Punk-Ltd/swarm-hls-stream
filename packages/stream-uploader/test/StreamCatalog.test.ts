@@ -118,7 +118,7 @@ function publishedBy(write: CapturedWrite): CatalogEntry[] {
 }
 
 /** The log lines written while `run` is in flight, with the previous sink restored afterwards. */
-async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
+async function logLinesDuring(run: () => Promise<unknown>): Promise<string[]> {
   const lines: string[] = [];
   const logger = Logger.getInstance();
   const previous = logger.configure({ sink: (_level, line) => lines.push(line) });

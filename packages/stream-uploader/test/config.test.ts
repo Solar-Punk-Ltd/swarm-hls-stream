@@ -301,23 +301,24 @@ describe('admin mode', () => {
   });
 
   /**
-   * ⛔ Refused at boot rather than ignored. Admin mode gives a broadcast one topic, minted by the
-   * admin, and a ladder needs one feed per rung plus a master feed the admin knows nothing about:
-   * the two designs disagree about what a stream *is*. Run together they would produce a stage that
-   * looks configured for ABR and publishes a single rendition, which is precisely the shape of
-   * failure this repository keeps paying for. Refusing costs a restart.
+   * ⛔ The two used to refuse each other at boot, on the grounds that admin mode gives a broadcast one
+   * topic and a ladder needs one feed per rung plus a master feed the admin knows nothing about. They
+   * now agree about what a stream is: **the declared topic is the ladder's master feed**, the rungs
+   * keep their own fresh topics, and the ladder's merge state lives in the admin rather than in the
+   * catalog feed. Both halves have to reach their fields, because a deployment that reads as admin
+   * mode with no ladder publishes a single rendition where four were configured, which is the shape of
+   * failure this repository keeps paying for.
    */
-  it('refuses to start with the ABR ladder turned on as well', async () => {
-    await assert.rejects(
-      () =>
-        loadConfig({
-          ...requiredEnv(),
-          ADMIN_API_URL: ADMIN_URL,
-          ADMIN_API_TOKEN: ADMIN_TOKEN,
-          ABR_ENABLED: 'true',
-        }),
-      /ABR_ENABLED/,
-    );
+  it('runs the ABR ladder and admin mode together', async () => {
+    const config = await loadConfig({
+      ...requiredEnv(),
+      ADMIN_API_URL: ADMIN_URL,
+      ADMIN_API_TOKEN: ADMIN_TOKEN,
+      ABR_ENABLED: 'true',
+    });
+
+    assert.deepEqual(config.admin, { apiUrl: ADMIN_URL, apiToken: ADMIN_TOKEN });
+    assert.ok(config.abr, 'the ladder must survive admin mode being on, or four rungs publish as one');
   });
 
   it('leaves the ladder alone when admin mode is off', async () => {

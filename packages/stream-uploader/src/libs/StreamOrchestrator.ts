@@ -60,6 +60,7 @@ import {
   watchFragment,
 } from './fragmentAgreement.js';
 import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
+import { LadderSink } from './LadderSink.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -136,6 +137,11 @@ export interface StreamOrchestratorConfig {
    * uploader reports state to the admin instead of writing the Swarm stream catalog.
    */
   adminApi?: AdminApiClient;
+  /**
+   * Where a ladder rung's rendition record goes. Absent is the stream catalog this orchestrator was
+   * built with, which is the standalone deployment. See {@link LadderSink}.
+   */
+  ladderSink?: LadderSink;
 }
 
 /**
@@ -455,7 +461,14 @@ export class StreamOrchestrator {
       // closing and VOD manifests race the replacement's live ones for the same feed indexes. Outside
       // admin mode each session owns a topic nothing else writes, so nothing waits.
       const drained = this.finalizeRetiredSession(streamId, stale);
-      this.spawnUploader(streamId, mediatype, claimant, admin, admin ? drained : undefined);
+      // ⛔ The gate is owed only where the two sessions share a feed, which is a declared topic a
+      // session publishes its own manifests onto. A RUNG in admin mode does not: its manifest topic is
+      // a fresh uuid like any other rung's, and what it shares with the retired session is the
+      // ladder's master feed, whose writer establishes its own index per process and serialises every
+      // write on its own queue. Holding a rung's publishes for its predecessor's drain would freeze
+      // one quality of a live ladder for the length of a finalize and buy nothing.
+      const sharesOneFeed = admin !== undefined && (this.config.ladder?.match(streamId) ?? null) === null;
+      this.spawnUploader(streamId, mediatype, claimant, admin, sharesOneFeed ? drained : undefined);
       return true;
     }
 
@@ -683,11 +696,11 @@ export class StreamOrchestrator {
     // would be handed the topic it just finished writing and, with no state to resume from, would
     // start overwriting it at SOC index 0. What has to be stable across a ladder is the group.
     //
-    // ⛔ **Admin mode is the exception, and it owes exactly the debt that comment describes.** There
-    // the topic belongs to the declaration: the admin mints it when the stream is created and hands
-    // it to viewers before anything has ever published on it, so a second session under one
-    // declaration is precisely the case of "handed the topic it just finished writing". Paying that
-    // debt takes two things, and each is useless without the other:
+    // ⛔ **A lone rendition in admin mode is the exception, and it owes exactly the debt that comment
+    // describes.** There the topic belongs to the declaration: the admin mints it when the stream is
+    // created and hands it to viewers before anything has ever published on it, so a second session
+    // under one declaration is precisely the case of "handed the topic it just finished writing".
+    // Paying that debt takes two things, and each is useless without the other:
     //
     //   1. Such a session no longer starts with no state to resume from. The uploader reads the feed
     //      head before its first SOC write and continues above it — `StreamUploader.resumeAdminFeedIndex`.
@@ -697,7 +710,15 @@ export class StreamOrchestrator {
     //      publish that follows it and the two sessions claim the same indexes. The replacement is
     //      handed the retired session's finalize and holds its publishes until it settles — see the
     //      re-announce branch of `startStream` above, and `StreamUploaderOptions.predecessorDrained`.
-    const streamTopic = admin?.topic ?? crypto.randomUUID();
+    //
+    // ⛔ **A RUNG in admin mode takes a fresh topic like every other rung, and the declaration becomes
+    // its GROUP instead.** The declared topic is the one identifier a viewer is handed, and for a
+    // ladder what a viewer has to find there is the master playlist, whose feed topic *is* the group —
+    // so declaring the group is what makes the admin's catalog entry resolve without the admin
+    // knowing anything about renditions. Handing the rung that topic as well would put four rungs and
+    // the master on one feed, all writing over each other. Neither debt above is owed here: the rung's
+    // feed is empty, and the master's own writer probes its head on the first write of a process.
+    const streamTopic = admin && !match ? admin.topic : crypto.randomUUID();
 
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
     // same way only because they all read this one instant, and a rung admitted a moment later
@@ -705,7 +726,7 @@ export class StreamOrchestrator {
     let anchor: BroadcastAnchor = { startedAtMs: this.wallClock(), fragmentSeconds: this.config.fragmentSeconds };
 
     if (match) {
-      const remembered = this.groupFor(match.baseStreamId);
+      const remembered = this.groupFor(match.baseStreamId, admin?.topic);
       anchor = this.anchorOf(remembered);
       ladder = { group: remembered.group, rung: match.rung };
       this.streamBases.set(streamId, match.baseStreamId);
@@ -729,6 +750,7 @@ export class StreamOrchestrator {
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
+      ladderSink: this.config.ladderSink,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
       redundancyLevel: this.config.segmentRedundancy,
@@ -1364,6 +1386,7 @@ export class StreamOrchestrator {
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
+      ladderSink: this.config.ladderSink,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
       redundancyLevel: this.config.segmentRedundancy,
@@ -1859,15 +1882,34 @@ export class StreamOrchestrator {
    * survive. A crash around finalize is exactly the case with none, because `StreamUploader.finalize`
    * deletes each rung's entry as that rung completes, so the broadcast came back under a second
    * group and was listed for viewers a second time.
+   *
+   * @param preferredGroup the group to mint with instead of a fresh uuid, which in admin mode is the
+   * declared topic: the master feed's topic is the group, and the admin's catalog entry already points
+   * a viewer at the declared topic, so the two have to be the same string or the entry resolves to a
+   * feed nothing writes.
+   *
+   * ⛔ **Preferred, never imposed.** What is remembered — in memory, on disk, and in each rung's own
+   * recovery entry — stays the single source of truth across a restart, because it is what the rungs
+   * already publishing have been folded under and what the master already written names. A
+   * declaration that disagrees with a remembered group is said out loud rather than acted on: the
+   * only way to produce one is a broadcast that crashed and was then re-declared, and adopting the new
+   * topic mid-ladder would strand the master the surviving rungs are still writing.
    */
-  private groupFor(base: string): RememberedLadder {
+  private groupFor(base: string, preferredGroup?: string): RememberedLadder {
     const existing = this.ladderGroups.get(base) ?? this.readPersistedLadder(base);
     if (existing) {
+      if (preferredGroup !== undefined && existing.group !== preferredGroup) {
+        this.logger.warn(
+          `[StreamOrchestrator] Ladder ${base} is remembered under group ${existing.group} and its declaration ` +
+            `now names topic ${preferredGroup}. Keeping the remembered group, which is where the master its ` +
+            'rungs are publishing under already lives; the declaration will point viewers elsewhere.',
+        );
+      }
       this.rememberLadder(base, existing);
       return existing;
     }
 
-    const identity = { group: crypto.randomUUID(), startedAtMs: this.wallClock() };
+    const identity = { group: preferredGroup ?? crypto.randomUUID(), startedAtMs: this.wallClock() };
     this.rememberLadder(base, identity);
     return identity;
   }

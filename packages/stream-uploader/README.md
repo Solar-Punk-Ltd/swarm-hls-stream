@@ -52,6 +52,10 @@ The segment path asks it on every delivery and rewrites the master only when the
 actually changes. A version of this filter shipped correct, tested and deployed, and never ran once,
 because only `upsertRendition` wrote a master.
 
+With `ADMIN_API_URL` set as well, everything above still happens, but the fold moves out of the
+catalog feed and into the admin and the master's topic is the declared one — see
+[Admin mode](#admin-mode).
+
 ### The manifest contract: timestamps and sequence zero
 
 Every playlist this service writes, live, closing and recording alike, carries two numbers per
@@ -633,17 +637,47 @@ mints the feed topic and the publish key; this service stops deciding either:
 | The session mints a random feed topic              | The session publishes on the declared topic, resuming from its feed head    |
 | This service writes the Swarm stream catalog       | It writes none, and reports `live` then `vod` to the admin instead          |
 | `PUBLISH_KEY_SECRET` authenticates publishers      | `PUBLISH_KEY_SECRET` is ignored                                             |
+| A ladder folds its rungs in the catalog feed       | The admin folds them, and the declared topic is the ladder's master feed    |
 
 A publish is refused when the ingest `app/stream` is not declared, when the admin cannot be reached,
 when the presented `key=` is not the declaration's, or when the ingest `app` and the declared media
-type disagree. Each refusal says which it was in the log. `ABR_ENABLED` together with admin mode
-refuses to start: admin mode gives a broadcast one topic, and a ladder needs one feed per rung plus a
-master the admin knows nothing about.
+type disagree. Each refusal says which it was in the log.
 
 | Variable          | Description                                                                        |
 | ----------------- | ---------------------------------------------------------------------------------- |
 | `ADMIN_API_URL`   | Base URL of the admin service. Empty (the default) is the standalone deployment    |
 | `ADMIN_API_TOKEN` | Bearer token for the admin's internal routes. Required when the URL is set, min 32 |
+
+### The ABR ladder in admin mode
+
+`ABR_ENABLED` and `ADMIN_API_URL` run together, and what reconciles them is that **the declared topic
+becomes the ladder's master playlist feed**. It has to be: the master's feed topic is the group id,
+and the declared topic is the one address the admin hands a viewer before anything has published.
+
+Everything else follows. Each rung still mints a **fresh random topic** for its own media playlists —
+a rung that restarts mid-ladder must never be handed a feed it has just finished writing, and four
+rungs sharing the master's feed would write over each other and over the master. The ladder's merge
+state, one record per rung, moves out of the catalog feed and into the admin: each rung posts its own
+`Rendition` to `POST /api/internal/streams/:id/renditions` (bearer `ADMIN_API_TOKEN`, the same
+internal-route auth as the state route, and **the admin must serve it**), the admin folds it by the
+same "a rung that has already finished stays finished" rule `StreamCatalog.keepingWhatFinished`
+states, writes `renditions` into the catalog entry it already owns, and answers with the merged
+ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
+as ever, and rewrites it when a rung stops without asking the admin again.
+
+`live` and `vod` are then reported for the **ladder** rather than for a rung. `live` goes out once the
+first master has landed, which may be said more than once and is accepted. `vod` goes out from the
+rung whose own report finished the ladder, and its `index` is **the final master's index in the
+declared topic's feed** — never a rung's own VOD index, which names a position in a feed no viewer
+opens. Its `duration` is the ladder's. It is said again by any later announce that finds the ladder
+finished while the admin still holds the stream as anything but `vod`: the admin answers the flip
+once, and if the master write behind that one report failed, the next announce is the only chance
+left to list the recording. `vod -> vod` is accepted, so the repeat is harmless.
+
+Two things a single-rendition declared stream does that a rung does not: resume its SOC index from the
+declared topic's feed head, and hold its publishes for a re-announced predecessor's drain. Both exist
+because two sessions share one declared feed there; a rung's manifest feed is its own, and the master
+feed writer establishes its own index.
 
 ### Local loop with the admin API
 

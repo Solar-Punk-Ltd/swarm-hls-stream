@@ -2,7 +2,7 @@ import { assertUsableAdminApiToken } from '../libs/AdminApiClient.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 
 import { readAbrConfig } from './abrConfig.js';
-import { optional, optionalBool, optionalInt, optionalNumber, required } from './env.js';
+import { optional, optionalInt, optionalNumber, required } from './env.js';
 
 /**
  * How much SWAP chequebook balance every Bee node must hold before the uploader will start.
@@ -119,23 +119,19 @@ interface AdminConfig {
  * standalone one. The token is not optional-with-a-warning for the same reason `API_AUTH_TOKEN` is
  * not: it is the only thing between the admin's internal routes and anyone who can reach them.
  *
- * ⛔ The ladder is refused here rather than ignored. Admin mode gives a broadcast one topic, minted
- * by the admin, and a ladder needs one feed per rung plus a master feed that the admin knows nothing
- * about; the two designs disagree about what a stream *is*. Running them together would produce a
- * stage that looks configured for ABR and publishes a single rendition, which is the shape of
- * failure this repository keeps paying for. Refusing at boot costs a restart.
+ * ⛔ The ladder used to be refused here, on the grounds that admin mode gives a broadcast one topic
+ * and a ladder needs one feed per rung plus a master feed the admin knows nothing about. The two now
+ * agree about what a stream *is*, and the agreement is this: **the declared topic is the ladder's
+ * master feed**. The rungs keep the fresh random topics they have always had, one per session, and
+ * the ladder's merge state — one record per rung, which the catalog feed used to hold — moves into
+ * the admin, which folds each rung's report and writes `renditions` into its own catalog entry. The
+ * uploader writes the master from the ladder the admin hands back and reports `live` and `vod` at
+ * ladder granularity. See the "Admin mode" section of the package README and `libs/AdminLadderSink.ts`.
  */
 function readAdminConfig(): AdminConfig | null {
   const apiUrl = optional('ADMIN_API_URL', '');
   if (!apiUrl) {
     return null;
-  }
-
-  if (optionalBool('ABR_ENABLED', false)) {
-    throw new Error(
-      'ADMIN_API_URL and ABR_ENABLED are both set. Admin mode publishes one feed per stream, on the topic ' +
-        'the admin minted, and has no master playlist to put a ladder in. Turn one of them off.',
-    );
   }
 
   const apiToken = required('ADMIN_API_TOKEN');

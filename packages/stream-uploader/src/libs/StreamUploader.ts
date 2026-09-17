@@ -3,6 +3,7 @@ import {
   addingStreamToList,
   engineSkippedSegments,
   finalizeResumed,
+  ladderFinalized,
   manifestUploaded,
   originDeclaredDiscontinuity,
   publishingRendition,
@@ -49,6 +50,7 @@ import { BeePublisher } from './BeePublisherPool.js';
 import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
+import { LadderSink, RenditionAnnouncement } from './LadderSink.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -220,6 +222,12 @@ const BITRATE_REFRESH_INTERVAL_MS = 30_000;
  *    the head once and latches it, which is only sound once the head has stopped moving — and a
  *    re-announce leaves the retired session writing its closing and VOD playlists onto this same
  *    topic. See {@link StreamUploaderOptions.predecessorDrained}.
+ *
+ * ⚠️ **A rung of a ladder is the exception to (3) and (4), and only to those two.** There the declared
+ * topic is the ladder's MASTER feed rather than any rung's, so this session's manifest feed is a fresh
+ * `crypto.randomUUID()` exactly as it is standalone: nothing has ever written on it, there is no head
+ * to resume from and no retired session to share it with. (1) and (2) hold unchanged, with the
+ * reports made at ladder granularity — see {@link notifyStart} and {@link completeFinalize}.
  */
 interface AdminReporting {
   client: AdminApiClient;
@@ -252,6 +260,15 @@ export interface StreamUploaderOptions {
    */
   publisher: BeePublisher;
   streamCatalog: StreamCatalog;
+  /**
+   * Where a ladder rung's rendition record goes, and where its deliveries are counted.
+   *
+   * Defaults to `streamCatalog`, which is the standalone deployment: the catalog folds the four rungs
+   * into one entry and writes the master from it. In admin mode the merge state belongs to the admin,
+   * so an `AdminLadderSink` takes its place — and nothing else in this class changes, because a rung
+   * announcing itself is the same act either way. Unread on a stream with no ladder.
+   */
+  ladderSink?: LadderSink;
   recoveryStore: RecoveryStore;
   streamKey: string;
   streamId: string;
@@ -321,6 +338,7 @@ export class StreamUploader {
   private streamSigner: PrivateKey;
   private streamRawTopic: string;
   private streamCatalog: StreamCatalog;
+  private ladderSink: LadderSink;
   private recoveryStore: RecoveryStore;
   private streamId: string;
   private stamp: string;
@@ -422,6 +440,7 @@ export class StreamUploader {
     this.bee = options.publisher.bee;
     this.streamSigner = new PrivateKey(options.streamKey);
     this.streamCatalog = options.streamCatalog;
+    this.ladderSink = options.ladderSink ?? options.streamCatalog;
     this.recoveryStore = options.recoveryStore;
     this.streamId = options.streamId;
     this.stamp = options.publisher.stamp;
@@ -507,7 +526,7 @@ export class StreamUploader {
     if (this.ladder) {
       // Beside the metric and not instead of it: the metric is an observation, this decides what the
       // master is allowed to advertise. Both want the same moment, which is a segment that landed.
-      this.streamCatalog.recordRungDelivered(this.ladder.group, this.ladder.rung.name);
+      this.ladderSink.recordRungDelivered(this.ladder.group, this.ladder.rung.name);
     }
     this.uploadLiveManifest();
     await this.refreshBandwidthIfDrifted();
@@ -592,6 +611,22 @@ export class StreamUploader {
   }
 
   public async notifyStart(): Promise<void> {
+    if (this.admin && this.ladder) {
+      // ⛔ The rung first and the ladder's state second, which is the same ordering as everywhere
+      // else here: the master a viewer opens has to exist before anything says the broadcast is live.
+      // `live` is a statement about the LADDER, so it waits for a master to have landed rather than
+      // for this rung's own manifest — and it may be said more than once, by each rung in turn and
+      // again after a restart, which is why the admin accepts `live -> live`.
+      const announced = await this.announceRendition();
+      if (announced && announced.masterIndex !== null) {
+        await this.reportAdminState(
+          { state: ADMIN_STATE_LIVE },
+          'so the admin will go on showing it as a draft until the next attempt',
+        );
+      }
+      return;
+    }
+
     if (this.admin) {
       return this.reportAdminState(
         { state: ADMIN_STATE_LIVE },
@@ -600,7 +635,8 @@ export class StreamUploader {
     }
 
     if (this.ladder) {
-      return this.announceRendition();
+      await this.announceRendition();
+      return;
     }
 
     const entry = {
@@ -698,6 +734,42 @@ export class StreamUploader {
    * catalog entry points a viewer at.
    */
   private async completeFinalize(vodIndex: number): Promise<void> {
+    if (this.admin && this.ladder) {
+      // ⛔ The index reported is the MASTER's, never this rung's own VOD index. A viewer in admin mode
+      // is pointed at the declared topic, and for a ladder that topic holds the master playlist, so an
+      // entry carrying a rung's index would name a position in a feed nobody opens.
+      const announced = await this.announceRendition({
+        index: vodIndex,
+        duration: this.manifestManager.getTotalDuration(),
+      });
+
+      // ⛔ Reported only by the rung whose own report finished the ladder, and only once. A rung
+      // draining while its siblings are still live ends its own recording and nothing more: the
+      // broadcast is over when the LAST of them finalizes, which is the only report the admin answers
+      // with a flip. A rung announcing the end off its own drain would take three live rungs off the
+      // air in the admin's list. This is `StreamCatalog.upsertRendition`'s `flippedToVod` rule, read
+      // off the other side of a wire rather than off a feed read.
+      if (announced && announced.flippedToFinished && announced.masterIndex !== null) {
+        await this.reportAdminState(
+          {
+            state: ADMIN_STATE_VOD,
+            index: announced.masterIndex,
+            duration: announced.duration ?? this.manifestManager.getTotalDuration(),
+          },
+          'so the recording is in the feed and the admin does not know it, which the recovery entry lets the next boot retry',
+        );
+        // ⛔⛔⛔ After the report and only when the ladder really flipped, which is the same rule the
+        // standalone halves of this method both state at length: written earlier it announces a flip
+        // the admin has not taken yet, and written unconditionally a resumed finalize announces a
+        // second flip for one broadcast.
+        this.logger.log(ladderFinalized(this.ladder.group));
+      }
+
+      this.metrics?.recordStreamFinalized();
+      this.clearRecoveryEntry();
+      return;
+    }
+
     if (this.admin) {
       // ⛔ Exactly where the catalog's VOD entry is written below, and carrying exactly the two values
       // that entry would have carried, because they answer the same question: where the recording is
@@ -814,10 +886,17 @@ export class StreamUploader {
    * ⚠️ Not run for a session rebuilt from a recovery entry. That one already holds the index it
    * wrote, and `publishedRecordingIndex` above asks the feed its own, sharper question.
    *
+   * ⚠️ **Not run for a rung of a ladder either, and that is not a weakening of the guard above.** The
+   * debt it pays is owed by a session whose topic it did not mint, and a rung mints its own: in admin
+   * mode the declared topic is the ladder's master feed, which `MasterFeedWriter.nextIndex` probes for
+   * itself on the first write of a process, and this session's manifest feed is fresh. Running it here
+   * would read the head of a topic this stream never publishes on and start every rung above the
+   * master's index.
+   *
    * @returns whether the index is settled and a manifest may be committed.
    */
   private async resumeAdminFeedIndex(): Promise<boolean> {
-    if (this.admin === undefined || this.adminFeedIndexResumed || this.resumedFromCrash) {
+    if (this.admin === undefined || this.ladder !== undefined || this.adminFeedIndexResumed || this.resumedFromCrash) {
       return true;
     }
 
@@ -1054,13 +1133,20 @@ export class StreamUploader {
     }
   }
 
-  private async announceRendition(final?: { index: number; duration: number }): Promise<void> {
+  /**
+   * Fold this rung into its ladder, wherever the ladder is kept, and answer what that achieved.
+   *
+   * @returns `null` when nothing was announced because a newer session holds this rung. Only admin
+   * mode reads the announcement: standalone, the catalog carries the ladder's whole state itself and
+   * a rung has nothing to do with the answer.
+   */
+  private async announceRendition(final?: { index: number; duration: number }): Promise<RenditionAnnouncement | null> {
     if (!this.ownsRecoveryEntry) {
       // A re-announce has handed this rung to a newer session. The catalog and master entry are keyed
       // by rung name, which this outgoing session shares, so any upsert from here overwrites the live
       // rung with a retired session's topic and a VOD index. The VOD manifest this session published
       // stands on its own feed; only the shared ladder entry is off limits. Mirrors persistState.
-      return;
+      return null;
     }
 
     const rendition = this.buildRendition(final);
@@ -1068,17 +1154,21 @@ export class StreamUploader {
     this.lastAnnounceAttemptAt = Date.now();
 
     this.logger.log(publishingRendition(rendition.name, this.ladder!.group));
-    await this.streamCatalog.upsertRendition(
+    const announced = await this.ladderSink.upsertRendition(
       {
         title: this.getFormattedDate(),
         owner: this.streamSigner.publicKey().address().toHex(),
         group: this.ladder!.group,
         mediatype: this.mediatype,
+        // Absent standalone, where the catalog never reads it. In admin mode it is what addresses the
+        // report, and it is the ladder's rather than this rung's: one declared stream is one ladder.
+        adminStreamId: this.admin?.id,
       },
       rendition,
     );
 
     this.driftBaselineBps = rendition.bandwidth;
+    return announced;
   }
 
   private async refreshBandwidthIfDrifted(): Promise<void> {

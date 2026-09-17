@@ -13,6 +13,7 @@ import './utils/env.js';
 import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
 import { AdminApiClient } from './libs/AdminApiClient.js';
+import { AdminLadderSink } from './libs/AdminLadderSink.js';
 import { BeePublisherPool } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
@@ -21,6 +22,7 @@ import { PostageGate } from './libs/PostageGate.js';
 /** The gate's floor is configured in hours, because that is the unit an operator tops a batch up in. */
 const SECONDS_PER_HOUR = 3_600;
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
+import { LadderSink } from './libs/LadderSink.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
@@ -123,9 +125,26 @@ async function start() {
       config.streamKey,
       config.streamListTopic,
       catalogIndexStore,
-      masterWriter,
+      // ⛔ Withheld in admin mode, where this catalog writes nothing at all: the master belongs to the
+      // ladder sink below, and a catalog holding a writer it must never reach is a catalog a later
+      // change can make write one. Nothing would call it today; the wiring says so anyway.
+      config.admin ? undefined : masterWriter,
     );
     await streamCatalog.init();
+
+    // Where a ladder rung's rendition record goes. Standalone, the catalog: it folds four rungs into
+    // one entry on the stream list feed and writes the master from it. In admin mode the fold moves
+    // into the admin — the declared topic becomes the master feed's topic, each rung reports its own
+    // record, and the admin writes `renditions` into the catalog entry it already owns. See
+    // `libs/AdminLadderSink.ts` and the "Admin mode" section of the package README.
+    const ladderSink: LadderSink =
+      adminApi && masterWriter ? new AdminLadderSink({ client: adminApi, masterWriter }) : streamCatalog;
+    if (adminApi && masterWriter) {
+      logger.info(
+        '[Admin] ABR ladder in admin mode: the declared topic is the ladder master feed, each rung publishes ' +
+          'to a fresh topic of its own, and the ladder the master is written from is the one the admin folds',
+      );
+    }
 
     const streamOrchestrator = new StreamOrchestrator(publishers, streamCatalog, recoveryStore, {
       streamKey: config.streamKey,
@@ -139,6 +158,7 @@ async function start() {
       ladder: config.abr?.ladder,
       ladderGroupStore,
       adminApi,
+      ladderSink,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);
