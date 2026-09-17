@@ -76,12 +76,34 @@ describe('a gate that warned reaches /health', () => {
     assert.deepEqual(Object.keys(warnings[0]).sort(), ['gate', 'rung']);
   });
 
-  // The gates are read again on every attempt of a node wait, so accumulating would report a rung
-  // that was down for one attempt and fine for the next. Only the last pass describes the service.
-  it('replaces the last pass rather than adding to it', async () => {
+  it('reports nothing at all for a pass that cleared every gate', async () => {
     const cleared = await collectedWarnings([passingGate('ChequebookGate'), passingGate('PostageGate')]);
 
     assert.deepEqual(cleared, []);
+  });
+
+  // The gates are read again on every attempt of a node wait, so accumulating would report a rung
+  // that was down for one attempt and fine for the next. Only the last pass describes the service,
+  // which takes two passes to show: a clearing pass on its own proves nothing about what it replaced.
+  it('replaces what the pass before it left, rather than adding to it', () => {
+    const orchestrator = makeTestOrchestrator();
+
+    orchestrator.recordStartGateWarnings([
+      { gate: 'ChequebookGate', rung: '360p' },
+      { gate: 'PostageGate', rung: '360p' },
+    ]);
+    orchestrator.recordStartGateWarnings([{ gate: 'PostageGate', rung: '1080p' }]);
+
+    assert.deepEqual(orchestrator.getHealthSignals().startGateWarnings, [{ gate: 'PostageGate', rung: '1080p' }]);
+  });
+
+  it('is emptied by a later pass that found nothing, which is a node that came back', () => {
+    const orchestrator = makeTestOrchestrator();
+    orchestrator.recordStartGateWarnings([{ gate: 'ChequebookGate', rung: '360p' }]);
+
+    orchestrator.recordStartGateWarnings([]);
+
+    assert.deepEqual(orchestrator.getHealthSignals().startGateWarnings, []);
   });
 
   it('latches nothing under refuse, where a gate that fails ends the boot instead', async () => {
