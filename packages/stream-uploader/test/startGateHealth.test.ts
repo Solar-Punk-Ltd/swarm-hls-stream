@@ -52,7 +52,8 @@ function collectedWarnings(gates: readonly StartGate[]): Promise<StartGateWarnin
 /**
  * ⛔⛔⛔ **A warning nobody can find is the same as no warning at all.**
  *
- * The owner ruled on 2026-09-17 that a gate which cannot clear its node warns and the uploader starts.
+ * The owner ruled on 2026-09-17 that the uploader starts whatever the chequebook says, and a gate
+ * that cannot read its node warns.
  * What that left, found in review of this branch: a pool-backed ABR deployment has no refusal anywhere
  * in the stack, because the manager's own start gate returns early for a profile that owns no Bee node
  * of its own. The whole record of an unfunded chequebook or an exhausted batch was then one line at
