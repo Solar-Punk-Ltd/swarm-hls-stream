@@ -74,10 +74,17 @@ function publisher(rung: string, url: string, stamp: string, answer: PostageBatc
 
 /**
  * A node whose read fails, which is both the unreachable case and the absent-batch case: bee 404s for
- * a batch it does not hold, so bee-js throws for both and the gate cannot tell them apart by shape.
+ * a batch it does not hold, so bee-js throws for both.
+ *
+ * ⛔ `status` is the one thing that tells the two apart, and `gateReadingOfError` reads nothing else.
+ * bee-js puts the response's status on the `BeeResponseError` it throws, so a caller modelling an
+ * answer the node gave passes it, and a caller leaving it out is modelling a read that never reached
+ * a node at all.
  */
-function failingPublisher(rung: string, url: string, stamp: string, failure: string, reads: Reads) {
-  return node(rung, url, stamp, reads, () => Promise.reject(new Error(failure)));
+function failingPublisher(rung: string, url: string, stamp: string, failure: string, reads: Reads, status?: number) {
+  return node(rung, url, stamp, reads, () =>
+    Promise.reject(status === undefined ? new Error(failure) : Object.assign(new Error(failure), { status })),
+  );
 }
 
 const silent = { info: () => {} };
@@ -166,6 +173,10 @@ describe('PostageGate', () => {
    * verified against a live node on 2026-08-31, so bee-js throws rather than returning an answer with
    * `exists: false` in it. That field is not on `PostageBatch` at all. The absence of a batch is
    * therefore this path and never a field reading, which is why the gate no longer looks for one.
+   *
+   * The 404 is on the thrown error as well as in its text, because that is where bee-js puts it and
+   * where the gate reads it. A fixture carrying the number in prose alone models a read that never
+   * landed, which is the opposite of the case this test is named for.
    */
   it('refuses a batch the node does not hold, which arrives as a thrown 404', async () => {
     const reads: Reads = { asked: [] };
@@ -176,6 +187,7 @@ describe('PostageGate', () => {
         'c'.repeat(64),
         'Request failed with status code 404: issuer does not exist',
         reads,
+        404,
       ),
     ]);
 
