@@ -425,7 +425,7 @@ describe('the chequebook gate with somewhere to put a refusal', () => {
  * reads or writes through one. What keeps a stream away from an orchestrator whose catalog has not
  * been read is `refuseWhileWaiting`, asserted in `waitingForNode.test.ts`, rather than this ordering.
  */
-describe('the entry point clears the gate before anything paid or stateful', () => {
+describe('the entry point clears the gate before anything that reads or writes through a node', () => {
   const ENTRY_POINT = resolve(dirname(fileURLToPath(import.meta.url)), '../src/index.ts');
   const source = readFileSync(ENTRY_POINT, 'utf8');
 
