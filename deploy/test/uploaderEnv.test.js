@@ -26,6 +26,7 @@ const CONFIG = readdirSync(CONFIG_DIR)
   .join('\n');
 const COMPOSE = resolve(ROOT, 'deploy/docker-compose.yml');
 const ENV_SAMPLE = resolve(ROOT, '.env.sample');
+const UPLOADER_README = resolve(ROOT, 'packages/stream-uploader/README.md');
 
 /** The compose service the uploader runs as, which is the only block its own knobs may be read from. */
 const UPLOADER_SERVICE = 'stream-uploader';
@@ -251,6 +252,35 @@ describe('the uploader environment reaches the container', () => {
       `can be set but are not in .env.sample, so an operator has no way to learn they exist: ${undocumented.join(
         ', ',
       )}`,
+    );
+  });
+
+  /**
+   * The third page a knob has to reach, and the only one that is nobody's deployment.
+   *
+   * Compose decides whether the container can see a knob and `.env.sample` decides whether the
+   * operator editing that file can. Neither is what a reader of the package opens, and the uploader's
+   * README is: nine knobs the service reads and `.env.sample` already documents had no row in either
+   * of its two tables, among them the chequebook floor and both postage thresholds, which are the
+   * three an operator most wants to move. The gap is invisible from inside the page, because the rows
+   * that are there stay correct. `START_GATE_TIMEOUT_MS` said it was "separate from
+   * `BEE_REQUEST_TIMEOUT_MS`" while pointing at a row the table did not carry.
+   *
+   * Either table counts. Required and Optional are one surface split by whether a value has to be
+   * supplied, and which side a knob belongs on is a judgement rather than something a pattern can
+   * settle. An upper-case first column is these two tables and nothing else in the page: every other
+   * table there is keyed by a health reason or a metric name, which are lower case.
+   */
+  it('gives every knob a row in the uploader README', () => {
+    const readme = readFileSync(UPLOADER_README, 'utf8');
+
+    const unlisted = knobs.filter((knob) => !new RegExp(`^\\|\\s*\`${knob}\`\\s*\\|`, 'm').test(readme));
+
+    assert.deepEqual(
+      unlisted,
+      [],
+      `read by the uploader and in neither environment table of packages/stream-uploader/README.md, ` +
+        `so a reader of the package has no way to learn they exist: ${unlisted.join(', ') || 'none'}`,
     );
   });
 });
