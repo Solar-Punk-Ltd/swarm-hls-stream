@@ -293,7 +293,16 @@ export function shortBatchId(stamp: string): string {
  * normalised, because it is no longer what was configured either way.
  */
 export function safeUrl(url: string): string {
-  const parsed = new URL(url);
+  const parsed = parseOrNull(url);
+  if (parsed === null) {
+    // ⛔ Never a throw. Every caller is already reporting something, and a TypeError here replaces
+    // that report with itself: a catalog refusing to call a feed empty read as "Invalid URL" rather
+    // than as the node being unreachable, found in review on 2026-09-17. Without a parse there is no
+    // userinfo to strip, so this is the query-string redaction alone, which is the most that can be
+    // said about a string nothing can read as a url.
+    return redactUrlSecrets(url);
+  }
+
   if (parsed.username === '' && parsed.password === '') {
     return redactUrlSecrets(url);
   }
@@ -301,6 +310,14 @@ export function safeUrl(url: string): string {
   parsed.username = '';
   parsed.password = '';
   return redactUrlSecrets(parsed.toString());
+}
+
+function parseOrNull(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
 }
 
 function assertBatchId(subject: string, stamp: string): void {

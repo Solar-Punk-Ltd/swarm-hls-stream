@@ -3,14 +3,15 @@ import { catalogStateLost, ladderFinalized } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
-import { getErrorMessage, isFeedAbsent, retryUntilDeadlineAsync } from '../utils/common.js';
+import { extractHttpStatus, getErrorMessage, isFeedAbsent, retryUntilDeadlineAsync } from '../utils/common.js';
 
-import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
+import { BeePublisher, BeePublisherPool, safeUrl } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
+import { NodeUnreachableError } from './NodeUnreachableError.js';
 
 const CATALOG_RETRY_WINDOW_MS = 10_000;
 
@@ -312,6 +313,18 @@ export class StreamCatalog {
           this.resumeFromPersisted(persisted, 'Boot lookup found no feed');
           return;
         }
+
+        // ⛔⛔⛔ Only when the node said so. Beginning at index 0 is the one answer here that cannot
+        // be taken back: every reader following the original chain keeps following it, and the
+        // entries this process writes are invisible to all of them.
+        if (!(await this.absenceIsAnAnswer(error))) {
+          throw new NodeUnreachableError(
+            `[StreamCatalog] ${safeUrl(this.publisher.url)} answered ${extractHttpStatus(error)} for the catalog ` +
+              'feed head and does not report itself ready, so whether this feed exists is unknown. Refusing to ' +
+              'begin at index 0, which would fork the feed for every reader that keeps following the original chain.',
+          );
+        }
+
         this.feedIndex = null;
         this.logger.info('[StreamCatalog] No existing feed found, starting fresh');
         return;
@@ -363,6 +376,34 @@ export class StreamCatalog {
    * problem; one that does not answer keeps the boot failing, which is what a wrong url or a node
    * that is down deserves.
    */
+  /**
+   * Whether "there is no feed here" is something the node actually said.
+   *
+   * ⛔ `isFeedAbsent` accepts 404 and 503, and the two are not the same evidence. Only a serving node
+   * answers 404, so that one settles it. bee answers 503 both for a feed with no update yet and for a
+   * node that cannot serve the request at all, and an intermediary in front of a node that is not
+   * there answers it too, so a 503 on its own says nothing about the feed.
+   *
+   * Before D16 this could not be reached with a node that was down, because `ChequebookGate` threw on
+   * the same node first. That shield was removed on purpose, so the question is asked here instead.
+   */
+  private async absenceIsAnAnswer(error: unknown): Promise<boolean> {
+    if (extractHttpStatus(error) === 404) {
+      return true;
+    }
+
+    try {
+      await this.publisher.bee.getReadiness();
+      return true;
+    } catch (readinessError) {
+      this.logger.error(
+        `[StreamCatalog] ${safeUrl(this.publisher.url)} answered 503 for the boot lookup and its readiness ` +
+          `check did not answer either (${getErrorMessage(readinessError)})`,
+      );
+      return false;
+    }
+  }
+
   private async payloadUnreadableOnLiveNode(error: unknown): Promise<boolean> {
     if (!isTransferLost(error)) {
       return false;

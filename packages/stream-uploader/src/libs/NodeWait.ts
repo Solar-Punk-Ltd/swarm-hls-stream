@@ -1,6 +1,7 @@
 import { NodeWaitReport } from '../types.js';
 
 import { safeUrl } from './BeePublisherPool.js';
+import { NodeUnreachableError } from './NodeUnreachableError.js';
 
 /**
  * The half of the boot that needs a Bee node, run as a wait rather than as a one-shot.
@@ -114,6 +115,39 @@ export async function waitForNode<T>(init: () => Promise<T>, options: NodeWaitOp
   }
 }
 
+/** One node, as {@link assertNodeReachable} needs it. `BeePublisher` satisfies this. */
+interface ReachableNode {
+  readonly url: string;
+  readonly bee: { isConnected(): Promise<boolean> };
+}
+
+/**
+ * Ask the node whether it is there, before anything has to interpret an answer.
+ *
+ * ⛔ **The cheapest question, asked first, because everything after it is harder.** A start gate
+ * spends its whole budget per node and then wraps the cause in a sentence of its own, and
+ * `StreamCatalog.init` has to decide whether a status means this feed is empty or that this node
+ * cannot say. Both are only difficult because nobody asked "is anything there" first. The same call
+ * already answers that question for `StreamCatalog.payloadUnreadableOnLiveNode`.
+ *
+ * Throws {@link NodeUnreachableError}, which {@link isNodeUnavailable} reads as unreachable, so the
+ * wait around it retries rather than the boot ending.
+ */
+export async function assertNodeReachable(node: ReachableNode): Promise<void> {
+  const url = safeUrl(node.url);
+
+  let connected: boolean;
+  try {
+    connected = await node.bee.isConnected();
+  } catch (error) {
+    throw new NodeUnreachableError(`${url} did not answer a liveness check: ${describeFailure(error)}`);
+  }
+
+  if (!connected) {
+    throw new NodeUnreachableError(`${url} answered a liveness check by saying it is not connected`);
+  }
+}
+
 /**
  * Whether this failure says the node is not answering, as opposed to answering something wrong.
  *
@@ -129,6 +163,12 @@ export async function waitForNode<T>(init: () => Promise<T>, options: NodeWaitOp
  * waiting changes a batch it does not hold.
  */
 export function isNodeUnavailable(error: unknown): boolean {
+  // This service's own word, from the probe below or from a catalog read that could not be trusted.
+  // Read first, because such an error carries no code and no status to recognise it by.
+  if (error instanceof NodeUnreachableError) {
+    return true;
+  }
+
   const status = statusOf(error);
   if (status !== null) {
     return status >= 500;

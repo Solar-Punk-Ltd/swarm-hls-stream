@@ -63,7 +63,7 @@ export function isFeedAbsent(error: unknown): boolean {
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
-function extractHttpStatus(error: unknown): number | undefined {
+export function extractHttpStatus(error: unknown): number | undefined {
   if (error instanceof BeeResponseError) {
     return error.status;
   }

@@ -22,7 +22,7 @@ const SECONDS_PER_HOUR = 3_600;
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
-import { waitForNode } from './libs/NodeWait.js';
+import { assertNodeReachable, waitForNode } from './libs/NodeWait.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
@@ -148,6 +148,12 @@ async function start() {
     // that cost and why the reading still happens on every boot.
     const recoveredStreamIds = await waitForNode(
       async () => {
+        // ⛔ The cheapest question, before anything has to interpret an answer. A node that is not
+        // there costs each gate its whole budget and then arrives as a sentence, and it reaches
+        // `StreamCatalog.init` as a status that has to be told apart from an empty feed. See
+        // `assertNodeReachable`.
+        await assertNodeReachable(publishers.coordinator());
+
         await runStartGates(
           [
             {
