@@ -255,10 +255,10 @@ describe('the chequebook gate', () => {
  * ⛔ **A refusal is read by more people than the request that caused it.**
  *
  * bee accepts basic auth in the URL's userinfo, so a `BEE_PUBLISHERS` entry can carry a credential,
- * and these messages travel further than a log file: under `warn` they reach `/health` through a
- * latch, and they are quoted into deploy output and pasted into reports. `BeePublisherPool.routing`
- * already answers with the same URLs stripped, for exactly this reason, and this uses the same helper
- * so the two cannot drift.
+ * and these messages travel further than a log file: they are quoted into deploy output and pasted
+ * into reports, and under `warn` the gate's name and rung reach `/health` through a latch while the
+ * message itself stays in the log. `BeePublisherPool.routing` already answers with the same URLs
+ * stripped, for exactly this reason, and this uses the same helper so the two cannot drift.
  */
 describe('what a refusal says about the node url', () => {
   it('strips a credential out of a refusal', async () => {
