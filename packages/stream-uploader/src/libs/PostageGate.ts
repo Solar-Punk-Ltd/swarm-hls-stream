@@ -282,7 +282,7 @@ function numberOf(value: unknown): number | null {
 function distinctByNodeAndStamp(publishers: readonly StampedPublisher[]): StampedPublisher[] {
   const seen = new Set<string>();
   return publishers.filter((publisher) => {
-    const key = `${publisher.url} ${publisher.stamp}`;
+    const key = `${publisher.url}\0${publisher.stamp}`;
     if (seen.has(key)) {
       return false;
     }
