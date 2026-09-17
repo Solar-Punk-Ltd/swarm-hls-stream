@@ -507,18 +507,6 @@ for (const container of inventory) {
 }
 
 /**
- * Runs what it is handed instead of only recording it, with HOME inside the sandbox so the remote
- * path executes for real. Recording the text alone would let the remote sweep drift from the local
- * one while a substring assertion still passed.
- *
- * `bash -c "$*"` is not a shortcut, it is the fidelity that makes SEC-21 visible. Real ssh joins its
- * remaining arguments into one string and hands it to the far side's LOGIN SHELL, which word-splits
- * and evaluates it, which is why an unquoted interpolation into an ssh command line is a command
- * injection rather than a quoting nit. A stub that exec'd an argv would model something ssh does not
- * do and would report the injection as safe. The `bash -s` callers keep working through the same
- * line: stdin is inherited, so their heredoc still reaches the shell they asked for.
- */
-/**
  * Copies, rather than reporting success and doing nothing.
  *
  * A stub that only exits 0 makes every file the remote path depends on someone else's problem, and
@@ -562,6 +550,18 @@ for (const source of positional) {
 `;
 }
 
+/**
+ * Runs what it is handed instead of only recording it, with HOME inside the sandbox so the remote
+ * path executes for real. Recording the text alone would let the remote sweep drift from the local
+ * one while a substring assertion still passed.
+ *
+ * `bash -c "$*"` is not a shortcut, it is the fidelity that makes SEC-21 visible. Real ssh joins its
+ * remaining arguments into one string and hands it to the far side's LOGIN SHELL, which word-splits
+ * and evaluates it, which is why an unquoted interpolation into an ssh command line is a command
+ * injection rather than a quoting nit. A stub that exec'd an argv would model something ssh does not
+ * do and would report the injection as safe. The `bash -s` callers keep working through the same
+ * line: stdin is inherited, so their heredoc still reaches the shell they asked for.
+ */
 function sshStub(remoteHome, remoteJournal, argvJournal) {
   return `#!/bin/bash
 # Drop ssh's own options and then the target, leaving exactly the string the far side would get.
