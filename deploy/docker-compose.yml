@@ -242,8 +242,9 @@ services:
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
       # What the two startup gates below do about a node they cannot read, and how long each of their
       # reads gets. The owner ruled on 2026-09-17 that the uploader starts whatever the chequebook
-      # says, so `warn` reads every gate, logs whatever refused and starts, and `refuse` is the
-      # behaviour every boot had before that date. The timeout is deliberately not the one above: a
+      # says, so `warn` reads every gate, logs whatever refused and starts. `refuse` puts the old
+      # refusal back for a node that ANSWERS with a reading the gate will not accept, while a node
+      # that does not answer at all is waited for whatever it says, which is D16 of the same day. The timeout is deliberately not the one above: a
       # chequebook balance and a batch are answered off the chain, and 4000ms borrowed from the upload
       # loop's retry windows is what held a live uploader in a restart loop on 2026-09-16 against a
       # pool address that had no node behind it. A gate that warns leaves `start_gate_warned` on
