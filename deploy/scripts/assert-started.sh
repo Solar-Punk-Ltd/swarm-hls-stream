@@ -17,11 +17,13 @@
 #
 # In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one
 # HTTP read per bee node and one per batch, in turn, each bounded by START_GATE_TIMEOUT_MS at
-# 20000ms, and only then does `StreamCatalog.init` look a feed up on a node that may be cold. Those
-# now run behind the listener, so the container stays up through all of it and answers /health,
-# unhealthy while it waits. Under UPLOADER_START_GATES=refuse a gate that cannot clear its node is a
-# refusal again, arriving a minute or more into the boot. Either way a five second look has already
-# called the container started.
+# 20000ms, and only then does `StreamCatalog.init` look a feed up on a node that may be cold. All of
+# that runs BEHIND the listener since decision D16 of 2026-09-17, so the port is open and answering
+# `waiting_for_node` throughout, and the container stays up whatever those reads find. On a
+# four-node pool that answers nothing the default budget spends about 160 seconds an attempt under
+# `warn`, which reads every node of both gates, and the wait then goes round again. Under
+# UPLOADER_START_GATES=refuse each gate stops at its first node, so the container exits about 40
+# seconds in and loops. Either way a five second look has already called it started.
 #
 # And in one instant: the state alone cannot tell a loop from a healthy start, whichever order it is
 # asked in. Early in a loop docker's restart backoff is a tenth of a second against a container that

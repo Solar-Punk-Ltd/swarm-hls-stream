@@ -102,14 +102,15 @@ describe('a deploy reports whether the services it started are up', () => {
  * That the deploy watches for as long as its services can take to refuse, rather than looking once.
  *
  * ⛔⛔⛔ A five second look cannot see either of the two gates it was written for. The uploader runs
- * `ChequebookGate.assertFunded` and then `PostageGate.assertUsable` before the API listens, one HTTP
- * read per bee node and per batch, each bounded by START_GATE_TIMEOUT_MS at 20000ms, and only then
- * does `StreamCatalog.init` look a feed up on a node that may be cold. On the four-node ABR pool a
- * pool that answers nothing holds the boot there for minutes. At five seconds the container is
- * `running` with its node process inside an HTTP call, and the deploy prints its success line. Under
- * UPLOADER_START_GATES=refuse, which is what those gates need to stop a start at all since
- * 2026-09-17, the container then exits 1 and loops unwatched. A node that simply is not there stopped
- * being one of those exits on the same day, decision D16: the uploader listens first and waits.
+ * `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one HTTP read per bee node and
+ * per batch, each bounded by START_GATE_TIMEOUT_MS at 20000ms, and only then does
+ * `StreamCatalog.init` look a feed up on a node that may be cold. Since decision D16 of 2026-09-17
+ * all of it runs behind the listener, so the port is open and answering `waiting_for_node` the whole
+ * time. On a four-node ABR pool that answers nothing the default budget spends about 160 seconds an
+ * attempt under `warn`, which reads every node of both gates, and then waits and goes round again.
+ * At five seconds the container is `running` with its node process inside an HTTP call, and the
+ * deploy prints its success line. Under UPLOADER_START_GATES=refuse each gate stops at its first
+ * node, so about 40 seconds in the container exits 1 and loops unwatched.
  *
  * The second half is the same blindness in one instant rather than over time: a crash loop spends
  * most of its life `running`, because `restarting` is the brief moment between attempts. So a look

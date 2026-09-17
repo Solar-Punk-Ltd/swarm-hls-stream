@@ -515,6 +515,7 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 | `fragment_publisher_gop` | Segments longer than `HLS_FRAGMENT` with no ladder running. Nothing transcodes there, so the publisher's own keyframe interval decides the segment and the configured value is a floor. Raised once eight measured segments run over it by over 5%. Nothing is stale, and the dating follows the media so the recording's clock stays right. What it names is a stage cutting longer than the deployment declared, with the same wrong-sized gap entries as the row above: set `HLS_FRAGMENT` to the publisher's keyframe interval, or turn the ladder on                      |
 | `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                                                                                                                                                                                                                   |
 | `node_unavailable`       | The boot has not finished, because the half of it that needs a Bee node is still waiting for one to answer. The only reason that is not a reading about this process at all, and the only one that can be the whole answer on a service that has done nothing yet. See the waiting state below                                                                                                                                                                                                                                                                                 |
+| `start_gate_warned`      | A startup gate could not clear a node and the uploader started anyway, which is what `UPLOADER_START_GATES=warn` asks for. Latched from boot, since the gates are read once and nothing later re-reads them, and `startGateWarnings` on the same body names which gate and which rung. The gate's own message is in the log and deliberately not here: this endpoint takes no credential and those messages carry node URLs and batch ids                                                                                                                                      |
 
 **The waiting state, `status: "waiting_for_node"`** (decision D16, the owner on 2026-09-17: "we should be
 able to start the uploader but maybe say its node not available, try to reconnect or something"). The API
@@ -539,6 +540,14 @@ While it waits, `/stream/*` and every engine prefix answer `503` naming the node
 rather than reaching an orchestrator whose catalog has never been read. `/metrics` keeps answering,
 since its counters describe this process and not the node.
 
+**What a warned gate leaves behind.** Under `warn` the gates read every node rather than stopping at
+the first that refuses, so one boot names every rung an operator has to fix rather than one per
+restart, and the outcome of the pass that finished the boot is latched into `startGateWarnings`. The
+service is degraded from then on, which is what the container's healthcheck reads and what
+`deploy/scripts/assert-started.sh` reports. A later pass replaces an earlier one, because the gates
+are read again on every attempt while the uploader waits for its node and only the last of those
+describes the service that is now running.
+
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
 expected to be sending. The route spreads the whole signal set rather than picking from it, so every
@@ -547,7 +556,7 @@ reading a reason above is derived from is on the same body: `activeStreams`, `st
 `msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`,
 `msSinceAuthRejection`, `hasIngestedMedia`, `segmentsSkipped`, `openingSegmentsWithheld`,
 `segmentsNeverNamed`, `quarantinedRecoveryEntries`, `fragmentMismatchStreams`, `publisherGopStreams`,
-`postageRefusedPublishers`, `publishers`, `refusedPublishers` and `engines`. `queueBacklogSeconds` is the
+`postageRefusedPublishers`, `startGateWarnings`, `publishers`, `refusedPublishers` and `engines`. `queueBacklogSeconds` is the
 only field that says which of `queue_pressure`'s two triggers fired. `msSinceAuthRejection` beside
 `hasIngestedMedia` is the pair `ingest_refused` is read off, which is what tells a deployment that has
 never worked apart from one whose broadcaster mistyped a key once. `publisherGopStreams` names every
