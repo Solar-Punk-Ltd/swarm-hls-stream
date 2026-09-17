@@ -423,10 +423,10 @@ one, then `deploy.sh --profile=latbench --portSlot=7 bee-gateway`. Swap on with 
 bee refuses to start. `deploy/scripts/retrieval-debt-probe.sh` and
 `deploy/scripts/phase06-light-vs-ultralight.sh` write both halves for you.
 
-| arm   | gateway                                                    |
-| ----- | ---------------------------------------------------------- |
-| **L** | `--swap-enable=true`, funded chequebook. What ships today. |
-| **U** | `--swap-enable=false`, no chequebook. bee's ultra-light.   |
+| arm   | gateway                                                                                               |
+| ----- | ----------------------------------------------------------------------------------------------------- |
+| **L** | endpoint set and `--swap-enable=true`, funded chequebook. The mode of a gateway created on the chain. |
+| **U** | no endpoint and `--swap-enable=false`, no chequebook. bee's ultra-light, and what ships today.        |
 
 ⛔ **Label correction, 2026-09-15.** Arm U above was a light node with swap off, not ultra-light: bee decides
 ultra-light on an empty `--blockchain-rpc-endpoint`, and every gateway here carried one. The comparison stands as
