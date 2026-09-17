@@ -12,7 +12,7 @@ import './utils/env.js';
 
 import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
-import { BeePublisherPool } from './libs/BeePublisherPool.js';
+import { BeePublisherPool, safeUrl } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
 import { PostageGate } from './libs/PostageGate.js';
@@ -111,11 +111,16 @@ async function start() {
 
     const engines = loadEngines(config.engine);
 
+    // ⛔ Stripped once, here, because a node url may carry basic auth in its userinfo and everything
+    // built from this reaches `/health`, which takes no credential of its own. `waitForNode` strips
+    // what it publishes too, so neither path depends on the other having remembered.
+    const coordinatorUrl = safeUrl(publishers.coordinator().url);
+
     // Waiting from the first second rather than from the first failed read. The API below listens
     // before anything touches a node, so a probe arriving in between has to be told the boot is not
     // finished. `waitForNode` replaces this with its own report as soon as it starts.
     let nodeWait: NodeWaitReport | null = {
-      url: publishers.coordinator().url,
+      url: coordinatorUrl,
       waitingSince: new Date().toISOString(),
       attempts: 0,
     };
@@ -170,7 +175,7 @@ async function start() {
         return streamOrchestrator.recoverStreams();
       },
       {
-        url: publishers.coordinator().url,
+        url: coordinatorUrl,
         logger,
         onReport: (report) => {
           nodeWait = report;

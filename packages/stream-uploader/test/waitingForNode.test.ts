@@ -6,6 +6,7 @@ import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { EnginePlugin } from '../src/engines/types.js';
+import { waitForNode } from '../src/libs/NodeWait.js';
 import {
   HEALTH_OK,
   HEALTH_REASON_NODE_UNAVAILABLE,
@@ -26,6 +27,28 @@ const WAITING: NodeWaitReport = {
   attempts: 3,
   lastError: 'timeout of 20000ms exceeded',
 };
+
+/**
+ * ⛔⛔⛔ **`/health` takes no credential and is bound on every interface the deployment exposes.**
+ *
+ * A node URL may carry basic auth in its userinfo, because bee accepts it there and
+ * `BeePublisherPool.parseEntry` keeps what the operator configured. The report the wait publishes is
+ * built by `waitForNode`, which strips it, and these two cases drive the real composition: a report
+ * made the way production makes one, through the route and the middleware that print it.
+ */
+const CREDENTIALLED_NODE = 'http://operator:hunter2@bee-a:1633';
+
+/** A report as `waitForNode` produces one, rather than a literal a test wrote by hand. */
+async function reportFor(url: string): Promise<NodeWaitReport> {
+  const reports: NodeWaitReport[] = [];
+  await waitForNode(async () => undefined, {
+    url,
+    logger: { info: () => {}, warn: () => {} },
+    onReport: (report) => reports.push(report),
+    now: () => new Date('2026-09-17T09:00:00.000Z'),
+  });
+  return reports[0];
+}
 
 const servers: ApiTestServer[] = [];
 
@@ -141,6 +164,24 @@ describe('the uploader while it is waiting for its node', () => {
     assert.deepEqual(reached, []);
   });
 
+  it('publishes no credential from the node url on /health', async () => {
+    const api = await startApi(makeTestOrchestrator(), await reportFor(CREDENTIALLED_NODE));
+
+    const { body } = await api.request('/health');
+
+    assert.doesNotMatch(JSON.stringify(body), /hunter2/, 'a credential in BEE_URL reached an unauthenticated reader');
+    assert.match(JSON.stringify(body), /bee-a:1633/, 'the node still has to be nameable');
+  });
+
+  it('puts no credential into the 503 an engine is told and logs', async () => {
+    const api = await startApi(makeFakeOrchestrator(), await reportFor(CREDENTIALLED_NODE));
+
+    const { body } = await startStream(api);
+
+    assert.doesNotMatch(String((body as Record<string, unknown>).error), /hunter2/);
+    assert.match(String((body as Record<string, unknown>).error), /bee-a:1633/);
+  });
+
   // The credential gate stays in front, so waiting does not become a way to learn the service exists
   // without holding its token.
   it('still refuses an unauthenticated caller as unauthenticated', async () => {
@@ -208,6 +249,19 @@ describe('the entry point listens before it reads a node', () => {
       assert.ok(at('waitForNode(') < at(step), `${step} runs outside the wait and would end the boot again`);
     });
   }
+
+  it('builds the first report through safeUrl, since the wait has not started yet', () => {
+    assert.match(
+      source,
+      /const coordinatorUrl = safeUrl\(/,
+      'index.ts must strip the coordinator url once and use that, or the first seconds of /health leak it',
+    );
+    assert.doesNotMatch(
+      source,
+      /url: publishers\.coordinator\(\)\.url/,
+      'the raw configured url must not reach a report or the wait',
+    );
+  });
 
   it('hands the API a reader of the wait rather than a copy of it', () => {
     assert.match(

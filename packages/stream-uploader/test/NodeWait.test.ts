@@ -250,3 +250,45 @@ describe('an error that says the node is not there', () => {
     });
   }
 });
+
+/**
+ * ⛔⛔⛔ **What this reports is published to anyone who can reach `/health`.**
+ *
+ * bee takes basic auth in a URL's userinfo, so `BEE_URL` and every `BEE_PUBLISHERS` entry may carry a
+ * credential, and `BeePublisherPool.parseEntry` keeps it because the node needs it. The report below
+ * reaches an endpoint that takes no credential of its own and a 503 body an engine logs, so the wait
+ * strips the url once, here, rather than asking every reader of the report to remember.
+ */
+describe('what the wait says about the node url', () => {
+  const CREDENTIALLED = 'http://operator:hunter2@bee-a:1633';
+
+  it('strips a credential out of the report it publishes', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, wrappedTimeout).run, { ...seen.options, url: CREDENTIALLED });
+
+    for (const report of seen.reports) {
+      assert.doesNotMatch(report.url, /hunter2/);
+      assert.doesNotMatch(report.url, /operator/);
+      assert.match(report.url, /bee-a:1633/);
+    }
+  });
+
+  it('strips it out of the lines it logs, both the wait and the answer', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, wrappedTimeout).run, { ...seen.options, url: CREDENTIALLED });
+
+    for (const line of [...seen.warnings, ...seen.notices]) {
+      assert.doesNotMatch(line, /hunter2/);
+    }
+  });
+
+  it('leaves a url with nothing to hide as the operator wrote it', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(0, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.reports[0].url, NODE_URL);
+  });
+});
