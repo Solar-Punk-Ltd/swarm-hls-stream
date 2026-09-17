@@ -94,14 +94,17 @@ const MAX_HLS_FRAGMENT_SECONDS = 3600;
  * retry worth having: shorten a window below 8.35s and this becomes the wrong number, which is why
  * `test/config.test.ts` reads those windows out of the files that declare them and re-derives it.
  *
- * The two startup gates are the one thing this no longer bounds. Their reads have no retry around
- * them and answer off the chain rather than out of the node, so they were the calls this derivation
- * was never about. They run on START_GATE_TIMEOUT_MS below, since 2026-09-17.
+ * The two startup gates and the reachability probe in front of them are what this no longer bounds.
+ * The gates' reads have no retry around them and answer off the chain rather than out of the node, so
+ * they were the calls this derivation was never about, and the probe reads through the same pool so
+ * that a node the gates would wait twenty seconds for is not failed in four. All three run on
+ * START_GATE_TIMEOUT_MS below, since 2026-09-17.
  */
 const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
 
 /**
- * How long one startup gate's read of a node may take before it gives up on that node.
+ * How long one startup gate's read of a node, or the liveness probe in front of the gates, may take
+ * before it gives up on that node.
  *
  * ⛔ Separate from BEE_REQUEST_TIMEOUT_MS above, and the separation is the fix rather than a tidy-up.
  * A chequebook balance and a postage batch are answered from the chain, not from the node's own
