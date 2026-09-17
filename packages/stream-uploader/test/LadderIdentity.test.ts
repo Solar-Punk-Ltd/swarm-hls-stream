@@ -5,18 +5,22 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
+import { AdminApiClient } from '../src/libs/AdminApiClient.js';
 import { LadderGroupStore, RememberedLadder } from '../src/libs/LadderGroupStore.js';
+import { LadderRegistry } from '../src/libs/LadderRegistry.js';
+import { Logger } from '../src/libs/Logger.js';
+import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { buildLadderEntry, LadderIdentity, StreamEntry } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, Rendition, StreamState } from '../src/types.js';
 
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { makeFakeRecoveryStore, makeTestOrchestrator } from './helpers/fakes.js';
 import { waitFor } from './helpers/waiting.js';
 
 /**
  * One broadcast is one recording, across a crash.
  *
- * The catalog keys a ladder's entry on `(owner, group)`: four rungs fold into a single row and
+ * The catalog keys a ladder's entry on `(owner, group)`: four rungs merge into a single row and
  * `StreamCatalog.withoutGroup` replaces that row only when the group matches. So a source handed a
  * second group is not a cosmetic slip, it is the same broadcast listed twice for viewers, each copy
  * paid for in its own postage and neither reachable from the other.
@@ -230,7 +234,7 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
   /**
    * The other half of the rule, and the reason the record is retired rather than kept forever. A
    * ladder whose last rung finalized is a finished recording, so the next broadcast on that source
-   * must not be folded into it.
+   * must not be merged into it.
    */
   it('gives the next broadcast on the same source a new group once the ladder has finished', async () => {
     const root = makeTempRoot();
@@ -336,5 +340,276 @@ describe('the tail of a broadcast after a crash goes into the recording already 
     const listed: StreamEntry[] = [first, second];
     assert.equal(new Set(listed.map((entry) => entry.group)).size, 2);
     assert.equal(second.renditions?.length, 1, 'the re-minted ladder must not inherit the first one');
+  });
+});
+
+/**
+ * A ladder under a declaration, which is what admin mode and `ABR_ENABLED` together produce.
+ *
+ * ⛔ **The declared topic becomes the ladder's GROUP, and a rung's own feed topic stays random.** The
+ * group is the master playlist's feed topic, and the master is what a viewer opens: the admin hands
+ * out the declared topic before anything has published, so the two have to be the same string or the
+ * admin's catalog entry points at a feed nothing ever writes. Handing the rung that topic as well
+ * would put four rungs and the master on one feed, all claiming the same indexes.
+ *
+ * ⛔ **What is remembered still wins after a restart.** The group store and each rung's recovery entry
+ * are the two records of the identity the surviving rungs are already publishing under, and a
+ * declaration that disagrees with them arrives only for a broadcast that crashed and was re-declared.
+ * Adopting the new topic mid-ladder would strand the master the other rungs are still writing.
+ */
+describe('a ladder in admin mode', () => {
+  const DECLARED_TOPIC = 'declared-topic-0001';
+  const ADMIN_SESSION = { id: 'str_01HZY', topic: DECLARED_TOPIC };
+
+  /** One rung's announce as the ladder registry received it. */
+  interface Announce {
+    identity: LadderIdentity;
+    rendition: Rendition;
+  }
+
+  /**
+   * A ladder registry that keeps every record registered with it and writes no master, standing in
+   * for `AdminLadderRegistry`. What these cases pin is that the orchestrator hands its configured
+   * registry to every session it builds, under the identity a declared ladder has to carry: the group
+   * is the declared topic and the stream id is the declaration's.
+   */
+  function recordingRegistry(): { registry: LadderRegistry; announces: Announce[] } {
+    const announces: Announce[] = [];
+    return {
+      announces,
+      registry: {
+        upsertRendition: async (identity, rendition) => {
+          announces.push({ identity, rendition });
+          return { masterIndex: null, flippedToFinished: false, duration: null };
+        },
+        recordRungDelivered: () => {},
+      },
+    };
+  }
+
+  function declaredAdmin(): AdminApiClient {
+    return new AdminApiClient({
+      baseUrl: 'http://admin.test:9877',
+      token: 'admin-api-token-0123456789abcdef',
+      fetcher: (async () => new Response('{}', { status: 200 })) as typeof globalThis.fetch,
+    });
+  }
+
+  /**
+   * An orchestrator as `index.ts` builds one for a deployment running both: a ladder, a group store
+   * under the shared state directory, an admin client, and the ladder registry admin mode swaps in.
+   * The client answers every report, because these cases are about identity and a session that
+   * reached its retry ladder in the background would spend seconds of an unrelated assertion.
+   */
+  function bootDeclaredLadder(
+    root: string,
+    ladderRegistry: LadderRegistry = recordingRegistry().registry,
+  ): StreamOrchestrator {
+    return makeTestOrchestrator({
+      ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
+      ladderGroupStore: new LadderGroupStore(path.join(root, 'ladder', 'groups.json')),
+      adminApi: declaredAdmin(),
+      ladderRegistry,
+    });
+  }
+
+  /**
+   * Every error the error handler logged while `run` ran. An announce that dies inside the uploader is
+   * caught by `announceToCatalog` and handed to the error handler, which logs it and nothing else, so a
+   * case that asserts only on what the registry holds would pass over a registry that was never
+   * reached.
+   * Fifteen cases in this file did exactly that once, over a fake catalog with no `upsertRendition`.
+   */
+  async function errorsDuring(run: () => Promise<void>): Promise<string[]> {
+    const lines: string[] = [];
+    const logger = Logger.getInstance();
+    const previous = logger.configure({ sink: (level, line) => (level === 'error' ? lines.push(line) : undefined) });
+    try {
+      await run();
+    } finally {
+      logger.configure(previous);
+    }
+    return lines;
+  }
+
+  /**
+   * Reaches the live session for its own feed topic. The topic has no behavioural signal to observe
+   * from outside — the same reason `groupOf` above reaches into the ladder maps.
+   */
+  interface ActiveStreams {
+    activeStreams: Map<string, { getStreamState(): { streamRawTopic: string; adminStreamId?: string } }>;
+  }
+
+  function sessionOf(orch: StreamOrchestrator, streamId: string) {
+    return (orch as unknown as ActiveStreams).activeStreams.get(streamId)?.getStreamState();
+  }
+
+  it('makes the declared topic the ladder group and leaves every rung a feed of its own', async () => {
+    const root = makeTempRoot();
+    const orch = bootDeclaredLadder(root);
+
+    try {
+      orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+      orch.startStream(RUNG_360P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+      await waitFor(() => groupOf(orch, BASE) !== undefined, SETTLE_CEILING_MS);
+
+      assert.equal(groupOf(orch, BASE), DECLARED_TOPIC, 'the master feed has to be where the admin points viewers');
+      const topics = [RUNG_720P, RUNG_360P].map((rung) => sessionOf(orch, rung)?.streamRawTopic);
+      assert.equal(new Set(topics).size, 2, 'two rungs sharing one feed write over each other');
+      assert.ok(
+        topics.every((topic) => topic !== undefined && topic !== DECLARED_TOPIC),
+        `a rung must not publish its manifests onto the master′s feed, got ${JSON.stringify(topics)}`,
+      );
+      assert.equal(sessionOf(orch, RUNG_720P)?.adminStreamId, ADMIN_SESSION.id, 'and each rung reports to the ladder');
+    } finally {
+      await orch.cleanup();
+    }
+  });
+
+  /**
+   * ⛔ The one wiring `index.ts` adds for admin mode: the registry it builds has to reach every
+   * session, or a rung registers with the stream catalog admin mode is never allowed to write. Pinned
+   * through the orchestrator rather than on `StreamUploader` directly, because the orchestrator is
+   * where the registry is threaded and where it was silently dropped from the fixture for fifteen
+   * passing cases.
+   */
+  it('registers each rung′s record with the ladder registry under the declared group and stream id', async () => {
+    const root = makeTempRoot();
+    const { registry, announces } = recordingRegistry();
+    const orch = bootDeclaredLadder(root, registry);
+
+    try {
+      const errors = await errorsDuring(async () => {
+        orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+        orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('seg'));
+        await waitFor(() => announces.length > 0, SETTLE_CEILING_MS);
+      });
+
+      const [{ identity, rendition }] = announces;
+      assert.equal(identity.group, DECLARED_TOPIC, 'the ladder is merged under the topic the admin points viewers at');
+      assert.equal(identity.adminStreamId, ADMIN_SESSION.id, 'and reported against the declaration');
+      assert.equal(rendition.name, '720p');
+      assert.notEqual(rendition.topic, DECLARED_TOPIC, 'the rung′s own feed is never the master′s');
+      assert.deepEqual(errors, [], 'an announce that died on the way to the registry is logged, never thrown');
+    } finally {
+      await orch.cleanup();
+    }
+  });
+
+  it('keeps the group its ladder already had when a declaration names a different topic', async () => {
+    const root = makeTempRoot();
+    const before = bootDeclaredLadder(root);
+    before.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+    await waitFor(() => groupOf(before, BASE) !== undefined, SETTLE_CEILING_MS);
+
+    // The crash: the process is gone, so nothing stops and nothing is retired. Then a re-declaration,
+    // which is the only way a second topic can reach the same base at all.
+    const after = bootDeclaredLadder(root);
+    try {
+      after.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, { id: 'str_SECOND', topic: 'declared-topic-0002' });
+
+      assert.equal(
+        groupOf(after, BASE),
+        DECLARED_TOPIC,
+        'the remembered group is where the master the surviving rungs publish under already lives',
+      );
+    } finally {
+      await after.cleanup();
+    }
+  });
+
+  /**
+   * ⛔ Nothing re-announces a recovered stream, so the entry on disk is the only surviving record of
+   * which declaration this rung belonged to and of which ladder it was merged into. Without the id the
+   * broadcast finalizes into its feed and stays `live` in the admin's list for ever; without the group
+   * its master is written to a topic the admin points nobody at.
+   */
+  it('rebuilds a recovered rung on the group and the declaration its entry carries', async () => {
+    const root = makeTempRoot();
+    const state: StreamState = {
+      streamId: RUNG_720P,
+      streamRawTopic: 'rung-topic-0001',
+      mediatype: MEDIA_TYPE_VIDEO,
+      socIndex: 3,
+      segments: [{ index: 0, duration: 2, ref: 'ref0' }],
+      hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+      isFirstSegmentReady: true,
+      isFirstManifestReady: true,
+      updatedAt: Date.now(),
+      ladder: { group: DECLARED_TOPIC, rung: { name: '720p', width: 1280, height: 720, configuredKbps: 2800 } },
+      adminStreamId: ADMIN_SESSION.id,
+    };
+
+    const { registry, announces } = recordingRegistry();
+    const orch = bootDeclaredLadder(root, registry);
+    (orch as unknown as { recoveryStore: RecoveryStore }).recoveryStore = makeFakeRecoveryStore({
+      listActive: () => [RUNG_720P],
+      load: () => state,
+    });
+
+    try {
+      await orch.recoverStreams();
+
+      assert.equal(sessionOf(orch, RUNG_720P)?.adminStreamId, ADMIN_SESSION.id);
+      assert.equal(groupOf(orch, BASE), DECLARED_TOPIC, 'the group store is rewritten from the entry that survived');
+
+      // Nothing re-announces a recovered stream, so the first record it registers is its finalize, the
+      // announce that carries the recording's index. It goes through the same registry a fresh
+      // session's does, under the same declaration, or the recovered tail of the broadcast is merged
+      // into nothing the admin holds.
+      const errors = await errorsDuring(async () => {
+        await orch.stopStream(RUNG_720P);
+        await waitFor(() => announces.length > 0, SETTLE_CEILING_MS);
+      });
+      assert.equal(announces[0].identity.adminStreamId, ADMIN_SESSION.id);
+      assert.equal(announces[0].identity.group, DECLARED_TOPIC);
+      assert.notEqual(announces[0].rendition.index, undefined, 'a finalize announces where the recording ended');
+      assert.deepEqual(errors, []);
+    } finally {
+      await orch.cleanup();
+    }
+  });
+
+  /**
+   * ⛔ A rung is not handed its predecessor's drain, and this is what says so. The gate exists because
+   * two admin-mode sessions share one declared feed; a rung's manifest feed is its own, so holding its
+   * playlist for a finalize would freeze one quality of a live ladder and buy nothing.
+   */
+  it('lets a re-announced rung publish without waiting for the session it replaced', async () => {
+    const root = makeTempRoot();
+    const published: number[] = [];
+    const orch = makeTestOrchestrator(
+      {
+        ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
+        ladderGroupStore: new LadderGroupStore(path.join(root, 'ladder', 'groups.json')),
+        adminApi: new AdminApiClient({
+          baseUrl: 'http://admin.test:9877',
+          token: 'admin-api-token-0123456789abcdef',
+          fetcher: (async () => new Response('{}', { status: 200 })) as typeof globalThis.fetch,
+        }),
+      },
+      {
+        uploadPayload: async (index) => {
+          published.push(index);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+    );
+
+    try {
+      orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+      orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('seg'));
+      await waitFor(() => published.length > 0, SETTLE_CEILING_MS);
+      const before = published.length;
+
+      // The transcoder restarts and re-announces the same rung. The retired session drains in the
+      // background; the replacement must not be waiting on it.
+      orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+      orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('seg'));
+
+      await waitFor(() => published.length > before, SETTLE_CEILING_MS);
+    } finally {
+      await orch.cleanup();
+    }
   });
 });

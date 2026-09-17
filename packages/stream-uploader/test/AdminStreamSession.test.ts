@@ -36,8 +36,9 @@ import {
   STATE_REPORT_FAILED,
   StateReportOutcome,
 } from '../src/libs/AdminApiClient.js';
+import { LadderRegistry, RenditionAnnouncement } from '../src/libs/LadderRegistry.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
-import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, Rendition, StreamState } from '../src/types.js';
 
 import {
   FakeFeedHead,
@@ -530,5 +531,279 @@ describe('a replacement session on a declared topic waits for the session it rep
       [5],
       'nothing to wait for, so nothing waits',
     );
+  });
+});
+
+/**
+ * A rung of an ABR ladder under a declaration, which is the other shape admin mode now takes.
+ *
+ * ## What is the same, and what is not
+ *
+ * The three properties above hold, with one substitution each. The declared topic still belongs to the
+ * declaration — but it is the **ladder's master feed**, not this rung's, so this session mints a fresh
+ * `crypto.randomUUID()` for its own manifests exactly as a standalone rung does, and neither the head
+ * resume nor the predecessor gate is owed here. Nothing is written to the stream catalog, and the
+ * admin is told instead — but the two reports are now statements about the LADDER: `live` once a
+ * master a viewer can open has landed, and `vod` once every rung of the ladder has finalized, carrying
+ * the master's index rather than this rung's own.
+ *
+ * ⛔ The rung registers its own record through the ladder registry, which is the only thing that can
+ * see the other three rungs. That is why the flip is read off an answer rather than off this session's
+ * intent: a rung draining while its siblings are live has ended its own recording and nothing else.
+ */
+describe('a rung of a declared ladder', () => {
+  const RUNG_TOPIC = 'rung-topic-0001';
+  const RUNG = { name: '720p', width: 1280, height: 720, configuredKbps: 2800 };
+
+  /** One rendition report registered with the registry. */
+  interface Upsert {
+    adminStreamId?: string;
+    group: string;
+    rendition: Rendition;
+  }
+
+  interface LadderSession {
+    uploader: StreamUploader;
+    published: ManifestWrite[];
+    catalogEntries: unknown[];
+    reports: AdminStateReport[];
+    upserts: Upsert[];
+    delivered: string[];
+  }
+
+  interface LadderSessionOptions {
+    /**
+     * What the registry answers for each announce in turn. Defaults to a master at 0 that flipped
+     * nothing.
+     */
+    announce?: (upsert: Upsert, attempt: number) => RenditionAnnouncement;
+    /** How long a failed announce waits before the next manifest publish re-attempts it. */
+    catalogAnnounceRetryMs?: number;
+    feedHead?: () => FakeFeedHead | null;
+  }
+
+  function newLadderSession(options: LadderSessionOptions = {}): LadderSession {
+    const published: ManifestWrite[] = [];
+    const catalogEntries: unknown[] = [];
+    const reports: AdminStateReport[] = [];
+    const upserts: Upsert[] = [];
+    const delivered: string[] = [];
+
+    const bee = makeFakeBee({
+      uploadPayload: async (index, payload) => {
+        published.push({ index, playlist: String(payload) });
+        return { reference: { toHex: () => `soc${index}` } };
+      },
+      feedHead: options.feedHead ?? (() => null),
+    });
+
+    const client = {
+      describe: () => 'http://admin.test:9877',
+      reportState: async (_id: string, report: AdminStateReport) => {
+        reports.push(report);
+        return STATE_REPORT_ACCEPTED;
+      },
+    } as unknown as AdminApiClient;
+
+    const ladderRegistry: LadderRegistry = {
+      upsertRendition: async (identity, rendition) => {
+        const upsert = { adminStreamId: identity.adminStreamId, group: identity.group, rendition };
+        upserts.push(upsert);
+        return (
+          options.announce?.(upsert, upserts.length) ?? {
+            masterIndex: 0,
+            flippedToFinished: false,
+            duration: null,
+          }
+        );
+      },
+      recordRungDelivered: (_group, rung) => {
+        delivered.push(rung);
+      },
+    };
+
+    const uploader = new StreamUploader({
+      anchor: TEST_ANCHOR,
+      publisher: testPublisher(bee as Bee),
+      streamCatalog: makeFakeCatalog({
+        addStream: async (entry: unknown) => {
+          catalogEntries.push(entry);
+          return true;
+        },
+      }),
+      ladderRegistry,
+      recoveryStore: makeFakeRecoveryStore(),
+      streamKey: TEST_STREAM_KEY,
+      redundancyLevel: 0,
+      streamId: `${STREAM_ID}_720p`,
+      // A topic of this session's own, which is what the orchestrator mints for a rung. The
+      // declaration's topic is the group below.
+      streamTopic: RUNG_TOPIC,
+      mediatype: MEDIA_TYPE_VIDEO,
+      ladder: { group: DECLARED_TOPIC, rung: RUNG },
+      admin: { client, id: ADMIN_STREAM_ID },
+      catalogAnnounceRetryMs: options.catalogAnnounceRetryMs,
+    });
+
+    return { uploader, published, catalogEntries, reports, upserts, delivered };
+  }
+
+  /**
+   * ⛔ The declared topic is the ladder's, so reading its head here would establish this rung's SOC
+   * index from the master feed and start every rung above whatever the master had reached. The rung's
+   * own feed is fresh and starts at 0, exactly as it does standalone.
+   */
+  it('publishes from zero on a topic of its own, without reading the declared topic', async () => {
+    let reads = 0;
+    const session = newLadderSession({
+      feedHead: () => {
+        reads++;
+        return { index: 7, manifest: SOME_PLAYLIST };
+      },
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(reads, 0, 'the head of the declared topic belongs to the master feed writer, not to a rung');
+    assert.equal(session.published[0]?.index, 0);
+  });
+
+  it('writes nothing to the stream catalog, and registers its rung with the ladder registry instead', async () => {
+    const session = newLadderSession();
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.deepEqual(session.catalogEntries, []);
+    assert.deepEqual(
+      session.upserts.map((upsert) => [
+        upsert.group,
+        upsert.adminStreamId,
+        upsert.rendition.name,
+        upsert.rendition.topic,
+      ]),
+      [[DECLARED_TOPIC, ADMIN_STREAM_ID, '720p', RUNG_TOPIC]],
+      'the record names the rung′s own feed, under the declared ladder, addressed to the declared stream',
+    );
+  });
+
+  /**
+   * `live` is a statement about the ladder, so it waits for a master a viewer can actually open. A
+   * rung that published a manifest into a ladder with no master yet is a quality nothing points at.
+   */
+  it('reports live once the ladder′s first master has landed', async () => {
+    const session = newLadderSession();
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.deepEqual(
+      session.reports.map((report) => report.state),
+      [ADMIN_STATE_LIVE],
+    );
+  });
+
+  it('reports nothing while no master has landed', async () => {
+    const session = newLadderSession({
+      announce: () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.deepEqual(session.reports, [], 'there is nothing for a viewer to open yet, so the broadcast is not live');
+  });
+
+  /**
+   * ⛔ The index is the FINAL MASTER's, in the declared topic's feed, and never this rung's own VOD
+   * index. A viewer in admin mode is handed the declared topic; for a ladder that feed holds the
+   * master, so a rung's index would name a position in a feed nobody opens.
+   */
+  it('reports vod at the master′s index with the ladder′s duration, once the ladder flipped', async () => {
+    const session = newLadderSession({
+      announce: (upsert) =>
+        upsert.rendition.index === undefined
+          ? { masterIndex: 0, flippedToFinished: false, duration: null }
+          : { masterIndex: 4, flippedToFinished: true, duration: 12 },
+    });
+
+    await feedOneSegment(session.uploader, 0);
+    await session.uploader.notifyStop();
+
+    const vod = session.reports.at(-1);
+    assert.equal(vod?.state, ADMIN_STATE_VOD);
+    assert.equal(vod?.state === ADMIN_STATE_VOD ? vod.index : null, 4, 'the master′s index, not the rung′s');
+    assert.equal(vod?.state === ADMIN_STATE_VOD ? vod.duration : null, 12, 'the ladder′s playing time, not the rung′s');
+    assert.notEqual(
+      session.published.at(-1)?.index,
+      4,
+      'and the rung really did publish its own recording somewhere else, or this asserts nothing',
+    );
+  });
+
+  /**
+   * ⛔ A rung draining while its siblings are still live has ended its own recording and nothing more.
+   * The broadcast is over when the LAST of them finalizes, which is the only report the admin answers
+   * with a flip, so a rung announcing the end off its own drain would take three live rungs off the
+   * air in the admin′s list.
+   */
+  it('reports no vod when its own finalize did not finish the ladder', async () => {
+    const session = newLadderSession({
+      announce: () => ({ masterIndex: 0, flippedToFinished: false, duration: null }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+    await session.uploader.notifyStop();
+
+    assert.deepEqual(
+      session.reports.map((report) => report.state),
+      [ADMIN_STATE_LIVE],
+      'the broadcast went live and stays that way: three of its rungs are still publishing',
+    );
+    assert.equal(session.upserts.length, 2, 'the rung still announced itself finished, which is what flips the ladder');
+    assert.equal(session.upserts[1].rendition.index, session.published.at(-1)?.index);
+  });
+
+  /**
+   * A rendition report that did not land is a rung missing from the master every viewer resolves, so it
+   * costs exactly what a failed catalog announce costs: the age `/health` reports as an unlisted
+   * stream, and a re-attempt on the announce cadence rather than on the segment cadence.
+   */
+  it('re-attempts a failed announce on the announce cadence, and says so on /health meanwhile', async () => {
+    const session = newLadderSession({
+      catalogAnnounceRetryMs: 0,
+      announce: (_upsert, attempt) => {
+        if (attempt === 1) {
+          throw new Error('the admin refused the rendition report');
+        }
+        return { masterIndex: 1, flippedToFinished: false, duration: null };
+      },
+    });
+
+    await feedOneSegment(session.uploader, 0);
+    assert.equal(session.upserts.length, 1);
+    // A length rather than `deepEqual` against `[]`: node's assertion signature narrows the array to
+    // `never[]` for the rest of the block, and the assertions below are about what ends up in it.
+    assert.equal(session.reports.length, 0, 'nothing is live until a master exists');
+    assert.notEqual(
+      session.uploader.getMsSinceCatalogAnnounceFailed(),
+      null,
+      'a ladder the admin does not hold is a broadcast no viewer can find, which is what this signal is',
+    );
+
+    await feedOneSegment(session.uploader, 1);
+
+    assert.equal(session.upserts.length, 2, 'the next manifest publish re-attempts it');
+    assert.deepEqual(
+      session.reports.map((report) => report.state),
+      [ADMIN_STATE_LIVE],
+    );
+    assert.equal(session.uploader.getMsSinceCatalogAnnounceFailed(), null, 'and the signal clears once it lands');
+  });
+
+  it('counts each delivery against the ladder, so the master can drop a rung that stops', async () => {
+    const session = newLadderSession();
+
+    await feedOneSegment(session.uploader, 0);
+    await feedOneSegment(session.uploader, 1);
+
+    assert.deepEqual(session.delivered, ['720p', '720p']);
   });
 });

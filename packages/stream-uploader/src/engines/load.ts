@@ -18,6 +18,8 @@ export interface EngineLoaderDeps {
    * {@link EngineFactoryDeps}.
    */
   adminApi: EngineFactoryDeps['adminApi'];
+  /** Passed straight through with the admin client, for the same reason. */
+  signerOwner: EngineFactoryDeps['signerOwner'];
 }
 
 /**
@@ -33,14 +35,20 @@ export interface EngineLoaderDeps {
  * `none` and an empty name are configurations rather than mistakes, so they are silent.
  */
 export function loadEngines(engine: string, deps: Partial<EngineLoaderDeps> = {}): EnginePlugin[] {
-  const { registry = engineRegistry, loadEnv = loadEngineEnv, logger = Logger.getInstance(), adminApi } = deps;
+  const {
+    registry = engineRegistry,
+    loadEnv = loadEngineEnv,
+    logger = Logger.getInstance(),
+    adminApi,
+    signerOwner,
+  } = deps;
 
   const createEngine = registry[engine];
   if (createEngine) {
     // Before constructing, because the engine reads its own settings out of the environment as it is
     // built, and a plugin built against an unloaded environment gets the defaults in silence.
     loadEnv(engine);
-    return [createEngine({ adminApi })];
+    return [createEngine({ adminApi, signerOwner })];
   }
 
   if (engine && engine !== ENGINE_NONE) {

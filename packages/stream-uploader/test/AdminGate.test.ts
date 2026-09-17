@@ -20,9 +20,10 @@ import { describe, it } from 'node:test';
 
 import { createOmeEngine } from '../src/engines/ome.js';
 import { createSrsEngine } from '../src/engines/srs.js';
+import { AbrLadder } from '../src/libs/AbrLadder.js';
 import { AdminApiClient, AdminStreamDraft } from '../src/libs/AdminApiClient.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO } from '../src/types.js';
+import { AdminSession, MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO } from '../src/types.js';
 import { derivePublishKey } from '../src/utils/publishKey.js';
 
 import { makeFakeOrchestrator, makeTestOrchestrator } from './helpers/fakes.js';
@@ -48,10 +49,21 @@ const LEGACY_KEY = derivePublishKey(LEGACY_PUBLISH_SECRET, STREAM_ID);
 /** The key the admin minted for this declaration. The only one that admits anybody in admin mode. */
 const DECLARED_KEY = 'declared-publish-key-0123456789';
 
+/** The address the admin signs its catalog with, as its rows spell it: forty hex digits, lower case. */
+const FEED_OWNER = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+/**
+ * The same address as this deployment spells it. Deliberately prefixed and upper-cased: the two
+ * services print one address two ways, and a compare that read the spelling would refuse every
+ * correctly configured deployment.
+ */
+const DEPLOYMENT_SIGNS_AS = `0x${FEED_OWNER.toUpperCase()}`;
+/** A declaration made under some other feed key. */
+const SOMEBODY_ELSES_OWNER = 'ffffffffffffffffffffffffffffffffffffffff';
+
 const DRAFT: AdminStreamDraft = {
   id: 'str_01HZY',
   topic: 'declared-topic-0001',
-  owner: '0xowner',
+  owner: FEED_OWNER,
   mediaType: MEDIA_TYPE_VIDEO,
   title: 'A declared broadcast',
   status: 'draft',
@@ -172,6 +184,7 @@ function withSrs(lookup: LookupAnswer, drive: Drive): Promise<void> {
         // configured it could not tell "ignored" from "absent".
         publishKeySecret: LEGACY_PUBLISH_SECRET,
         adminApi,
+        signerOwner: DEPLOYMENT_SIGNS_AS,
       }),
       announce: async (baseUrl, prefix, ingestApp, address, query) => {
         const response = await fetch(`${baseUrl}${prefix}/streams?token=${SRS_TOKEN}`, {
@@ -200,6 +213,7 @@ function withOme(lookup: LookupAnswer, drive: Drive): Promise<void> {
         admissionSecret: OME_SECRET,
         publishKeySecret: LEGACY_PUBLISH_SECRET,
         adminApi,
+        signerOwner: DEPLOYMENT_SIGNS_AS,
       }),
       announce: async (baseUrl, prefix, ingestApp, address, query) => {
         const reply = await postAdmission(
@@ -321,6 +335,27 @@ for (const [name, withThisEngine] of ENGINES) {
       });
     });
 
+    /**
+     * ⛔ A deployment fault, not a broadcaster's. The admin's entry points viewers at `owner/topic` and
+     * every feed this service writes there is signed with `STREAM_KEY`; with the two keys apart every
+     * report answers 200 and every viewer resolves a feed nobody wrote. Refused after the key check, so
+     * a caller who has not proved the declaration learns nothing about it, and not counted on /health
+     * as an authentication rejection, because nothing the caller did caused it. The fixture's own owner
+     * is spelled two ways on the two sides, so every admitting case above is also the proof that the
+     * compare reads the address and not its spelling.
+     */
+    it('refuses a declaration owned by another feed key, and does not count it as an auth rejection', async () => {
+      await withThisEngine(answersDraft({ owner: SOMEBODY_ELSES_OWNER }), async ({ announce, orchestrator }) => {
+        assert.equal(await announce(BROADCASTER, `?key=${DECLARED_KEY}`), false);
+        assert.equal(orchestrator.getActiveStreamCount(), 0);
+        assert.equal(
+          orchestrator.getMetricsSnapshot().authRejectionsTotal,
+          0,
+          'two keys of one deployment disagreeing is nothing the caller did',
+        );
+      });
+    });
+
     it('admits an audio publish against an audio declaration', async () => {
       await withThisEngine(answersDraft({ mediaType: MEDIA_TYPE_AUDIO }), async ({ announceApp, orchestrator }) => {
         assert.equal(await announceApp('audio', `?key=${DECLARED_KEY}`), true);
@@ -408,5 +443,219 @@ describe('fail-open in admin mode', () => {
       server.close();
       engine.stopIngest?.();
     }
+  });
+});
+
+/**
+ * The publish gate with BOTH the ladder and admin mode on, which is a deployment neither half used to
+ * allow. See the "Admin mode" section of the package README.
+ *
+ * ## What the combination has to get right
+ *
+ * A ladder publish arrives twice over: once as the untranscoded **source** a real broadcaster sends to
+ * the ingest vhost, carrying the declaration's key, and then four times as **rungs** SRS republishes
+ * from loopback onto the ABR vhost carrying nothing at all. Only the source has an ingest id the admin
+ * has ever heard of — a rung's is `video/<uuid>_720p`, which nothing declared and nothing ever will —
+ * so the session the source resolves is the only thing that can tell a rung which broadcast it belongs
+ * to. Losing it would start four rungs with no declaration, on topics of their own, publishing a ladder
+ * the admin never learns about and no viewer could find.
+ *
+ * SEC-28's rule is unchanged underneath: a rung is admitted only because its base authenticated, and
+ * only from the transcode loopback.
+ */
+describe('the admin publish gate with the ABR ladder on', () => {
+  const LADDER_SPEC = '720p:1280:720:2800 360p:640:360:700';
+  const ABR_VHOST = 'abr';
+  const INGEST_VHOST = '__defaultVhost__';
+  const LOOPBACK = '127.0.0.1';
+  const RUNG = `${STREAM}_720p`;
+  const RUNG_ID = `${STREAM_ID}_720p`;
+
+  /** One `startStream` the engine asked for, with the declaration it passed alongside it. */
+  interface Start {
+    streamId: string;
+    admin?: AdminSession;
+  }
+
+  interface LadderCalls {
+    starts: Start[];
+    stops: string[];
+    /** How many refusals reached `/health` through `recordAuthRejection`. See OBS-15. */
+    authRejections: number;
+  }
+
+  interface SrsBody {
+    action: 'on_publish' | 'on_unpublish';
+    app: string;
+    stream: string;
+    vhost: string;
+    ip?: string;
+    param?: string;
+  }
+
+  async function withSrsLadder(
+    lookup: LookupAnswer,
+    drive: (harness: { calls: LadderCalls; post: (body: SrsBody) => Promise<number> }) => Promise<void>,
+  ): Promise<void> {
+    const calls: LadderCalls = { starts: [], stops: [], authRejections: 0 };
+    const orchestrator = makeFakeOrchestrator({
+      startStream: (streamId: string, _mediatype: unknown, _claimant: unknown, admin?: AdminSession) => {
+        calls.starts.push({ streamId, admin });
+        return true;
+      },
+      stopStream: async (streamId: string) => {
+        calls.stops.push(streamId);
+      },
+      recordAuthRejection: () => {
+        calls.authRejections += 1;
+      },
+    });
+    const engine = createSrsEngine('/srv/media', {
+      webhookToken: SRS_TOKEN,
+      publishKeySecret: LEGACY_PUBLISH_SECRET,
+      adminApi: adminAnswering(lookup),
+      abr: { vhost: ABR_VHOST, ladder: AbrLadder.parse(LADDER_SPEC) },
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+
+    async function post(body: SrsBody): Promise<number> {
+      const response = await fetch(`${baseUrl}${engine.prefix}/streams?token=${SRS_TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return response.json() as Promise<number>;
+    }
+
+    try {
+      await drive({ calls, post });
+    } finally {
+      server.close();
+      engine.stopIngest?.();
+    }
+  }
+
+  const source = (extra: Partial<SrsBody> = {}): SrsBody => ({
+    action: 'on_publish',
+    app: APP,
+    stream: STREAM,
+    vhost: INGEST_VHOST,
+    ip: BROADCASTER,
+    ...extra,
+  });
+
+  const rung = (extra: Partial<SrsBody> = {}): SrsBody => ({
+    action: 'on_publish',
+    app: APP,
+    stream: RUNG,
+    vhost: ABR_VHOST,
+    ip: LOOPBACK,
+    ...extra,
+  });
+
+  it('resolves the source against its declaration and admits it without ingesting it', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      assert.equal(await post(source({ param: `?key=${DECLARED_KEY}` })), 0);
+      assert.deepEqual(calls.starts, [], 'the source exists to be transcoded by SRS, not ingested by the uploader');
+      assert.equal(calls.authRejections, 0);
+    });
+  });
+
+  it('refuses a source whose key is not the declaration′s, and records the refusal', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      assert.equal(await post(source({ param: '?key=not-the-declared-key' })), 1);
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1, 'a refused credential has to be visible on /health. See OBS-15');
+    });
+  });
+
+  it('refuses a source the admin has never heard of, so no rung of it can be admitted either', async () => {
+    await withSrsLadder(answersNotFound, async ({ calls, post }) => {
+      assert.equal(await post(source({ param: `?key=${DECLARED_KEY}` })), 1);
+
+      assert.equal(await post(rung()), 1, 'a rung is admitted only because its base authenticated');
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 2);
+    });
+  });
+
+  /**
+   * ⛔ The whole of the combination, in one assertion. The rung presents nothing and names an ingest id
+   * the admin has never heard of, so the declaration its base resolved is the only route by which this
+   * broadcast can reach the admin at all.
+   */
+  it('starts a rung under the declaration its base resolved', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      await post(source({ param: `?key=${DECLARED_KEY}` }));
+
+      assert.equal(await post(rung()), 0);
+      assert.deepEqual(calls.starts, [{ streamId: RUNG_ID, admin: { id: DRAFT.id, topic: DRAFT.topic } }]);
+    });
+  });
+
+  it('refuses a loopback rung whose base never authenticated', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      assert.equal(await post(rung({ stream: 'attacker_720p' })), 1);
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1);
+    });
+  });
+
+  it('refuses a rung that is not from the transcode loopback, however its base authenticated', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      await post(source({ param: `?key=${DECLARED_KEY}` }));
+
+      assert.equal(await post(rung({ ip: STRANGER })), 1, 'origin trust must not extend off the host');
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1);
+    });
+  });
+
+  /**
+   * ⛔ The rungs must not outlive their base. An unpublished source gives up the declaration, so a rung
+   * arriving afterwards has nothing to publish under and is refused rather than started without one.
+   */
+  it('forgets the declaration when the source unpublishes', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      await post(source({ param: `?key=${DECLARED_KEY}` }));
+      assert.equal(await post(source({ action: 'on_unpublish', param: `?key=${DECLARED_KEY}` })), 0);
+
+      assert.equal(await post(rung()), 1);
+      assert.deepEqual(calls.starts, []);
+    });
+  });
+
+  it('still stops a rung on an unpublish from loopback', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      await post(source({ param: `?key=${DECLARED_KEY}` }));
+      await post(rung());
+
+      assert.equal(await post(rung({ action: 'on_unpublish' })), 0);
+      assert.deepEqual(calls.stops, [RUNG_ID]);
+    });
+  });
+
+  /**
+   * A name on the ABR vhost that is no configured rung is nothing the uploader can place on a ladder.
+   * Accepted so SRS keeps running, ingested never — and, in admin mode, never looked up either: a
+   * lookup per stray name would let anyone who can reach the webhook probe the admin's declarations.
+   */
+  it('ingests nothing for a stray name on the ABR vhost', async () => {
+    let lookups = 0;
+    await withSrsLadder(
+      () => {
+        lookups += 1;
+        return answersDraft()();
+      },
+      async ({ calls, post }) => {
+        assert.equal(await post(rung({ stream: 'not-a-rung' })), 0);
+        assert.deepEqual(calls.starts, []);
+        assert.equal(lookups, 0);
+      },
+    );
   });
 });

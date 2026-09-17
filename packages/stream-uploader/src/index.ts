@@ -13,6 +13,7 @@ import './utils/env.js';
 import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
 import { AdminApiClient } from './libs/AdminApiClient.js';
+import { AdminLadderRegistry } from './libs/AdminLadderRegistry.js';
 import { BeePublisherPool } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
@@ -21,6 +22,7 @@ import { PostageGate } from './libs/PostageGate.js';
 /** The gate's floor is configured in hours, because that is the unit an operator tops a batch up in. */
 const SECONDS_PER_HOUR = 3_600;
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
+import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
@@ -29,6 +31,7 @@ import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
+import { sameFeedOwner } from './utils/feedOwner.js';
 
 const logger = Logger.getInstance();
 const lifecycle = new ServiceLifecycle((code) => process.exit(code), logger);
@@ -80,10 +83,43 @@ function buildAdminApi(): AdminApiClient | undefined {
   return new AdminApiClient({ baseUrl: config.admin.apiUrl, token: config.admin.apiToken });
 }
 
+/**
+ * Refuse to come up as an admin-mode uploader whose feeds the admin's catalog can never point at.
+ *
+ * The admin's entry names `owner/topic` and every feed this service writes at that topic is signed
+ * with `STREAM_KEY`, so the admin's `FEED_PRIVATE_KEY` and `STREAM_KEY` have to derive one address.
+ * Nothing else enforces it: with the two apart every report answers 200 and every viewer resolves a
+ * feed nobody wrote. Asked once here, off the admin's public config, and again per declaration in
+ * the publish gate. An admin that cannot be reached yet is a warning rather than a refusal, because
+ * that is a deploy ordering and the gate covers it.
+ */
+async function assertAdminSignsAsThisService(adminApi: AdminApiClient, signerOwner: string): Promise<void> {
+  const feedOwner = await adminApi.fetchFeedOwner();
+  if (feedOwner === null) {
+    logger.warn(
+      `[Admin] Could not confirm that ${adminApi.describe()} signs its catalog as ${signerOwner}; every declaration ` +
+        'is checked against it at publish time instead',
+    );
+    return;
+  }
+  if (!sameFeedOwner(feedOwner, signerOwner)) {
+    throw new Error(
+      `${adminApi.describe()} signs its catalog as ${feedOwner} and this service signs its feeds as ${signerOwner}. ` +
+        "STREAM_KEY and the admin's FEED_PRIVATE_KEY have to derive one address, or the admin's catalog entries " +
+        'point viewers at feeds nobody writes. Fix one of the two and restart.',
+    );
+  }
+  logger.info(`[Admin] ${adminApi.describe()} signs its catalog as ${feedOwner}, the same owner as this service`);
+}
+
 async function start() {
   try {
     const publishers = buildPublishers();
     const adminApi = buildAdminApi();
+    const signerOwner = new PrivateKey(config.streamKey).publicKey().address().toHex();
+    if (adminApi) {
+      await assertAdminSignsAsThisService(adminApi, signerOwner);
+    }
 
     // First, ahead of recovery and the engines, because a dry chequebook is silent: the node answers
     // /health normally and stalls every paid push behind an allowance that never arrives. Refusing
@@ -123,9 +159,26 @@ async function start() {
       config.streamKey,
       config.streamListTopic,
       catalogIndexStore,
-      masterWriter,
+      // ⛔ Withheld in admin mode, where this catalog writes nothing at all: the master belongs to the
+      // ladder registry below, and a catalog holding a writer it must never reach is a catalog a
+      // later change can make write one. Nothing would call it today; the wiring says so anyway.
+      config.admin ? undefined : masterWriter,
     );
     await streamCatalog.init();
+
+    // Where a ladder rung's rendition record goes. Standalone, the catalog: it merges four rungs into
+    // one entry on the stream list feed and writes the master from it. In admin mode the merge moves
+    // into the admin — the declared topic becomes the master feed's topic, each rung reports its own
+    // record, and the admin writes `renditions` into the catalog entry it already owns. See
+    // `libs/AdminLadderRegistry.ts` and the "Admin mode" section of the package README.
+    const ladderRegistry: LadderRegistry =
+      adminApi && masterWriter ? new AdminLadderRegistry({ client: adminApi, masterWriter }) : streamCatalog;
+    if (adminApi && masterWriter) {
+      logger.info(
+        '[Admin] ABR ladder in admin mode: the declared topic is the ladder master feed, each rung publishes ' +
+          'to a fresh topic of its own, and the ladder the master is written from is the one the admin merges',
+      );
+    }
 
     const streamOrchestrator = new StreamOrchestrator(publishers, streamCatalog, recoveryStore, {
       streamKey: config.streamKey,
@@ -139,12 +192,13 @@ async function start() {
       ladder: config.abr?.ladder,
       ladderGroupStore,
       adminApi,
+      ladderRegistry,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
-    const engines = loadEngines(config.engine, { adminApi });
+    const engines = loadEngines(config.engine, { adminApi, signerOwner });
     const apiServer = startApiServer(streamOrchestrator, config.apiPort, {
       authToken: config.apiAuthToken,
       engines,
