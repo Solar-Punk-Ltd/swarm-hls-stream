@@ -400,9 +400,13 @@ of it runs OME and no rung node.
 
 Running the four-rung ladder one Bee node per rung takes both halves: the three rung services enabled
 here, and `BEE_PUBLISHERS` in the root `.env` pointing at them. A rung node enabled and left out of
-`BEE_PUBLISHERS` is a node nothing publishes through, and the reverse refuses at startup, because
-`ChequebookGate` reads every publisher's chequebook before the first broadcast and a URL with no node
-behind it cannot answer. `bee-uploader` is the 360p rung as well as the shared default, so the
+`BEE_PUBLISHERS` is a node nothing publishes through, and the reverse is a rung pointing at nothing,
+because `ChequebookGate` reads every publisher's chequebook before the first broadcast and a URL with
+no node behind it cannot answer. Since the owner's ruling of 2026-09-17 that read times out into a
+warning and the uploader starts, so a rung named without its node shows as one warning per boot
+rather than as a container that will not stay up. `UPLOADER_START_GATES=refuse` in the root `.env`
+puts the old refusal back, and `START_GATE_TIMEOUT_MS` is how long each of those reads may take,
+twenty seconds by default. `bee-uploader` is the 360p rung as well as the shared default, so the
 catalog and every ladder master go through it. Their ports, data directories and what each one has to
 hold are in [.env.sample](../.env.sample) under "Per-rung Bee nodes".
 

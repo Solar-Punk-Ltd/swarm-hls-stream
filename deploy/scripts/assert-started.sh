@@ -6,15 +6,18 @@
 # container whose process throws on its first line has been started. With `restart: unless-stopped`
 # docker then loops it, and the deploy that asked for it has already printed its success line. Every
 # startup refusal this repository has on purpose lands in that gap: the five `required()` reads in
-# `utils/config.ts`, the chequebook floor, and `PostageGate`. The compose healthcheck does not close
-# it either, deliberately: it reports without acting, and nothing declares a dependency on it.
+# `utils/config.ts`, and the chequebook floor and `PostageGate` on a deployment that sets
+# UPLOADER_START_GATES=refuse, which since 2026-09-17 is what asks those two to stop a start at all.
+# The compose healthcheck does not close it either, deliberately: it reports without acting, and
+# nothing declares a dependency on it.
 #
 # ⛔⛔ A fixed sleep is blind to that gap in both directions, so this watches instead.
 #
 # In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable` before
 # the API listens, one HTTP read per bee node and one per batch, in turn, each bounded by
-# BEE_REQUEST_TIMEOUT_MS at 4000ms, and only then does `StreamCatalog.init` look a feed up on a node
-# that may be cold. On the four-node ABR pool that refusal arrives half a minute in, by which time a
+# START_GATE_TIMEOUT_MS at 20000ms, and only then does `StreamCatalog.init` look a feed up on a node
+# that may be cold. On the four-node ABR pool a pool that answers nothing spends minutes in there
+# before the API opens, and under UPLOADER_START_GATES=refuse it is a refusal instead. Either way a
 # five second look has already called the container started.
 #
 # And in one instant: the state alone cannot tell a loop from a healthy start, whichever order it is
