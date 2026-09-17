@@ -405,13 +405,11 @@ export class StreamCatalog {
    * problem. One that does not answer makes this false, so `init` rethrows instead of resuming from
    * the persisted index.
    *
-   * ⛔ That rethrow ends the boot rather than being waited on, and it is the one rethrow here that
-   * does. bee-js puts the transport code on `statusText` and leaves `code` unset, while
-   * `NodeWait.ts`'s `isNodeUnavailable` reads `code`, a status and the message text, so `ECONNABORTED`
-   * on a `BeeResponseError` whose message is "response stream aborted" matches none of the three.
-   * Measured 2026-09-17 against the classifier itself. A wrong url or a node that is down is
-   * `ECONNREFUSED`, a shape {@link isTransferLost} refuses above, so it never reaches this check and
-   * the wait does retry it.
+   * That rethrow is waited on like any other. Until 2026-09-17 this one was not: a dropped body
+   * arrives as `ECONNABORTED` on `statusText` with the message "response stream aborted", and the
+   * wait read neither of those, so the boot ended here while every other rethrow was retried. See
+   * `transportCodeOf` in `NodeWait.ts` for what bee-js does with a transport code and why a fixture
+   * of our own hid it for so long.
    */
   private async payloadUnreadableOnLiveNode(error: unknown): Promise<boolean> {
     if (!isTransferLost(error)) {
