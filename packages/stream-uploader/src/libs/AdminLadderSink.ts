@@ -1,7 +1,7 @@
 import { Rendition } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
-import { ADMIN_STATE_VOD, AdminApiClient } from './AdminApiClient.js';
+import { ADMIN_STATE_VOD, AdminApiClient, RenditionReportResponse } from './AdminApiClient.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
 import { LadderIdentity, LadderSink, RenditionAnnouncement } from './LadderSink.js';
 import { Logger } from './Logger.js';
@@ -65,14 +65,19 @@ export class AdminLadderSink implements LadderSink {
   private readonly liveness = new Map<string, LadderLiveness>();
 
   /**
-   * The ladder the admin last returned, by group.
+   * The ladder the admin last folded, by group.
    *
    * ⛔ The admin's fold and never this process's own accumulation. Four rungs report concurrently and
-   * each is answered with the whole ladder as it stood after its own report, so the newest answer is
+   * each is answered with the whole ladder as it stood after its own report, so the newest fold is
    * the closest thing to the truth any of them can hold — and a rung rewriting the master from a
    * ladder it assembled itself would name only the rungs that happen to share its process.
+   *
+   * ⛔ Newest by the admin's own write index, never by arrival. See {@link adopt}.
    */
   private readonly merged = new Map<string, Rendition[]>();
+
+  /** The catalog write index behind {@link merged}, by group, and absent while no answer carried one. */
+  private readonly newestFeedIndex = new Map<string, number>();
 
   constructor(options: AdminLadderSinkOptions) {
     this.client = options.client;
@@ -114,9 +119,9 @@ export class AdminLadderSink implements LadderSink {
       );
     }
 
-    this.merged.set(identity.group, report.renditions);
+    const ladder = this.adopt(identity.group, rendition.name, report);
 
-    const advertised = advertisableRenditions(report.renditions, this.livenessOf(identity.group));
+    const advertised = advertisableRenditions(ladder, this.livenessOf(identity.group));
     const published = await this.masterWriter.publish(identity.group, advertised);
     if (published) {
       // Only what the feed took, for the reason {@link MasterRewriteSchedule} states: a shape recorded
@@ -135,6 +140,36 @@ export class AdminLadderSink implements LadderSink {
       flippedToFinished: report.ladder.flippedToFinished || finishedButUnreported,
       duration: report.ladder.duration,
     };
+  }
+
+  /**
+   * Take an answer as the ladder this process holds for a group, unless a newer one has already been
+   * taken, and say which ladder the master is to be written from.
+   *
+   * ⛔ Ordered by the admin's catalog write index and never by arrival. Four rungs report concurrently,
+   * the admin folds them in one order, and their answers can land here in another. Writing each master
+   * from its own answer let an older fold arriving last publish a master missing a rung a newer answer
+   * had already named — a quality gone from the ladder until the next announce, which a steady
+   * broadcast can go its whole length without producing. An answer carrying no index is taken as it
+   * comes, which is what every answer was before the index was read.
+   */
+  private adopt(group: string, rung: string, report: RenditionReportResponse): Rendition[] {
+    const newest = this.newestFeedIndex.get(group);
+    if (report.feedIndex !== null && newest !== undefined && report.feedIndex < newest) {
+      const held = this.merged.get(group);
+      if (held !== undefined) {
+        this.logger.log(
+          `[AdminLadderSink] The answer to ${rung} of ladder ${group} is an older fold (catalog index ` +
+            `${report.feedIndex}) than one already applied (${newest}); the master is written from the newer ladder`,
+        );
+        return held;
+      }
+    }
+    this.merged.set(group, report.renditions);
+    if (report.feedIndex !== null) {
+      this.newestFeedIndex.set(group, report.feedIndex);
+    }
+    return report.renditions;
   }
 
   public recordRungDelivered(group: string, rung: string): void {

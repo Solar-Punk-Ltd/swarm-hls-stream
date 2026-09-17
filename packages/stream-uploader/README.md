@@ -640,8 +640,17 @@ mints the feed topic and the publish key; this service stops deciding either:
 | A ladder folds its rungs in the catalog feed       | The admin folds them, and the declared topic is the ladder's master feed    |
 
 A publish is refused when the ingest `app/stream` is not declared, when the admin cannot be reached,
-when the presented `key=` is not the declaration's, or when the ingest `app` and the declared media
-type disagree. Each refusal says which it was in the log.
+when the presented `key=` is not the declaration's, when the declaration is owned by a feed key this
+service does not sign with, or when the ingest `app` and the declared media type disagree. Each
+refusal says which it was in the log.
+
+Both services have to sign as one owner. The admin's catalog entry points a viewer at `owner/topic`,
+and every feed this service writes at that topic is signed with `STREAM_KEY`, so the admin's
+`FEED_PRIVATE_KEY` must derive the same address or the entry resolves a feed nobody wrote — while every
+report answers 200 and nothing says so. Nothing on the wire carries a key, so the address is what is
+compared: once at boot, off the admin's public `/api/config`, where a mismatch refuses to start and an
+admin that cannot be reached yet only warns; and again on every publish, against the declaration's
+`owner`.
 
 | Variable          | Description                                                                        |
 | ----------------- | ---------------------------------------------------------------------------------- |
@@ -663,7 +672,9 @@ internal-route auth as the state route, and **the admin must serve it**), the ad
 same "a rung that has already finished stays finished" rule `StreamCatalog.keepingWhatFinished`
 states, writes `renditions` into the catalog entry it already owns, and answers with the merged
 ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
-as ever, and rewrites it when a rung stops without asking the admin again.
+as ever, and rewrites it when a rung stops without asking the admin again. Answers are applied in the
+order the admin folded them, by the catalog write index each one carries, so four rungs whose answers
+land out of order cannot leave an older fold on the master.
 
 `live` and `vod` are then reported for the **ladder** rather than for a rung. `live` goes out once the
 first master has landed, which may be said more than once and is accepted. `vod` goes out from the

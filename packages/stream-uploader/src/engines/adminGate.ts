@@ -2,6 +2,7 @@ import { AdminApiClient, AdminStreamDraft } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { AdminSession, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
+import { sameFeedOwner } from '../utils/feedOwner.js';
 import { matchesPublishKey } from '../utils/publishKey.js';
 
 const logger = Logger.getInstance();
@@ -27,7 +28,13 @@ const logger = Logger.getInstance();
  *    published to a random topic that the admin never learns about is worse than one that never
  *    started, because it spends postage and reaches nobody.
  * 3. **Bad key.** The presented `key=` is not the draft's, compared constant-time.
- * 4. **Wrong media type.** The engine's `app` says one thing and the declaration says another. Refused
+ * 4. **Wrong owner.** The declaration is owned by a feed key this service does not sign with. The
+ *    admin's catalog entry points a viewer at `owner/topic` and every feed this service writes there
+ *    is signed with `STREAM_KEY`, so the two addresses have to be one or the entry resolves a feed
+ *    nobody wrote — while every report answers 200 and nothing else says so. A deployment fault
+ *    rather than a broadcaster's, so it is not counted as an authentication rejection. Checked after
+ *    the key, so a caller who has not proved the declaration is theirs learns nothing about it.
+ * 5. **Wrong media type.** The engine's `app` says one thing and the declaration says another. Refused
  *    rather than reconciled: `app` decides which media the uploader publishes and the draft decides
  *    what the admin will show, and a stream that is audio to one and video to the other is a player
  *    that builds the wrong codec set from the first fragment.
@@ -36,12 +43,14 @@ export const ADMIN_PUBLISH_ALLOWED = 'allowed' as const;
 const ADMIN_PUBLISH_UNANNOUNCED = 'unannounced' as const;
 const ADMIN_PUBLISH_UNREACHABLE = 'unreachable' as const;
 const ADMIN_PUBLISH_BAD_KEY = 'bad-key' as const;
+const ADMIN_PUBLISH_WRONG_OWNER = 'wrong-owner' as const;
 const ADMIN_PUBLISH_WRONG_MEDIA_TYPE = 'wrong-media-type' as const;
 
 type AdminPublishRefusal =
   | typeof ADMIN_PUBLISH_UNANNOUNCED
   | typeof ADMIN_PUBLISH_UNREACHABLE
   | typeof ADMIN_PUBLISH_BAD_KEY
+  | typeof ADMIN_PUBLISH_WRONG_OWNER
   | typeof ADMIN_PUBLISH_WRONG_MEDIA_TYPE;
 
 type AdminPublishVerdict =
@@ -55,7 +64,8 @@ type AdminPublishVerdict =
  * The two credential refusals count. `unreachable` does not: it is this deployment failing, not a
  * caller failing to prove anything, and counting it would make an admin outage read as an attack.
  * `wrong-media-type` does not either: the caller proved the key for the stream it named, so it is a
- * misconfigured publisher rather than an unauthorised one.
+ * misconfigured publisher rather than an unauthorised one. Nor does `wrong-owner`, which is this
+ * deployment's two keys disagreeing and nothing the caller did.
  */
 export function isAuthRefusal(refusal: AdminPublishRefusal): boolean {
   return refusal === ADMIN_PUBLISH_UNANNOUNCED || refusal === ADMIN_PUBLISH_BAD_KEY;
@@ -66,6 +76,9 @@ export function isAuthRefusal(refusal: AdminPublishRefusal): boolean {
  * engine writes does.
  * @param presentedKey the `key=` the announce carried, from the engine's own extraction helper, or
  * null when it carried none.
+ * @param signerOwner the address this service signs its feeds with, so a declaration made under a
+ * different feed key is refused rather than published to a feed the admin's entry never names.
+ * Absent, the owner is not compared, which is what every engine did before the check existed.
  */
 export async function resolveAdminPublish(
   client: AdminApiClient,
@@ -73,6 +86,7 @@ export async function resolveAdminPublish(
   streamId: string,
   mediatype: MediaType,
   presentedKey: string | null,
+  signerOwner?: string,
 ): Promise<AdminPublishVerdict> {
   let draft: AdminStreamDraft | null;
   try {
@@ -98,6 +112,15 @@ export async function resolveAdminPublish(
   if (!matchesPublishKey(draft.publishKey, presentedKey)) {
     logger.warn(`${tag} refused ${streamId}: missing or invalid publish key for the announced stream`);
     return { kind: ADMIN_PUBLISH_BAD_KEY };
+  }
+
+  if (signerOwner !== undefined && !sameFeedOwner(draft.owner, signerOwner)) {
+    logger.error(
+      `${tag} refused ${streamId}: the announced stream is owned by ${draft.owner} and this service signs as ` +
+        `${signerOwner}. STREAM_KEY and the admin's FEED_PRIVATE_KEY have to derive one address, or the feeds this ` +
+        "service writes resolve under an owner the admin's catalog entry never names",
+    );
+    return { kind: ADMIN_PUBLISH_WRONG_OWNER };
   }
 
   if (draft.mediaType !== mediatype) {

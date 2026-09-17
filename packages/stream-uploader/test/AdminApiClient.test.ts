@@ -361,6 +361,20 @@ describe('the admin API client, reporting one rung of a ladder', () => {
     });
   });
 
+  /**
+   * ⛔ The one number that orders answers the way the admin folded them. Four rungs report concurrently
+   * and their answers can arrive in another order; without this the sink would write whichever fold
+   * landed last, and an older one landing last takes a rung off the master. See `AdminLadderSink.adopt`.
+   */
+  it('reads the catalog write index off the reply, and answers null for a body that carries none', async () => {
+    await withAdmin(always(200, FOLDED), async ({ client }) => {
+      assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.feedIndex, 7);
+    });
+    await withAdmin(always(200, { ...FOLDED, feed: undefined }), async ({ client }) => {
+      assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.feedIndex, null);
+    });
+  });
+
   it('reads the stream′s status off the reply, and answers null for a body that carries none', async () => {
     await withAdmin(always(200, { ...FOLDED, stream: { id: ADMIN_STREAM_ID, status: 'live' } }), async ({ client }) => {
       assert.equal((await client.reportRendition(ADMIN_STREAM_ID, RUNG))?.streamStatus, 'live');
@@ -423,6 +437,41 @@ describe('the admin API client, reporting one rung of a ladder', () => {
       });
     });
   }
+});
+
+/**
+ * The boot-time half of the owner check. Both services have to sign as one address or the admin's
+ * catalog entries point viewers at feeds nobody writes, and nothing on the wire says so: every report
+ * answers 200. So boot reads the admin's public config and compares. Never throws, because an admin
+ * that is not up yet is a deploy ordering and the publish gate compares each declaration's owner anyway.
+ */
+describe('the admin API client, reading the feed owner', () => {
+  const CONFIG = { feed: { owner: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', topic: 't', topicHex: '00' } };
+
+  it('reads the owner off the public config', async () => {
+    await withAdmin(always(200, CONFIG), async ({ client, received }) => {
+      assert.equal(await client.fetchFeedOwner(), CONFIG.feed.owner);
+      assert.equal(received[0].method, 'GET');
+      assert.equal(received[0].url, '/api/config');
+    });
+  });
+
+  for (const [name, handle] of [
+    ['the admin answers 5xx', always(503)],
+    ['the body carries no feed owner', always(200, { feed: { topic: 't' } })],
+    ['the body is not an object', always(200, 'nope')],
+  ] as const) {
+    it(`answers null, and does not throw, when ${name}`, async () => {
+      await withAdmin(handle, async ({ client }) => {
+        assert.equal(await client.fetchFeedOwner(), null);
+      });
+    });
+  }
+
+  it('answers null when the admin cannot be reached at all', async () => {
+    const client = new AdminApiClient({ baseUrl: 'http://127.0.0.1:1', token: TOKEN, lookupTimeoutMs: 200 });
+    assert.equal(await client.fetchFeedOwner(), null);
+  });
 });
 
 describe('the admin API token', () => {

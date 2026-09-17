@@ -29,6 +29,10 @@ import { Logger } from './Logger.js';
  * outcome and decides, because the two callers want different things from a failure — see
  * {@link StateReportOutcome}.
  *
+ * `fetchFeedOwner` runs once at boot and never throws either: it confirms that the admin signs its
+ * catalog with the address this service signs its feeds with, and an admin that cannot be asked yet
+ * is a warning rather than a refusal, because the publish gate compares each declaration's owner.
+ *
  * `reportRendition` follows `reportState`'s policy exactly, on the same ladder and the same timeout,
  * and for the same reason: a rung announcing itself is behind a broadcast that is already running.
  * What it is NOT is optional — the admin holds the ladder's merge state in admin mode, so a report
@@ -142,6 +146,16 @@ export interface RenditionReportResponse {
    * see that the ladder is finished and the admin still says `live`, and report `vod` after all.
    */
   streamStatus: string | null;
+  /**
+   * The index of the catalog feed write this report caused, or null when the body did not carry one.
+   *
+   * The admin serialises every catalog write on one mutex and answers each report from inside it, so
+   * this number orders answers the way the admin folded them. Four rungs report concurrently and
+   * their answers can arrive here in another order; `AdminLadderSink` compares this before letting an
+   * answer replace the ladder it holds, so an older fold arriving late cannot write a master missing
+   * a rung a newer answer already named.
+   */
+  feedIndex: number | null;
   ladder: {
     /** Every rendition on record carries an index, and there is at least one. */
     finished: boolean;
@@ -271,9 +285,20 @@ function asRenditionReport(body: unknown): RenditionReportResponse | null {
     typeof stream === 'object' && stream !== null && typeof (stream as Record<string, unknown>).status === 'string'
       ? ((stream as Record<string, unknown>).status as string)
       : null;
+  // Optional for the same reason: an answer without it is taken in arrival order, which is what every
+  // answer was before the index was read at all.
+  const feed = candidate.feed;
+  const feedIndex =
+    typeof feed === 'object' &&
+    feed !== null &&
+    typeof (feed as Record<string, unknown>).index === 'number' &&
+    Number.isFinite((feed as Record<string, unknown>).index)
+      ? ((feed as Record<string, unknown>).index as number)
+      : null;
   return {
     renditions: candidate.renditions as Rendition[],
     streamStatus: status,
+    feedIndex,
     ladder: {
       finished: state.finished,
       flippedToFinished: state.flippedToFinished,
@@ -307,6 +332,45 @@ export class AdminApiClient {
   /** Where this client is pointed, for the one boot line that says which mode the service is in. */
   public describe(): string {
     return this.baseUrl;
+  }
+
+  /**
+   * The address the admin signs its catalog feed with, read off its public config, or null when it
+   * could not be read.
+   *
+   * Boot asks this once. Both services have to sign as one owner: the admin's catalog entry points a
+   * viewer at `owner/topic`, and the master this service writes at that topic resolves only under the
+   * key it was signed with. Nothing on the wire carries a key, so the address is the one thing that
+   * can be compared, and a deployment where the two differ answers 200 to every report while every
+   * viewer resolves a feed nobody wrote. `resolveAdminPublish` runs the per-declaration half of the
+   * same check on every publish.
+   *
+   * Never throws, and null is deliberately not a refusal: an admin that is down while this service
+   * boots is a deploy ordering rather than a misconfiguration, and the publish gate compares each
+   * declaration's owner anyway.
+   */
+  public async fetchFeedOwner(): Promise<string | null> {
+    const url = `${this.baseUrl}/api/config`;
+    try {
+      const response = await this.send(url, { method: 'GET' }, this.lookupTimeoutMs);
+      if (!response.ok) {
+        this.logger.warn(`[Admin] ${url} answered ${response.status}, so the feed owner could not be confirmed`);
+        return null;
+      }
+      const body = await this.readJson(response);
+      const feed = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).feed : undefined;
+      const owner = typeof feed === 'object' && feed !== null ? (feed as Record<string, unknown>).owner : undefined;
+      if (typeof owner !== 'string' || owner.length === 0) {
+        this.logger.warn(`[Admin] ${url} answered without a feed owner, so it could not be confirmed`);
+        return null;
+      }
+      return owner;
+    } catch (error) {
+      this.logger.warn(
+        `[Admin] ${url} did not answer, so the feed owner could not be confirmed: ${getErrorMessage(error)}`,
+      );
+      return null;
+    }
   }
 
   /**

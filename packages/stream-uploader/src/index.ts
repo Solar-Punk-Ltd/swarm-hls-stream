@@ -31,6 +31,7 @@ import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
+import { sameFeedOwner } from './utils/feedOwner.js';
 
 const logger = Logger.getInstance();
 const lifecycle = new ServiceLifecycle((code) => process.exit(code), logger);
@@ -82,10 +83,43 @@ function buildAdminApi(): AdminApiClient | undefined {
   return new AdminApiClient({ baseUrl: config.admin.apiUrl, token: config.admin.apiToken });
 }
 
+/**
+ * Refuse to come up as an admin-mode uploader whose feeds the admin's catalog can never point at.
+ *
+ * The admin's entry names `owner/topic` and every feed this service writes at that topic is signed
+ * with `STREAM_KEY`, so the admin's `FEED_PRIVATE_KEY` and `STREAM_KEY` have to derive one address.
+ * Nothing else enforces it: with the two apart every report answers 200 and every viewer resolves a
+ * feed nobody wrote. Asked once here, off the admin's public config, and again per declaration in
+ * the publish gate. An admin that cannot be reached yet is a warning rather than a refusal, because
+ * that is a deploy ordering and the gate covers it.
+ */
+async function assertAdminSignsAsThisService(adminApi: AdminApiClient, signerOwner: string): Promise<void> {
+  const feedOwner = await adminApi.fetchFeedOwner();
+  if (feedOwner === null) {
+    logger.warn(
+      `[Admin] Could not confirm that ${adminApi.describe()} signs its catalog as ${signerOwner}; every declaration ` +
+        'is checked against it at publish time instead',
+    );
+    return;
+  }
+  if (!sameFeedOwner(feedOwner, signerOwner)) {
+    throw new Error(
+      `${adminApi.describe()} signs its catalog as ${feedOwner} and this service signs its feeds as ${signerOwner}. ` +
+        "STREAM_KEY and the admin's FEED_PRIVATE_KEY have to derive one address, or the admin's catalog entries " +
+        'point viewers at feeds nobody writes. Fix one of the two and restart.',
+    );
+  }
+  logger.info(`[Admin] ${adminApi.describe()} signs its catalog as ${feedOwner}, the same owner as this service`);
+}
+
 async function start() {
   try {
     const publishers = buildPublishers();
     const adminApi = buildAdminApi();
+    const signerOwner = new PrivateKey(config.streamKey).publicKey().address().toHex();
+    if (adminApi) {
+      await assertAdminSignsAsThisService(adminApi, signerOwner);
+    }
 
     // First, ahead of recovery and the engines, because a dry chequebook is silent: the node answers
     // /health normally and stalls every paid push behind an allowance that never arrives. Refusing
@@ -164,7 +198,7 @@ async function start() {
     lifecycle.trackOrchestrator(streamOrchestrator);
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
-    const engines = loadEngines(config.engine, { adminApi });
+    const engines = loadEngines(config.engine, { adminApi, signerOwner });
     const apiServer = startApiServer(streamOrchestrator, config.apiPort, {
       authToken: config.apiAuthToken,
       engines,

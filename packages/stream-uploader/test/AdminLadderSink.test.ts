@@ -69,12 +69,13 @@ function merged(
   renditions: Rendition[],
   ladder: Partial<RenditionReportResponse['ladder']> = {},
   status: string = 'live',
+  feedIndex: number = 3,
 ): string {
   return JSON.stringify({
     stream: { id: ADMIN_STREAM_ID, status },
     renditions,
     ladder: { finished: false, flippedToFinished: false, duration: null, ...ladder },
-    feed: { owner: '0xowner', topic: DECLARED_TOPIC, topicHex: '00', index: 3, entryCount: 1 },
+    feed: { owner: '0xowner', topic: DECLARED_TOPIC, topicHex: '00', index: feedIndex, entryCount: 1 },
   });
 }
 
@@ -97,8 +98,11 @@ interface Harness {
 }
 
 interface HarnessOptions {
-  /** What the admin answers for each report in turn. Defaults to a ladder holding just what was sent. */
-  answer?: (rendition: Rendition, attempt: number) => Response;
+  /**
+   * What the admin answers for each report in turn. Defaults to a ladder holding just what was sent.
+   * May answer a promise, so a case can hold one answer back while another lands.
+   */
+  answer?: (rendition: Rendition, attempt: number) => Response | Promise<Response>;
   /**
    * Whether the next master write fails, standing in for a node that will not take one.
    *
@@ -282,6 +286,61 @@ describe('what a rendition announce does in admin mode', () => {
    * the orchestrator refuses an announce without one — but said out loud rather than assumed, because
    * the alternative is a report addressed to `undefined` and a 404 that reads like a deleted stream.
    */
+  /**
+   * ⛔ Four rungs report concurrently, the admin folds them in one order, and the answers can land here
+   * in another. Each master used to be written from its own answer, so an older fold landing last
+   * published a master missing a rung a newer answer had already named — and a steady broadcast can go
+   * its whole length without the next announce that would have put it back. The admin's catalog write
+   * index is what orders the folds, and an answer older than one already applied is written from the
+   * newer ladder instead.
+   */
+  it('writes the master from the newer fold when an older answer lands after it', async () => {
+    const first = rung('360p', 360);
+    const second = rung('720p', 720);
+    let releaseFirst: (response: Response) => void = () => {};
+    const heldBack = new Promise<Response>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const { sink, masters } = makeSink({
+      // The admin folded 360p first (write index 3, a ladder of one) and 720p second (index 4, both).
+      // The first answer is held until the second has landed.
+      answer: (rendition) =>
+        rendition.name === '360p' ? heldBack : new Response(merged([first, second], {}, 'live', 4)),
+    });
+
+    const announces = [sink.upsertRendition(IDENTITY, first), sink.upsertRendition(IDENTITY, second)];
+    await waitFor(() => masters.length === 1, SETTLE_CEILING_MS);
+    releaseFirst(new Response(merged([first], {}, 'live', 3), { status: 200 }));
+    await Promise.all(announces);
+
+    assert.equal(masters.length, 2, 'both announces still write a master');
+    assert.match(
+      masters[1].playlist,
+      /RESOLUTION=1280x720/,
+      'the late, older answer must not take 720p off the master',
+    );
+    assert.match(masters[1].playlist, /RESOLUTION=640x360/);
+  });
+
+  it('takes an answer carrying no write index as it comes, which is what every answer was before', async () => {
+    const first = rung('360p', 360);
+    const second = rung('720p', 720);
+    const withoutIndex = (ladder: Rendition[]) => {
+      const body = JSON.parse(merged(ladder)) as Record<string, unknown>;
+      delete body.feed;
+      return new Response(JSON.stringify(body), { status: 200 });
+    };
+    const { sink, masters } = makeSink({
+      answer: (rendition) => withoutIndex(rendition.name === '360p' ? [first] : [first, second]),
+    });
+
+    await sink.upsertRendition(IDENTITY, second);
+    await sink.upsertRendition(IDENTITY, first);
+
+    assert.equal(masters.length, 2);
+    assert.doesNotMatch(masters[1].playlist, /RESOLUTION=1280x720/, 'arrival order is all there is without an index');
+  });
+
   it('refuses to report a ladder that carries no admin stream id', async () => {
     const harness = makeSink();
     const { adminStreamId: _dropped, ...withoutId } = IDENTITY;

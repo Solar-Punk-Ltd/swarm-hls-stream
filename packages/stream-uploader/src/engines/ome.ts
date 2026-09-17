@@ -37,6 +37,7 @@ export function createOmeEngineFromEnv(seams: OmeEngineSeams = {}): EnginePlugin
     fetchTimeoutMs,
     fetcher: seams.fetcher,
     adminApi: seams.adminApi,
+    signerOwner: seams.signerOwner,
   });
 }
 
@@ -78,6 +79,7 @@ export function createOmeEngine(
   const observedSegmentTimes = new Map<string, ObservedSegmentTime>();
   const admissionSecret = options.admissionSecret ?? '';
   const adminApi = options.adminApi;
+  const signerOwner = options.signerOwner;
   // Blanked rather than read alongside, for the reason `srs.ts` gives: the two modes answer the same
   // question from two different sources of truth, and a deployment where they disagree has no right
   // answer. Admin mode is the one that wins, because it is the one a stream was declared in.
@@ -236,6 +238,7 @@ export function createOmeEngine(
         void handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen, sessions, {
           publishKeySecret,
           adminApi,
+          signerOwner,
         });
       });
 
@@ -435,6 +438,8 @@ interface SessionRegistry {
 interface OmePublishGate {
   publishKeySecret: string;
   adminApi?: AdminApiClient;
+  /** The owner every feed this service writes resolves under, compared with each declaration's. */
+  signerOwner?: string;
 }
 
 async function handleAdmission(
@@ -447,7 +452,7 @@ async function handleAdmission(
   sessions: SessionRegistry,
   gate: OmePublishGate,
 ): Promise<void> {
-  const { publishKeySecret, adminApi } = gate;
+  const { publishKeySecret, adminApi, signerOwner } = gate;
   try {
     const payload = req.body as OmeAdmissionPayload;
     const request = payload?.request;
@@ -519,7 +524,14 @@ async function handleAdmission(
     const mediatype = resolveMediaType(parsed.app);
 
     if (adminApi) {
-      const verdict = await resolveAdminPublish(adminApi, '[OME]', streamId, mediatype, publishKeyFromUrl(request.url));
+      const verdict = await resolveAdminPublish(
+        adminApi,
+        '[OME]',
+        streamId,
+        mediatype,
+        publishKeyFromUrl(request.url),
+        signerOwner,
+      );
 
       if (verdict.kind !== ADMIN_PUBLISH_ALLOWED) {
         if (isAuthRefusal(verdict.kind)) {

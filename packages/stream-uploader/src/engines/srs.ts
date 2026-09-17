@@ -47,6 +47,11 @@ export interface SrsEngineOptions {
    * and nothing for a deployment to configure per broadcaster. See `engines/adminGate.ts`.
    */
   adminApi?: AdminApiClient;
+  /**
+   * The address this service signs its feeds with. Read only in admin mode, where the gate refuses a
+   * declaration owned by another feed key. See {@link EngineFactoryDeps.signerOwner}.
+   */
+  signerOwner?: string;
 }
 
 // SRS webhook response codes
@@ -133,6 +138,7 @@ export function createSrsEngineFromEnv(deps: EngineFactoryDeps = {}): EnginePlug
     publishKeySecret,
     abr: readAbrConfig() ?? undefined,
     adminApi: deps.adminApi,
+    signerOwner: deps.signerOwner,
   });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
@@ -169,6 +175,7 @@ function createWebhookGate(webhookToken: string): RequestHandler {
 export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
   const webhookToken = options.webhookToken ?? '';
   const adminApi = options.adminApi;
+  const signerOwner = options.signerOwner;
   // Blanked rather than read alongside, so no later change can accidentally consult both. The two
   // modes answer the same question — is this publisher the owner of this stream — from two different
   // sources of truth, and a deployment in which they disagree has no right answer.
@@ -240,7 +247,14 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
         // rejection would be an unhandled one. Nothing is lost: `handleStreams` has its own catch
         // around everything, and outside admin mode it reaches no `await` before it answers, so a
         // deployment that has not opted in still responds in the same synchronous turn it always did.
-        void handleStreams(req, res, streamOrchestrator, { publishKeySecret, adminApi }, abr, authenticatedBases);
+        void handleStreams(
+          req,
+          res,
+          streamOrchestrator,
+          { publishKeySecret, adminApi, signerOwner },
+          abr,
+          authenticatedBases,
+        );
       });
 
       router.post('/hls', (req: Request, res: Response) => {
@@ -391,6 +405,8 @@ interface SrsPublishGate {
   publishKeySecret: string;
   /** Admin mode. Set, the secret above is empty and every publish is resolved against a declaration. */
   adminApi?: AdminApiClient;
+  /** The owner every feed this service writes resolves under, compared with each declaration's. */
+  signerOwner?: string;
 }
 
 async function handleStreams(
@@ -401,7 +417,7 @@ async function handleStreams(
   abr?: AbrGuard,
   authenticatedBases: Map<string, AdminSession | null> = new Map(),
 ): Promise<void> {
-  const { publishKeySecret, adminApi } = gate;
+  const { publishKeySecret, adminApi, signerOwner } = gate;
   // Read before the try, so the catch below can tell a publish from anything else. A handler error on
   // a publish has to refuse when a secret is configured, and the action is the only thing that says
   // which kind of webhook was being handled.
@@ -543,6 +559,7 @@ async function handleStreams(
         streamId,
         mediatype,
         publishKeyFromParam(payload.param),
+        signerOwner,
       );
 
       if (verdict.kind !== ADMIN_PUBLISH_ALLOWED) {

@@ -153,6 +153,11 @@ export function makeFakeCatalog(overrides: Record<string, unknown> = {}): Stream
     getMsSinceIndexSaveFailed: () => null,
     // Called from the uploader's segment path, so every fake needs it or the segment path throws.
     recordRungDelivered: () => {},
+    // What a rung's announce lands on when no other ladder sink is configured. A neutral answer: no
+    // master written and no flip, which is the real catalog's answer for a rung it holds no entry
+    // for. Missing, every rung announce in every orchestrator test died with a TypeError the error
+    // handler swallowed, and fifteen tests passed over it — the fourth time this fake went stale.
+    upsertRendition: async () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
     ...overrides,
   } as unknown as StreamCatalog;
 }
