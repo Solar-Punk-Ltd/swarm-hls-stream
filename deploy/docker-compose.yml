@@ -246,7 +246,9 @@ services:
       # behaviour every boot had before that date. The timeout is deliberately not the one above: a
       # chequebook balance and a batch are answered off the chain, and 4000ms borrowed from the upload
       # loop's retry windows is what held a live uploader in a restart loop on 2026-09-16 against a
-      # pool address that had no node behind it. See `libs/StartGates.ts`.
+      # pool address that had no node behind it. A gate that warns leaves `start_gate_warned` on
+      # /health for the life of the process, so the container reports unhealthy rather than the
+      # finding living in one log line. See `libs/StartGates.ts`.
       UPLOADER_START_GATES: ${UPLOADER_START_GATES:-warn}
       START_GATE_TIMEOUT_MS: ${START_GATE_TIMEOUT_MS:-20000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
