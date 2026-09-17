@@ -1,3 +1,4 @@
+import { BeeResponseError } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -36,6 +37,34 @@ function withCode(code: string): Error {
 
 function withStatus(status: number): Error {
   return Object.assign(new Error(`Request failed with status code ${status}`), { status });
+}
+
+/**
+ * What bee-js throws, built through its own class rather than through a shape of our own.
+ *
+ * ⛔ **The transport code arrives on `statusText` and `code` is never set at all.** bee-js 9.8.1
+ * builds every failure as
+ * `new BeeResponseError(method, url, e.message, e.response?.data, e.response?.status, e.code)`
+ * (`dist/mjs/utils/http.js:57`), so axios's code lands in the `statusText` slot. A fixture of our own
+ * that put it on `code` would agree with a classifier reading `code` and prove nothing about what
+ * reaches the wait, which is how a dropped body went unwaited for without a red case anywhere.
+ *
+ * The status slot is filled only when a response arrived, so these two builders are the two things
+ * that can go wrong: no answer, or an answer.
+ */
+function beeTransportFailure(code: string, message: string): BeeResponseError {
+  return new BeeResponseError('GET', '/feeds', message, undefined, undefined, code);
+}
+
+function beeHttpAnswer(status: number, code: string): BeeResponseError {
+  return new BeeResponseError(
+    'GET',
+    '/stamps/aaaa',
+    `Request failed with status code ${status}`,
+    undefined,
+    status,
+    code,
+  );
 }
 
 function watcher() {
@@ -244,6 +273,42 @@ describe('an error that says the node is not there', () => {
   for (const status of [500, 502, 503, 504]) {
     it(`reads a ${status} from the node as the node not being ready`, () => {
       assert.equal(isNodeUnavailable(withStatus(status)), true);
+    });
+  }
+
+  /**
+   * The shape that reaches this wait from a node that went away in the middle of a lookup.
+   *
+   * `StreamCatalog.init` rethrows a transfer-lost error once the node has failed the liveness check
+   * behind it, so by the time one arrives here the node is known not to be answering. It is the only
+   * error this service forwards with bee-js's own class intact, which is why it is also the only one
+   * whose code is still sitting on `statusText`.
+   *
+   * ⚠️ Only the dropped body was ever misread. The other two name their code inside the message, so
+   * the text fallback matched them by luck rather than by design, and one shape out of three being
+   * wrong is exactly what kept it invisible.
+   */
+  for (const [name, error] of Object.entries({
+    'a response body that was dropped': beeTransportFailure('ECONNABORTED', 'response stream aborted'),
+    'a connection reset while the answer was arriving': beeTransportFailure('ECONNRESET', 'socket hang up'),
+    'a connection that was refused, as bee-js throws it': beeTransportFailure(
+      'ECONNREFUSED',
+      'connect ECONNREFUSED 127.0.0.1:1633',
+    ),
+  })) {
+    it(`reads ${name} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(error), true);
+    });
+  }
+
+  // The status slot decides before the code does, so an answer stays an answer however its code
+  // reads. bee-js fills both on a response, and only the status says whether waiting can help.
+  for (const [name, error] of Object.entries({
+    'a batch the node does not hold, as bee-js throws it': beeHttpAnswer(404, 'ERR_BAD_REQUEST'),
+    'a request the node refused, as bee-js throws it': beeHttpAnswer(400, 'ERR_BAD_REQUEST'),
+  })) {
+    it(`does not read ${name} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(error), false);
     });
   }
 
