@@ -22,6 +22,7 @@ const SECONDS_PER_HOUR = 3_600;
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
+import { waitForNode } from './libs/NodeWait.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
@@ -29,6 +30,7 @@ import { runStartGates } from './libs/StartGates.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
+import { NodeWaitReport } from './types.js';
 
 const logger = Logger.getInstance();
 const lifecycle = new ServiceLifecycle((code) => process.exit(code), logger);
@@ -69,37 +71,6 @@ async function start() {
     // lending it to them is what held a live uploader in a restart loop on 2026-09-16.
     const gateNodes = buildPublishers(config.startGateTimeoutMs).nodes();
 
-    // First, ahead of recovery and the engines, because what these two read is silent when it is
-    // wrong. A dry chequebook answers /health normally and stalls every paid push behind an
-    // allowance that never arrives, and a full or expired batch fails every upload while the node
-    // answers and the config reads correctly. BeePublisherPool already rejects a batch id that is
-    // malformed or does not cover the ladder, and PostageGate is the half that asks whether the
-    // batch it names can still carry anything.
-    //
-    // Since 2026-09-17 a gate that cannot clear its node warns and the uploader starts anyway, on
-    // the owner's ruling. UPLOADER_START_GATES=refuse restores the refusal. See StartGates for what
-    // that cost and why the reading still happens on every boot.
-    await runStartGates(
-      [
-        {
-          name: 'ChequebookGate',
-          run: () => new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(),
-        },
-        {
-          name: 'PostageGate',
-          run: () =>
-            new PostageGate(
-              gateNodes,
-              config.stampMinTtlHours * SECONDS_PER_HOUR,
-              config.stampMaxUtilization,
-              logger,
-            ).assertUsable(),
-        },
-      ],
-      config.startGateMode,
-      logger,
-    );
-
     const recoveryStore = new RecoveryStore(config.stateDir);
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
@@ -122,7 +93,6 @@ async function start() {
       catalogIndexStore,
       masterWriter,
     );
-    await streamCatalog.init();
 
     const streamOrchestrator = new StreamOrchestrator(publishers, streamCatalog, recoveryStore, {
       streamKey: config.streamKey,
@@ -138,14 +108,76 @@ async function start() {
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);
-    const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
     const engines = loadEngines(config.engine);
+
+    // Waiting from the first second rather than from the first failed read. The API below listens
+    // before anything touches a node, so a probe arriving in between has to be told the boot is not
+    // finished. `waitForNode` replaces this with its own report as soon as it starts.
+    let nodeWait: NodeWaitReport | null = {
+      url: publishers.coordinator().url,
+      waitingSince: new Date().toISOString(),
+      attempts: 0,
+    };
+
+    // ⛔ Ahead of every node-dependent step, which is the whole of D16. Everything above is local:
+    // config, disk and object construction, none of it asks a node anything. Everything below needs
+    // one, and it used to run first, so a node that was not answering meant no listener at all, a
+    // container that exited, and a deploy refused on a restart count that was climbing for a reason
+    // nothing about this service could fix. See `libs/NodeWait.ts` and `refuseWhileWaiting`.
     const apiServer = startApiServer(streamOrchestrator, config.apiPort, {
       authToken: config.apiAuthToken,
       engines,
+      waitingForNode: () => nodeWait,
     });
     lifecycle.trackApiServer(apiServer);
+
+    // The two gates read what is silent when it is wrong. A dry chequebook answers /health in a
+    // millisecond while every paid push behind it stalls, and a full or expired batch fails every
+    // upload while the node answers and the config reads correctly. BeePublisherPool already rejects
+    // a batch id that is malformed or does not cover the ladder, and PostageGate is the half that
+    // asks whether the batch it names can still carry anything.
+    //
+    // Since 2026-09-17 a gate that cannot clear its node warns and the uploader starts anyway, on
+    // the owner's ruling. UPLOADER_START_GATES=refuse restores the refusal. See StartGates for what
+    // that cost and why the reading still happens on every boot.
+    const recoveredStreamIds = await waitForNode(
+      async () => {
+        await runStartGates(
+          [
+            {
+              name: 'ChequebookGate',
+              run: () => new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(),
+            },
+            {
+              name: 'PostageGate',
+              run: () =>
+                new PostageGate(
+                  gateNodes,
+                  config.stampMinTtlHours * SECONDS_PER_HOUR,
+                  config.stampMaxUtilization,
+                  logger,
+                ).assertUsable(),
+            },
+          ],
+          config.startGateMode,
+          logger,
+        );
+
+        await streamCatalog.init();
+        return streamOrchestrator.recoverStreams();
+      },
+      {
+        url: publishers.coordinator().url,
+        logger,
+        onReport: (report) => {
+          nodeWait = report;
+        },
+      },
+    );
+
+    // Only now, so nothing reaches an orchestrator whose catalog has never been read.
+    nodeWait = null;
 
     // An engine that pulls segments itself must re-attach its fetch loop to recovered streams.
     // Otherwise the recovered stream produces no segments and is finalized as VOD at the timeout.
@@ -155,7 +187,7 @@ async function start() {
       }
     }
 
-    logger.info('Stream uploader started — waiting for engine connections');
+    logger.info('Stream uploader started, waiting for engine connections');
   } catch (error) {
     logger.error('Failed to start:', error);
     process.exit(1);

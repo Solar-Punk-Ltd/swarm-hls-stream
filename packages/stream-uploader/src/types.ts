@@ -215,8 +215,16 @@ export type QueuePressure = typeof PRESSURE_LOW | typeof PRESSURE_MEDIUM | typeo
 
 export const HEALTH_OK = 'ok' as const;
 export const HEALTH_DEGRADED = 'degraded' as const;
+/**
+ * The boot has not finished, because the half of it that needs a Bee node is still waiting for one.
+ *
+ * Distinct from `degraded` on purpose, and the distinction is what an operator acts on: degraded is a
+ * reading about a service that is running, while this one says nothing has run yet. See
+ * `libs/NodeWait.ts` for what the service is doing while it answers this.
+ */
+export const HEALTH_WAITING_FOR_NODE = 'waiting_for_node' as const;
 
-export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED;
+export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED | typeof HEALTH_WAITING_FOR_NODE;
 
 export const HEALTH_REASON_STALE_MANIFEST = 'stale_manifest' as const;
 export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as const;
@@ -230,6 +238,7 @@ export const HEALTH_REASON_UNRECOVERABLE_STREAM = 'unrecoverable_stream' as cons
 export const HEALTH_REASON_FRAGMENT_MISMATCH = 'fragment_mismatch' as const;
 export const HEALTH_REASON_FRAGMENT_PUBLISHER_GOP = 'fragment_publisher_gop' as const;
 export const HEALTH_REASON_POSTAGE_REFUSED = 'postage_refused' as const;
+export const HEALTH_REASON_NODE_UNAVAILABLE = 'node_unavailable' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -243,7 +252,24 @@ export type HealthReason =
   | typeof HEALTH_REASON_UNRECOVERABLE_STREAM
   | typeof HEALTH_REASON_FRAGMENT_MISMATCH
   | typeof HEALTH_REASON_FRAGMENT_PUBLISHER_GOP
-  | typeof HEALTH_REASON_POSTAGE_REFUSED;
+  | typeof HEALTH_REASON_POSTAGE_REFUSED
+  | typeof HEALTH_REASON_NODE_UNAVAILABLE;
+
+/**
+ * What the boot is waiting for, as `/health` reports it while the node has not answered.
+ *
+ * `waitingSince` is the whole wait rather than the current attempt, because the question a person
+ * asks of a page showing this is how long it has been like that. `lastError` is absent until the
+ * first attempt has failed: a boot reports that it is waiting before it has tried anything, so that
+ * a probe reaching the service in its first second is told the truth rather than `ok`.
+ */
+export interface NodeWaitReport {
+  readonly url: string;
+  /** ISO 8601, so it survives the JSON that carries it and reads the same to a person and a page. */
+  readonly waitingSince: string;
+  readonly attempts: number;
+  readonly lastError?: string;
+}
 
 export const RECOVERY_ENTRY_MISSING = 'missing' as const;
 export const RECOVERY_ENTRY_LOADED = 'loaded' as const;

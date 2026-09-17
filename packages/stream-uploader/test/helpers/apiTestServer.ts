@@ -7,6 +7,7 @@ import { RequestLimits } from '../../src/api/requestLimits.js';
 import { createApiApp } from '../../src/api/server.js';
 import { EnginePlugin } from '../../src/engines/types.js';
 import { StreamOrchestrator } from '../../src/libs/StreamOrchestrator.js';
+import { NodeWaitReport } from '../../src/types.js';
 
 import { LOOPBACK_HOST } from './loopbackServer.js';
 
@@ -197,8 +198,12 @@ export async function startTestApi(
   streamOrchestrator: StreamOrchestrator,
   engines: EnginePlugin[] = [],
   limits?: RequestLimits,
+  /** Omitted is a service whose boot has finished, which is what every test before D16 assumes. */
+  waitingForNode?: () => NodeWaitReport | null,
 ): Promise<ApiTestServer> {
-  const server = http.createServer(createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines, limits }));
+  const server = http.createServer(
+    createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines, limits, waitingForNode }),
+  );
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
