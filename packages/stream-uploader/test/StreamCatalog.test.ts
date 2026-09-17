@@ -529,7 +529,7 @@ describe('StreamCatalog unreadable-head hardening', () => {
     );
   });
 
-  it('keeps the boot fatal when the lookup never reached the node', async () => {
+  it("rethrows a lookup that never reached the node, which the boot's wait then retries", async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
     const catalog = new StreamCatalog(
@@ -542,7 +542,7 @@ describe('StreamCatalog unreadable-head hardening', () => {
     await assert.rejects(
       () => catalog.init(),
       /ECONNREFUSED/,
-      'a wrong url or a node that is down must refuse the boot, not start an uploader that cannot publish',
+      'a wrong url or a node that is down must not read as an empty feed, so the catalog rethrows it for the wait',
     );
   });
 
