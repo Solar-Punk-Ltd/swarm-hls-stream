@@ -39,6 +39,7 @@ import {
   StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
+import { rungTopicFor } from '../utils/rungTopic.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { AbrLadder } from './AbrLadder.js';
@@ -454,20 +455,22 @@ export class StreamOrchestrator {
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
       // Started before the replacement rather than after it, so the replacement can be handed the
-      // promise. The drain itself is unchanged and still nobody awaits it here; what is new is that in
-      // admin mode the replacement holds its manifest publishes until this settles. `retire()` gives
-      // up the recovery entry, the admin report and the catalog entry, but not the SOC writes, and in
-      // admin mode both sessions hold the declared topic — so without the gate the retired session's
-      // closing and VOD manifests race the replacement's live ones for the same feed indexes. Outside
-      // admin mode each session owns a topic nothing else writes, so nothing waits.
+      // promise. The drain itself is unchanged and still nobody awaits it here; what is new is that
+      // the replacement holds its manifest publishes until this settles. `retire()` gives up the
+      // recovery entry, the admin report and the catalog entry, but not the SOC writes, so wherever
+      // both sessions hold one topic the retired session's closing and VOD manifests race the
+      // replacement's live ones for the same feed indexes.
       const drained = this.finalizeRetiredSession(streamId, stale);
-      // ⛔ The gate is owed only where the two sessions share a feed, which is a declared topic a
-      // session publishes its own manifests onto. A RUNG in admin mode does not: its manifest topic is
-      // a fresh uuid like any other rung's, and what it shares with the retired session is the
-      // ladder's master feed, whose writer establishes its own index per process and serialises every
-      // write on its own queue. Holding a rung's publishes for its predecessor's drain would freeze
-      // one quality of a live ladder for the length of a finalize and buy nothing.
-      const sharesOneFeed = admin !== undefined && (this.config.ladder?.match(streamId) ?? null) === null;
+      // ⛔ The gate is owed wherever the two sessions publish their own manifests onto one topic, and
+      // that is now every session whose topic outlives it: a declared stream in admin mode, and a RUNG
+      // in either deployment, whose topic is derived from its ladder group and its rung name and is
+      // therefore the same one the retired session is still closing. Without the gate the two claim
+      // the same feed indexes and the retired session's VOD lands above the live broadcast, leaving
+      // the feed head saying a running broadcast had ended.
+      //
+      // A standalone single-rendition stream is the one that owes nothing: it mints a fresh uuid per
+      // session, so the retired session is writing to a feed this one will never touch.
+      const sharesOneFeed = admin !== undefined || (this.config.ladder?.match(streamId) ?? null) !== null;
       this.spawnUploader(streamId, mediatype, claimant, admin, sharesOneFeed ? drained : undefined);
       return true;
     }
@@ -691,34 +694,32 @@ export class StreamOrchestrator {
     const match = this.config.ladder?.match(streamId) ?? null;
     let ladder: LadderMembership | undefined;
 
-    // A fresh topic per uploader, ladder or not. Deriving a rung's topic from (group, rung) would be
-    // tidier to read, but a rung that stops and restarts while its siblings keep the ladder alive
-    // would be handed the topic it just finished writing and, with no state to resume from, would
-    // start overwriting it at SOC index 0. What has to be stable across a ladder is the group.
+    // Three kinds of topic, and which one this session gets is the whole of where its playlists land.
     //
-    // ⛔ **A lone rendition in admin mode is the exception, and it owes exactly the debt that comment
-    // describes.** There the topic belongs to the declaration: the admin mints it when the stream is
-    // created and hands it to viewers before anything has ever published on it, so a second session
-    // under one declaration is precisely the case of "handed the topic it just finished writing".
-    // Paying that debt takes two things, and each is useless without the other:
+    // ⛔ **A RUNG's topic is DERIVED from its ladder group and its rung name**, in both deployments,
+    // so it is the same string every time that rung of that ladder publishes. Its feed therefore
+    // outlives the session, and a rung that restarts mid-broadcast — SRS bouncing a transcoder, an
+    // encoder reconnecting — continues the feed the master already names instead of appearing on one
+    // nothing points at until it re-announces. Sessions sit back to back on it: the replacement reads
+    // the head, numbers its playlist on from there with a discontinuity at the seam, and its recording
+    // is the latest of however many that feed holds. See `rungTopicFor` and
+    // `StreamUploader.resumeFeedIndex`. Uniqueness per broadcast is the group's, which is a fresh uuid
+    // standalone and the declared topic in admin mode.
     //
-    //   1. Such a session no longer starts with no state to resume from. The uploader reads the feed
-    //      head before its first SOC write and continues above it — `StreamUploader.resumeAdminFeedIndex`.
-    //   2. It does not take that reading while the head is still moving. A re-announce leaves the
-    //      retired session writing its closing and VOD playlists to this same topic, and the head read
-    //      is latched for the life of the session, so a reading taken mid-drain is wrong for every
-    //      publish that follows it and the two sessions claim the same indexes. The replacement is
-    //      handed the retired session's finalize and holds its publishes until it settles — see the
-    //      re-announce branch of `startStream` above, and `StreamUploaderOptions.predecessorDrained`.
+    // ⛔ **A rung never takes the declared topic itself, and in admin mode the declaration becomes its
+    // GROUP instead.** The declared topic is the one identifier a viewer is handed, and for a ladder
+    // what a viewer has to find there is the master playlist, whose feed topic *is* the group — so
+    // declaring the group is what makes the admin's catalog entry resolve without the admin knowing
+    // anything about renditions. Handing the rung that topic as well would put four rungs and the
+    // master on one feed, all writing over each other.
     //
-    // ⛔ **A RUNG in admin mode takes a fresh topic like every other rung, and the declaration becomes
-    // its GROUP instead.** The declared topic is the one identifier a viewer is handed, and for a
-    // ladder what a viewer has to find there is the master playlist, whose feed topic *is* the group —
-    // so declaring the group is what makes the admin's catalog entry resolve without the admin
-    // knowing anything about renditions. Handing the rung that topic as well would put four rungs and
-    // the master on one feed, all writing over each other. Neither debt above is owed here: the rung's
-    // feed is empty, and the master's own writer probes its head on the first write of a process.
-    const streamTopic = admin && !match ? admin.topic : crypto.randomUUID();
+    // ⛔ **A lone rendition in admin mode publishes on the declared topic**, which the admin mints
+    // when the stream is created and hands to viewers before anything has ever published on it. That
+    // topic outlives its sessions for the same reason a rung's does, and is paid for the same way.
+    //
+    // Standalone and single-rendition is the only session left with a topic nothing has ever held, and
+    // a fresh uuid is what makes its feed empty by construction.
+    let streamTopic = admin ? admin.topic : crypto.randomUUID();
 
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
     // same way only because they all read this one instant, and a rung admitted a moment later
@@ -729,6 +730,10 @@ export class StreamOrchestrator {
       const remembered = this.groupFor(match.baseStreamId, admin?.topic);
       anchor = this.anchorOf(remembered);
       ladder = { group: remembered.group, rung: match.rung };
+      // The remembered group and never a fresh one, which is what makes the topic stable across a
+      // restart: `groupFor` answers with whatever the surviving rungs and the group store are already
+      // publishing under, so a rung coming back derives the same string it derived the first time.
+      streamTopic = rungTopicFor(remembered.group, match.rung.name);
       this.streamBases.set(streamId, match.baseStreamId);
       this.logger.info(
         `[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, remembered.group, streamTopic)}`,

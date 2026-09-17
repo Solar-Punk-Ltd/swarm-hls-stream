@@ -122,9 +122,11 @@ interface AdminConfig {
  * ⛔ The ladder used to be refused here, on the grounds that admin mode gives a broadcast one topic
  * and a ladder needs one feed per rung plus a master feed the admin knows nothing about. The two now
  * agree about what a stream *is*, and the agreement is this: **the declared topic is the ladder's
- * master feed**. The rungs keep the fresh random topics they have always had, one per session, and
- * the ladder's merge state — one record per rung, which the catalog feed used to hold — moves into
- * the admin, which merges each rung's report and writes `renditions` into its own catalog entry. The
+ * master feed**. Each rung publishes on a topic derived from the group and its own rung name, which
+ * is stable for the life of the declaration, so a rung that restarts continues the feed it was
+ * already on. The ladder's merge state — one record per rung, which the catalog feed used to hold —
+ * moves into the admin, which merges each rung's report and writes `renditions` into its own catalog
+ * entry. The
  * uploader writes the master from the ladder the admin hands back and reports `live` and `vod` at
  * ladder granularity. See the "Admin mode" section of the package README and `libs/AdminLadderRegistry.ts`.
  */

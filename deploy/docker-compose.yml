@@ -232,7 +232,10 @@ services:
       # URL is set, so a half-configured admin deployment refuses to start rather than running as a
       # standalone one. Both default to empty so an existing deployment upgrades unchanged.
       # With ABR_ENABLED as well, the declared topic is the ladder's master playlist feed and each
-      # rung keeps a random topic of its own; the admin merges the rungs and the uploader writes the
+      # rung publishes on a topic derived from the group and its rung name, so a rung's feed outlives
+      # its session: a restarted rung or a reconnected encoder continues the same feed with a
+      # discontinuity, recordings sit back to back on it and the entry names the latest, which is why
+      # the admin accepts `live` after `vod`. The admin merges the rungs and the uploader writes the
       # master from what it hands back. See the uploader README's "Admin mode".
       ADMIN_API_URL: ${ADMIN_API_URL:-}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}

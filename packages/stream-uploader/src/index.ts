@@ -176,7 +176,8 @@ async function start() {
     if (adminApi && masterWriter) {
       logger.info(
         '[Admin] ABR ladder in admin mode: the declared topic is the ladder master feed, each rung publishes ' +
-          'to a fresh topic of its own, and the ladder the master is written from is the one the admin merges',
+          'to a topic derived from the group and its rung name, and the ladder the master is written from is ' +
+          'the one the admin merges',
       );
     }
 

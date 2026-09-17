@@ -99,9 +99,12 @@ export function manifestUploadedPattern(flags = ''): RegExp {
  * `StreamOrchestrator` wrote before this composer existed, so the derived pattern also reads logs
  * from deployments that predate it.
  *
- * This is the only line that carries the session topic, and the topic is what tells a recovered
- * session from a retired one: the ladder group deliberately survives an engine restart while any
- * sibling is still draining, so recovery is visible as fresh topics, never as a fresh group.
+ * This is the only line that carries a rung's feed topic. ⛔ That topic is DERIVED from the ladder
+ * group and the rung name and is stable for the life of the ladder, so it does NOT tell one session
+ * from another: a rung that restarts announces the topic it announced before, because it resumes
+ * that same feed above its own last session's head. Sessions are told apart by when they announced.
+ * The group is stable too — it deliberately survives an engine restart while any sibling is still
+ * draining — so neither field marks a restart.
  */
 export function rungAnnounced(streamId: string, rung: string, ladder: string, topic: string): string {
   return `${streamId} is rung ${rung} of ladder ${ladder}, topic ${topic}`;

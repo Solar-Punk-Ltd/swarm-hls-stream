@@ -659,6 +659,16 @@ function mergeRendition(existing: Rendition[], incoming: Rendition): Rendition[]
  * `index`, `duration` and `topic` move together or not at all: the index names a position inside the
  * feed the topic addresses, so keeping one without the other would point at a place in the wrong
  * feed. Everything the re-announce genuinely knows better — the measured bitrates — is taken from it.
+ *
+ * ⛔ **A rung's topic is stable, and this rule is written for that and NOT against it.** Since a
+ * rung's feed topic is derived from its ladder group and its rung name, the re-announce carries the
+ * same topic the finished record already holds, and a rung that stopped and started again is live
+ * again on the same feed. That is not a reason to compare topics here. The question this answers is
+ * whether a recording that has been published is still the one to point at, and until the returning
+ * session finalizes there is nothing else to point at: its own recording does not exist yet, and the
+ * previous one is whole at the index kept here. The next finalize arrives WITH an index and replaces
+ * the record wholesale, which is the first branch below and which is how the entry comes to name the
+ * latest of however many recordings that feed holds.
  */
 function keepingWhatFinished(previous: Rendition | undefined, incoming: Rendition): Rendition {
   if (previous?.index === undefined || incoming.index !== undefined) {

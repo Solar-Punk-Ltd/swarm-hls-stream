@@ -37,6 +37,13 @@ export interface AdminLadderRegistryOptions {
  * write one.
  * The only feed it can address at all is the master's.
  *
+ * ⛔ **The admin has to accept `live` after `vod`, and a rung's stable feed is why.** A declared
+ * stream is one ladder for the life of the declaration, and its rungs' feeds outlive their sessions:
+ * a broadcaster who stops and comes back is a ladder going `live` again under a stream the admin
+ * already holds as `vod`, with its recordings sitting back to back on the same feeds and the entry
+ * naming the latest. The admin ships that transition on its own branch; this service simply reports
+ * what happened.
+ *
  * ## Why `recordRungDelivered` never asks the admin
  *
  * A rung dying is not an announce — nothing reports it, and that is the whole of the ⛔⛔⛔ note on

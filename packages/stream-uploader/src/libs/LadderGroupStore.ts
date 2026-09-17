@@ -7,7 +7,15 @@ import { Logger } from './Logger.js';
 
 /** What every rung of one source's ladder has to agree on, and which outlives any one of them. */
 export interface RememberedLadder {
-  /** The ladder's group id, which is the catalog entry's identity and the master feed's topic. */
+  /**
+   * The ladder's group id, which is the catalog entry's identity, the master feed's topic, and what
+   * every rung's own feed topic is derived from.
+   *
+   * ⛔ Losing it costs more than a duplicate catalog entry now. `rungTopicFor` hashes this together
+   * with the rung name, so a ladder handed a second group publishes its rungs onto a second set of
+   * feeds as well: the master the surviving rungs are still writing names feeds nobody is filling,
+   * and the recordings on the first set stay reachable only through what already names them.
+   */
   group: string;
   /** Epoch milliseconds this broadcast was admitted. See `BroadcastAnchor`. */
   startedAtMs: number;

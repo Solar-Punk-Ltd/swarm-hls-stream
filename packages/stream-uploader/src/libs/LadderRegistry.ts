@@ -9,6 +9,10 @@ import { MediaType, Rendition } from '../types.js';
 export interface LadderIdentity {
   title: string;
   owner: string;
+  /**
+   * What ties the rungs together: the catalog entry's key, the master feed's topic, and the name every
+   * rung's own feed topic is derived from. See `rungTopicFor`.
+   */
   group: string;
   mediatype: MediaType;
   /**
@@ -23,6 +27,11 @@ export interface LadderIdentity {
 
 /**
  * What one rung's announce achieved for the whole ladder, which is more than that rung can see.
+ *
+ * ⛔ A rung announcing itself again without an `index` is a rung that is LIVE again, on the feed it
+ * was already on: its topic is derived from the group and its rung name, so it is the same string it
+ * announced last time. Whatever finished record it replaces stays addressable until that rung's next
+ * finalize arrives with an index of its own — see `StreamCatalog.keepingWhatFinished`.
  *
  * ⛔ Returned rather than inferred by the caller, and that is the same rule
  * `StreamCatalog.addStream` already follows for a single-rendition stream: a rung announces its own

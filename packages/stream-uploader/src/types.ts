@@ -31,6 +31,16 @@ export interface StreamState {
   /** Absent on state written before playlists carried a wall clock. See {@link BroadcastAnchor}. */
   anchor?: BroadcastAnchor;
   /**
+   * What this session adds to every sequence it publishes, because it opened over a feed that already
+   * held one. Absent means zero, which is every entry written before a feed outlived its session.
+   *
+   * ⛔ Persisted rather than read off the feed again after a crash. The head this was derived from is
+   * this session's own live playlist by then, so re-deriving it would add this session's own length
+   * to its own numbering and every recovered segment would jump forward by a whole broadcast. See
+   * `ManifestManager.continueFrom`.
+   */
+  sequenceOffset?: number;
+  /**
    * The admin's id for this broadcast, when the service is in admin mode. See {@link AdminSession}.
    *
    * ⛔ Persisted rather than resolved again after a crash, and it has to be. A recovered session is
