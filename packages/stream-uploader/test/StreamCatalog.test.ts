@@ -146,8 +146,6 @@ async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
 }
 
 /**
-/** The catalog reaches its node through the pool's coordinator, so that is all a double needs. */
-/**
  * A catalog feed that reads back whatever was last written to it.
  *
  * `makeCatalogBee` serves a fixed payload, which is right for testing one write but cannot express
@@ -172,6 +170,7 @@ function feedbackBee(writes: CapturedWrite[]): Bee {
   } as unknown as Bee;
 }
 
+/** The catalog reaches its node through the pool's coordinator, so that is all a double needs. */
 function makePublishers(bee: Bee): BeePublisherPool {
   const publisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
   return {
