@@ -27,6 +27,7 @@ import {
   REJECT_UNUSABLE_DURATION,
   SegmentEntry,
   SegmentResult,
+  StartGateWarning,
   STOP_FAILURE_DRAIN_TIMEOUT,
   STOP_FAILURE_FINALIZE_FAILED,
   STREAM_LIFECYCLE_DRAINING,
@@ -1765,7 +1766,19 @@ export class StreamOrchestrator {
       // against a publisher the routing no longer names still turns this service degraded. The signal
       // must never under-report, and a payload that cannot place one is the lesser failure.
       postageRefusedPublishers: this.metrics.getPostageRefusals().length,
+      startGateWarnings: [...this.metrics.getStartGateWarnings()],
     };
+  }
+
+  /**
+   * What the startup gates warned about instead of refusing, from the pass that finished the boot.
+   *
+   * Here rather than anywhere closer to the gates because `/health` is derived from this object and
+   * nothing else, so a finding that does not reach it is a finding an operator cannot see. Replaces
+   * the previous pass: see `ServiceMetrics.setStartGateWarnings`.
+   */
+  public recordStartGateWarnings(warnings: readonly StartGateWarning[]): void {
+    this.metrics.setStartGateWarnings(warnings);
   }
 
   public async cleanup(): Promise<void> {

@@ -1,3 +1,5 @@
+import { StartGateWarning } from '../types.js';
+
 /**
  * Counters that outlive every stream they describe.
  *
@@ -70,6 +72,7 @@ export class ServiceMetrics {
    * all of them at once. See `StreamUploader.reportBatchRefusal` for the measurement behind that.
    */
   private readonly postageRefusals = new Map<string, PostageRefusal>();
+  private startGateWarnings: StartGateWarning[] = [];
   private lastSegmentAt: number | null = null;
   private lastAuthRejectionAt: number | null = null;
 
@@ -274,6 +277,22 @@ export class ServiceMetrics {
    */
   public getPostageRefusals(): readonly PostageRefusal[] {
     return [...this.postageRefusals.values()];
+  }
+
+  /**
+   * What the last startup gate pass warned about, replacing whatever the pass before it left.
+   *
+   * Replaced rather than accumulated, unlike the refusals above, because the gates are read again on
+   * every attempt of a node wait: a rung that was unreachable on attempt one and fine on attempt two
+   * is not something to report about the service that is now running. The pass that clears is the
+   * pass that empties this.
+   */
+  public setStartGateWarnings(warnings: readonly StartGateWarning[]): void {
+    this.startGateWarnings = [...warnings];
+  }
+
+  public getStartGateWarnings(): readonly StartGateWarning[] {
+    return this.startGateWarnings;
   }
 
   public getCounters(): MetricsCounters {

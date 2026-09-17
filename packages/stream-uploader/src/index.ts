@@ -163,6 +163,7 @@ async function start() {
           ],
           config.startGateMode,
           logger,
+          (warnings) => streamOrchestrator.recordStartGateWarnings(warnings),
         );
 
         await streamCatalog.init();

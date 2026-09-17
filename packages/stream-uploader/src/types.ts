@@ -482,6 +482,15 @@ export interface HealthSignals {
    * than a recovery.
    */
   postageRefusedPublishers: number;
+  /**
+   * The startup gates that warned instead of refusing, as the last gate pass left them.
+   *
+   * Empty on a boot whose gates all cleared, and on every deployment running
+   * `UPLOADER_START_GATES=refuse`, where a gate that cannot clear its node ends the boot instead.
+   * Latched for the life of the process, like `postageRefusedPublishers` and for the same reason:
+   * the gates run once, at boot, so nothing later can clear it and a restart is what re-reads them.
+   */
+  startGateWarnings: StartGateWarning[];
 }
 
 export interface HealthReport {

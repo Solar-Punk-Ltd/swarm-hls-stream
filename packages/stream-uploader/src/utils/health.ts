@@ -11,6 +11,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_START_GATE_WARNED,
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HEALTH_REASON_UNRECOVERABLE_STREAM,
@@ -62,6 +63,14 @@ export function deriveHealthStatus(
   }
 
   const reasons: HealthReason[] = [];
+
+  // First of the running service's reasons, because it is the only one about the boot rather than
+  // about the media: a gate that warned instead of refusing is a chequebook or a batch this service
+  // was started on anyway, and nothing it does later will clear it. One reason however many rungs
+  // warned, since the names are on the payload and a reason per rung would read as several faults.
+  if (signals.startGateWarnings.length > 0) {
+    reasons.push(HEALTH_REASON_START_GATE_WARNED);
+  }
 
   if (signals.maxConsecutiveManifestFailures >= MANIFEST_FAILURE_THRESHOLD) {
     reasons.push(HEALTH_REASON_STALE_MANIFEST);
