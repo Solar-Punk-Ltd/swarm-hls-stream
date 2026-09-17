@@ -454,7 +454,10 @@ describe('a pass with one gate warning and one refusing', () => {
     assert.match(logger.warnings[0], /ChequebookGate/);
   });
 
-  it('latches what warned before the refusal, so /health has it if the process survives', async () => {
+  // Named for what it proves. A pass that ended latches nothing at all, including what warned before
+  // the refusal, because the sink is called once at the end and that pass never reaches it. That is
+  // right either way: the pass is retried by the wait, or it is fatal and the process is going down.
+  it('latches nothing from a pass that ended, whatever warned earlier in it', async () => {
     const latched: StartGateWarning[] = [];
 
     await assert.rejects(
@@ -466,6 +469,6 @@ describe('a pass with one gate warning and one refusing', () => {
         ),
       /PostageGate refused/,
     );
-    assert.deepEqual(latched, [], 'a pass that ended has nothing to report, since the process is going down');
+    assert.deepEqual(latched, [], 'a pass that ended reports nothing, since it is either retried or fatal');
   });
 });
