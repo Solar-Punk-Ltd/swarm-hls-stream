@@ -213,9 +213,9 @@ describe('BeePublisherPool.perRung', () => {
     assert.throws(() => BeePublisherPool.perRung(withStray, RUNG_ORDER, ANY_TIMEOUT_MS), /names rung\(s\) 2160p/);
   });
 
-  // What `ChequebookGate` enumerates at startup. Taken from the pool rather than rebuilt from the
-  // config, so a rung added to BEE_PUBLISHERS is checked for funding without anyone remembering to
-  // widen a second list.
+  // What `index.ts` enumerates at startup and hands to both gates. Taken from the pool rather than
+  // rebuilt from the config, so a rung added to BEE_PUBLISHERS is checked without anyone remembering
+  // to widen a second list.
   it('lists every node in ladder order, so a startup check reaches all of them', () => {
     const pool = BeePublisherPool.perRung(
       [spec('1080p', 1663), spec('720p', 1653), spec('480p', 1643), spec('360p', 1633)],
