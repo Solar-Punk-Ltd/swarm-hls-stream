@@ -43,11 +43,13 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * Not a theory: the first live run of this suite (2026-08-27) timed out all three waits while the
  * log showed the ladder fully re-formed 22 seconds after the restart.
  *
- * What does rotate per session is the topic. Every rung announce carries it, a retired session
- * never announces again, and its finalize lines carry no topic at all, so announces on topics first
- * seen after the restart are exactly the recovered session and nothing else. The same scoping is
- * what makes the suite go red when nothing recovers: with no fresh topic, the wait times out rather
- * than latching onto the retirement.
+ * The topic does not separate them either: a rung's feed topic is derived from its ladder group and
+ * its rung name, so the rung that comes back announces the one it announced before. What separates
+ * them is TIME. A retired session never announces again and its finalize lines carry no topic at
+ * all, so the announces after the restart instant are exactly the recovered session and nothing
+ * else — see `restartAndReconnect`. The same scoping is what makes the suite go red when nothing
+ * recovers: with no announce after the restart, the wait times out rather than latching onto the
+ * retirement.
  *
  * ## Why a restart rather than a per-rung outage
  *

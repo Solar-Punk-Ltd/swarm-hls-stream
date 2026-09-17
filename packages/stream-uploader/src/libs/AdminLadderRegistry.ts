@@ -25,9 +25,12 @@ export interface AdminLadderRegistryOptions {
  *
  * Standalone, `StreamCatalog` holds one entry per ladder on the stream list feed, merges each rung's
  * record into it, and writes the master from the merged result. Admin mode moves the merge into the
- * admin's database — each rung posts its own record, the admin merges it by exactly the rule
- * `StreamCatalog.keepingWhatFinished` states, stores it, writes `renditions` into its own catalog
- * entry, and answers with the merged ladder. What does NOT move is the master: the ladder's
+ * admin's database — each rung posts its own record, the admin merges it by the rule
+ * `StreamCatalog.keepingWhatFinished` states (a rung that has already finished stays finished when
+ * it reports again without an index), stores it, writes `renditions` into its own catalog entry, and
+ * answers with the merged ladder. The admin's rule additionally requires the report to name the same
+ * feed, which the rule here deliberately does not compare — see `keepingWhatFinished` for why the
+ * uploader has no reason to. What does NOT move is the master: the ladder's
  * multivariant playlist is still a Swarm feed this service signs and writes, and the feed's topic is
  * the **declared** topic, because that is where the admin's catalog entry already points a viewer.
  *

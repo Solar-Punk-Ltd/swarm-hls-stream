@@ -24,9 +24,11 @@ export interface PublishedMaster {
  * viewer holding a catalog entry needs nothing further to find the master, and a rung that
  * restarts mid-ladder republishes to the same place instead of stranding a second master.
  *
- * The rung topics, by contrast, are fresh UUIDs per uploader and must stay that way — a rung that
- * stopped and restarted while its siblings kept the ladder alive would otherwise be handed the
- * topic it just finished writing and start overwriting it at index 0.
+ * The rung topics are derived the same way, from the group and the rung name (`rungTopicFor`), so a
+ * rung that stopped and restarted while its siblings kept the ladder alive comes back onto the feed
+ * it was already writing rather than stranding what it published there. What pays for that is
+ * `StreamUploader.resumeFeedIndex`: a session whose topic outlived it reads the head before it
+ * writes anything, so it appends above the previous session instead of overwriting it at index 0.
  */
 export class MasterFeedWriter {
   private indices = new Map<string, FeedIndex | null>();

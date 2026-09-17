@@ -347,8 +347,8 @@ function isoOf(atMs: number): string {
  * The newest announce for one rung, which is the session this broadcast published on it, or null.
  *
  * ⛔ Newest, for the reason `newestStreamIdByRung` in the scenario suite records: a session an engine
- * restart replaced announces again on a fresh topic while the retired one keeps its own, and the
- * retired stream is mid-finalize as the read happens.
+ * restart replaced announces again on the rung's own derived topic, the same one the retired session
+ * holds, and that retired stream is mid-finalize as the read happens.
  */
 function newestStreamIdOf(logText: string, rung: string): string | null {
   const mine = announcedRungs(logText).filter((announce) => announce.rung === rung);

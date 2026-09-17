@@ -301,13 +301,13 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------------- |
-| `BEE_URL`           | Bee node API URL                                                                               |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                          |
-| `STREAM_KEY`        | Private key (hex) for signing feeds                                                            |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                              |
-| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32` |
+| Variable            | Description                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BEE_URL`           | Bee node API URL                                                                                                                                                   |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`). Required only when `BEE_PUBLISHERS` is empty — a node-per-rung deployment leaves it blank and each publisher brings its own |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                                                                                                |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                                                                                                  |
+| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32`                                                                     |
 
 **Optional:**
 
@@ -681,8 +681,9 @@ The ladder's merge state, one record per rung, moves out of the catalog feed and
 `Rendition` to `POST /api/internal/streams/:id/renditions` (bearer `ADMIN_API_TOKEN`, the same
 internal-route auth as the state route, and **the admin must serve it**), the admin merges it by the
 same "a rung that has already finished stays finished" rule `StreamCatalog.keepingWhatFinished`
-states, writes `renditions` into the catalog entry it already owns, and answers with the merged
-ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
+states — additionally requiring the report to name the rung's own feed, which is true of every
+report a well-formed ladder sends — writes `renditions` into the catalog entry it already owns, and
+answers with the merged ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
 as ever, and rewrites it when a rung stops without asking the admin again. Answers are applied in the
 order the admin merged them, by the catalog write index each one carries, so four rungs whose answers
 land out of order cannot leave an older merge on the master.

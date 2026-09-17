@@ -1411,6 +1411,12 @@ export class StreamOrchestrator {
         pendingDiscontinuity: state.pendingDiscontinuity,
         bitrate: state.bitrate,
         anchor: state.anchor,
+        // ⛔ Carried for the same reason the anchor is, and it is load-bearing:
+        // a recovered session never reads its feed head (`topicOutlivesThisSession`
+        // is false for one), so this entry is the only record of how far the
+        // numbering it is resuming had already got. Dropping it republishes the
+        // broadcast from a media sequence viewers were handed minutes ago.
+        sequenceOffset: state.sequenceOffset,
       },
       metrics: this.metrics,
       // From the entry rather than from a fresh lookup: nothing re-announces a recovered stream, so
