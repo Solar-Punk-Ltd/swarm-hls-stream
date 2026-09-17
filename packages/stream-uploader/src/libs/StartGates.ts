@@ -224,9 +224,10 @@ export function parseStartGateMode(written: string): StartGateMode {
  *
  * A gate that warns is read whole, every node of it, and so is the gate after it, because the
  * chequebook and the postage batch are separate questions with separate fixes and so is every rung.
- * An operator who has to restart once per finding learns them one boot at a time. A gate that refuses
- * rethrows its first failure untouched, so the caller's crash report carries the gate's own message
- * rather than a wrapper around it, and nothing after it runs.
+ * An operator who has to restart once per finding learns them one boot at a time. The first refusal a
+ * gate's policy will not survive comes out untouched, thrown from inside the gate's own loop, so the
+ * caller's crash report carries the gate's own message rather than a wrapper around it, and nothing
+ * after it runs.
  *
  * Per gate rather than per pass since 2026-09-17: under the shipped default the chequebook warns and
  * the postage gate refuses, so one pass can do both.
