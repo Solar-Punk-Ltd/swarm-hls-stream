@@ -3,7 +3,8 @@ import { Logger } from './Logger.js';
 import { GateCollector } from './StartGates.js';
 
 /**
- * Refuse to start unless every Bee node this stage publishes through can still pay for bandwidth.
+ * Read every Bee node's chequebook before the uploader touches anything paid, and refuse or warn
+ * about one that cannot pay for bandwidth according to `UPLOADER_START_GATES`.
  *
  * ## The failure this exists for
  *
@@ -43,9 +44,10 @@ import { GateCollector } from './StartGates.js';
  *
  * ## Scope
  *
- * Startup only. No periodic re-check and no change to what `/health` reports, because the owner rule
- * is that the uploader only *runs* with a filled chequebook. A node that drains mid-broadcast is a
- * different question and is not answered here.
+ * Startup only, and no periodic re-check. Under `warn` what this pass found is latched onto `/health`
+ * as `start_gate_warned`, so a chequebook read at boot is still visible hours later without anything
+ * reading it again. A node that drains mid-broadcast is a different question and is not answered
+ * here.
  */
 export class ChequebookGate {
   constructor(

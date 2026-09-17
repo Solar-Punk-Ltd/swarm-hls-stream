@@ -638,9 +638,9 @@ describe('deriveHealthStatus refused postage batches', () => {
  * Every reason above is something the uploader measured while running. This one says the boot has not
  * finished, because the node-dependent half of it is still waiting for a node to answer, so there is
  * nothing to measure yet: no catalog, no recovered stream, and every counter at the zero it was
- * initialised with. Reporting that as `ok` is what a probe would have believed on 2026-09-17 before
- * the listener moved in front of the wait, and it is the one answer that would be wrong in the
- * direction nobody checks.
+ * initialised with. Answering `ok` here is what a probe would read if this return were absent, and it
+ * is the one answer that would be wrong in the direction nobody checks. Before the listener moved in
+ * front of the wait on 2026-09-17 a probe got no answer at all, because there was no port open.
  */
 describe('deriveHealthStatus while the boot is waiting for its node', () => {
   const waiting: NodeWaitReport = {

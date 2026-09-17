@@ -231,8 +231,8 @@ while :; do
       broken_reasons+=("$observed_reason")
     elif [ -z "${confirmed[$index]}" ]; then
       if [ "$observed_health" = 'healthy' ]; then
-        # The strongest answer available, and the only one that says the startup gates in front of
-        # the API finished rather than that they had not failed yet.
+        # The strongest answer available, and the only one that says the node-dependent half of the
+        # boot behind the listener finished rather than that it had not failed yet.
         confirmed[index]='healthy'
       elif [ "$look" -ge "$settle_looks" ]; then
         if [ -z "$observed_running" ]; then
@@ -258,8 +258,9 @@ done
 
 # A service still unanswered when the window ran out. Accepted rather than refused, and the
 # difference is deliberate: the uploader answers /health with a 503 whenever it is degraded, which
-# one dropped segment on a recovered stream is enough to cause, so `unhealthy` is a report about
-# media that was already lost and not a statement that the service failed to start. What a deploy
+# one dropped segment on a recovered stream is enough to cause, or when it is still waiting for its
+# node, so `unhealthy` is a report about media that was already lost or a boot still going and not a
+# statement that the service failed to start. What a deploy
 # may refuse on is a container that fell over, and this one has not. Said out loud, though, because
 # a service that never answered its own healthcheck is not a service anybody should rely on unread.
 if [ "${#broken_services[@]}" -eq 0 ]; then

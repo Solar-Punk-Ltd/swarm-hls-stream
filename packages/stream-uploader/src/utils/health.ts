@@ -121,8 +121,10 @@ export function deriveHealthStatus(
     reasons.push(HEALTH_REASON_STATE_NOT_PERSISTED);
   }
 
-  // The one reason that can fire while nothing is registered and nothing has ever run, which is what
-  // every other reason here structurally cannot do: a credential wrong from startup means no
+  // The one reason ABOUT THE MEDIA that can fire while nothing is registered and nothing has ever run,
+  // which is what every other reason below structurally cannot do. `node_unavailable` and
+  // `start_gate_warned` above both fire there too, and both are about the boot rather than about a
+  // stream: a credential wrong from startup means no
   // `on_publish` ever succeeds, so `activeStreams` stays 0, every counter stays 0, and no threshold
   // below can reach. See OBS-15.
   //

@@ -293,9 +293,10 @@ describe('the environment contract', () => {
       );
     });
 
-    // A stray zero is the mistake this range exists for. Ten minutes is far longer than any
-    // chain-backed read needs and far shorter than the 26 minutes 200000 mistyped as 2000000 buys,
-    // which under D16 would be 26 minutes per attempt of a wait that retries for ever.
+    // The two-zero slip is what this range catches: 2000000 is 33 minutes for one read and over four
+    // hours for a warn pass over four nodes, spent again on every attempt of a wait that retries for
+    // ever. The one-zero slip is not caught, because 200000 sits under the ceiling and is a setting an
+    // operator could mean, and it costs about 26 minutes a pass.
     it('refuses a timeout longer than any node read could need', async () => {
       await assert.rejects(
         () => loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '2000000' }),

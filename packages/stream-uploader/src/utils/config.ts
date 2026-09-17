@@ -109,9 +109,10 @@ const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
  * uploader spent its whole life restarting on "timeout of 4000ms exceeded" from a chequebook read,
  * which was a number borrowed from another question being applied to this one.
  *
- * Twenty seconds is long enough for a cold node to answer a chain-backed read and short enough that
- * a pool of four nodes that all hang still reaches the API in under three minutes. It costs nothing
- * on a healthy boot, where both gates finish in milliseconds.
+ * Twenty seconds is long enough for a cold node to answer a chain-backed read and short enough that a
+ * `warn` pass over a hanging pool of four nodes finishes in under three minutes before the wait goes
+ * round again. The API is listening throughout either way, since D16. It costs nothing on a healthy
+ * boot, where both gates finish in milliseconds.
  */
 const DEFAULT_START_GATE_TIMEOUT_MS = 20_000;
 
@@ -120,9 +121,13 @@ const DEFAULT_START_GATE_TIMEOUT_MS = 20_000;
  *
  * A chain-backed read that has not answered in ten minutes is a node that is not answering, and since
  * decision D16 this budget is spent per node per attempt of a wait that retries for as long as it
- * takes. A stray zero on a sensible 200000 buys 26 minutes of silence per pass instead, with the
- * service listening and `/health` saying nothing has been read yet, which looks exactly like a node
- * that is down. `CHEQUEBOOK_MIN_BZZ` has a maximum for the same reason: a typo must not be a setting.
+ * takes.
+ *
+ * ⚠️ What this ceiling catches is the two-zero slip: 2000000 is 33 minutes for one read and over four
+ * hours for a `warn` pass over four nodes, and it is refused here. The one-zero slip is not caught
+ * and cannot be without refusing settings an operator may mean: 200000 sits under this ceiling, is
+ * accepted, and costs about 26 minutes a pass. `CHEQUEBOOK_MIN_BZZ` has a maximum for the same
+ * reason and with the same limit: a typo must not be a setting, as far as a range can tell.
  */
 const MAX_START_GATE_TIMEOUT_MS = 600_000;
 

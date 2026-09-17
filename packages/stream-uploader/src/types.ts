@@ -486,9 +486,11 @@ export interface HealthSignals {
    * The startup gates that warned instead of refusing, as the last gate pass left them.
    *
    * Empty on a boot whose gates all cleared, and on every deployment running
-   * `UPLOADER_START_GATES=refuse`, where a gate that cannot clear its node ends the boot instead.
-   * Latched for the life of the process, like `postageRefusedPublishers` and for the same reason:
-   * the gates run once, at boot, so nothing later can clear it and a restart is what re-reads them.
+   * `UPLOADER_START_GATES=refuse`, where a refusal is rethrown rather than collected.
+   * Replaced by each gate pass rather than added to, because the gates are read again on every
+   * attempt while the boot waits for its node, and only the last pass describes the service that is
+   * now running. Nothing re-runs them once the boot has finished, so from there it is fixed for the
+   * life of the process, like `postageRefusedPublishers`.
    */
   startGateWarnings: StartGateWarning[];
 }

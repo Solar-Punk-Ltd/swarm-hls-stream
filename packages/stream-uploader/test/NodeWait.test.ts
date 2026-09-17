@@ -12,7 +12,13 @@ import { NodeWaitReport } from '../src/types.js';
 const NODE_URL = 'http://bee-uploader:1633';
 const WAITING_SINCE = '2026-09-17T09:00:00.000Z';
 
-/** The refusal the live host saw on 2026-09-16, as the gate hands it over: a cause inside a sentence. */
+/**
+ * A gate's refusal with the cause inside the sentence, at today's gate budget.
+ *
+ * The live host saw this shape on 2026-09-16 with 4000ms in it, which is what the gates were bounded
+ * by before START_GATE_TIMEOUT_MS existed. What matters to the classifier is the wrapping, not the
+ * number.
+ */
 function wrappedTimeout(): Error {
   return new Error(
     `[ChequebookGate] ${NODE_URL} chequebook is absent or unreadable: timeout of 20000ms exceeded. ` +
@@ -200,8 +206,8 @@ describe('waiting for the node', () => {
  *
  * ⚠️ The message matters as much as the code, because the two gates in front of this do not rethrow
  * what bee-js threw: they wrap the cause in a sentence of their own. An error whose `code` is gone
- * and whose text ends in "timeout of 20000ms exceeded" is the exact shape the live failure of
- * 2026-09-16 arrived in.
+ * and whose text ends in "timeout of 20000ms exceeded" is that shape at today's budget, and the live
+ * failure of 2026-09-16 was the same sentence saying 4000ms.
  */
 describe('an error that says the node is not there', () => {
   for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH']) {
