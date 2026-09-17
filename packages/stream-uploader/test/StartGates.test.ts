@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
 import { bzzToPlur, ChequebookGate, ChequebookNode } from '../src/libs/ChequebookGate.js';
 import { PostageGate, StampedPublisher } from '../src/libs/PostageGate.js';
 import {
@@ -10,6 +11,7 @@ import {
   START_GATE_WARN,
   StartGate,
 } from '../src/libs/StartGates.js';
+import { StartGateWarning } from '../src/types.js';
 
 const FLOOR_PLUR = bzzToPlur(0.5);
 const MIN_TTL_S = 12 * 3_600;
@@ -339,5 +341,48 @@ describe('how much a gate is asked to read', () => {
 
     assert.equal(logger.warnings.length, 1);
     assert.match(logger.warnings[0], /no Bee node/);
+  });
+});
+
+/**
+ * The rung a single-node deployment has is the placeholder `all`, which `BeePublisherPool` gives the
+ * one publisher that carries everything. It is a routing label rather than a rung anybody configured,
+ * and reading "ChequebookGate on all did not clear" back off a live boot is what showed that naming
+ * it helps nobody. `StartGateWarning.rung` already said it is absent on a single-node deployment, so
+ * this is the code agreeing with the contract rather than a new rule.
+ */
+describe('a deployment with one node for everything', () => {
+  function refusingOn(rung: string): StartGate {
+    return {
+      name: 'ChequebookGate',
+      run: async (collect) => collect?.({ rung, url: 'http://bee-a:1633', message: 'nothing answered' }),
+    };
+  }
+
+  it('leaves the placeholder rung out of the warning it writes', async () => {
+    const logger = recordingLogger();
+
+    await runStartGates([refusingOn(SINGLE_PUBLISHER)], START_GATE_WARN, logger);
+
+    assert.match(logger.warnings[0], /ChequebookGate did not clear/);
+    assert.doesNotMatch(logger.warnings[0], /on all/);
+  });
+
+  it('leaves it out of what /health latches too', async () => {
+    const latched: StartGateWarning[] = [];
+
+    await runStartGates([refusingOn(SINGLE_PUBLISHER)], START_GATE_WARN, recordingLogger(), (warnings) =>
+      latched.push(...warnings),
+    );
+
+    assert.deepEqual(latched, [{ gate: 'ChequebookGate', rung: undefined }]);
+  });
+
+  it('still names a real rung, which is the whole point of carrying one', async () => {
+    const logger = recordingLogger();
+
+    await runStartGates([refusingOn('1080p')], START_GATE_WARN, logger);
+
+    assert.match(logger.warnings[0], /ChequebookGate on 1080p did not clear/);
   });
 });
