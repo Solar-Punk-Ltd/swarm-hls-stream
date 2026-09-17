@@ -37,12 +37,13 @@
 #
 # ## Why the flip is checked on the node rather than trusted from compose
 #
-# The arm is one env value and a container recreate, which is exactly the kind of change that can
-# appear to happen. Two things are asserted after every recreate:
+# The arm is two env values, swap and the chain endpoint, and a container recreate, which is exactly
+# the kind of change that can appear to happen. Two things are asserted after every recreate:
 #
-#   1. The container's command differs from the one found at startup in `--swap-enable` and nothing
-#      else, and its mounts and ports are identical. A recreate that quietly lost a port binding or
-#      a data directory would otherwise be measured as an arm.
+#   1. The container's command differs from the one found at startup in `--swap-enable` and
+#      `--blockchain-rpc-endpoint` and nothing else, and its mounts and ports are identical. A
+#      recreate that quietly lost a port binding or a data directory would otherwise be measured as
+#      an arm.
 #   2. The node's own `/chequebook/balance` answers in the shape the arm requires. A funded node
 #      returns a balance; a node started with swap disabled has no chequebook at all and answers 405.
 #      That is the difference between the two arms, read off the node rather than off the intent.
