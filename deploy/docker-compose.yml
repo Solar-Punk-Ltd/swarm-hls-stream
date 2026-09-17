@@ -240,9 +240,18 @@ services:
       # bee-js reads an unset timeout as no timeout. See BEE_REQUEST_TIMEOUT_MS in config.ts for
       # where the 4000 comes from.
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
+      # What the two startup gates below do about a node they cannot read, and how long each of their
+      # reads gets. The owner ruled on 2026-09-17 that the uploader starts whatever the chequebook
+      # says, so `warn` reads every gate, logs whatever refused and starts, and `refuse` is the
+      # behaviour every boot had before that date. The timeout is deliberately not the one above: a
+      # chequebook balance and a batch are answered off the chain, and 4000ms borrowed from the upload
+      # loop's retry windows is what held a live uploader in a restart loop on 2026-09-16 against a
+      # pool address that had no node behind it. See `libs/StartGates.ts`.
+      UPLOADER_START_GATES: ${UPLOADER_START_GATES:-warn}
+      START_GATE_TIMEOUT_MS: ${START_GATE_TIMEOUT_MS:-20000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
-      # The other two thresholds `PostageGate` refuses a start on, and they belong here for the same
-      # reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
+      # The other two thresholds `PostageGate` reads a batch against, and they belong here for the
+      # same reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
       # compiled 24 and 0.9 whatever an operator wrote in .env, which is the ORPHAN_REAP_MS shape
       # again: an argued-for setting that no deployment could actually move. The defaults repeat
       # config.ts on purpose, and `bee-publishers.sh` carries the same pair, which

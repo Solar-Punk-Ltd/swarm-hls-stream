@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import '../src/utils/env.js';
 
 import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
+import { START_GATE_REFUSE, START_GATE_WARN } from '../src/libs/StartGates.js';
 
 type Config = typeof import('../src/utils/config.js')['config'];
 
@@ -73,6 +74,20 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     sample: '0.75',
     fallback: 0.9,
     refused: ['most', '-0.1', '1.1'],
+  },
+  {
+    name: 'UPLOADER_START_GATES',
+    field: 'startGateMode',
+    sample: 'refuse',
+    fallback: 'warn',
+    refused: ['on', 'strict', 'warn refuse'],
+  },
+  {
+    name: 'START_GATE_TIMEOUT_MS',
+    field: 'startGateTimeoutMs',
+    sample: '9000',
+    fallback: 20000,
+    refused: ['0', '-1', '20s'],
   },
 ];
 
@@ -230,6 +245,59 @@ describe('the environment contract', () => {
         `a ${beeRequestTimeoutMs}ms request timeout leaves ${shortest.name} (${shortest.ms}ms) room for one ` +
           'attempt, not the two its backoff was written for',
       );
+    });
+  });
+
+  /**
+   * What the two startup gates do to a deployment that cannot answer them, which is the whole of the
+   * owner's ruling of 2026-09-17: the uploader starts whatever the chequebook says, and the refusal
+   * is something an operator asks for rather than the shipped behaviour.
+   */
+  describe('the start gates', () => {
+    it('warns and starts by default, so an unreadable chequebook costs a log line', async () => {
+      const config = await loadConfig(requiredEnv());
+
+      assert.equal(config.startGateMode, START_GATE_WARN);
+    });
+
+    it('takes refuse as the mode that puts the old refusal back', async () => {
+      const config = await loadConfig({ ...requiredEnv(), UPLOADER_START_GATES: 'refuse' });
+
+      assert.equal(config.startGateMode, START_GATE_REFUSE);
+    });
+
+    // An operator writing the mode into a `.env` by hand should not be refused over a capital.
+    it('reads a mode written with padding or capitals as the mode it spells', async () => {
+      const config = await loadConfig({ ...requiredEnv(), UPLOADER_START_GATES: '  Refuse ' });
+
+      assert.equal(config.startGateMode, START_GATE_REFUSE);
+    });
+  });
+
+  /**
+   * ⛔ The gates read a chequebook and a postage batch, and both answers come off the chain rather
+   * than out of the node's memory, so they are slower than every other call the service makes. They
+   * were bounded by BEE_REQUEST_TIMEOUT_MS until 2026-09-17, whose 4000ms is derived from the retry
+   * windows of the upload loop and has nothing to do with how long a chain-backed read takes. On the
+   * live host that timeout is what refused a start, so the two are separated here: this asserts that
+   * moving one leaves the other where its own derivation put it.
+   */
+  describe('the start gate timeout', () => {
+    it('is longer than the per-request deadline the upload loop runs on', async () => {
+      const { startGateTimeoutMs, beeRequestTimeoutMs } = await loadConfig(requiredEnv());
+
+      assert.ok(
+        startGateTimeoutMs > beeRequestTimeoutMs,
+        `a ${startGateTimeoutMs}ms gate timeout is no longer than the ${beeRequestTimeoutMs}ms upload deadline, ` +
+          'so the gates are back on a window derived for something else',
+      );
+    });
+
+    it('leaves the deadline of the upload loop alone when a deployment moves it', async () => {
+      const config = await loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '45000' });
+
+      assert.equal(config.startGateTimeoutMs, 45000);
+      assert.equal(config.beeRequestTimeoutMs, 4000);
     });
   });
 

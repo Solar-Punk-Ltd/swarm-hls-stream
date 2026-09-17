@@ -1,4 +1,5 @@
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
+import { parseStartGateMode, START_GATE_WARN } from '../libs/StartGates.js';
 
 import { readAbrConfig } from './abrConfig.js';
 import { optional, optionalInt, optionalNumber, required } from './env.js';
@@ -91,8 +92,28 @@ const MAX_HLS_FRAGMENT_SECONDS = 3600;
  * attempts fit inside 10s for any timeout up to 4825ms. 4s is that with room left over, and it keeps a
  * retry worth having: shorten a window below 8.35s and this becomes the wrong number, which is why
  * `test/config.test.ts` reads those windows out of the files that declare them and re-derives it.
+ *
+ * The two startup gates are the one thing this no longer bounds. Their reads have no retry around
+ * them and answer off the chain rather than out of the node, so they were the calls this derivation
+ * was never about. They run on START_GATE_TIMEOUT_MS below, since 2026-09-17.
  */
 const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
+
+/**
+ * How long one startup gate's read of a node may take before it gives up on that node.
+ *
+ * ⛔ Separate from BEE_REQUEST_TIMEOUT_MS above, and the separation is the fix rather than a tidy-up.
+ * A chequebook balance and a postage batch are answered from the chain, not from the node's own
+ * memory, so they are the slowest reads the service makes, while the 4000ms above is derived from
+ * the retry windows of the upload loop and describes nothing about them. On 2026-09-16 a live ABR
+ * uploader spent its whole life restarting on "timeout of 4000ms exceeded" from a chequebook read,
+ * which was a number borrowed from another question being applied to this one.
+ *
+ * Twenty seconds is long enough for a cold node to answer a chain-backed read and short enough that
+ * a pool of four nodes that all hang still reaches the API in under three minutes. It costs nothing
+ * on a healthy boot, where both gates finish in milliseconds.
+ */
+const DEFAULT_START_GATE_TIMEOUT_MS = 20_000;
 
 /**
  * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.
@@ -127,6 +148,20 @@ export const config = {
   stamp: publishers.length === 0 ? required('STAMP') : optional('STAMP', ''),
   publishers,
   beeRequestTimeoutMs: optionalInt('BEE_REQUEST_TIMEOUT_MS', DEFAULT_BEE_REQUEST_TIMEOUT_MS, { min: 1 }),
+  /**
+   * Whether a startup gate that cannot clear its node stops the uploader, or only says so.
+   *
+   * Warn is the shipped mode on the owner's ruling of 2026-09-17: the uploader starts whatever the
+   * chequebook says, and a gate that refuses leaves its whole message in the log as a warning.
+   * `refuse` is the behaviour every boot had before that date. See `libs/StartGates.ts`.
+   *
+   * The name is written out here rather than taken from the constant `StartGates.ts` quotes it by,
+   * because `deploy/test/uploaderEnv.test.js` scrapes these reads for their literal to prove every
+   * knob reaches the container and is documented. A knob read through a constant is one that gate
+   * cannot see, which is the shape it exists to catch.
+   */
+  startGateMode: parseStartGateMode(optional('UPLOADER_START_GATES', START_GATE_WARN)),
+  startGateTimeoutMs: optionalInt('START_GATE_TIMEOUT_MS', DEFAULT_START_GATE_TIMEOUT_MS, { min: 1 }),
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
     max: MAX_CHEQUEBOOK_MIN_BZZ,

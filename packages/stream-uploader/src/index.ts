@@ -25,6 +25,7 @@ import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
+import { runStartGates } from './libs/StartGates.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
@@ -42,9 +43,9 @@ registerCrashHandlers(logger);
  * Set, it is one node per rung, and every rung of ABR_LADDER must appear — which only means
  * anything with a ladder to map onto, hence the refusal below rather than silently ignoring it.
  */
-function buildPublishers(): BeePublisherPool {
+function buildPublishers(requestTimeoutMs: number): BeePublisherPool {
   if (config.publishers.length === 0) {
-    return BeePublisherPool.single(config.beeUrl, config.stamp, config.beeRequestTimeoutMs);
+    return BeePublisherPool.single(config.beeUrl, config.stamp, requestTimeoutMs);
   }
 
   if (!config.abr) {
@@ -54,31 +55,50 @@ function buildPublishers(): BeePublisherPool {
   return BeePublisherPool.perRung(
     config.publishers,
     config.abr.ladder.rungs().map((rung) => rung.name),
-    config.beeRequestTimeoutMs,
+    requestTimeoutMs,
   );
 }
 
 async function start() {
   try {
-    const publishers = buildPublishers();
+    const publishers = buildPublishers(config.beeRequestTimeoutMs);
 
-    // First, ahead of recovery and the engines, because a dry chequebook is silent: the node answers
-    // /health normally and stalls every paid push behind an allowance that never arrives. Refusing
-    // here costs a restart. Reaching the engines first costs a broadcast that looks live and uploads
-    // nothing. See ChequebookGate for the full account.
-    await new ChequebookGate(publishers.nodes(), bzzToPlur(config.chequebookMinBzz), logger).assertFunded();
+    // The gates read the same nodes through their own clients, because a chequebook balance and a
+    // postage batch are answered off the chain and neither read has a retry around it. The upload
+    // loop's per-request deadline is derived from retry windows that do not apply to either, and
+    // lending it to them is what held a live uploader in a restart loop on 2026-09-16.
+    const gateNodes = buildPublishers(config.startGateTimeoutMs).nodes();
 
-    // Beside the chequebook check and for the same reason. A batch that is full or expired fails
-    // every upload while the node answers normally and the config reads correctly, so it is the same
-    // silent shape and it gets the same refusal. BeePublisherPool already rejects a batch id that is
-    // malformed or does not cover the ladder; this is the half that asks whether the batch it names
-    // can still carry anything. See PostageGate.
-    await new PostageGate(
-      publishers.nodes(),
-      config.stampMinTtlHours * SECONDS_PER_HOUR,
-      config.stampMaxUtilization,
+    // First, ahead of recovery and the engines, because what these two read is silent when it is
+    // wrong. A dry chequebook answers /health normally and stalls every paid push behind an
+    // allowance that never arrives, and a full or expired batch fails every upload while the node
+    // answers and the config reads correctly. BeePublisherPool already rejects a batch id that is
+    // malformed or does not cover the ladder, and PostageGate is the half that asks whether the
+    // batch it names can still carry anything.
+    //
+    // Since 2026-09-17 a gate that cannot clear its node warns and the uploader starts anyway, on
+    // the owner's ruling. UPLOADER_START_GATES=refuse restores the refusal. See StartGates for what
+    // that cost and why the reading still happens on every boot.
+    await runStartGates(
+      [
+        {
+          name: 'ChequebookGate',
+          run: () => new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(),
+        },
+        {
+          name: 'PostageGate',
+          run: () =>
+            new PostageGate(
+              gateNodes,
+              config.stampMinTtlHours * SECONDS_PER_HOUR,
+              config.stampMaxUtilization,
+              logger,
+            ).assertUsable(),
+        },
+      ],
+      config.startGateMode,
       logger,
-    ).assertUsable();
+    );
 
     const recoveryStore = new RecoveryStore(config.stateDir);
 
