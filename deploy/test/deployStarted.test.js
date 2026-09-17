@@ -103,11 +103,12 @@ describe('a deploy reports whether the services it started are up', () => {
  *
  * ⛔⛔⛔ A five second look cannot see either of the two gates it was written for. The uploader runs
  * `ChequebookGate.assertFunded` and then `PostageGate.assertUsable` before the API listens, one HTTP
- * read per bee node and per batch, each bounded by BEE_REQUEST_TIMEOUT_MS at 4000ms, and only then
- * does `StreamCatalog.init` look a feed up on a node that may be cold. On the four-node ABR pool the
- * refusal lands half a minute in. At five seconds the container is `running` with its node process
- * inside an HTTP call, the deploy prints its success line, and the container exits 1 and loops
- * unwatched.
+ * read per bee node and per batch, each bounded by START_GATE_TIMEOUT_MS at 20000ms, and only then
+ * does `StreamCatalog.init` look a feed up on a node that may be cold. On the four-node ABR pool a
+ * pool that answers nothing holds the boot there for minutes. At five seconds the container is
+ * `running` with its node process inside an HTTP call, and the deploy prints its success line. Under
+ * UPLOADER_START_GATES=refuse, which is what those gates need to stop a start at all since
+ * 2026-09-17, the container then exits 1 and loops unwatched.
  *
  * The second half is the same blindness in one instant rather than over time: a crash loop spends
  * most of its life `running`, because `restarting` is the brief moment between attempts. So a look

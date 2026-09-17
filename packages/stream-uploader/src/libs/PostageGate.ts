@@ -23,6 +23,14 @@ import { Logger } from './Logger.js';
  * right, and every paid write fails. So this is a gate that refuses before the first segment, not a
  * number in a runbook. A threshold you wrote down is not a control.
  *
+ * ## What happens to that refusal, 2026-09-17
+ *
+ * The owner ruled that the uploader starts whatever these two gates read, so by default this batch
+ * reading still happens on every boot and a batch that cannot carry a broadcast is a warning
+ * carrying the whole refusal rather than a stopped service. `UPLOADER_START_GATES=refuse` restores
+ * it. The account of what that costs and why it was ruled is in `libs/StartGates.ts`, beside the
+ * chequebook read it was ruled about.
+ *
  * ## Why per publisher rather than per node
  *
  * `ChequebookGate` deduplicates by URL because one node has one chequebook however many rungs route
