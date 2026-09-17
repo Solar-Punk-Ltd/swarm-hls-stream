@@ -161,15 +161,22 @@ services:
       # version of this comment stated the rule wrongly and four other places in the tree carried
       # the same error.
       #
-      # Levi ruled on 2026-09-15 that a viewer node is always ultra-light, so both are stated here
-      # rather than left to a variable. What that costs is LAT-10: such a node has no chequebook,
-      # lives on the free bandwidth allowance alone, and a viewer polling it sees the feed freeze
-      # 30 to 48s at a time. Paying peers would need an endpoint, swap on and a funded wallet at
-      # the address `/addresses` reports as `chain_address`, which is a deliberate edit to this
-      # file rather than a setting anything can reach.
-      - --blockchain-rpc-endpoint=
+      # Levi ruled on 2026-09-17 (T27) that a node's mode is chosen when the node is created, so the
+      # two flags below are settings and their defaults are what this file has always started. A
+      # deployment that sets neither key gets the ultra-light gateway exactly as before: the endpoint
+      # is empty, swap is off, and there is nothing to fund. The manager writes both keys into a
+      # deployment's env file for a gateway an operator created on the chain, and neither key for one
+      # created ultra-light. This supersedes the ruling of 2026-09-15, which stated both here as
+      # literals and made a gateway on the chain a deliberate edit to this file.
+      #
+      # --full-node stays a literal because a full node is never what a viewer's gateway is. What
+      # ultra-light costs is LAT-10: such a node has no chequebook, lives on the free bandwidth
+      # allowance alone, and a viewer polling it sees the feed freeze 30 to 48s at a time. What the
+      # other mode costs is gas and a funded chequebook at the address `/addresses` reports as
+      # `chain_address`, both topped up by hand.
+      - --blockchain-rpc-endpoint=${BEE_GATEWAY_RPC_ENDPOINT:-}
       - --full-node=false
-      - --swap-enable=false
+      - --swap-enable=${BEE_GATEWAY_SWAP_ENABLE:-false}
       # ⛔⛔ ZERO IS THE ONE VALUE THAT GUARANTEES A THRASH LOOP, so read this before changing it and
       # before quoting any cache figure gathered at it. Bee's cache Putter never tests capacity, so
       # chunks enter regardless; eviction triggers whenever size exceeds capacity, which at 0 is every
