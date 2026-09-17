@@ -401,15 +401,17 @@ of it runs OME and no rung node.
 Running the four-rung ladder one Bee node per rung takes both halves: the three rung services enabled
 here, and `BEE_PUBLISHERS` in the root `.env` pointing at them. A rung node enabled and left out of
 `BEE_PUBLISHERS` is a node nothing publishes through, and the reverse is a rung pointing at nothing,
-because `ChequebookGate` reads every publisher's chequebook before the first broadcast and a URL with
-no node behind it cannot answer. Since the owner's rulings of 2026-09-17 that read no longer takes the
-uploader off the air twice over. The gate warns instead of refusing, so a rung named without its node
-costs a warning per boot rather than a container that will not stay up, and the whole node-dependent
-half of the boot is a wait rather than a one-shot, so the service listens, answers `/health` with
-`waiting_for_node` naming that url, and keeps retrying until the node is there.
-`UPLOADER_START_GATES=refuse` in the root `.env` puts the old gate refusal back, and
-`START_GATE_TIMEOUT_MS` is how long each of those reads may take, twenty seconds by default. What a
-deployment cannot ask for is an exit on an absent node, which is the state the ruling removed. `bee-uploader` is the 360p rung as well as the shared default, so the
+because both startup gates read every publisher before the first broadcast and a URL with no node
+behind it cannot answer. Since the owner's rulings of 2026-09-17 that no longer takes the uploader off
+the air. The boot asks each node whether it is there before anything else, and a node that is not is
+waited for rather than refused on, so the service listens, answers `/health` with `waiting_for_node`
+naming that url, and keeps retrying until the node is there. A node that does answer and reads badly
+is the mode's question rather than the wait's: the chequebook gate warns by default and the postage
+gate still refuses.
+`UPLOADER_START_GATES=refuse` in the root `.env` has both gates refusing again, `warn` has both
+warning, and `chequebook-warn` is the shipped middle. `START_GATE_TIMEOUT_MS` is how long each of
+those reads may take, twenty seconds by default and ten minutes at most. What a deployment cannot ask
+for is an exit on a node that never answered, which is the state the ruling removed. `bee-uploader` is the 360p rung as well as the shared default, so the
 catalog and every ladder master go through it. Their ports, data directories and what each one has to
 hold are in [.env.sample](../.env.sample) under "Per-rung Bee nodes".
 
