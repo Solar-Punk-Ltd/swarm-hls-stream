@@ -32,11 +32,14 @@ import { NodeUnreachableError } from './NodeUnreachableError.js';
  * period between attempts is the pass plus the wait rather than the wait alone. The ceiling below
  * bounds the idle half only.
  *
- * ⚠️ A 5xx from a gate read is waited on even when the probe above has just proved the node is there.
- * That is the wrapped-5xx rule doing what it was written for rather than a hole in the probe: a node
- * can answer `GET /` and still answer 502 or 503 for a chequebook or a batch, because what is behind
- * it, an intermediary or the chain itself, is not ready. Waiting is the right answer to both, and a
- * 4xx from the same read still ends the boot.
+ * ⚠️ Under `refuse`, a 5xx from a gate read is waited on even when the probe above has just proved
+ * the node is there. That is the wrapped-5xx rule doing what it was written for rather than a hole in
+ * the probe: a node can answer `GET /` and still answer 502 or 503 for a chequebook or a batch,
+ * because what is behind it, an intermediary or the chain itself, is not ready. Waiting is the right
+ * answer to both. Under the shipped mode the same 5xx is a reading the gate could not get, so it is
+ * warned about and latched and never reaches this wait. A 4xx ends the boot only from a gate whose
+ * policy refuses an answered reading, which is the postage gate under the shipped mode and either
+ * gate under `refuse`.
  *
  * ⚠️ Nothing cancels this. A SIGTERM during a wait is handled by `ServiceLifecycle`, which stops the
  * orchestrator, closes the API and calls `process.exit`, and the loop dies with the process rather
