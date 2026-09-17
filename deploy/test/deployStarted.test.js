@@ -10,9 +10,9 @@ after(removeSandboxes);
  *
  * The real defaults give a service with no healthcheck five seconds to fall over and one with a
  * healthcheck thirty, which is the whole mechanism: the uploader's two startup gates read every bee
- * node and every batch in turn before the API ever listens, and compose returned success long
- * before. Here a look costs a twentieth of a second and the window is half a second, so a test can
- * state what happens on the third look and still finish in the time the old fixed sleep took.
+ * node and every batch in turn behind a listener that is already up, and compose returned success
+ * long before. Here a look costs a twentieth of a second and the window is half a second, so a test
+ * can state what happens on the third look and still finish in the time the old fixed sleep took.
  *
  * The stub answers from a fixed inventory rather than from a daemon, so nothing is being hurried.
  */
