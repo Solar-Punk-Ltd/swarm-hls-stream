@@ -117,9 +117,12 @@ function refusingGate(name: string, reason: string, reached: string[], refuses: 
  * and the gate's refusal hid the address that was wrong.
  *
  * The owner ruled on 2026-09-17 that the uploader and the engine start whatever the chequebook says.
- * So the reading still happens, on every boot, and a gate that cannot clear its node now says so as a
- * warning carrying its whole refusal. `UPLOADER_START_GATES=refuse` is the deployment that wants the
- * old behaviour back, and nothing else changes: the same gates, the same readings, the same messages.
+ * So the reading still happens, on every boot, and the chequebook gate now says so as a warning
+ * carrying its whole refusal, while the postage gate warns only on a reading it could not get and
+ * still refuses one the node answered, which is decision 7 option b below.
+ * `UPLOADER_START_GATES=refuse` makes both gates refuse both readings, which is the deployment that
+ * wants the old behaviour back, and nothing else changes: the same gates, the same readings, the
+ * same messages.
  */
 describe('the start gates', () => {
   it('starts on a chequebook nothing can read, and carries the refusal into a warning', async () => {
