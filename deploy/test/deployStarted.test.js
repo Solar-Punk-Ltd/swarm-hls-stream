@@ -182,6 +182,58 @@ describe('a deploy watches until its services have earned their green', () => {
   });
 
   /**
+   * ⛔⛔ **A warned stack never reports healthy, so the deploy's own note stopped meaning anything.**
+   *
+   * Since the gates warn and latch (D15 and its review), an uploader that started on a chequebook
+   * under its floor answers /health 503 for the life of the process. Its healthcheck therefore never
+   * goes green, and every deploy of such a stack waited out the whole window to print "never reported
+   * healthy", which says nothing about what is wrong and trains a reader to skip the line.
+   *
+   * The watch asks the container what it says about itself. A 503 whose only reason is
+   * `start_gate_warned` is a service that started, so it is confirmed inside the window and the gates
+   * and rungs are named. The exit code does not move: this was never a refusal and must not become
+   * one, because a gate that warns is a deployment's own setting rather than a failure to start.
+   */
+  it('confirms a started service whose gates warned, and names them', async () => {
+    const { run } = deploy(['stream-uploader'], {
+      DOCKER_STUB_HEALTH: 'stream-uploader:starting',
+      DOCKER_STUB_HEALTH_REPORT: 'degraded start_gate_warned ChequebookGate/1080p PostageGate/360p',
+    });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, `a started service whose gates warned was refused: ${finished.stderr}`);
+    assert.match(finished.stderr, /gates warned on/, 'the deploy never said which gates warned');
+    assert.match(finished.stderr, /ChequebookGate\/1080p/);
+    assert.match(finished.stderr, /PostageGate\/360p/);
+    assert.doesNotMatch(finished.stderr, /never reported healthy/, 'a warned service is started, not unanswered');
+  });
+
+  it('keeps waiting on a service that says it is still waiting for its node', async () => {
+    const { sandbox, run } = deploy(['stream-uploader'], {
+      DOCKER_STUB_HEALTH: 'stream-uploader:starting',
+      DOCKER_STUB_HEALTH_REPORT: 'waiting_for_node node_unavailable',
+    });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0, 'a boot that is still going is not a refusal either');
+    assert.doesNotMatch(finished.stderr, /gates warned on/, 'a waiting boot has not started, whatever else it says');
+    assert.ok(looks(sandbox, 'stream-uploader') > 1, 'the window was not waited out on a service that is not ready');
+  });
+
+  // A 503 for any other reason is a running service reporting on media, which this watch has never
+  // had anything to say about. It stays the case the note at the end of the window is for.
+  it('says nothing about gates for a service degraded for its own reasons', async () => {
+    const { run } = deploy(['stream-uploader'], {
+      DOCKER_STUB_HEALTH: 'stream-uploader:starting',
+      DOCKER_STUB_HEALTH_REPORT: 'degraded segment_upload_failure,start_gate_warned ChequebookGate/1080p',
+    });
+    const finished = await run;
+
+    assert.equal(finished.exitCode, 0);
+    assert.doesNotMatch(finished.stderr, /gates warned on/, 'a stack with a second reason is not merely warned');
+  });
+
+  /**
    * ⛔ A restart count is a lifetime total and not this deploy's.
    *
    * Measured on docker 29.8.0: a container that exited once and recovered reads `1 running` and is

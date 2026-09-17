@@ -394,6 +394,18 @@ for (let i = 0; i < argv.length; i++) {
 
 const inventory = ${JSON.stringify(INVENTORY)};
 
+// What the service says about its own health, which the watch asks a running container for when it
+// has not reported healthy yet. DOCKER_STUB_HEALTH_REPORT is the line the real one-liner prints:
+// \`<status> <reasons, comma separated> <gate/rung list>\`. Unset, the exec fails the way it does on an
+// image with no node in it, which is every service here but the uploader.
+if (argv[0] === 'exec') {
+  if (!process.env.DOCKER_STUB_HEALTH_REPORT) {
+    process.exit(1);
+  }
+  console.log(process.env.DOCKER_STUB_HEALTH_REPORT);
+  process.exit(0);
+}
+
 // A failing service's own output, which is the only place the reason for a refusal exists. Empty
 // unless a test asked for one, so every other test's deploy prints nothing extra.
 if (argv[0] === 'logs') {
