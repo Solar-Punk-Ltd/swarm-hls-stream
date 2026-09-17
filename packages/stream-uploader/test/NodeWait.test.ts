@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { NodeUnreachableError } from '../src/libs/NodeUnreachableError.js';
 import {
+  assertNodeReachable,
   isNodeUnavailable,
   NODE_WAIT_FIRST_DELAY_MS,
   NODE_WAIT_MAX_DELAY_MS,
@@ -290,5 +292,71 @@ describe('what the wait says about the node url', () => {
     await waitForNode(failingInit(0, wrappedTimeout).run, seen.options);
 
     assert.equal(seen.reports[0].url, NODE_URL);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **One plain question, asked before anything has to interpret an answer.**
+ *
+ * Everything the boot does next reads a node and reports what it found: a gate spends its whole
+ * budget per node and wraps the cause in a sentence, and `StreamCatalog.init` has to decide whether a
+ * status means this feed is empty or that this node cannot say. Both of those are much harder to get
+ * right than "is anything there", and both are only asked because nobody asked the easy one first.
+ *
+ * The answer arrives as {@link NodeUnreachableError}, which the classifier above reads as the node
+ * not being there, so the wait does its job and the gates never spend a budget on a node that is not
+ * answering.
+ */
+describe('the reachability probe in front of the boot', () => {
+  const live = { url: NODE_URL, bee: { isConnected: async () => true } };
+  const dead = { url: NODE_URL, bee: { isConnected: async () => false } };
+  const refusing = {
+    url: NODE_URL,
+    bee: {
+      isConnected: () => Promise.reject(new Error('connect ECONNREFUSED 10.0.0.9:1633')),
+    },
+  };
+
+  it('passes a node that answers', async () => {
+    await assertNodeReachable(live);
+  });
+
+  it('refuses a node that says it is not connected, naming it', async () => {
+    await assert.rejects(() => assertNodeReachable(dead), NodeUnreachableError);
+    await assert.rejects(() => assertNodeReachable(dead), new RegExp(NODE_URL));
+  });
+
+  it('refuses a node whose liveness check does not come back either', async () => {
+    await assert.rejects(() => assertNodeReachable(refusing), NodeUnreachableError);
+    await assert.rejects(() => assertNodeReachable(refusing), /ECONNREFUSED/);
+  });
+
+  it('keeps a credential out of what it says about the node', async () => {
+    const credentialled = { url: 'http://operator:hunter2@bee-a:1633', bee: { isConnected: async () => false } };
+
+    await assert.rejects(
+      () => assertNodeReachable(credentialled),
+      (error: Error) => {
+        assert.doesNotMatch(error.message, /hunter2/);
+        assert.match(error.message, /bee-a:1633/);
+        return true;
+      },
+    );
+  });
+
+  // The whole point of the class: the wait has to read it as a node that is not there, or the probe
+  // would end the boot instead of starting the wait.
+  it('is read as the node being unavailable, so the wait retries rather than exits', () => {
+    assert.equal(isNodeUnavailable(new NodeUnreachableError('http://bee-a:1633 is not answering')), true);
+  });
+
+  it('is waited on and retried like any other unreachable node', async () => {
+    const seen = watcher();
+    const init = failingInit(2, () => new NodeUnreachableError(`${NODE_URL} is not answering`));
+
+    await waitForNode(init.run, seen.options);
+
+    assert.equal(init.calls(), 3);
+    assert.deepEqual(seen.slept, [1_000, 2_000]);
   });
 });
