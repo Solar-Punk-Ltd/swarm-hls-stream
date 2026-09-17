@@ -140,8 +140,9 @@ describe('api server over http (S0.7 test layer)', () => {
         'staleManifestStreams',
         'status',
       ].sort(),
-      // health.sh reads only the status code (curl -o /dev/null), so the body's consumer is the e2e
-      // suite in streaming-infra-manager, which asserts on status and activeStreams.
+      // health.sh reads only the status code (curl -o /dev/null), so the body's consumers are
+      // `deploy/scripts/assert-started.sh`, which reads status, reasons and startGateWarnings, and
+      // the e2e suite in streaming-infra-manager, which asserts on status and activeStreams.
       'the health body is a published contract',
     );
   });
