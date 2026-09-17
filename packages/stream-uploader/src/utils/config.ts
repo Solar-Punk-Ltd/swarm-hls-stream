@@ -16,8 +16,9 @@ import { optional, optionalInt, optionalNumber, required } from './env.js';
  * two that answers whether the next segment can be paid for.
  *
  * Zero is a legal setting and means "read every chequebook but accept any balance". It does not
- * disable the check: a chequebook that cannot be read at all is still a refusal, because a node
- * running with SWAP off has none to fill.
+ * disable the check: a chequebook that cannot be read at all is still reported, because a node
+ * running with SWAP off has none to fill. Under the shipped `chequebook-warn` that report is a
+ * warning on `/health` and the uploader starts. Under `refuse` it stops the boot.
  */
 const DEFAULT_CHEQUEBOOK_MIN_BZZ = 0.5;
 
