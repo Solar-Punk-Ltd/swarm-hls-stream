@@ -5,7 +5,8 @@ import { Logger } from './Logger.js';
 import { GateCollector } from './StartGates.js';
 
 /**
- * Refuse to start unless every postage batch this stage pays with can still carry a broadcast.
+ * Read every postage batch this stage pays with before the uploader touches anything paid, and refuse
+ * or warn about one that cannot carry a broadcast according to `UPLOADER_START_GATES`.
  *
  * ## The failure this exists for
  *
@@ -41,8 +42,8 @@ import { GateCollector } from './StartGates.js';
  *
  * ## Scope
  *
- * Startup only, exactly like the chequebook gate, and for the same reason: the owner rule is that the
- * uploader only *runs* with a stamp that can pay. A batch that fills mid-broadcast is a different
+ * Startup only and no periodic re-check, exactly like the chequebook gate, and latched onto `/health`
+ * as `start_gate_warned` the same way under `warn`. A batch that fills mid-broadcast is a different
  * question and is not answered here.
  */
 export class PostageGate {

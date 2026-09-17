@@ -41,8 +41,8 @@ function looks(sandbox, service) {
  * ⛔⛔⛔ `docker compose up -d` returns as soon as a container has been created and started, and a
  * container whose process throws on its first line has been started. With `restart: unless-stopped`
  * it then loops, and `deploy.sh` printed "Local deploy complete" over the top of it. Every startup
- * refusal this repository has on purpose lands in that gap: the five `required()` reads, the
- * chequebook floor, and `PostageGate`. The compose healthcheck cannot close it either, because it
+ * refusal this repository has on purpose lands in that gap: the five `required()` reads, and the
+ * chequebook floor and `PostageGate` on a deployment that sets UPLOADER_START_GATES=refuse. The compose healthcheck cannot close it either, because it
  * deliberately reports without acting and nothing declares a dependency on it.
  *
  * Found by a cross-provider review on 2026-09-14, prompted by the commit that made
@@ -169,8 +169,9 @@ describe('a deploy watches until its services have earned their green', () => {
 
   /**
    * ⛔ `unhealthy` is not "did not start". The uploader answers /health with a 503 while it is
-   * degraded, and one dropped segment on a recovered stream is enough to do it, so refusing a deploy
-   * on `unhealthy` would refuse on media that was already lost before the deploy began.
+   * degraded, and one dropped segment on a recovered stream is enough to do it, or while it is still
+   * waiting for its node, so refusing a deploy on `unhealthy` would refuse on media that was already
+   * lost before the deploy began, or on a boot that is still going.
    */
   it('does not refuse a container whose healthcheck is failing, only one that fell over', async () => {
     const { run } = deploy(['stream-uploader'], { DOCKER_STUB_HEALTH: 'stream-uploader:unhealthy' });
@@ -205,7 +206,7 @@ describe('a deploy watches until its services have earned their green', () => {
   });
 
   it('refuses a container whose older restart count rises again inside the window', async () => {
-    const reason = 'PostageGate: batch 0xabc has 0.4h of TTL left, below the 1h floor';
+    const reason = 'PostageGate: batch 0xabc has 0.4h of TTL left, below the 12h floor';
     const { run } = deploy(['stream-uploader'], {
       // The same older restart as above for two looks, and then another one. This is the half that
       // the baseline must not swallow: a count that was already 1 still has to refuse when it moves.

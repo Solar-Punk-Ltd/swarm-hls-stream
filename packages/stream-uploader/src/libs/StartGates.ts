@@ -35,14 +35,21 @@ import { SINGLE_PUBLISHER } from './BeePublisherPool.js';
  *
  * `utils/config.ts` writes the same name out again at the read rather than importing this, and that
  * is deliberate: `deploy/test/uploaderEnv.test.js` finds the service's knobs by scraping the literal
- * out of each `optional(...)` call, so a name read through a constant is a knob it cannot check.
+ * out of each `optional*` and `required*` call, so a name read through a constant is one it cannot
+ * check.
  */
 const START_GATE_MODE_ENV = 'UPLOADER_START_GATES';
 
 /** Read every gate, log what refuses, and start anyway. The shipped mode since 2026-09-17. */
 export const START_GATE_WARN = 'warn';
 
-/** Stop the start on the first gate that refuses, which is what every boot did before that date. */
+/**
+ * Rethrow the first refusal instead of collecting it.
+ *
+ * Whether that ends the boot is `waitForNode`'s to decide rather than this mode's: a node that never
+ * answered is waited on whatever a deployment sets here, and what this still ends a boot for is a
+ * node that answers with a reading the gate will not accept.
+ */
 export const START_GATE_REFUSE = 'refuse';
 
 /** The second argument of {@link runStartGates}, and what `parseStartGateMode` below answers with. */

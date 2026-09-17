@@ -110,8 +110,9 @@ export async function waitForNode<T>(init: () => Promise<T>, options: NodeWaitOp
  * ⛔ **The message is read as well as the code, and that is not belt and braces.** The two start
  * gates do not rethrow what bee-js threw: each wraps the cause in a sentence of its own, so the
  * `code` is gone by the time it arrives here and the only surviving evidence is the text. "timeout of
- * 20000ms exceeded" inside a `[ChequebookGate]` sentence is the exact shape of the live failure this
- * was written for.
+ * 20000ms exceeded" inside a `[ChequebookGate]` sentence is the shape today's gate budget produces.
+ * The live failure of 2026-09-16 said 4000ms, because the gates were bounded by the upload loop's
+ * deadline then.
  *
  * A 5xx counts, because a node that answers 500 is up and not ready, which is the same wait with a
  * different cause. A 4xx does not: the node answered and is refusing this request, and no amount of
