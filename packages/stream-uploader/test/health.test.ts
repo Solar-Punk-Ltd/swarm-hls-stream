@@ -680,10 +680,11 @@ describe('deriveHealthStatus while the boot is waiting for its node', () => {
 /**
  * The startup gates' own outcome, latched the way a refused postage batch is.
  *
- * Under `UPLOADER_START_GATES=warn`, which is the shipped mode since 2026-09-17, a gate that cannot
- * clear its node warns and the service starts. Without this the whole record of that was one log line
- * at boot, and on a pool-backed deployment nothing else in the stack refuses either, so an unfunded
- * chequebook was invisible within minutes of the line scrolling away.
+ * Under the shipped `chequebook-warn`, since 2026-09-17, the chequebook gate warns and the service
+ * starts, and the postage gate warns on a batch it could not read while still refusing one the node
+ * answered about. Without this the whole record of that was one log line at boot, and on a
+ * pool-backed deployment nothing else in the stack refuses either, so an unfunded chequebook was
+ * invisible within minutes of the line scrolling away.
  */
 describe('deriveHealthStatus start gate warnings', () => {
   it('is ok when the pass cleared every gate', () => {
