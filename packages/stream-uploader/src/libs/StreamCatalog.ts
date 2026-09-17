@@ -402,8 +402,16 @@ export class StreamCatalog {
    * The error codes for a transfer that broke on the way back cover a request that timed out as
    * well as one whose body was dropped, so the code alone cannot say which happened. A node that
    * answers a liveness check immediately afterwards is the evidence that the payload was the
-   * problem; one that does not answer keeps the boot failing, which is what a wrong url or a node
-   * that is down deserves.
+   * problem. One that does not answer makes this false, so `init` rethrows instead of resuming from
+   * the persisted index.
+   *
+   * ⛔ That rethrow ends the boot rather than being waited on, and it is the one rethrow here that
+   * does. bee-js puts the transport code on `statusText` and leaves `code` unset, while
+   * `NodeWait.ts`'s `isNodeUnavailable` reads `code`, a status and the message text, so `ECONNABORTED`
+   * on a `BeeResponseError` whose message is "response stream aborted" matches none of the three.
+   * Measured 2026-09-17 against the classifier itself. A wrong url or a node that is down is
+   * `ECONNREFUSED`, a shape {@link isTransferLost} refuses above, so it never reaches this check and
+   * the wait does retry it.
    */
   private async payloadUnreadableOnLiveNode(error: unknown): Promise<boolean> {
     if (!isTransferLost(error)) {
