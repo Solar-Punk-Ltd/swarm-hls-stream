@@ -108,7 +108,8 @@ describe('a deploy reports whether the services it started are up', () => {
  * pool that answers nothing holds the boot there for minutes. At five seconds the container is
  * `running` with its node process inside an HTTP call, and the deploy prints its success line. Under
  * UPLOADER_START_GATES=refuse, which is what those gates need to stop a start at all since
- * 2026-09-17, the container then exits 1 and loops unwatched.
+ * 2026-09-17, the container then exits 1 and loops unwatched. A node that simply is not there stopped
+ * being one of those exits on the same day, decision D16: the uploader listens first and waits.
  *
  * The second half is the same blindness in one instant rather than over time: a crash loop spends
  * most of its life `running`, because `restarting` is the brief moment between attempts. So a look

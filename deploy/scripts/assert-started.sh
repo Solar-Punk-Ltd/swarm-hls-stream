@@ -8,17 +8,20 @@
 # startup refusal this repository has on purpose lands in that gap: the five `required()` reads in
 # `utils/config.ts`, and the chequebook floor and `PostageGate` on a deployment that sets
 # UPLOADER_START_GATES=refuse, which since 2026-09-17 is what asks those two to stop a start at all.
-# The compose healthcheck does not close it either, deliberately: it reports without acting, and
-# nothing declares a dependency on it.
+# A node that does not answer is no longer one of them, since decision D16 of the same day: the
+# uploader listens first and waits for its node, so it stays up and says `waiting_for_node` on
+# /health instead of exiting into a restart loop. The compose healthcheck does not close the gap
+# either, deliberately: it reports without acting, and nothing declares a dependency on it.
 #
 # ⛔⛔ A fixed sleep is blind to that gap in both directions, so this watches instead.
 #
-# In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable` before
-# the API listens, one HTTP read per bee node and one per batch, in turn, each bounded by
-# START_GATE_TIMEOUT_MS at 20000ms, and only then does `StreamCatalog.init` look a feed up on a node
-# that may be cold. On the four-node ABR pool a pool that answers nothing spends minutes in there
-# before the API opens, and under UPLOADER_START_GATES=refuse it is a refusal instead. Either way a
-# five second look has already called the container started.
+# In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one
+# HTTP read per bee node and one per batch, in turn, each bounded by START_GATE_TIMEOUT_MS at
+# 20000ms, and only then does `StreamCatalog.init` look a feed up on a node that may be cold. Those
+# now run behind the listener, so the container stays up through all of it and answers /health,
+# unhealthy while it waits. Under UPLOADER_START_GATES=refuse a gate that cannot clear its node is a
+# refusal again, arriving a minute or more into the boot. Either way a five second look has already
+# called the container started.
 #
 # And in one instant: the state alone cannot tell a loop from a healthy start, whichever order it is
 # asked in. Early in a loop docker's restart backoff is a tenth of a second against a container that

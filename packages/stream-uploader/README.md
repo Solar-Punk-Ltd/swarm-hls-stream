@@ -497,8 +497,8 @@ there it logs `Resuming the finalize of <stream> at the catalog write`, publishe
 completes only the catalog write and the entry delete. A head that did not read is not taken for an
 empty feed, so the finalize is deferred to the next boot rather than risking a second recording.
 
-**Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
-`reasons` array:
+**Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` or
+`status: "waiting_for_node"` and a `reasons` array:
 
 | Reason                   | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -514,6 +514,30 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 | `fragment_mismatch`      | A rung's segments are not the length `HLS_FRAGMENT` says they are. The dating follows the media, so the recording keeps the right clock, but the declared length is what every `#EXT-X-GAP` entry is dated and sized at and what the rung GOP is pinned on, so a lost segment leaves a hole of the wrong size on a stage that is not what its configuration says. Raised only under `ABR_ENABLED`, once eight measured segments of a stream miss the configured length by over 5%. One of the two containers is running an older deploy, so redeploy the stale one             |
 | `fragment_publisher_gop` | Segments longer than `HLS_FRAGMENT` with no ladder running. Nothing transcodes there, so the publisher's own keyframe interval decides the segment and the configured value is a floor. Raised once eight measured segments run over it by over 5%. Nothing is stale, and the dating follows the media so the recording's clock stays right. What it names is a stage cutting longer than the deployment declared, with the same wrong-sized gap entries as the row above: set `HLS_FRAGMENT` to the publisher's keyframe interval, or turn the ladder on                      |
 | `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                                                                                                                                                                                                                   |
+| `node_unavailable`       | The boot has not finished, because the half of it that needs a Bee node is still waiting for one to answer. The only reason that is not a reading about this process at all, and the only one that can be the whole answer on a service that has done nothing yet. See the waiting state below                                                                                                                                                                                                                                                                                 |
+
+**The waiting state, `status: "waiting_for_node"`** (decision D16, the owner on 2026-09-17: "we should be
+able to start the uploader but maybe say its node not available, try to reconnect or something"). The API
+server listens before anything reads a Bee node, so `/health` answers from the first second of the
+process. While the node-dependent half of the boot has not finished, that answer is `503` with
+`status: "waiting_for_node"`, the single reason `node_unavailable`, a `waitingSince` timestamp for the
+whole wait rather than the current attempt, and a `node` object carrying `url`, `attempts` and, once
+something has failed, `lastError`. No other reason is reported beside it: nothing has run, so every
+signal on the body is the zero it was initialised with and reading one as health would be wrong in the
+direction nobody checks.
+
+What the service is doing meanwhile is in `libs/NodeWait.ts`: the two start gates, the catalog feed
+lookup and the recovery pass, retried with one log line per attempt, backing off 1s, 2s, 4s and holding
+at 30s, for as long as the node takes. A failure that says the node is not answering is waited on. A
+failure that says anything else, a feed whose payload will not parse or a key this deployment cannot
+sign with, still ends the boot with exit 1, because waiting on those is a service that never starts and
+never says why. Before this the whole boot ran ahead of the listener, so a node that was not there meant
+nothing answered at all, the container exited, and a deploy refused on a restart count that was climbing
+for a reason nothing about this service could fix.
+
+While it waits, `/stream/*` and every engine prefix answer `503` naming the node, with `Retry-After: 5`,
+rather than reaching an orchestrator whose catalog has never been read. `/metrics` keeps answering,
+since its counters describe this process and not the node.
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
