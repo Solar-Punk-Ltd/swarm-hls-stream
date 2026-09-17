@@ -149,9 +149,11 @@ async function start() {
     // a batch id that is malformed or does not cover the ladder, and PostageGate is the half that
     // asks whether the batch it names can still carry anything.
     //
-    // Since 2026-09-17 a gate that cannot clear its node warns and the uploader starts anyway, on
-    // the owner's ruling. UPLOADER_START_GATES=refuse restores the refusal. See StartGates for what
-    // that cost and why the reading still happens on every boot.
+    // Since 2026-09-17 the chequebook gate warns and the uploader starts whatever it found, on the
+    // owner's ruling. The postage gate still stops the boot on a batch the node answered about,
+    // absent, unusable, expired or full, and warns only on one it could not read, which is decision
+    // 7 b of the same day. UPLOADER_START_GATES=refuse makes both gates refuse both readings. See
+    // StartGates for what that cost and why the reading still happens on every boot.
     const recoveredStreamIds = await waitForNode(
       async () => {
         // ⛔ The cheapest question, before anything has to interpret an answer. A node that is not
