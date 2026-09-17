@@ -148,9 +148,9 @@ export class PostageGate {
       `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(
         publisher.url,
       )} is absent or ` +
-      `unreadable: ${reason}. The uploader refuses to run without a batch reading, because a batch ` +
-      'nothing can read is not one anyone can call usable, and every way of learning nothing here ' +
-      'looks identical to a healthy answer at the first failed upload.'
+      `unreadable: ${reason}. A batch nothing can read is not one anyone can call usable, and every ` +
+      'way of learning nothing here looks identical to a healthy answer until the first failed ' +
+      'upload. Check that the node is answering on that address, and that it still holds this batch.'
     );
   }
 
@@ -158,7 +158,7 @@ export class PostageGate {
     return (
       `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(publisher.url)} reports ` +
       `usable=${batch.usable}. A batch the node will not spend cannot carry a ` +
-      'broadcast, and the uploader refuses rather than failing on the first segment. Buy a batch on ' +
+      'broadcast, and every upload on this rung fails from the first segment. Buy a batch on ' +
       "that node and put its id in this rung's BEE_PUBLISHERS entry."
     );
   }
@@ -167,9 +167,9 @@ export class PostageGate {
     return (
       `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(publisher.url)} has ` +
       `${hours(batch.ttlSeconds)}h left and the floor is ${hours(this.minTtlSeconds)}h. A batch that ` +
-      'expires mid-broadcast stops paying for the data it was keeping, so the uploader refuses to ' +
-      'start one it cannot finish. Top it up with a postage top-up on that node, or lower the floor ' +
-      'with STAMP_MIN_TTL_HOURS if this run really is shorter than the batch has left.'
+      'expires mid-broadcast stops paying for the data it was keeping, so a run longer than that ' +
+      'loses the recording it bought. Top it up with a postage top-up on that node, or lower the ' +
+      'floor with STAMP_MIN_TTL_HOURS if this run really is shorter than the batch has left.'
     );
   }
 

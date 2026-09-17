@@ -135,19 +135,19 @@ export class ChequebookGate {
   private unfundedRefusal(url: string, availablePlur: bigint): string {
     return (
       `[ChequebookGate] ${safeUrl(url)} has ${plurToBzz(availablePlur)} BZZ available in its chequebook and the ` +
-      `floor is ${plurToBzz(this.floorPlur)} BZZ. The uploader refuses to run on an unfunded chequebook, ` +
-      'because a dry node answers /health in a millisecond while every paid push behind it stalls. Fund ' +
-      "it with a chequebook deposit from the node's own wallet, then restart. CHEQUEBOOK_MIN_BZZ moves " +
-      'the floor.'
+      `floor is ${plurToBzz(this.floorPlur)} BZZ. A dry node answers /health in a millisecond while ` +
+      'every paid push behind it stalls, which reads as a slow network rather than as a funding ' +
+      "fault. Fund it with a chequebook deposit from the node's own wallet, then restart. " +
+      'CHEQUEBOOK_MIN_BZZ moves the floor.'
     );
   }
 
   private unreadableRefusal(url: string, reason: string): string {
     return (
-      `[ChequebookGate] ${safeUrl(url)} chequebook is absent or unreadable: ${reason}. The uploader refuses to ` +
-      'run without a funding reading, because a chequebook nothing can read is not one anyone can call ' +
-      'filled, and a node running with SWAP disabled has no chequebook to fill at all. The floor is ' +
-      `${plurToBzz(this.floorPlur)} BZZ.`
+      `[ChequebookGate] ${safeUrl(url)} chequebook is absent or unreadable: ${reason}. A chequebook ` +
+      'nothing can read is not one anyone can call filled, and a node running with SWAP disabled has ' +
+      'no chequebook to fill at all. Check that the node is answering on that address and that SWAP ' +
+      `is on. The floor is ${plurToBzz(this.floorPlur)} BZZ.`
     );
   }
 }

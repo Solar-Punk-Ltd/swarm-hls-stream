@@ -24,7 +24,7 @@ const WAITING_SINCE = '2026-09-17T09:00:00.000Z';
 function wrappedTimeout(): Error {
   return new Error(
     `[ChequebookGate] ${NODE_URL} chequebook is absent or unreadable: timeout of 20000ms exceeded. ` +
-      'The uploader refuses to run without a funding reading.',
+      'A chequebook nothing can read is not one anyone can call filled.',
   );
 }
 
@@ -228,7 +228,7 @@ describe('an error that says the node is not there', () => {
     // exactly the 2026-09-16 shape: under refuse the boot ended and docker looped it.
     'a gate quoting a 502 it was given': new Error(
       '[PostageGate] 360p batch aaaaaaaa… on http://a:1633 is absent or unreadable: Request failed with ' +
-        'status code 502. The uploader refuses to run without a batch reading.',
+        'status code 502. A batch nothing can read is not one anyone can call usable.',
     ),
     'a gate quoting a 503': new Error(
       '[ChequebookGate] http://a:1633 chequebook is absent or unreadable: Request failed with status code 503.',
