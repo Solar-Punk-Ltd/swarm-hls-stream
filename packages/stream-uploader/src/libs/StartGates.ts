@@ -1,3 +1,5 @@
+import { StartGateWarning } from '../types.js';
+
 /**
  * What the uploader does about a startup gate it cannot clear.
  *
@@ -48,17 +50,45 @@ export const START_GATE_REFUSE = 'refuse';
  */
 type StartGateMode = typeof START_GATE_WARN | typeof START_GATE_REFUSE;
 
+/**
+ * One node a gate could not clear, as the gate hands it over when it is collecting rather than
+ * refusing.
+ *
+ * `url` and `message` are for the log and nothing else. `/health` is unauthenticated and published on
+ * every interface this deployment binds, and a gate's message carries node URLs and batch ids, so
+ * what is latched there is {@link StartGateWarning}: the gate's name and the rung, and no more.
+ */
+export interface GateRefusal {
+  /** The ABR rung, where the gate's nodes carry one. A single-node deployment has none to name. */
+  readonly rung?: string;
+  readonly url: string;
+  /** What the gate would have thrown, whole. */
+  readonly message: string;
+}
+
+/** Where a gate puts a refusal instead of throwing it. Absent, the gate throws at the first one. */
+export type GateCollector = (refusal: GateRefusal) => void;
+
 /** One startup check, as {@link runStartGates} needs it: a name for the log, and the reading itself. */
 export interface StartGate {
   /** How a warning names this gate to an operator. The class name is what both callers pass. */
   readonly name: string;
-  run(): Promise<void>;
+  /**
+   * Read, and either throw at the first refusal or hand every one of them to `collect`.
+   *
+   * The mode decides which, and the gate is told by being given a collector or not, rather than by
+   * being told the mode. A gate has no business knowing what a deployment does about what it found.
+   */
+  run(collect?: GateCollector): Promise<void>;
 }
 
 /** Where a downgraded refusal goes. Matches `Logger`, narrowed to the one method used here. */
 interface StartGateLogger {
   warn(message: string): void;
 }
+
+/** Where a whole pass of warnings goes, so `/health` can report what warned instead of refusing. */
+type StartGateWarningSink = (warnings: readonly StartGateWarning[]) => void;
 
 /**
  * The mode a deployment asked for, or a refusal naming both of them.
@@ -90,21 +120,46 @@ export async function runStartGates(
   gates: readonly StartGate[],
   mode: StartGateMode,
   logger: StartGateLogger,
+  /** Called once with everything this pass warned about, so `/health` can report it. See D16's review. */
+  onWarnings: StartGateWarningSink = () => {},
 ): Promise<void> {
+  const warnings: StartGateWarning[] = [];
+
   for (const gate of gates) {
+    const collect =
+      mode === START_GATE_REFUSE
+        ? undefined
+        : (refusal: GateRefusal) => {
+            warnings.push({ gate: gate.name, rung: refusal.rung });
+            logger.warn(warningLine(gate.name, refusal.rung, refusal.message));
+          };
+
     try {
-      await gate.run();
+      await gate.run(collect);
     } catch (error) {
       if (mode === START_GATE_REFUSE) {
         throw error;
       }
 
-      logger.warn(
-        `[startGates] ${gate.name} did not clear and the uploader is starting anyway: ${describeFailure(error)} ` +
-          `Set ${START_GATE_MODE_ENV}=${START_GATE_REFUSE} to make this stop the start again.`,
-      );
+      // A gate that threw under warn rather than collecting: an empty node set, or something no node
+      // reading produced. Neither may pass silently, so it is warned about and latched like the rest.
+      warnings.push({ gate: gate.name });
+      logger.warn(warningLine(gate.name, undefined, describeFailure(error)));
     }
   }
+
+  // Always, including with nothing to report, because the pass that clears is what replaces the last
+  // pass that did not. The gates are re-read on every attempt of a node wait, and only the last of
+  // those describes the service that is now running.
+  onWarnings(warnings);
+}
+
+function warningLine(gate: string, rung: string | undefined, message: string): string {
+  const subject = rung === undefined ? gate : `${gate} on ${rung}`;
+  return (
+    `[startGates] ${subject} did not clear and the uploader is starting anyway: ${message} ` +
+    `Set ${START_GATE_MODE_ENV}=${START_GATE_REFUSE} to make this stop the start again.`
+  );
 }
 
 function describeFailure(error: unknown): string {

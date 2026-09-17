@@ -12,6 +12,7 @@ import {
   FundingLogger,
   PLUR_PER_BZZ,
 } from '../src/libs/ChequebookGate.js';
+import { GateRefusal } from '../src/libs/StartGates.js';
 
 const FLOOR_PLUR = bzzToPlur(0.5);
 
@@ -246,6 +247,93 @@ describe('the chequebook gate', () => {
       recordingLogger(),
     );
     await assert.rejects(() => absent.assertFunded(), { message: /absent or unreadable/ });
+  });
+});
+
+/**
+ * ⛔ **Under `warn` the first bad node used to be the only one an operator heard about.**
+ *
+ * The loop above throws at the first refusal, which is right when the refusal stops the boot: there
+ * is nothing to learn from the second node when the service is not going to start. Since the owner's
+ * ruling of 2026-09-17 the service does start, so that same throw meant a four rung stage reported
+ * one rung per boot and an operator fixed them one restart at a time.
+ *
+ * Handing the gate somewhere to put a refusal changes that and nothing else. Every node is read, each
+ * one that cannot be cleared is handed over with the message it would have thrown, and the caller
+ * decides what that costs. With no collector the behaviour is exactly what `refuse` still needs.
+ */
+describe('the chequebook gate with somewhere to put a refusal', () => {
+  it('reads every node rather than stopping at the first that fails', async () => {
+    const reads = reader();
+    const collected: GateRefusal[] = [];
+    const gate = new ChequebookGate(
+      [
+        node('http://bee-360:1633', bzzToPlur(0.1), reads),
+        node('http://bee-480:1643', bzzToPlur(2), reads),
+        refusingNode('http://bee-720:1653', 'chequebook disabled', reads),
+      ],
+      FLOOR_PLUR,
+      recordingLogger(),
+    );
+
+    await gate.assertFunded((refusal) => collected.push(refusal));
+
+    assert.deepEqual(reads.urls, ['http://bee-360:1633', 'http://bee-480:1643', 'http://bee-720:1653']);
+    assert.deepEqual(
+      collected.map((refusal) => refusal.url),
+      ['http://bee-360:1633', 'http://bee-720:1653'],
+    );
+    assert.match(collected[0].message, /0\.1000 BZZ/);
+    assert.match(collected[1].message, /chequebook disabled/);
+  });
+
+  it('logs a reading for the nodes that did clear, in the same pass', async () => {
+    const reads = reader();
+    const logger = recordingLogger();
+
+    await new ChequebookGate(
+      [node('http://bee-360:1633', bzzToPlur(0.1), reads), node('http://bee-480:1643', bzzToPlur(2), reads)],
+      FLOOR_PLUR,
+      logger,
+    ).assertFunded(() => {});
+
+    assert.equal(logger.lines.length, 1);
+    assert.match(logger.lines[0], /http:\/\/bee-480:1643/);
+  });
+
+  // The rung is what /health may publish about a warned gate. The url is not, so the gate hands both
+  // over and the caller picks: the log gets the url, the health payload gets the rung.
+  it('names the rung when the caller gave its nodes one', async () => {
+    const reads = reader();
+    const collected: GateRefusal[] = [];
+    const rungNode = { ...node('http://bee-360:1633', bzzToPlur(0.1), reads), rung: '360p' };
+
+    await new ChequebookGate([rungNode], FLOOR_PLUR, recordingLogger()).assertFunded((refusal) =>
+      collected.push(refusal),
+    );
+
+    assert.equal(collected[0].rung, '360p');
+  });
+
+  it('leaves the rung out when the caller had none, rather than inventing one', async () => {
+    const reads = reader();
+    const collected: GateRefusal[] = [];
+
+    await new ChequebookGate(
+      [node('http://bee-a:1633', bzzToPlur(0.1), reads)],
+      FLOOR_PLUR,
+      recordingLogger(),
+    ).assertFunded((refusal) => collected.push(refusal));
+
+    assert.equal(collected[0].rung, undefined);
+  });
+
+  // An empty set is a caller bug rather than a node that could not be read, so it stays a throw the
+  // collector never sees. Nothing may report a gate as cleared when it read nothing at all.
+  it('still refuses an empty node set while collecting', async () => {
+    await assert.rejects(() => new ChequebookGate([], FLOOR_PLUR, recordingLogger()).assertFunded(() => {}), {
+      message: /no Bee node/,
+    });
   });
 });
 

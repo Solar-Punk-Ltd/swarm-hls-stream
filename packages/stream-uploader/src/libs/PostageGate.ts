@@ -2,6 +2,7 @@ import { PostageBatch } from '@ethersphere/bee-js';
 
 import { shortBatchId } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
+import { GateCollector } from './StartGates.js';
 
 /**
  * Refuse to start unless every postage batch this stage pays with can still carry a broadcast.
@@ -53,13 +54,17 @@ export class PostageGate {
   ) {}
 
   /**
-   * Read every distinct batch, throw on the first that cannot carry a broadcast, and otherwise leave
-   * one reading per batch in the log.
+   * Read every distinct batch and leave one reading per batch in the log.
    *
-   * Sequential rather than concurrent, so "the first failure" is the first rung in ladder order
-   * rather than whichever request happened to lose the race. Mirrors {@link ChequebookGate}.
+   * With no `collect` the first batch that cannot carry a broadcast throws, which is what a
+   * deployment asking for a refusal needs. Given one, every rung is read and each refusal is handed
+   * over with the message it would have thrown, because under `warn` the service runs and two
+   * exhausted batches must not take two restarts to learn about. Mirrors {@link ChequebookGate}.
+   *
+   * Sequential rather than concurrent either way, so "the first failure" is the first rung in ladder
+   * order rather than whichever request happened to lose the race.
    */
-  public async assertUsable(): Promise<void> {
+  public async assertUsable(collect?: GateCollector): Promise<void> {
     const distinct = distinctByNodeAndStamp(this.publishers);
     if (distinct.length === 0) {
       throw new Error(
@@ -69,45 +74,53 @@ export class PostageGate {
     }
 
     for (const publisher of distinct) {
-      const batch = await this.readBatch(publisher);
-
-      if (!batch.usable) {
-        throw new Error(this.unusableRefusal(publisher, batch));
+      const refusal = await this.refusalFor(publisher);
+      if (refusal === null) {
+        continue;
       }
-      if (batch.ttlSeconds < this.minTtlSeconds) {
-        throw new Error(this.expiringRefusal(publisher, batch));
+      if (collect === undefined) {
+        throw new Error(refusal);
       }
-      if (batch.utilization > this.maxUtilization) {
-        throw new Error(this.fullRefusal(publisher, batch));
-      }
-
-      this.logger.info(
-        `[PostageGate] ${publisher.rung} ${publisher.url} batch ${shortBatchId(publisher.stamp)}: ` +
-          `${percent(batch.utilization)} used, ${hours(batch.ttlSeconds)}h left ` +
-          `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)`,
-      );
+      collect({ rung: publisher.rung, url: publisher.url, message: refusal });
     }
   }
 
   /**
+   * The refusal this batch earns, or null once its reading is in the log.
+   *
    * ⛔ The catch is the absent-batch path, not an oversight. bee answers `/stamps/<id>` with
    * **404 "issuer does not exist"** for a batch it does not hold, verified against a live node on
    * 2026-08-31, so bee-js throws instead of returning something with `exists: false` on it. There is
    * no field to read for absence, and looking for one is what this gate used to do.
    */
-  private async readBatch(publisher: StampedPublisher): Promise<BatchReading> {
+  private async refusalFor(publisher: StampedPublisher): Promise<string | null> {
     let body: PostageBatch;
     try {
       body = await publisher.bee.getPostageBatch(publisher.stamp);
     } catch (error) {
-      throw new Error(this.unreadableRefusal(publisher, describeFailure(error)));
+      return this.unreadableRefusal(publisher, describeFailure(error));
     }
 
-    const reading = parseBatch(body);
-    if (reading === null) {
-      throw new Error(this.unreadableRefusal(publisher, 'the response carried no readable batch fields'));
+    const batch = parseBatch(body);
+    if (batch === null) {
+      return this.unreadableRefusal(publisher, 'the response carried no readable batch fields');
     }
-    return reading;
+    if (!batch.usable) {
+      return this.unusableRefusal(publisher, batch);
+    }
+    if (batch.ttlSeconds < this.minTtlSeconds) {
+      return this.expiringRefusal(publisher, batch);
+    }
+    if (batch.utilization > this.maxUtilization) {
+      return this.fullRefusal(publisher, batch);
+    }
+
+    this.logger.info(
+      `[PostageGate] ${publisher.rung} ${publisher.url} batch ${shortBatchId(publisher.stamp)}: ` +
+        `${percent(batch.utilization)} used, ${hours(batch.ttlSeconds)}h left ` +
+        `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)`,
+    );
+    return null;
   }
 
   private unreadableRefusal(publisher: StampedPublisher, reason: string): string {
