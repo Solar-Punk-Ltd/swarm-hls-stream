@@ -28,11 +28,13 @@ import { GateCollector } from './StartGates.js';
  *
  * ## What happens to that refusal, 2026-09-17
  *
- * The owner ruled that the uploader starts whatever these two gates read, so by default this batch
- * reading still happens on every boot and a batch that cannot carry a broadcast is a warning
- * carrying the whole refusal rather than a stopped service. `UPLOADER_START_GATES=refuse` restores
- * it. The account of what that costs and why it was ruled is in `libs/StartGates.ts`, beside the
- * chequebook read it was ruled about.
+ * ⛔ **This gate still refuses by default, and it is the only one that does.** The owner ruled the two
+ * apart on 2026-09-17: a chequebook under its floor is a node that publishes slowly, while a batch
+ * that is full or expired fails every write while the broadcast looks live to the room, the viewer
+ * and the catalog, and the recording it was meant to buy is never kept. So the shipped
+ * `chequebook-warn` has `ChequebookGate` warning and this one refusing, `warn` has both warning, and
+ * `refuse` has both refusing. A node that never answers is waited for under all three, which is
+ * `libs/NodeWait.ts` rather than this. The account of the ruling is in `libs/StartGates.ts`.
  *
  * ## Why per publisher rather than per node
  *

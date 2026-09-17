@@ -241,17 +241,18 @@ services:
       # where the 4000 comes from.
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
       # What the two startup gates below do about a node they cannot read, and how long each of their
-      # reads gets. The owner ruled on 2026-09-17 that the uploader starts whatever the chequebook
-      # says, so `warn` reads every gate, logs whatever refused and starts. `refuse` puts the old
-      # refusal back for a node that ANSWERS with a reading the gate will not accept, while a node
-      # that does not answer at all is waited for whatever it says, which is D16 of the same day.
+      # reads gets. The owner ruled the two apart on 2026-09-17, so `chequebook-warn`, the default,
+      # has the chequebook gate warning and starting while the postage gate still refuses: a batch
+      # that is full or expired fails every write while the broadcast looks live. `warn` is both
+      # warning, `refuse` is both refusing. A refusal is only ever about a node that ANSWERED, since
+      # one that does not answer at all is waited for whatever this says, which is D16 of the same day.
       #
       # The timeout is deliberately not the one above: a chequebook balance and a batch are answered
       # off the chain, and 4000ms borrowed from the upload loop's retry windows is what held a live
       # uploader in a restart loop on 2026-09-16 against a pool address that had no node behind it. A gate that warns leaves `start_gate_warned` on
       # /health for the life of the process, so the container reports unhealthy rather than the
       # finding living in one log line. See `libs/StartGates.ts`.
-      UPLOADER_START_GATES: ${UPLOADER_START_GATES:-warn}
+      UPLOADER_START_GATES: ${UPLOADER_START_GATES:-chequebook-warn}
       START_GATE_TIMEOUT_MS: ${START_GATE_TIMEOUT_MS:-20000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
       # The other two thresholds `PostageGate` reads a batch against, and they belong here for the

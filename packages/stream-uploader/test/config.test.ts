@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import '../src/utils/env.js';
 
 import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
-import { START_GATE_REFUSE, START_GATE_WARN } from '../src/libs/StartGates.js';
 
 type Config = typeof import('../src/utils/config.js')['config'];
 
@@ -74,13 +73,6 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     sample: '0.75',
     fallback: 0.9,
     refused: ['most', '-0.1', '1.1'],
-  },
-  {
-    name: 'UPLOADER_START_GATES',
-    field: 'startGateMode',
-    sample: 'refuse',
-    fallback: 'warn',
-    refused: ['on', 'strict', 'warn refuse'],
   },
   {
     name: 'START_GATE_TIMEOUT_MS',
@@ -249,29 +241,44 @@ describe('the environment contract', () => {
   });
 
   /**
-   * What the two startup gates do to a deployment that cannot answer them, which is the whole of the
-   * owner's ruling of 2026-09-17: the uploader starts whatever the chequebook says, and the refusal
-   * is something an operator asks for rather than the shipped behaviour.
+   * What the two startup gates do to a deployment that cannot answer them, which is the owner's
+   * ruling of 2026-09-17 in both its halves: the uploader starts whatever the chequebook says, and a
+   * postage batch that cannot carry a broadcast still stops it.
    */
   describe('the start gates', () => {
-    it('warns and starts by default, so an unreadable chequebook costs a log line', async () => {
-      const config = await loadConfig(requiredEnv());
+    const gatesFor = async (mode?: string) =>
+      (await loadConfig(mode === undefined ? requiredEnv() : { ...requiredEnv(), UPLOADER_START_GATES: mode }))
+        .startGates;
 
-      assert.equal(config.startGateMode, START_GATE_WARN);
+    it('warns on the chequebook and refuses on postage by default', async () => {
+      assert.deepEqual(await gatesFor(), { chequebookRefuses: false, postageRefuses: true });
     });
 
-    it('takes refuse as the mode that puts the old refusal back', async () => {
-      const config = await loadConfig({ ...requiredEnv(), UPLOADER_START_GATES: 'refuse' });
+    it('takes warn as both gates warning', async () => {
+      assert.deepEqual(await gatesFor('warn'), { chequebookRefuses: false, postageRefuses: false });
+    });
 
-      assert.equal(config.startGateMode, START_GATE_REFUSE);
+    it('takes refuse as both gates refusing, which is what every boot did before that date', async () => {
+      assert.deepEqual(await gatesFor('refuse'), { chequebookRefuses: true, postageRefuses: true });
     });
 
     // An operator writing the mode into a `.env` by hand should not be refused over a capital.
     it('reads a mode written with padding or capitals as the mode it spells', async () => {
-      const config = await loadConfig({ ...requiredEnv(), UPLOADER_START_GATES: '  Refuse ' });
-
-      assert.equal(config.startGateMode, START_GATE_REFUSE);
+      assert.deepEqual(await gatesFor('  Refuse '), { chequebookRefuses: true, postageRefuses: true });
     });
+
+    it('reads a blank setting as the default rather than refusing during import', async () => {
+      assert.deepEqual(await gatesFor('   '), { chequebookRefuses: false, postageRefuses: true });
+    });
+
+    for (const written of ['on', 'strict', 'warn refuse', 'postage-warn']) {
+      it(`refuses to start on UPLOADER_START_GATES=${written}, naming the variable`, async () => {
+        await assert.rejects(
+          () => loadConfig({ ...requiredEnv(), UPLOADER_START_GATES: written }),
+          /UPLOADER_START_GATES/,
+        );
+      });
+    }
   });
 
   /**
@@ -316,6 +323,12 @@ describe('the environment contract', () => {
     });
   });
 
+  /**
+   * Names read by `config.ts` whose value is not a scalar, so the table above cannot carry them.
+   * `UPLOADER_START_GATES` reaches config as the pair of gate policies it resolves to.
+   */
+  const DECLARED_ONLY = ['UPLOADER_START_GATES'];
+
   // Without this the pair can drift apart silently and in the direction that looks fine: the service
   // starts, every default applies, and the operator's setting is read from a name nothing sets.
   it('reads only names the deployment actually declares', () => {
@@ -328,7 +341,7 @@ describe('the environment contract', () => {
     const declared = new Set([...service.matchAll(/^ {6}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]));
 
     assert.ok(declared.size > 0, 'no environment names parsed out of docker-compose.yml, so this test checks nothing');
-    for (const { name } of [...REQUIRED_ENV, ...OPTIONAL_ENV]) {
+    for (const name of [...REQUIRED_ENV, ...OPTIONAL_ENV].map((variable) => variable.name).concat(DECLARED_ONLY)) {
       assert.ok(declared.has(name), `config.ts reads ${name}, which deploy/docker-compose.yml never sets`);
     }
   });

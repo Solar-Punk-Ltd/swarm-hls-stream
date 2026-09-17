@@ -333,22 +333,22 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable                | Default   | Description                                                                                                                                  |
-| ----------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLISH_KEY_SECRET`    | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below                         |
-| `API_PORT`              | `3000`    | HTTP API port                                                                                                                                |
-| `STATE_DIR`             | `./state` | Directory for crash recovery state                                                                                                           |
-| `MAX_QUEUE_SIZE`        | `100`     | Max queued segments per stream                                                                                                               |
-| `RECOVERY_TIMEOUT`      | `60000`   | Crash recovery timeout (ms)                                                                                                                  |
-| `SEGMENT_STALL_MS`      | `30000`   | Silence after which `/health` reads degraded                                                                                                 |
-| `UPLOADER_START_GATES`  | `warn`    | What a startup gate that cannot clear its node does. `warn` logs it, latches it onto `/health` and starts. `refuse` rethrows it              |
-| `START_GATE_TIMEOUT_MS` | `20000`   | How long one startup gate's read of one node may take, 600000 at most. Separate from `BEE_REQUEST_TIMEOUT_MS`, which the upload loop derives |
-| `HLS_FRAGMENT`          | `0.5`     | Nominal seconds per fragment, the grid a segment's date snaps to within one percent. Same variable the engine reads                          |
-| `SEGMENT_DEDUP_WINDOW`  | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                                          |
-| `SEGMENT_REDUNDANCY`    | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                                                   |
-| `ENGINE`                | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                                                |
-| `LOG_LEVEL`             | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                                     |
-| `LOG_FORMAT`            | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                                   |
+| Variable                | Default           | Description                                                                                                                                                                     |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLISH_KEY_SECRET`    | _(empty)_         | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below                                                            |
+| `API_PORT`              | `3000`            | HTTP API port                                                                                                                                                                   |
+| `STATE_DIR`             | `./state`         | Directory for crash recovery state                                                                                                                                              |
+| `MAX_QUEUE_SIZE`        | `100`             | Max queued segments per stream                                                                                                                                                  |
+| `RECOVERY_TIMEOUT`      | `60000`           | Crash recovery timeout (ms)                                                                                                                                                     |
+| `SEGMENT_STALL_MS`      | `30000`           | Silence after which `/health` reads degraded                                                                                                                                    |
+| `UPLOADER_START_GATES`  | `chequebook-warn` | Which startup gate stops the boot when it cannot clear a node. `chequebook-warn` warns on the chequebook and refuses on postage, `warn` warns on both, `refuse` refuses on both |
+| `START_GATE_TIMEOUT_MS` | `20000`           | How long one startup gate's read of one node may take, 600000 at most. Separate from `BEE_REQUEST_TIMEOUT_MS`, which the upload loop derives                                    |
+| `HLS_FRAGMENT`          | `0.5`             | Nominal seconds per fragment, the grid a segment's date snaps to within one percent. Same variable the engine reads                                                             |
+| `SEGMENT_DEDUP_WINDOW`  | `10000`           | Segment indexes remembered per stream, twice this many held at most                                                                                                             |
+| `SEGMENT_REDUNDANCY`    | `1`               | Erasure-coding parity on segment uploads, `0` turns it off                                                                                                                      |
+| `ENGINE`                | _(empty)_         | Engine plugin to load (`srs`, `ome` or empty)                                                                                                                                   |
+| `LOG_LEVEL`             | `debug`           | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                                                                        |
+| `LOG_FORMAT`            | _(empty)_         | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                                                                      |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -517,7 +517,7 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 | `fragment_publisher_gop` | Segments longer than `HLS_FRAGMENT` with no ladder running. Nothing transcodes there, so the publisher's own keyframe interval decides the segment and the configured value is a floor. Raised once eight measured segments run over it by over 5%. Nothing is stale, and the dating follows the media so the recording's clock stays right. What it names is a stage cutting longer than the deployment declared, with the same wrong-sized gap entries as the row above: set `HLS_FRAGMENT` to the publisher's keyframe interval, or turn the ladder on                                                                                                                                 |
 | `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                                                                                                                                                                                                                                                                                                                              |
 | `node_unavailable`       | The boot has not finished, because the half of it that needs a Bee node is still waiting for one to answer. The only reason that is not a reading about this process at all, and the only one that can be the whole answer on a service that has done nothing yet. See the waiting state below                                                                                                                                                                                                                                                                                                                                                                                            |
-| `start_gate_warned`      | A startup gate could not clear a node and the uploader started anyway, which is what `UPLOADER_START_GATES=warn` asks for. Latched from the pass that finished the boot and fixed from then on, since nothing re-runs the gates afterwards, and `startGateWarnings` on the same body names which gate and which rung. The gate's own message is in the log and deliberately not here: this endpoint takes no credential and those messages carry node URLs and batch ids                                                                                                                                                                                                                  |
+| `start_gate_warned`      | A startup gate could not clear a node and the uploader started anyway, which is what `UPLOADER_START_GATES` asks for on that gate. Latched from the pass that finished the boot and fixed from then on, since nothing re-runs the gates afterwards, and `startGateWarnings` on the same body names which gate and which rung. The gate's own message is in the log and deliberately not here: this endpoint takes no credential and those messages carry node URLs and batch ids                                                                                                                                                                                                          |
 
 **The waiting state, `status: "waiting_for_node"`** (decision D16, the owner on 2026-09-17: "we should be
 able to start the uploader but maybe say its node not available, try to reconnect or something"). The API
@@ -542,9 +542,12 @@ While it waits, `/stream/*` and every engine prefix answer `503` naming the node
 rather than reaching an orchestrator whose catalog has never been read. `/metrics` keeps answering,
 since its counters describe this process and not the node.
 
-**What a warned gate leaves behind.** Under `warn` the gates read every node rather than stopping at
-the first that refuses, so one boot names every rung an operator has to fix rather than one per
-restart, and the outcome of the pass that finished the boot is latched into `startGateWarnings`. The
+**What a warned gate leaves behind.** A gate that warns reads every node rather than stopping at the
+first that refuses, so one boot names every rung an operator has to fix rather than one per restart,
+and the outcome of the pass that finished the boot is latched into `startGateWarnings`. Under the
+shipped `chequebook-warn` that is the chequebook gate: a postage batch that cannot carry a broadcast
+still ends the boot, because every write against it fails while the broadcast looks live to the room,
+the viewer and the catalog. The
 service is degraded from then on, which is what the container's healthcheck reads and what
 `deploy/scripts/assert-started.sh` reports. A later pass replaces an earlier one, because the gates
 are read again on every attempt while the uploader waits for its node and only the last of those

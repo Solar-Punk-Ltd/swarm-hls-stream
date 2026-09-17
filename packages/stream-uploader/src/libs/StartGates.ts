@@ -40,7 +40,19 @@ import { SINGLE_PUBLISHER } from './BeePublisherPool.js';
  */
 const START_GATE_MODE_ENV = 'UPLOADER_START_GATES';
 
-/** Read every gate, log what refuses, and start anyway. The shipped mode since 2026-09-17. */
+/**
+ * The chequebook gate warns and the postage gate refuses. The shipped mode, on the owner's ruling of
+ * 2026-09-17.
+ *
+ * ⛔ The two are not the same risk, which is why one value covers both rather than one meaning each.
+ * A chequebook under its floor is a node that publishes slowly and noisily, and not starting over it
+ * is what the first half of that day's ruling removed. A batch that is full or expired fails every
+ * write while the broadcast looks live to the room, the viewer and the catalog, and the recording it
+ * was meant to buy is never kept, so that one still stops the boot.
+ */
+export const START_GATE_CHEQUEBOOK_WARN = 'chequebook-warn';
+
+/** Both gates read, log what refuses, and start anyway. */
 export const START_GATE_WARN = 'warn';
 
 /**
@@ -53,7 +65,32 @@ export const START_GATE_WARN = 'warn';
 export const START_GATE_REFUSE = 'refuse';
 
 /** The second argument of {@link runStartGates}, and what `parseStartGateMode` below answers with. */
-export type StartGateMode = typeof START_GATE_WARN | typeof START_GATE_REFUSE;
+export type StartGateMode = typeof START_GATE_CHEQUEBOOK_WARN | typeof START_GATE_WARN | typeof START_GATE_REFUSE;
+
+/**
+ * Which of the two gates a refusal stops the boot on, which is all a mode decides.
+ *
+ * Local, like the option types above: `config.ts` reaches it through `gatePolicyFor` and `index.ts`
+ * through `config`, so nothing names the type and an exported name nothing imports is surface
+ * `deploy/scripts/unused-exports.mjs` counts.
+ */
+interface StartGatePolicy {
+  readonly chequebookRefuses: boolean;
+  readonly postageRefuses: boolean;
+}
+
+/**
+ * The mode as the two gates read it.
+ *
+ * The one place in this file that names a gate, and deliberately so: a mode is a sentence about those
+ * two and nothing else, while everything below works on whatever gates it is handed.
+ */
+export function gatePolicyFor(mode: StartGateMode): StartGatePolicy {
+  return {
+    chequebookRefuses: mode === START_GATE_REFUSE,
+    postageRefuses: mode !== START_GATE_WARN,
+  };
+}
 
 /**
  * One node a gate could not clear, as the gate hands it over when it is collecting rather than
@@ -82,10 +119,17 @@ export interface StartGate {
   /** How a warning names this gate to an operator. The class name is what both callers pass. */
   readonly name: string;
   /**
+   * Whether a refusal from this gate stops the boot, as the deployment's mode decides for it.
+   *
+   * Per gate rather than per pass since the owner's ruling of 2026-09-17 separated the two: see
+   * {@link gatePolicyFor}.
+   */
+  readonly refuses: boolean;
+  /**
    * Read, and either throw at the first refusal or hand every one of them to `collect`.
    *
-   * The mode decides which, and the gate is told by being given a collector or not, rather than by
-   * being told the mode. A gate has no business knowing what a deployment does about what it found.
+   * The gate is told which by being given a collector or not, rather than by being told the mode. A
+   * gate has no business knowing what a deployment does about what it found.
    */
   run(collect?: GateCollector): Promise<void>;
 }
@@ -107,27 +151,38 @@ type StartGateWarningSink = (warnings: readonly StartGateWarning[]) => void;
  */
 export function parseStartGateMode(written: string): StartGateMode {
   const mode = written.trim().toLowerCase();
-  if (mode === START_GATE_WARN || mode === START_GATE_REFUSE) {
+
+  // A variable set to nothing is a variable nobody set, which is what `optional` decides for an empty
+  // string and `required` for whitespace. Refusing here happens during the import of `config.ts`,
+  // before the crash handlers exist, so it is the one refusal in the service with no readable report.
+  if (mode === '') {
+    return START_GATE_CHEQUEBOOK_WARN;
+  }
+
+  if (mode === START_GATE_CHEQUEBOOK_WARN || mode === START_GATE_WARN || mode === START_GATE_REFUSE) {
     return mode;
   }
 
   throw new Error(
-    `Env var ${START_GATE_MODE_ENV} is neither "${START_GATE_WARN}" nor "${START_GATE_REFUSE}": "${written}"`,
+    `Env var ${START_GATE_MODE_ENV} is none of "${START_GATE_CHEQUEBOOK_WARN}", "${START_GATE_WARN}" or ` +
+      `"${START_GATE_REFUSE}": "${written}"`,
   );
 }
 
 /**
- * Run every gate in order, and do with a refusal whatever the mode says.
+ * Run every gate in order, and do with each one's refusal what that gate says.
  *
- * Under `warn` every gate is read even after an earlier one refused, and so is every node inside
- * each gate, because the chequebook and the postage batch are separate questions with separate
- * fixes and so is every rung. An operator who has to restart once per finding learns them one boot
- * at a time. Under `refuse` the first failure is rethrown untouched, so the caller's crash report
- * carries the gate's own message rather than a wrapper around it.
+ * A gate that warns is read whole, every node of it, and so is the gate after it, because the
+ * chequebook and the postage batch are separate questions with separate fixes and so is every rung.
+ * An operator who has to restart once per finding learns them one boot at a time. A gate that refuses
+ * rethrows its first failure untouched, so the caller's crash report carries the gate's own message
+ * rather than a wrapper around it, and nothing after it runs.
+ *
+ * Per gate rather than per pass since 2026-09-17: under the shipped default the chequebook warns and
+ * the postage gate refuses, so one pass can do both.
  */
 export async function runStartGates(
   gates: readonly StartGate[],
-  mode: StartGateMode,
   logger: StartGateLogger,
   /** Called once with everything this pass warned about, so `/health` can report it. See D16's review. */
   onWarnings: StartGateWarningSink = () => {},
@@ -135,19 +190,18 @@ export async function runStartGates(
   const warnings: StartGateWarning[] = [];
 
   for (const gate of gates) {
-    const collect =
-      mode === START_GATE_REFUSE
-        ? undefined
-        : (refusal: GateRefusal) => {
-            const rung = namedRung(refusal.rung);
-            warnings.push({ gate: gate.name, rung });
-            logger.warn(warningLine(gate.name, rung, refusal.message));
-          };
+    const collect = gate.refuses
+      ? undefined
+      : (refusal: GateRefusal) => {
+          const rung = namedRung(refusal.rung);
+          warnings.push({ gate: gate.name, rung });
+          logger.warn(warningLine(gate.name, rung, refusal.message));
+        };
 
     try {
       await gate.run(collect);
     } catch (error) {
-      if (mode === START_GATE_REFUSE) {
+      if (gate.refuses) {
         throw error;
       }
 

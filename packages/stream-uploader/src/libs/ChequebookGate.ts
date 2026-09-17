@@ -22,14 +22,16 @@ import { GateCollector } from './StartGates.js';
  *
  * ## What happens to that refusal, 2026-09-17
  *
- * It became something a deployment asks for. The owner ruled that day that "the uploader and engine
- * should be able to start no matter what the status of the chequebook is", after this read timed out
+ * It became something a deployment asks for, and this gate is the one the ruling was about. The owner
+ * ruled that day that "the uploader and engine should be able to start no matter what the status of
+ * the chequebook is", after this read timed out
  * on the live host against a pool address that had no node behind it: the refusal was the loudest
  * line in the log, it was about a chequebook nothing was wrong with, and docker restarted the
  * container into it until the deploy gave up. So by default the reading below still happens on every
  * boot and still says exactly what it found, and the service starts anyway with the whole refusal in
- * the log as a warning. `UPLOADER_START_GATES=refuse` puts the refusal back, unchanged. What that
- * trades is in `libs/StartGates.ts`, which is where the decision now lives for both gates.
+ * the log as a warning, latched onto `/health`. `UPLOADER_START_GATES=refuse` puts the refusal back,
+ * unchanged, and the shipped `chequebook-warn` is this gate warning while `PostageGate` refuses.
+ * What that trades is in `libs/StartGates.ts`, which is where the decision lives for both gates.
  *
  * ## Why availableBalance rather than totalBalance
  *
