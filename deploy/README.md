@@ -422,6 +422,12 @@ The React client is bundled into a multi-stage docker image: Node builds `packag
 
 `client` and `bee-gateway` must be on the same target (nginx proxies via the docker service name).
 
+`bee-gateway` ships ultra-light, a node with no chain behind it that downloads and can never spend, and
+`BEE_GATEWAY_RPC_ENDPOINT` with `BEE_GATEWAY_SWAP_ENABLE` in the root `.env` put it on the chain instead,
+set together or not at all, which is what the manager writes for a deployment whose gateway was created
+on the chain. That costs gas and a funded chequebook at the address its `/addresses` reports as
+`chain_address`, both topped up by hand.
+
 ```bash
 # Spin up two viewer instances side-by-side. Each profile env file sets its own
 # VITE_APP_OWNER + STREAM_LIST_TOPIC pointing at a different streamer's feed.
