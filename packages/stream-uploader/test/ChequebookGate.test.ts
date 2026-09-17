@@ -445,3 +445,68 @@ describe('the entry point clears the gate before anything paid or stateful', () 
     });
   }
 });
+
+/**
+ * ⛔ **The same split the postage gate makes, because this gate's refusals have the same two kinds.**
+ *
+ * A balance under the floor is the node answering with a number. A read that threw may be either: a
+ * 4xx is the node refusing the request, and anything else, a timeout, a 5xx or no status at all, is
+ * no reading arriving. A body with no readable `availableBalance` in it is no reading either. This
+ * gate warns under the shipped mode whichever it is, so what the reading changes today is only what
+ * `refuse` and a future policy see. It is recorded because the fact belongs to the gate that
+ * established it, and `runStartGates` is the one place that decides what a boot does about it.
+ */
+describe('which reading a chequebook refusal carries', () => {
+  async function readingOf(nodes: readonly ChequebookNode[]): Promise<string | undefined> {
+    const collected: GateRefusal[] = [];
+    await new ChequebookGate(nodes, FLOOR_PLUR, recordingLogger()).assertFunded((refusal) => collected.push(refusal));
+    assert.equal(collected.length, 1, 'exactly one refusal was expected');
+    return collected[0].reading;
+  }
+
+  /** A node whose chequebook read rejects with `failure` rather than with a bare message. */
+  function throwingNode(url: string, failure: unknown): ChequebookNode {
+    return {
+      url,
+      bee: {
+        getChequebookBalance: async () => {
+          throw failure;
+        },
+      },
+    };
+  }
+
+  it('reads a balance under the floor as the node answering with a number', async () => {
+    const reads = reader();
+
+    assert.equal(await readingOf([node('http://bee-a:1633', bzzToPlur(0.1), reads)]), 'answered');
+  });
+
+  it('reads a 4xx as the node answering the request', async () => {
+    const notFound = Object.assign(new Error('chequebook disabled'), { name: 'BeeResponseError', status: 404 });
+
+    assert.equal(await readingOf([throwingNode('http://bee-a:1633', notFound)]), 'answered');
+  });
+
+  it('reads a 5xx as no reading at all', async () => {
+    const unready = Object.assign(new Error('bad gateway'), { name: 'BeeResponseError', status: 502 });
+
+    assert.equal(await readingOf([throwingNode('http://bee-a:1633', unready)]), 'unreadable');
+  });
+
+  it('reads the timeout that ended the boot on 2026-09-16 as no reading at all', async () => {
+    assert.equal(
+      await readingOf([throwingNode('http://bee-a:1633', new Error('timeout of 4000ms exceeded'))]),
+      'unreadable',
+    );
+  });
+
+  it('reads a body with no available balance in it as no reading at all', async () => {
+    const reads = reader();
+
+    assert.equal(
+      await readingOf([shapelessNode('http://bee-a:1633', { totalBalance: balance(9n) }, reads)]),
+      'unreadable',
+    );
+  });
+});

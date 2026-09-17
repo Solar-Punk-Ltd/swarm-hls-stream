@@ -1,6 +1,7 @@
 import { StartGateWarning } from '../types.js';
 
 import { SINGLE_PUBLISHER } from './BeePublisherPool.js';
+import { GateRefusalError } from './GateRefusalError.js';
 
 /**
  * What the uploader does about a startup gate it cannot clear.
@@ -22,6 +23,16 @@ import { SINGLE_PUBLISHER } from './BeePublisherPool.js';
  * So the readings stay, on every boot, and by default a gate that cannot clear its node writes its
  * whole refusal as a warning and the service starts. `UPLOADER_START_GATES=refuse` is how a
  * deployment asks for the old behaviour, unchanged: same gates, same order, same messages.
+ *
+ * ## What the owner ruled next, 2026-09-17, decision 7 option b
+ *
+ * "PostageGate refuses only a batch the node answered about and warns on an unreadable one." The
+ * postage gate kept refusing under the shipped mode, and a batch that could not be read at all was
+ * refused on the same footing as one the node had reported full or expired. That is the 2026-09-16
+ * failure again with the other gate's name on it: a rung whose node is not talking says nothing
+ * about any batch. So every refusal now says which of the two it is, {@link GateReading}, and a
+ * policy of `answered` stops the boot on the first kind and warns about the second. `warn` and
+ * `refuse` are untouched, and `UPLOADER_START_GATES` still has the same three values.
  *
  * ## Why the mode lives here rather than inside each gate
  *
@@ -73,6 +84,15 @@ export const START_GATE_REFUSE = 'refuse';
 export type StartGateMode = typeof START_GATE_CHEQUEBOOK_WARN | typeof START_GATE_WARN | typeof START_GATE_REFUSE;
 
 /**
+ * How much of what a gate finds stops the boot.
+ *
+ * `answered` is the middle the owner ruled on 2026-09-17: the node said something the gate will not
+ * accept, so every upload on that rung would fail the same way, while a rung nothing could be read
+ * from is a warning and a start. See {@link GateReading} for the two facts it sorts.
+ */
+export type GateRefusalPolicy = 'none' | 'answered' | 'all';
+
+/**
  * Which of the two gates a refusal stops the boot on, which is all a mode decides.
  *
  * Local, like the option types above: `config.ts` reaches it through `gatePolicyFor` and `index.ts`
@@ -80,8 +100,8 @@ export type StartGateMode = typeof START_GATE_CHEQUEBOOK_WARN | typeof START_GAT
  * `deploy/scripts/unused-exports.mjs` counts.
  */
 interface StartGatePolicy {
-  readonly chequebookRefuses: boolean;
-  readonly postageRefuses: boolean;
+  readonly chequebookRefuses: GateRefusalPolicy;
+  readonly postageRefuses: GateRefusalPolicy;
 }
 
 /**
@@ -91,10 +111,13 @@ interface StartGatePolicy {
  * two and nothing else, while everything below works on whatever gates it is handed.
  */
 export function gatePolicyFor(mode: StartGateMode): StartGatePolicy {
-  return {
-    chequebookRefuses: mode === START_GATE_REFUSE,
-    postageRefuses: mode !== START_GATE_WARN,
-  };
+  if (mode === START_GATE_REFUSE) {
+    return { chequebookRefuses: 'all', postageRefuses: 'all' };
+  }
+  if (mode === START_GATE_WARN) {
+    return { chequebookRefuses: 'none', postageRefuses: 'none' };
+  }
+  return { chequebookRefuses: 'none', postageRefuses: 'answered' };
 }
 
 /**
@@ -114,7 +137,22 @@ export interface GateRefusal {
   readonly url: string;
   /** What the gate would have thrown, whole. */
   readonly message: string;
+  readonly reading: GateReading;
 }
+
+/**
+ * Which kind of fact a refusal is, which is the only thing a policy of `answered` sorts on.
+ *
+ * `answered` is the node saying something the gate will not accept: this batch is not here, it is
+ * full, it has expired, this chequebook holds less than the floor. Every upload on that rung would
+ * fail the same way, so a deployment can reasonably refuse to start on it.
+ *
+ * `unreadable` is no reading arriving: a timeout, a refused connection, a 5xx, or an answer with
+ * nothing in it the gate can read. It says nothing whatever about the batch or the chequebook, only
+ * that this address is not talking, which is the thing that took a live uploader off the air on
+ * 2026-09-16 while the address itself was the fault.
+ */
+export type GateReading = 'answered' | 'unreadable';
 
 /** Where a gate puts a refusal instead of throwing it. Absent, the gate throws at the first one. */
 export type GateCollector = (refusal: GateRefusal) => void;
@@ -124,12 +162,13 @@ export interface StartGate {
   /** How a warning names this gate to an operator. The class name is what both callers pass. */
   readonly name: string;
   /**
-   * Whether a refusal from this gate stops the boot, as the deployment's mode decides for it.
+   * How much of what this gate finds stops the boot, as the deployment's mode decides for it.
    *
-   * Per gate rather than per pass since the owner's ruling of 2026-09-17 separated the two: see
+   * Per gate rather than per pass since the owner's ruling of 2026-09-17 separated the two, and
+   * three-valued since decision 7 b of the same day separated the two readings: see
    * {@link gatePolicyFor}.
    */
-  readonly refuses: boolean;
+  readonly refuses: GateRefusalPolicy;
   /**
    * Read, and either throw at the first refusal or hand every one of them to `collect`.
    *
@@ -185,6 +224,12 @@ export function parseStartGateMode(written: string): StartGateMode {
  *
  * Per gate rather than per pass since 2026-09-17: under the shipped default the chequebook warns and
  * the postage gate refuses, so one pass can do both.
+ *
+ * ⛔ Every gate is handed a collector, whatever its policy, and the collector is what throws. A gate
+ * that would stop the boot therefore still reads its pool one node at a time and still ends at the
+ * first refusal its policy will not survive, because the throw happens inside the gate's own loop.
+ * That is what lets a policy of `answered` warn its way past a rung nothing answered for and stop at
+ * the next rung the node did answer about, which no single decision taken before the reads could do.
  */
 export async function runStartGates(
   gates: readonly StartGate[],
@@ -195,18 +240,25 @@ export async function runStartGates(
   const warnings: StartGateWarning[] = [];
 
   for (const gate of gates) {
-    const collect = gate.refuses
-      ? undefined
-      : (refusal: GateRefusal) => {
-          const rung = namedRung(refusal.rung);
-          warnings.push({ gate: gate.name, rung });
-          logger.warn(warningLine(gate.name, rung, refusal.message));
-        };
+    const collect = (refusal: GateRefusal) => {
+      if (endsTheBoot(gate.refuses, refusal.reading)) {
+        throw new GateRefusalError(refusal.message, refusal.url);
+      }
+      const rung = namedRung(refusal.rung);
+      warnings.push({ gate: gate.name, rung });
+      logger.warn(warningLine(gate.name, rung, refusal.message));
+    };
 
     try {
       await gate.run(collect);
     } catch (error) {
-      if (gate.refuses) {
+      // The collector's own refusal on its way out through the gate, carrying the message and the
+      // node the gate would have thrown itself. Nothing here may wrap it or read it again.
+      if (error instanceof GateRefusalError) {
+        throw error;
+      }
+
+      if (gate.refuses !== 'none') {
         throw error;
       }
 
@@ -233,6 +285,10 @@ export async function runStartGates(
  */
 function namedRung(rung: string | undefined): string | undefined {
   return rung === SINGLE_PUBLISHER ? undefined : rung;
+}
+
+function endsTheBoot(policy: GateRefusalPolicy, reading: GateReading): boolean {
+  return policy === 'all' || (policy === 'answered' && reading === 'answered');
 }
 
 function warningLine(gate: string, rung: string | undefined, message: string): string {
