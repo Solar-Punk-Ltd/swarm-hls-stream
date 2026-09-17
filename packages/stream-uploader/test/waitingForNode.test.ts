@@ -244,6 +244,31 @@ describe('the entry point listens before it reads a node', () => {
     );
   });
 
+  /**
+   * ⛔ The probe reads through the gates' own clients, not the upload loop's.
+   *
+   * `buildPublishers` is called twice, once at BEE_REQUEST_TIMEOUT_MS for the upload loop and once at
+   * START_GATE_TIMEOUT_MS for the gates. A probe through the first would give a node four seconds to
+   * answer a liveness check where the gates behind it would have waited twenty, so a node that is
+   * merely slow to answer would be waited for forever by a boot whose gates could have cleared it.
+   */
+  it('probes through the gate pool, so the budget is the one the gates read on', () => {
+    assert.match(
+      source,
+      /assertNodeReachable\(gatePublishers\.coordinator\(\)\)/,
+      'the probe must use the pool built at the gate timeout',
+    );
+    assert.doesNotMatch(
+      source,
+      /assertNodeReachable\(publishers\.coordinator\(\)\)/,
+      'the upload loop pool carries a four second deadline, which is not what the gates read on',
+    );
+    assert.ok(
+      at('const gatePublishers = buildPublishers(config.startGateTimeoutMs)') < at('assertNodeReachable('),
+      'the gate pool has to exist before the probe reads through it',
+    );
+  });
+
   // The cheapest question first. A node that is not there answers a gate with a timeout it spends a
   // whole budget on, and answers the catalog with a status that has to be interpreted. See NodeWait.
   it('asks whether the node is there before it spends a gate budget on it', () => {
