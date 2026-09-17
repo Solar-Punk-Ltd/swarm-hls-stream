@@ -369,15 +369,6 @@ export class StreamCatalog {
   }
 
   /**
-   * Whether the node is up and it was only the head's payload that failed to arrive.
-   *
-   * The error codes for a transfer that broke on the way back cover a request that timed out as
-   * well as one whose body was dropped, so the code alone cannot say which happened. A node that
-   * answers a liveness check immediately afterwards is the evidence that the payload was the
-   * problem; one that does not answer keeps the boot failing, which is what a wrong url or a node
-   * that is down deserves.
-   */
-  /**
    * Whether "there is no feed here" is something the node actually said.
    *
    * ⛔ `isFeedAbsent` accepts 404 and 503, and the two are not the same evidence. Only a serving node
@@ -405,6 +396,15 @@ export class StreamCatalog {
     }
   }
 
+  /**
+   * Whether the node is up and it was only the head's payload that failed to arrive.
+   *
+   * The error codes for a transfer that broke on the way back cover a request that timed out as
+   * well as one whose body was dropped, so the code alone cannot say which happened. A node that
+   * answers a liveness check immediately afterwards is the evidence that the payload was the
+   * problem; one that does not answer keeps the boot failing, which is what a wrong url or a node
+   * that is down deserves.
+   */
   private async payloadUnreadableOnLiveNode(error: unknown): Promise<boolean> {
     if (!isTransferLost(error)) {
       return false;
