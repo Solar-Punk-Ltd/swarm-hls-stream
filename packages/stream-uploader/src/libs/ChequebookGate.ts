@@ -1,3 +1,4 @@
+import { safeUrl } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
 import { GateCollector } from './StartGates.js';
 
@@ -84,7 +85,7 @@ export class ChequebookGate {
       if (collect === undefined) {
         throw new Error(refusal);
       }
-      collect({ rung: node.rung, url: node.url, message: refusal });
+      collect({ rung: node.rung, url: safeUrl(node.url), message: refusal });
     }
   }
 
@@ -106,7 +107,7 @@ export class ChequebookGate {
     }
 
     this.logger.info(
-      `[ChequebookGate] ${node.url} chequebook available ${plurToBzz(availablePlur)} BZZ, ` +
+      `[ChequebookGate] ${safeUrl(node.url)} chequebook available ${plurToBzz(availablePlur)} BZZ, ` +
         `floor ${plurToBzz(this.floorPlur)} BZZ`,
     );
     return null;
@@ -114,7 +115,7 @@ export class ChequebookGate {
 
   private unfundedRefusal(url: string, availablePlur: bigint): string {
     return (
-      `[ChequebookGate] ${url} has ${plurToBzz(availablePlur)} BZZ available in its chequebook and the ` +
+      `[ChequebookGate] ${safeUrl(url)} has ${plurToBzz(availablePlur)} BZZ available in its chequebook and the ` +
       `floor is ${plurToBzz(this.floorPlur)} BZZ. The uploader refuses to run on an unfunded chequebook, ` +
       'because a dry node answers /health in a millisecond while every paid push behind it stalls. Fund ' +
       "it with a chequebook deposit from the node's own wallet, then restart. CHEQUEBOOK_MIN_BZZ moves " +
@@ -124,7 +125,7 @@ export class ChequebookGate {
 
   private unreadableRefusal(url: string, reason: string): string {
     return (
-      `[ChequebookGate] ${url} chequebook is absent or unreadable: ${reason}. The uploader refuses to ` +
+      `[ChequebookGate] ${safeUrl(url)} chequebook is absent or unreadable: ${reason}. The uploader refuses to ` +
       'run without a funding reading, because a chequebook nothing can read is not one anyone can call ' +
       'filled, and a node running with SWAP disabled has no chequebook to fill at all. The floor is ' +
       `${plurToBzz(this.floorPlur)} BZZ.`

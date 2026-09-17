@@ -292,7 +292,7 @@ export function shortBatchId(stamp: string): string {
  * make an identical pair read as a mismatch. One that had a credential removed is rebuilt, and so
  * normalised, because it is no longer what was configured either way.
  */
-function safeUrl(url: string): string {
+export function safeUrl(url: string): string {
   const parsed = new URL(url);
   if (parsed.username === '' && parsed.password === '') {
     return redactUrlSecrets(url);

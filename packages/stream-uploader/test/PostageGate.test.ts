@@ -330,3 +330,30 @@ describe('the postage gate with somewhere to put a refusal', () => {
     );
   });
 });
+
+/** The same credential-stripping {@link ChequebookGate} does, and through the same helper. */
+describe('what a postage refusal says about the node url', () => {
+  it('strips a credential out of a refusal', async () => {
+    const reads: Reads = { asked: [] };
+    const message = await refusalFrom([
+      failingPublisher('360p', 'http://operator:hunter2@a:1633', 'a'.repeat(64), 'connection refused', reads),
+    ]);
+
+    assert.doesNotMatch(message, /hunter2/);
+    assert.match(message, /a:1633/);
+  });
+
+  it('strips one out of the reading it logs when the batch clears', async () => {
+    const reads: Reads = { asked: [] };
+    const lines: string[] = [];
+
+    await new PostageGate(
+      [publisher('360p', 'http://operator:hunter2@a:1633', 'a'.repeat(64), batch(), reads)],
+      MIN_TTL_S,
+      MAX_UTILIZATION,
+      { info: (line: string) => lines.push(line) },
+    ).assertUsable();
+
+    assert.doesNotMatch(lines[0], /hunter2/);
+  });
+});

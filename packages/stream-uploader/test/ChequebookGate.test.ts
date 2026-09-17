@@ -251,6 +251,57 @@ describe('the chequebook gate', () => {
 });
 
 /**
+ * ⛔ **A refusal is read by more people than the request that caused it.**
+ *
+ * bee accepts basic auth in the URL's userinfo, so a `BEE_PUBLISHERS` entry can carry a credential,
+ * and these messages travel further than a log file: under `warn` they reach `/health` through a
+ * latch, and they are quoted into deploy output and pasted into reports. `BeePublisherPool.routing`
+ * already answers with the same URLs stripped, for exactly this reason, and this uses the same helper
+ * so the two cannot drift.
+ */
+describe('what a refusal says about the node url', () => {
+  it('strips a credential out of a refusal', async () => {
+    const reads = reader();
+    const gate = new ChequebookGate(
+      [refusingNode('http://operator:hunter2@bee-a:1633', 'chequebook disabled', reads)],
+      FLOOR_PLUR,
+      recordingLogger(),
+    );
+
+    await assert.rejects(() => gate.assertFunded(), /bee-a:1633/);
+    await assert.rejects(
+      () => gate.assertFunded(),
+      (error: Error) => {
+        assert.doesNotMatch(error.message, /hunter2/, 'a credential in BEE_PUBLISHERS must not reach a message');
+        assert.doesNotMatch(error.message, /operator/);
+        return true;
+      },
+    );
+  });
+
+  it('strips one out of the reading it logs when the node clears', async () => {
+    const reads = reader();
+    const logger = recordingLogger();
+
+    await new ChequebookGate(
+      [{ ...node('http://operator:hunter2@bee-a:1633', bzzToPlur(2), reads) }],
+      FLOOR_PLUR,
+      logger,
+    ).assertFunded();
+
+    assert.doesNotMatch(logger.lines[0], /hunter2/);
+    assert.match(logger.lines[0], /bee-a:1633/);
+  });
+
+  it('leaves a url with nothing to hide exactly as the operator wrote it', async () => {
+    const reads = reader();
+    const gate = new ChequebookGate([node('http://bee-a:1633', bzzToPlur(0.1), reads)], FLOOR_PLUR, recordingLogger());
+
+    await assert.rejects(() => gate.assertFunded(), /http:\/\/bee-a:1633 has/);
+  });
+});
+
+/**
  * ⛔ **Under `warn` the first bad node used to be the only one an operator heard about.**
  *
  * The loop above throws at the first refusal, which is right when the refusal stops the boot: there
