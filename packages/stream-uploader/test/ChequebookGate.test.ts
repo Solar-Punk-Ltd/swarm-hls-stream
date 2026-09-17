@@ -333,7 +333,8 @@ describe('what a refusal says about the node url', () => {
  *
  * Handing the gate somewhere to put a refusal changes that and nothing else. Every node is read, each
  * one that cannot be cleared is handed over with the message it would have thrown, and the caller
- * decides what that costs. With no collector the behaviour is exactly what `refuse` still needs.
+ * decides what that costs. The runner always hands one over, and under `refuse` that collector throws
+ * at the first refusal, so the no-collector path below is a direct caller's rather than a mode's.
  */
 describe('the chequebook gate with somewhere to put a refusal', () => {
   it('reads every node rather than stopping at the first that fails', async () => {
