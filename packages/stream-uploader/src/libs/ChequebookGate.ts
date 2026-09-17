@@ -64,10 +64,10 @@ export class ChequebookGate {
   /**
    * Read every distinct node's chequebook and leave one funding reading per node in the log.
    *
-   * With no `collect` the first node that cannot pay throws, which is what a deployment asking for a
-   * refusal needs. Given one, every node is read and each refusal is handed over with the message it
-   * would have thrown, because under `warn` the service runs and an operator who hears about one
-   * rung per boot fixes a four rung stage one restart at a time.
+   * With no `collect` the first node that cannot pay throws. `runStartGates` always passes one, and
+   * that collector either throws at the first refusal the policy will not survive or takes every one
+   * with the message it would have thrown. So under the shipped mode and under `warn` every node is
+   * read, and an operator does not fix a four rung stage one rung and one restart at a time.
    *
    * Sequential rather than concurrent either way, so "the first failure" is the first node in ladder
    * order rather than whichever request happened to lose the race. The nodes are deduplicated by URL

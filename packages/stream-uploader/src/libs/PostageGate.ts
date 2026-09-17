@@ -70,10 +70,10 @@ export class PostageGate {
   /**
    * Read every distinct batch and leave one reading per batch in the log.
    *
-   * With no `collect` the first batch that cannot carry a broadcast throws, which is what a
-   * deployment asking for a refusal needs. Given one, every rung is read and each refusal is handed
-   * over with the message it would have thrown, because under `warn` the service runs and two
-   * exhausted batches must not take two restarts to learn about. Mirrors {@link ChequebookGate}.
+   * With no `collect` the first batch that cannot carry a broadcast throws. `runStartGates` always
+   * passes one, and that collector either throws at the first refusal the policy will not survive or
+   * takes every one with the message it would have thrown. So under `warn` every rung is read and two
+   * exhausted batches do not take two restarts to learn about. Mirrors {@link ChequebookGate}.
    *
    * Sequential rather than concurrent either way, so "the first failure" is the first rung in ladder
    * order rather than whichever request happened to lose the race.
