@@ -89,7 +89,7 @@ describe('the chequebook gate', () => {
     });
     await assert.rejects(() => gate.assertFunded(), { message: /0\.1000 BZZ/ });
     await assert.rejects(() => gate.assertFunded(), { message: /0\.5000 BZZ/ });
-    await assert.rejects(() => gate.assertFunded(), { message: /refuses to run/ });
+    await assert.rejects(() => gate.assertFunded(), { message: /every paid push behind it stalls/ });
     await assert.rejects(() => gate.assertFunded(), { message: /chequebook deposit/ });
   });
 
