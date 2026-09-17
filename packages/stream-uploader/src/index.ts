@@ -69,7 +69,13 @@ async function start() {
     // postage batch are answered off the chain and neither read has a retry around it. The upload
     // loop's per-request deadline is derived from retry windows that do not apply to either, and
     // lending it to them is what held a live uploader in a restart loop on 2026-09-16.
-    const gateNodes = buildPublishers(config.startGateTimeoutMs).nodes();
+    //
+    // ⛔ The reachability probe reads through this pool too, and that is the point of keeping it
+    // rather than only its nodes. Probing through the pool above would give a node four seconds to
+    // answer a liveness check while the gates behind it wait twenty, so a node that is merely slow
+    // would be waited for forever by a boot whose gates could have cleared it.
+    const gatePublishers = buildPublishers(config.startGateTimeoutMs);
+    const gateNodes = gatePublishers.nodes();
 
     const recoveryStore = new RecoveryStore(config.stateDir);
 
@@ -152,7 +158,7 @@ async function start() {
         // there costs each gate its whole budget and then arrives as a sentence, and it reaches
         // `StreamCatalog.init` as a status that has to be told apart from an empty feed. See
         // `assertNodeReachable`.
-        await assertNodeReachable(publishers.coordinator());
+        await assertNodeReachable(gatePublishers.coordinator());
 
         await runStartGates(
           [
