@@ -4,6 +4,7 @@ import {
   HEALTH_REASON_FRAGMENT_MISMATCH,
   HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
   HEALTH_REASON_INGEST_REFUSED,
+  HEALTH_REASON_NODE_UNAVAILABLE,
   HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
@@ -13,9 +14,11 @@ import {
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HEALTH_REASON_UNRECOVERABLE_STREAM,
+  HEALTH_WAITING_FOR_NODE,
   HealthReason,
   HealthReport,
   HealthSignals,
+  NodeWaitReport,
   PRESSURE_HIGH,
 } from '../types.js';
 
@@ -44,7 +47,20 @@ const MS_PER_SECOND = 1_000;
  * The whole degradation policy, kept in one pure function so every threshold is assertable without
  * a running server or a clock.
  */
-export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: number): HealthReport {
+export function deriveHealthStatus(
+  signals: HealthSignals,
+  segmentStallMs: number,
+  /** The boot's own state, and absent for a service whose boot has finished. See `libs/NodeWait.ts`. */
+  nodeWait: NodeWaitReport | null = null,
+): HealthReport {
+  // ⛔ Before every threshold below and alone, because none of them has anything to describe yet. A
+  // service still waiting for its node has read no catalog, recovered no stream and uploaded no
+  // segment, so every signal is the zero it was initialised with and reads as a healthy service.
+  // Answering `ok` there is the one answer nothing downstream would question.
+  if (nodeWait !== null) {
+    return { status: HEALTH_WAITING_FOR_NODE, reasons: [HEALTH_REASON_NODE_UNAVAILABLE] };
+  }
+
   const reasons: HealthReason[] = [];
 
   if (signals.maxConsecutiveManifestFailures >= MANIFEST_FAILURE_THRESHOLD) {

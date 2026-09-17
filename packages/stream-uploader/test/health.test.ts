@@ -7,6 +7,7 @@ import {
   HEALTH_REASON_FRAGMENT_MISMATCH,
   HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
   HEALTH_REASON_INGEST_REFUSED,
+  HEALTH_REASON_NODE_UNAVAILABLE,
   HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
@@ -16,7 +17,9 @@ import {
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HEALTH_REASON_UNRECOVERABLE_STREAM,
+  HEALTH_WAITING_FOR_NODE,
   HealthSignals,
+  NodeWaitReport,
   PRESSURE_HIGH,
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
@@ -624,5 +627,50 @@ describe('deriveHealthStatus refused postage batches', () => {
 
     assert.equal(report.status, HEALTH_DEGRADED);
     assert.deepEqual(report.reasons, [HEALTH_REASON_POSTAGE_REFUSED]);
+  });
+});
+
+/**
+ * The one state that is not a reading about this process at all.
+ *
+ * Every reason above is something the uploader measured while running. This one says the boot has not
+ * finished, because the node-dependent half of it is still waiting for a node to answer, so there is
+ * nothing to measure yet: no catalog, no recovered stream, and every counter at the zero it was
+ * initialised with. Reporting that as `ok` is what a probe would have believed on 2026-09-17 before
+ * the listener moved in front of the wait, and it is the one answer that would be wrong in the
+ * direction nobody checks.
+ */
+describe('deriveHealthStatus while the boot is waiting for its node', () => {
+  const waiting: NodeWaitReport = {
+    url: 'http://bee-uploader:1633',
+    waitingSince: '2026-09-17T09:00:00.000Z',
+    attempts: 3,
+    lastError: 'timeout of 20000ms exceeded',
+  };
+
+  it('reports waiting rather than a status about media that has never flowed', () => {
+    const report = deriveHealthStatus(signals(), STALL_MS, waiting);
+
+    assert.equal(report.status, HEALTH_WAITING_FOR_NODE);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_NODE_UNAVAILABLE]);
+  });
+
+  // A signal read before the boot finished describes a process that has not run, so carrying one into
+  // the answer would send an operator after a stalled stream that does not exist.
+  it('says only that, whatever the untouched counters happen to read', () => {
+    const report = deriveHealthStatus(
+      signals({ maxConsecutiveManifestFailures: 9, postageRefusedPublishers: 2, quarantinedRecoveryEntries: 1 }),
+      STALL_MS,
+      waiting,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_NODE_UNAVAILABLE]);
+  });
+
+  it('goes back to its own reading when the wait is over', () => {
+    const report = deriveHealthStatus(signals(), STALL_MS, null);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
   });
 });

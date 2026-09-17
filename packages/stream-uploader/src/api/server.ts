@@ -4,11 +4,13 @@ import http from 'http';
 import { EnginePlugin, RawBodyRequest } from '../engines/types.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
+import { NodeWaitReport } from '../types.js';
 
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFound } from './middleware/notFound.js';
 import { createAuthRejectionObserver } from './middleware/observeAuthRejections.js';
 import { createRateLimiter } from './middleware/rateLimit.js';
+import { refuseWhileWaiting } from './middleware/refuseWhileWaiting.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { createAuthMiddleware } from './middleware/requireAuth.js';
 import { createHealthRouter } from './routes/health.js';
@@ -35,10 +37,18 @@ interface ApiAppOptions {
   engines?: EnginePlugin[];
   /** Overridden by tests, which drive a rate they configure rather than trying to exceed the real one. */
   limits?: RequestLimits;
+  /**
+   * What the boot is still waiting for, or null once it has finished.
+   *
+   * A function rather than a value because the app is built once, in the first second, and the answer
+   * changes underneath it when the node finally answers. Omitted, the service is ready from its first
+   * request, which is what every caller before D16 assumed and what every API test still drives.
+   */
+  waitingForNode?: () => NodeWaitReport | null;
 }
 
 export function createApiApp(streamOrchestrator: StreamOrchestrator, options: ApiAppOptions): express.Express {
-  const { authToken, engines = [], limits = DEFAULT_REQUEST_LIMITS } = options;
+  const { authToken, engines = [], limits = DEFAULT_REQUEST_LIMITS, waitingForNode = () => null } = options;
   const app = express();
 
   // Global middleware
@@ -66,6 +76,16 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
     if (gate) {
       app.use(engine.prefix, gate);
     }
+  }
+
+  // Behind the credential gates and ahead of everything that costs anything: a caller arriving while
+  // the boot is still waiting for its node is told so before a rate limiter counts it or a parser
+  // reads its body. `/health` is left out on purpose, as the endpoint that reports the wait, and so
+  // is `/metrics`, whose counters describe this process rather than the node. See the middleware.
+  const waitingGate = refuseWhileWaiting(waitingForNode);
+  app.use('/stream', waitingGate);
+  for (const engine of engines) {
+    app.use(engine.prefix, waitingGate);
   }
 
   // Behind the gate, so an anonymous flood is refused by the cheaper check and cannot spend the
@@ -118,6 +138,7 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
     createHealthRouter(
       streamOrchestrator,
       engines.map((e) => e.name),
+      waitingForNode,
     ),
   );
 

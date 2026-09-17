@@ -254,6 +254,14 @@ describe('the chequebook gate', () => {
  * service, because `index.ts` calls `start()` at module scope, so importing it launches the uploader
  * and there is nothing left to assert on. `envLoadOrder.test.ts` guards the import order of the same
  * file the same way and for the same reason.
+ *
+ * ⚠️ Two of the four steps this used to sort against moved ahead of the gate on 2026-09-17, and that
+ * is decision D16 rather than a regression. `new RecoveryStore(` reads the state directory and
+ * `loadEngines(` imports a module, so neither asks a node anything, and both are now built before the
+ * API server listens, which is what lets `/health` answer while the node-dependent half of the boot
+ * waits for a node that is not there yet. What still has to come after the gate is every step that
+ * reads or writes through one. What keeps a stream away from an orchestrator whose catalog has not
+ * been read is `refuseWhileWaiting`, asserted in `waitingForNode.test.ts`, rather than this ordering.
  */
 describe('the entry point clears the gate before anything paid or stateful', () => {
   const ENTRY_POINT = resolve(dirname(fileURLToPath(import.meta.url)), '../src/index.ts');
@@ -263,7 +271,7 @@ describe('the entry point clears the gate before anything paid or stateful', () 
     assert.match(source, /assertFunded\(/, 'index.ts never clears the chequebook gate');
   });
 
-  for (const later of ['new RecoveryStore(', 'streamCatalog.init(', 'recoverStreams(', 'loadEngines(']) {
+  for (const later of ['streamCatalog.init(', 'recoverStreams(']) {
     it(`clears it before ${later}`, () => {
       const gateAt = source.indexOf('assertFunded(');
       const laterAt = source.indexOf(later);
