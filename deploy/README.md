@@ -403,9 +403,12 @@ here, and `BEE_PUBLISHERS` in the root `.env` pointing at them. A rung node enab
 `BEE_PUBLISHERS` is a node nothing publishes through, and the reverse is a rung pointing at nothing,
 because both startup gates read every publisher before the first broadcast and a URL with no node
 behind it cannot answer. Since the owner's rulings of 2026-09-17 that no longer takes the uploader off
-the air. The boot asks each node whether it is there before anything else, and a node that is not is
-waited for rather than refused on, so the service listens, answers `/health` with `waiting_for_node`
-naming that url, and keeps retrying until the node is there. A node that does answer and reads badly
+the air. The boot asks the coordinator, the node the catalog goes through, whether it is there
+before anything else, and a coordinator that is not there is waited for rather than refused on, so the
+service listens, answers `/health` with `waiting_for_node` naming that url, and keeps retrying until it
+is there. The other rung nodes are reached by the gates instead: under the shipped mode one that does
+not answer is warned about and the service starts degraded with that rung under `start_gate_warned`,
+and under `refuse` it is waited for like the coordinator. A node that does answer and reads badly
 is the mode's question rather than the wait's: the chequebook gate warns by default, and since the
 owner's decision 7 b of 2026-09-17 the postage gate refuses a batch the node answered about while
 warning about one it could not read at all.
