@@ -16,7 +16,10 @@ const HTTP_SERVICE_UNAVAILABLE = 503;
 export function createHealthRouter(
   streamOrchestrator: StreamOrchestrator,
   engineNames: string[],
-  /** Absent is a service whose boot has finished, which is every caller before D16 and every test. */
+  /**
+   * Absent is a service whose boot has finished, which is every caller before D16 and every test
+   * but the two about the wait.
+   */
   waitingForNode: () => NodeWaitReport | null = () => null,
 ): Router {
   const router = Router();
