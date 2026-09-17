@@ -44,7 +44,7 @@ The publishers are read straight out of `BEE_PUBLISHERS` (see [.env.sample](../.
 
 The URLs are used as written. In a Docker deployment the host's `.env` holds host-reachable URLs while compose overrides the uploader container's copy with compose service names — the same split `BEE_URL` already has.
 
-`stamp:check` looks at the publishers only. The gateway runs with swap disabled and buys nothing, so it appears in the node info commands and not there.
+`stamp:check` looks at the publishers only. The gateway ships with swap off, and even one put on the chain with `BEE_GATEWAY_SWAP_ENABLE` holds no upload batch, so it appears in the node info commands and not there.
 
 ### Without it — the single-node deployment
 
