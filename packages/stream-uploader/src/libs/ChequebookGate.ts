@@ -31,8 +31,10 @@ import { GateCollector, GateFinding } from './StartGates.js';
  * container into it until the deploy gave up. So by default the reading below still happens on every
  * boot and still says exactly what it found, and the service starts anyway with the whole refusal in
  * the log as a warning, latched onto `/health`. `UPLOADER_START_GATES=refuse` puts the refusal back,
- * unchanged, and the shipped `chequebook-warn` is this gate warning while `PostageGate` refuses.
- * What that trades is in `libs/StartGates.ts`, which is where the decision lives for both gates.
+ * unchanged, and the shipped `chequebook-warn` is this gate warning while `PostageGate` refuses a
+ * batch its node answered about and warns about one it could not read at all. Why that gate is split
+ * on the reading and this one is not is in `libs/PostageGate.ts`, and what the whole thing trades is
+ * in `libs/StartGates.ts`, which is where the decision lives for both gates.
  *
  * ## Why availableBalance rather than totalBalance
  *
