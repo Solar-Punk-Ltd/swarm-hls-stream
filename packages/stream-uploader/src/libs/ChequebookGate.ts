@@ -1,4 +1,5 @@
 import { safeUrl } from './BeePublisherPool.js';
+import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
 import { GateCollector } from './StartGates.js';
 
@@ -85,7 +86,7 @@ export class ChequebookGate {
         continue;
       }
       if (collect === undefined) {
-        throw new Error(refusal);
+        throw new GateRefusalError(refusal, safeUrl(node.url));
       }
       collect({ rung: node.rung, url: safeUrl(node.url), message: refusal });
     }

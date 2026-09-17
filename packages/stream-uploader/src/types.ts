@@ -280,6 +280,14 @@ export interface StartGateWarning {
  * a probe reaching the service in its first second is told the truth rather than `ok`.
  */
 export interface NodeWaitReport {
+  /**
+   * The node this wait is about, with any credential stripped.
+   *
+   * The coordinator until something fails, since that is the node every boot read reaches. After a
+   * failure it is the node that failure was about where it named one, because on a pool of four a
+   * refusal about the 1080p rung reported against a coordinator that is answering sends an operator
+   * to the wrong machine.
+   */
   readonly url: string;
   /** ISO 8601, so it survives the JSON that carries it and reads the same to a person and a page. */
   readonly waitingSince: string;

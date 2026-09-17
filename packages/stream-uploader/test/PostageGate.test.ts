@@ -2,6 +2,7 @@ import { BatchId, Duration, PostageBatch, Size } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { GateRefusalError } from '../src/libs/GateRefusalError.js';
 import { PostageGate, StampedPublisher } from '../src/libs/PostageGate.js';
 import { GateRefusal } from '../src/libs/StartGates.js';
 
@@ -355,5 +356,28 @@ describe('what a postage refusal says about the node url', () => {
     ).assertUsable();
 
     assert.doesNotMatch(lines[0], /hunter2/);
+  });
+});
+
+/** The same, for the rung a postage refusal was about. See `GateRefusalError`. */
+describe('which node a postage refusal names', () => {
+  it('carries the node on the error, with its credential stripped', async () => {
+    const reads: Reads = { asked: [] };
+    const gate = new PostageGate(
+      [failingPublisher('1080p', 'http://operator:hunter2@d:1633', 'd'.repeat(64), 'connection refused', reads)],
+      MIN_TTL_S,
+      MAX_UTILIZATION,
+      silent,
+    );
+
+    await assert.rejects(
+      () => gate.assertUsable(),
+      (error: unknown) => {
+        assert.ok(error instanceof GateRefusalError);
+        // Normalised, since safeUrl rebuilds a url it had to take a credential out of. See its doc.
+        assert.equal(error.nodeUrl, 'http://d:1633/');
+        return true;
+      },
+    );
   });
 });
