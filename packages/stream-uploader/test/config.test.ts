@@ -87,7 +87,7 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     field: 'startGateTimeoutMs',
     sample: '9000',
     fallback: 20000,
-    refused: ['0', '-1', '20s'],
+    refused: ['0', '-1', '20s', '600001'],
   },
 ];
 
@@ -290,6 +290,20 @@ describe('the environment contract', () => {
         startGateTimeoutMs > beeRequestTimeoutMs,
         `a ${startGateTimeoutMs}ms gate timeout is no longer than the ${beeRequestTimeoutMs}ms upload deadline, ` +
           'so the gates are back on a window derived for something else',
+      );
+    });
+
+    // A stray zero is the mistake this range exists for. Ten minutes is far longer than any
+    // chain-backed read needs and far shorter than the 26 minutes 200000 mistyped as 2000000 buys,
+    // which under D16 would be 26 minutes per attempt of a wait that retries for ever.
+    it('refuses a timeout longer than any node read could need', async () => {
+      await assert.rejects(
+        () => loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '2000000' }),
+        /START_GATE_TIMEOUT_MS/,
+      );
+      assert.equal(
+        (await loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '600000' })).startGateTimeoutMs,
+        600000,
       );
     });
 
