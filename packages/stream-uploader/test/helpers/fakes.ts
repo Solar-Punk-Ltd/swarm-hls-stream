@@ -303,12 +303,6 @@ export function toRecoveryFileId(streamId: string): string {
 }
 
 /**
- * One node for everything, which is what an unsplit deployment gets from `BeePublisherPool.single`.
- *
- * Every rung resolves to the same publisher, so a test that turns the ladder on still writes through
- * one fake bee and can assert on it without knowing which rung asked.
- */
-/**
  * A url the real pool would accept. It used to be the empty string, which no deployment could have
  * and which `BeePublisherPool.single` refuses, so anything reading a publisher's url off this fake
  * was reading a value that cannot occur.
@@ -325,6 +319,12 @@ export function testPublisher(bee: Bee, stamp = 'stamp'): BeePublisher {
   return { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp, bee };
 }
 
+/**
+ * One node for everything, which is what an unsplit deployment gets from `BeePublisherPool.single`.
+ *
+ * Every rung resolves to the same publisher, so a test that turns the ladder on still writes through
+ * one fake bee and can assert on it without knowing which rung asked.
+ */
 function makeFakePublishers(bee: Bee): BeePublisherPool {
   const publisher = testPublisher(bee);
   return {
