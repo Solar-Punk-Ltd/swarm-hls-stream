@@ -7,7 +7,7 @@ import { after, describe, it } from 'node:test';
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
 import { AdminApiClient } from '../src/libs/AdminApiClient.js';
 import { LadderGroupStore, RememberedLadder } from '../src/libs/LadderGroupStore.js';
-import { LadderSink } from '../src/libs/LadderSink.js';
+import { LadderRegistry } from '../src/libs/LadderRegistry.js';
 import { Logger } from '../src/libs/Logger.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { buildLadderEntry, LadderIdentity, StreamEntry } from '../src/libs/StreamCatalog.js';
@@ -361,23 +361,23 @@ describe('a ladder in admin mode', () => {
   const DECLARED_TOPIC = 'declared-topic-0001';
   const ADMIN_SESSION = { id: 'str_01HZY', topic: DECLARED_TOPIC };
 
-  /** One rung's announce as the ladder sink received it. */
+  /** One rung's announce as the ladder registry received it. */
   interface Announce {
     identity: LadderIdentity;
     rendition: Rendition;
   }
 
   /**
-   * A ladder sink that records what it was handed and writes no master, standing in for
-   * `AdminLadderSink`. What these cases pin is that the orchestrator hands its configured sink to every
-   * session it builds, under the identity a declared ladder has to carry: the group is the declared
-   * topic and the stream id is the declaration's.
+   * A ladder registry that keeps every record registered with it and writes no master, standing in
+   * for `AdminLadderRegistry`. What these cases pin is that the orchestrator hands its configured
+   * registry to every session it builds, under the identity a declared ladder has to carry: the group
+   * is the declared topic and the stream id is the declaration's.
    */
-  function recordingSink(): { sink: LadderSink; announces: Announce[] } {
+  function recordingRegistry(): { registry: LadderRegistry; announces: Announce[] } {
     const announces: Announce[] = [];
     return {
       announces,
-      sink: {
+      registry: {
         upsertRendition: async (identity, rendition) => {
           announces.push({ identity, rendition });
           return { masterIndex: null, flippedToFinished: false, duration: null };
@@ -397,23 +397,27 @@ describe('a ladder in admin mode', () => {
 
   /**
    * An orchestrator as `index.ts` builds one for a deployment running both: a ladder, a group store
-   * under the shared state directory, an admin client, and the ladder sink admin mode swaps in. The
-   * client answers every report, because these cases are about identity and a session that reached
-   * its retry ladder in the background would spend seconds of an unrelated assertion.
+   * under the shared state directory, an admin client, and the ladder registry admin mode swaps in.
+   * The client answers every report, because these cases are about identity and a session that
+   * reached its retry ladder in the background would spend seconds of an unrelated assertion.
    */
-  function bootDeclaredLadder(root: string, ladderSink: LadderSink = recordingSink().sink): StreamOrchestrator {
+  function bootDeclaredLadder(
+    root: string,
+    ladderRegistry: LadderRegistry = recordingRegistry().registry,
+  ): StreamOrchestrator {
     return makeTestOrchestrator({
       ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
       ladderGroupStore: new LadderGroupStore(path.join(root, 'ladder', 'groups.json')),
       adminApi: declaredAdmin(),
-      ladderSink,
+      ladderRegistry,
     });
   }
 
   /**
    * Every error the error handler logged while `run` ran. An announce that dies inside the uploader is
    * caught by `announceToCatalog` and handed to the error handler, which logs it and nothing else, so a
-   * case that asserts only on what the sink recorded would pass over a sink that was never reached.
+   * case that asserts only on what the registry holds would pass over a registry that was never
+   * reached.
    * Fifteen cases in this file did exactly that once, over a fake catalog with no `upsertRendition`.
    */
   async function errorsDuring(run: () => Promise<void>): Promise<string[]> {
@@ -463,15 +467,16 @@ describe('a ladder in admin mode', () => {
   });
 
   /**
-   * ⛔ The one wiring `index.ts` adds for admin mode: the sink it builds has to reach every session,
-   * or a rung announces into the stream catalog admin mode is never allowed to write. Pinned through
-   * the orchestrator rather than on `StreamUploader` directly, because the orchestrator is where the
-   * sink is threaded and where it was silently dropped from the fixture for fifteen passing cases.
+   * ⛔ The one wiring `index.ts` adds for admin mode: the registry it builds has to reach every
+   * session, or a rung registers with the stream catalog admin mode is never allowed to write. Pinned
+   * through the orchestrator rather than on `StreamUploader` directly, because the orchestrator is
+   * where the registry is threaded and where it was silently dropped from the fixture for fifteen
+   * passing cases.
    */
-  it('hands each rung′s record to the ladder sink under the declared group and stream id', async () => {
+  it('registers each rung′s record with the ladder registry under the declared group and stream id', async () => {
     const root = makeTempRoot();
-    const { sink, announces } = recordingSink();
-    const orch = bootDeclaredLadder(root, sink);
+    const { registry, announces } = recordingRegistry();
+    const orch = bootDeclaredLadder(root, registry);
 
     try {
       const errors = await errorsDuring(async () => {
@@ -485,7 +490,7 @@ describe('a ladder in admin mode', () => {
       assert.equal(identity.adminStreamId, ADMIN_SESSION.id, 'and reported against the declaration');
       assert.equal(rendition.name, '720p');
       assert.notEqual(rendition.topic, DECLARED_TOPIC, 'the rung′s own feed is never the master′s');
-      assert.deepEqual(errors, [], 'an announce that died on the way to the sink is logged, never thrown');
+      assert.deepEqual(errors, [], 'an announce that died on the way to the registry is logged, never thrown');
     } finally {
       await orch.cleanup();
     }
@@ -535,8 +540,8 @@ describe('a ladder in admin mode', () => {
       adminStreamId: ADMIN_SESSION.id,
     };
 
-    const { sink, announces } = recordingSink();
-    const orch = bootDeclaredLadder(root, sink);
+    const { registry, announces } = recordingRegistry();
+    const orch = bootDeclaredLadder(root, registry);
     (orch as unknown as { recoveryStore: RecoveryStore }).recoveryStore = makeFakeRecoveryStore({
       listActive: () => [RUNG_720P],
       load: () => state,
@@ -548,10 +553,10 @@ describe('a ladder in admin mode', () => {
       assert.equal(sessionOf(orch, RUNG_720P)?.adminStreamId, ADMIN_SESSION.id);
       assert.equal(groupOf(orch, BASE), DECLARED_TOPIC, 'the group store is rewritten from the entry that survived');
 
-      // Nothing re-announces a recovered stream, so the first thing to reach the sink is its finalize,
-      // and that is the announce that carries the recording's index. It goes through the same sink a
-      // fresh session's does, under the same declaration, or the recovered tail of the broadcast is
-      // folded into nothing the admin holds.
+      // Nothing re-announces a recovered stream, so the first record it registers is its finalize, the
+      // announce that carries the recording's index. It goes through the same registry a fresh
+      // session's does, under the same declaration, or the recovered tail of the broadcast is folded
+      // into nothing the admin holds.
       const errors = await errorsDuring(async () => {
         await orch.stopStream(RUNG_720P);
         await waitFor(() => announces.length > 0, SETTLE_CEILING_MS);

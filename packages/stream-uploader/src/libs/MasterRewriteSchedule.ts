@@ -15,11 +15,11 @@ export const MASTER_REWRITE_RETRY_MS = 30_000;
  * When a ladder's master may be rewritten because the set of rungs producing it changed, and what a
  * rewrite that did not land costs.
  *
- * ## ⛔⛔⛔ Shared by both ladder sinks rather than written twice
+ * ## ⛔⛔⛔ Shared by both ladder registries rather than written twice
  *
  * Every rule below is a fix for a measured live failure, recorded at length on
  * `StreamCatalog.republishIfLadderShapeChanged`, and this class is that bookkeeping lifted out
- * unchanged so the admin sink runs it rather than a second copy of it. `LadderLiveness` states the
+ * unchanged so the admin registry runs it rather than a second copy of it. `LadderLiveness` states the
  * same principle about the player's rung-death rule it ports: a second, independent version of a rule
  * that took several attempts to get right is a decision to make those mistakes again somewhere they
  * are harder to see.

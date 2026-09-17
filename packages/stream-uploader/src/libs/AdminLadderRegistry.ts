@@ -3,12 +3,12 @@ import { getErrorMessage } from '../utils/common.js';
 
 import { ADMIN_STATE_VOD, AdminApiClient, RenditionReportResponse } from './AdminApiClient.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
-import { LadderIdentity, LadderSink, RenditionAnnouncement } from './LadderSink.js';
+import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter } from './MasterFeedWriter.js';
 import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
 
-export interface AdminLadderSinkOptions {
+export interface AdminLadderRegistryOptions {
   client: AdminApiClient;
   masterWriter: MasterFeedWriter;
   /**
@@ -19,7 +19,7 @@ export interface AdminLadderSinkOptions {
 }
 
 /**
- * The ladder sink admin mode uses: the admin holds the merge state, and this writes the master.
+ * The ladder registry admin mode uses: the admin holds the merge state, and this writes the master.
  *
  * ## What moves, and what does not
  *
@@ -33,7 +33,8 @@ export interface AdminLadderSinkOptions {
  *
  * ⛔ **It holds no catalog and no catalog feed writer, and that is structural rather than a
  * convention.** The one rule admin mode has never been allowed to break is that this service writes
- * no stream catalog entry; a sink that could reach one is a sink a later change can make write one.
+ * no stream catalog entry; a registry that could reach one is a registry a later change can make
+ * write one.
  * The only feed it can address at all is the master's.
  *
  * ## Why `recordRungDelivered` never asks the admin
@@ -55,7 +56,7 @@ export interface AdminLadderSinkOptions {
  * the admin accepts `vod -> vod`, so saying it twice costs a round trip, and saying it never costs the
  * recording its listing.
  */
-export class AdminLadderSink implements LadderSink {
+export class AdminLadderRegistry implements LadderRegistry {
   private readonly logger = Logger.getInstance();
   private readonly client: AdminApiClient;
   private readonly masterWriter: MasterFeedWriter;
@@ -79,7 +80,7 @@ export class AdminLadderSink implements LadderSink {
   /** The catalog write index behind {@link merged}, by group, and absent while no answer carried one. */
   private readonly newestFeedIndex = new Map<string, number>();
 
-  constructor(options: AdminLadderSinkOptions) {
+  constructor(options: AdminLadderRegistryOptions) {
     this.client = options.client;
     this.masterWriter = options.masterWriter;
     this.rewrites = new MasterRewriteSchedule(options.now ?? (() => performance.now()));
@@ -159,7 +160,7 @@ export class AdminLadderSink implements LadderSink {
       const held = this.merged.get(group);
       if (held !== undefined) {
         this.logger.log(
-          `[AdminLadderSink] The answer to ${rung} of ladder ${group} is an older fold (catalog index ` +
+          `[AdminLadderRegistry] The answer to ${rung} of ladder ${group} is an older fold (catalog index ` +
             `${report.feedIndex}) than one already applied (${newest}); the master is written from the newer ladder`,
         );
         return held;
@@ -212,7 +213,7 @@ export class AdminLadderSink implements LadderSink {
       const published = await this.masterWriter.publish(group, advertised);
       if (published) {
         this.logger.log(
-          `[AdminLadderSink] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,
+          `[AdminLadderRegistry] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,
         );
         this.rewrites.rewriteLanded(group, shape);
         return;
@@ -224,7 +225,7 @@ export class AdminLadderSink implements LadderSink {
     } catch (error) {
       this.rewrites.holdOff(group);
       this.logger.error(
-        `[AdminLadderSink] Could not rewrite the master for ${group} after its rungs changed: ${getErrorMessage(
+        `[AdminLadderRegistry] Could not rewrite the master for ${group} after its rungs changed: ${getErrorMessage(
           error,
         )}`,
       );

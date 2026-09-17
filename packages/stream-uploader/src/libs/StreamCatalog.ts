@@ -9,7 +9,7 @@ import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
-import { LadderIdentity, LadderSink, RenditionAnnouncement } from './LadderSink.js';
+import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
 import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
@@ -17,10 +17,10 @@ import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
 const CATALOG_RETRY_WINDOW_MS = 10_000;
 
 // Re-exported from where they are now declared, so nothing that named them here has to move. The
-// rewrite schedule moved out because the admin-mode ladder sink runs the same one; the identity moved
-// out because it describes a ladder rather than a catalog, and both sinks are handed one.
+// rewrite schedule moved out because the admin-mode ladder registry runs the same one; the identity
+// moved out because it describes a ladder rather than a catalog, and both registries are handed one.
 export { MASTER_REWRITE_RETRY_MS } from './MasterRewriteSchedule.js';
-export type { LadderIdentity } from './LadderSink.js';
+export type { LadderIdentity } from './LadderRegistry.js';
 
 /**
  * How many consecutive failures to read the resumed state it takes before the entries there are
@@ -60,7 +60,7 @@ export interface StreamEntry {
   renditions?: Rendition[];
 }
 
-export class StreamCatalog implements LadderSink {
+export class StreamCatalog implements LadderRegistry {
   private publishers: BeePublisherPool;
   private signer: PrivateKey;
   private feedTopic: Topic;
@@ -101,9 +101,9 @@ export class StreamCatalog implements LadderSink {
   /**
    * When a rung dying may rewrite this ladder's master, and what a rewrite that did not land costs.
    *
-   * ⛔ Lifted into {@link MasterRewriteSchedule} rather than kept here, because the admin-mode sink
-   * has to run the same rules and every one of them is a fix for a measured live failure. The rules
-   * and the reasons for them are stated there; nothing about them changed in the move.
+   * ⛔ Lifted into {@link MasterRewriteSchedule} rather than kept here, because the admin-mode ladder
+   * registry has to run the same rules and every one of them is a fix for a measured live failure.
+   * The rules and the reasons for them are stated there; nothing about them changed in the move.
    */
   private readonly rewrites: MasterRewriteSchedule;
 

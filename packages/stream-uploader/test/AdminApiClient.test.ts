@@ -363,8 +363,8 @@ describe('the admin API client, reporting one rung of a ladder', () => {
 
   /**
    * ⛔ The one number that orders answers the way the admin folded them. Four rungs report concurrently
-   * and their answers can arrive in another order; without this the sink would write whichever fold
-   * landed last, and an older one landing last takes a rung off the master. See `AdminLadderSink.adopt`.
+   * and their answers can arrive in another order; without this the registry would write whichever fold
+   * landed last, and an older one landing last takes a rung off the master. See `AdminLadderRegistry.adopt`.
    */
   it('reads the catalog write index off the reply, and answers null for a body that carries none', async () => {
     await withAdmin(always(200, FOLDED), async ({ client }) => {

@@ -60,7 +60,7 @@ import {
   watchFragment,
 } from './fragmentAgreement.js';
 import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
-import { LadderSink } from './LadderSink.js';
+import { LadderRegistry } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -139,9 +139,9 @@ export interface StreamOrchestratorConfig {
   adminApi?: AdminApiClient;
   /**
    * Where a ladder rung's rendition record goes. Absent is the stream catalog this orchestrator was
-   * built with, which is the standalone deployment. See {@link LadderSink}.
+   * built with, which is the standalone deployment. See {@link LadderRegistry}.
    */
-  ladderSink?: LadderSink;
+  ladderRegistry?: LadderRegistry;
 }
 
 /**
@@ -750,7 +750,7 @@ export class StreamOrchestrator {
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
-      ladderSink: this.config.ladderSink,
+      ladderRegistry: this.config.ladderRegistry,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
       redundancyLevel: this.config.segmentRedundancy,
@@ -1386,7 +1386,7 @@ export class StreamOrchestrator {
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
-      ladderSink: this.config.ladderSink,
+      ladderRegistry: this.config.ladderRegistry,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
       redundancyLevel: this.config.segmentRedundancy,

@@ -4,7 +4,7 @@ import { MediaType, Rendition } from '../types.js';
  * Everything about a ladder that is the same for all of its rungs.
  *
  * Declared here rather than beside the catalog that used to be the only thing holding it, because
- * both implementations of {@link LadderSink} are handed one and only one of them is a catalog.
+ * both implementations of {@link LadderRegistry} are handed one and only one of them is a catalog.
  */
 export interface LadderIdentity {
   title: string;
@@ -49,11 +49,11 @@ export interface RenditionAnnouncement {
  *
  * Two implementations, one per deployment, and the split is the whole of ABR in admin mode.
  * {@link StreamCatalog} folds the four rungs into one catalog entry on Swarm and writes the master
- * from it. `AdminLadderSink` posts each record to the admin, which holds the merge state and writes
+ * from it. `AdminLadderRegistry` posts each record to the admin, which holds the merge state and writes
  * its own catalog entry, and writes the master from the ladder that comes back. Neither knows about
  * the other, and the uploader knows about neither.
  */
-export interface LadderSink {
+export interface LadderRegistry {
   /**
    * Fold one rung into its ladder, publish the ladder's master playlist, and say what that achieved.
    */

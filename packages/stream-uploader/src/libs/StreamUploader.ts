@@ -50,7 +50,7 @@ import { BeePublisher } from './BeePublisherPool.js';
 import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
-import { LadderSink, RenditionAnnouncement } from './LadderSink.js';
+import { LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -265,10 +265,10 @@ export interface StreamUploaderOptions {
    *
    * Defaults to `streamCatalog`, which is the standalone deployment: the catalog folds the four rungs
    * into one entry and writes the master from it. In admin mode the merge state belongs to the admin,
-   * so an `AdminLadderSink` takes its place — and nothing else in this class changes, because a rung
+   * so an `AdminLadderRegistry` takes its place — and nothing else in this class changes, because a rung
    * announcing itself is the same act either way. Unread on a stream with no ladder.
    */
-  ladderSink?: LadderSink;
+  ladderRegistry?: LadderRegistry;
   recoveryStore: RecoveryStore;
   streamKey: string;
   streamId: string;
@@ -338,7 +338,7 @@ export class StreamUploader {
   private streamSigner: PrivateKey;
   private streamRawTopic: string;
   private streamCatalog: StreamCatalog;
-  private ladderSink: LadderSink;
+  private ladderRegistry: LadderRegistry;
   private recoveryStore: RecoveryStore;
   private streamId: string;
   private stamp: string;
@@ -440,7 +440,7 @@ export class StreamUploader {
     this.bee = options.publisher.bee;
     this.streamSigner = new PrivateKey(options.streamKey);
     this.streamCatalog = options.streamCatalog;
-    this.ladderSink = options.ladderSink ?? options.streamCatalog;
+    this.ladderRegistry = options.ladderRegistry ?? options.streamCatalog;
     this.recoveryStore = options.recoveryStore;
     this.streamId = options.streamId;
     this.stamp = options.publisher.stamp;
@@ -526,7 +526,7 @@ export class StreamUploader {
     if (this.ladder) {
       // Beside the metric and not instead of it: the metric is an observation, this decides what the
       // master is allowed to advertise. Both want the same moment, which is a segment that landed.
-      this.ladderSink.recordRungDelivered(this.ladder.group, this.ladder.rung.name);
+      this.ladderRegistry.recordRungDelivered(this.ladder.group, this.ladder.rung.name);
     }
     this.uploadLiveManifest();
     await this.refreshBandwidthIfDrifted();
@@ -1154,7 +1154,7 @@ export class StreamUploader {
     this.lastAnnounceAttemptAt = Date.now();
 
     this.logger.log(publishingRendition(rendition.name, this.ladder!.group));
-    const announced = await this.ladderSink.upsertRendition(
+    const announced = await this.ladderRegistry.upsertRendition(
       {
         title: this.getFormattedDate(),
         owner: this.streamSigner.publicKey().address().toHex(),

@@ -126,7 +126,7 @@ interface AdminConfig {
  * the ladder's merge state — one record per rung, which the catalog feed used to hold — moves into
  * the admin, which folds each rung's report and writes `renditions` into its own catalog entry. The
  * uploader writes the master from the ladder the admin hands back and reports `live` and `vod` at
- * ladder granularity. See the "Admin mode" section of the package README and `libs/AdminLadderSink.ts`.
+ * ladder granularity. See the "Admin mode" section of the package README and `libs/AdminLadderRegistry.ts`.
  */
 function readAdminConfig(): AdminConfig | null {
   const apiUrl = optional('ADMIN_API_URL', '');

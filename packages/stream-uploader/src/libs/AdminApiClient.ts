@@ -38,7 +38,7 @@ import { Logger } from './Logger.js';
  * What it is NOT is optional — the admin holds the ladder's merge state in admin mode, so a report
  * that never lands is a rung missing from the master every viewer resolves. The caller treats a
  * failure as a failed catalog announce and re-attempts on the announce cadence. See
- * `libs/AdminLadderSink.ts`.
+ * `libs/AdminLadderRegistry.ts`.
  */
 
 /** Minimum length for `ADMIN_API_TOKEN`, matching `API_AUTH_TOKEN`'s and the SRS webhook token's. */
@@ -151,7 +151,7 @@ export interface RenditionReportResponse {
    *
    * The admin serialises every catalog write on one mutex and answers each report from inside it, so
    * this number orders answers the way the admin folded them. Four rungs report concurrently and
-   * their answers can arrive here in another order; `AdminLadderSink` compares this before letting an
+   * their answers can arrive here in another order; `AdminLadderRegistry` compares this before letting an
    * answer replace the ladder it holds, so an older fold arriving late cannot write a master missing
    * a rung a newer answer already named.
    */

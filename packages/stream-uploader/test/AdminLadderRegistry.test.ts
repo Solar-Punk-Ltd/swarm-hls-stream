@@ -1,5 +1,5 @@
 /**
- * The ladder sink admin mode uses: the admin holds the merge state, this writes the master.
+ * The ladder registry admin mode uses: the admin holds the merge state, this writes the master.
  *
  * ## What each group of cases is for
  *
@@ -22,10 +22,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { AdminApiClient, RenditionReportResponse } from '../src/libs/AdminApiClient.js';
-import { AdminLadderSink } from '../src/libs/AdminLadderSink.js';
+import { AdminLadderRegistry } from '../src/libs/AdminLadderRegistry.js';
 import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
 import { RUNG_DEATH_LAG_SEGMENTS } from '../src/libs/LadderLiveness.js';
-import { LadderIdentity } from '../src/libs/LadderSink.js';
+import { LadderIdentity } from '../src/libs/LadderRegistry.js';
 import { MasterFeedWriter } from '../src/libs/MasterFeedWriter.js';
 import { MASTER_REWRITE_RETRY_MS } from '../src/libs/MasterRewriteSchedule.js';
 import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
@@ -79,7 +79,7 @@ function merged(
   });
 }
 
-/** One master playlist this sink wrote, and where it landed. */
+/** One master playlist this registry wrote, and where it landed. */
 interface MasterWrite {
   /** The feed topic it was written to, as bee sees it, so the declared topic can be checked in hex. */
   topicHex: string;
@@ -88,7 +88,7 @@ interface MasterWrite {
 }
 
 interface Harness {
-  sink: AdminLadderSink;
+  registry: AdminLadderRegistry;
   /** Every master write, in order. */
   masters: MasterWrite[];
   /** Every url the admin client called, in order. */
@@ -112,7 +112,7 @@ interface HarnessOptions {
   masterWritesFail?: () => boolean;
 }
 
-function makeSink(options: HarnessOptions = {}): Harness {
+function makeRegistry(options: HarnessOptions = {}): Harness {
   const masters: MasterWrite[] = [];
   const posted: string[] = [];
   let attempts = 0;
@@ -148,7 +148,7 @@ function makeSink(options: HarnessOptions = {}): Harness {
   const publishers = { coordinator: () => publisher } as unknown as BeePublisherPool;
 
   return {
-    sink: new AdminLadderSink({
+    registry: new AdminLadderRegistry({
       client: new AdminApiClient({
         baseUrl: ADMIN_URL,
         token: ADMIN_TOKEN,
@@ -169,9 +169,9 @@ function makeSink(options: HarnessOptions = {}): Harness {
 
 describe('what a rendition announce does in admin mode', () => {
   it('reports the rung to the admin′s rendition route for the declared stream', async () => {
-    const harness = makeSink();
+    const harness = makeRegistry();
 
-    await harness.sink.upsertRendition(IDENTITY, rung('360p', 360));
+    await harness.registry.upsertRendition(IDENTITY, rung('360p', 360));
 
     assert.deepEqual(harness.posted, [`${ADMIN_URL}/api/internal/streams/${ADMIN_STREAM_ID}/renditions`]);
   });
@@ -183,9 +183,9 @@ describe('what a rendition announce does in admin mode', () => {
    */
   it('writes the master from the ladder the admin folded, not from the rung it was handed', async () => {
     const ladder = [rung('360p', 360), rung('720p', 720)];
-    const harness = makeSink({ answer: () => new Response(merged(ladder), { status: 200 }) });
+    const harness = makeRegistry({ answer: () => new Response(merged(ladder), { status: 200 }) });
 
-    const announced = await harness.sink.upsertRendition(IDENTITY, rung('360p', 360));
+    const announced = await harness.registry.upsertRendition(IDENTITY, rung('360p', 360));
 
     assert.equal(harness.masters.length, 1);
     assert.match(harness.masters[0].playlist, /topic-360p/);
@@ -198,55 +198,55 @@ describe('what a rendition announce does in admin mode', () => {
    * A master written anywhere else is a ladder nobody can open.
    */
   it('writes the master to the declared topic, which is the ladder group', async () => {
-    const harness = makeSink();
+    const harness = makeRegistry();
 
-    await harness.sink.upsertRendition(IDENTITY, rung('360p', 360));
+    await harness.registry.upsertRendition(IDENTITY, rung('360p', 360));
 
     assert.equal(harness.masters[0]?.topicHex, Topic.fromString(DECLARED_TOPIC).toString());
   });
 
   it('hands back the flip and the ladder′s duration exactly as the admin reported them', async () => {
     const finished = [rung('360p', 360, { index: 9, duration: 12 })];
-    const harness = makeSink({
+    const harness = makeRegistry({
       answer: () =>
         new Response(merged(finished, { finished: true, flippedToFinished: true, duration: 12 }), { status: 200 }),
     });
 
-    const announced = await harness.sink.upsertRendition(IDENTITY, finished[0]);
+    const announced = await harness.registry.upsertRendition(IDENTITY, finished[0]);
 
     assert.deepEqual(announced, { masterIndex: 0, flippedToFinished: true, duration: 12 });
   });
 
   /**
    * The admin flips once, on the report that completed the fold. If the master write behind that
-   * report failed, the sink threw and the flip is gone: the retry is answered with a finished ladder
+   * report failed, the registry threw and the flip is gone: the retry is answered with a finished ladder
    * and `flippedToFinished: false`. Read literally, that is a recording the admin lists as live for
    * good, so a finished ladder the admin still holds as anything but `vod` is a flip to report.
    */
   it('reports a finished ladder as flipped while the admin still holds the stream as live', async () => {
     const finished = [rung('360p', 360, { index: 9, duration: 12 })];
-    const harness = makeSink({
+    const harness = makeRegistry({
       answer: () =>
         new Response(merged(finished, { finished: true, flippedToFinished: false, duration: 12 }, 'live'), {
           status: 200,
         }),
     });
 
-    const announced = await harness.sink.upsertRendition(IDENTITY, finished[0]);
+    const announced = await harness.registry.upsertRendition(IDENTITY, finished[0]);
 
     assert.deepEqual(announced, { masterIndex: 0, flippedToFinished: true, duration: 12 });
   });
 
   it('does not report a finished ladder again once the admin holds the stream as vod', async () => {
     const finished = [rung('360p', 360, { index: 9, duration: 12 })];
-    const harness = makeSink({
+    const harness = makeRegistry({
       answer: () =>
         new Response(merged(finished, { finished: true, flippedToFinished: false, duration: 12 }, 'vod'), {
           status: 200,
         }),
     });
 
-    const announced = await harness.sink.upsertRendition(IDENTITY, finished[0]);
+    const announced = await harness.registry.upsertRendition(IDENTITY, finished[0]);
 
     assert.equal(
       announced.flippedToFinished,
@@ -262,23 +262,23 @@ describe('what a rendition announce does in admin mode', () => {
    * cadence; `completeFinalize` lets it propagate and leaves the recovery entry on disk.
    */
   it('throws when the admin refuses the report, and writes no master over a ladder it does not know', async () => {
-    const harness = makeSink({ answer: () => new Response('{"error":"invalid_state"}', { status: 409 }) });
+    const harness = makeRegistry({ answer: () => new Response('{"error":"invalid_state"}', { status: 409 }) });
 
-    await assert.rejects(() => harness.sink.upsertRendition(IDENTITY, rung('360p', 360)), /admin API/);
+    await assert.rejects(() => harness.registry.upsertRendition(IDENTITY, rung('360p', 360)), /admin API/);
     assert.deepEqual(harness.masters, []);
   });
 
   it('throws when the admin answers 200 with a body that is not a ladder', async () => {
-    const harness = makeSink({ answer: () => new Response('{"renditions":[{"name":"360p"}]}', { status: 200 }) });
+    const harness = makeRegistry({ answer: () => new Response('{"renditions":[{"name":"360p"}]}', { status: 200 }) });
 
-    await assert.rejects(() => harness.sink.upsertRendition(IDENTITY, rung('360p', 360)), /admin API/);
+    await assert.rejects(() => harness.registry.upsertRendition(IDENTITY, rung('360p', 360)), /admin API/);
     assert.deepEqual(harness.masters, [], 'a master built from a body nobody screened is an unplayable stream');
   });
 
   it('throws when the master could not be written, even though the admin took the report', async () => {
-    const harness = makeSink({ masterWritesFail: () => true });
+    const harness = makeRegistry({ masterWritesFail: () => true });
 
-    await assert.rejects(() => harness.sink.upsertRendition(IDENTITY, rung('360p', 360)), /master/i);
+    await assert.rejects(() => harness.registry.upsertRendition(IDENTITY, rung('360p', 360)), /master/i);
   });
 
   /**
@@ -301,14 +301,14 @@ describe('what a rendition announce does in admin mode', () => {
     const heldBack = new Promise<Response>((resolve) => {
       releaseFirst = resolve;
     });
-    const { sink, masters } = makeSink({
+    const { registry, masters } = makeRegistry({
       // The admin folded 360p first (write index 3, a ladder of one) and 720p second (index 4, both).
       // The first answer is held until the second has landed.
       answer: (rendition) =>
         rendition.name === '360p' ? heldBack : new Response(merged([first, second], {}, 'live', 4)),
     });
 
-    const announces = [sink.upsertRendition(IDENTITY, first), sink.upsertRendition(IDENTITY, second)];
+    const announces = [registry.upsertRendition(IDENTITY, first), registry.upsertRendition(IDENTITY, second)];
     await waitFor(() => masters.length === 1, SETTLE_CEILING_MS);
     releaseFirst(new Response(merged([first], {}, 'live', 3), { status: 200 }));
     await Promise.all(announces);
@@ -330,22 +330,22 @@ describe('what a rendition announce does in admin mode', () => {
       delete body.feed;
       return new Response(JSON.stringify(body), { status: 200 });
     };
-    const { sink, masters } = makeSink({
+    const { registry, masters } = makeRegistry({
       answer: (rendition) => withoutIndex(rendition.name === '360p' ? [first] : [first, second]),
     });
 
-    await sink.upsertRendition(IDENTITY, second);
-    await sink.upsertRendition(IDENTITY, first);
+    await registry.upsertRendition(IDENTITY, second);
+    await registry.upsertRendition(IDENTITY, first);
 
     assert.equal(masters.length, 2);
     assert.doesNotMatch(masters[1].playlist, /RESOLUTION=1280x720/, 'arrival order is all there is without an index');
   });
 
   it('refuses to report a ladder that carries no admin stream id', async () => {
-    const harness = makeSink();
+    const harness = makeRegistry();
     const { adminStreamId: _dropped, ...withoutId } = IDENTITY;
 
-    await assert.rejects(() => harness.sink.upsertRendition(withoutId, rung('360p', 360)), /admin stream id/);
+    await assert.rejects(() => harness.registry.upsertRendition(withoutId, rung('360p', 360)), /admin stream id/);
     assert.deepEqual(harness.posted, []);
   });
 });
@@ -357,23 +357,23 @@ describe('what a rendition announce does in admin mode', () => {
  * the fixture deterministic. The same arrangement `StreamCatalog.test.ts` uses, for the same reason: a
  * rung reaching the liveness tracker changes the ladder's shape, so warming up after the announce
  * leaves fire-and-forget rewrites racing whatever the case does next. Before it, every delivery returns
- * at the sink's own "nothing has announced this ladder yet" guard, writing nothing, and the announce
+ * at the registry's own "nothing has announced this ladder yet" guard, writing nothing, and the announce
  * then leaves the advertised shape agreeing with the tracker.
  */
 async function announcedLadder(options: HarnessOptions = {}): Promise<Harness & { deliver: Deliver }> {
   const ladder = [rung('360p', 360), rung('720p', 720)];
-  const harness = makeSink({ answer: () => new Response(merged(ladder), { status: 200 }), ...options });
+  const harness = makeRegistry({ answer: () => new Response(merged(ladder), { status: 200 }), ...options });
 
   const deliver: Deliver = (rungs, rounds = 1) => {
     for (let round = 0; round < rounds; round++) {
       for (const name of rungs) {
-        harness.sink.recordRungDelivered(DECLARED_TOPIC, name);
+        harness.registry.recordRungDelivered(DECLARED_TOPIC, name);
       }
     }
   };
 
   deliver(BOTH_RUNGS, WARMUP_ROUNDS);
-  await harness.sink.upsertRendition(IDENTITY, ladder[0]);
+  await harness.registry.upsertRendition(IDENTITY, ladder[0]);
   assert.equal(harness.masters.length, 1, 'the fixture is only settled if nothing is still being rewritten');
 
   return { ...harness, deliver };
@@ -411,14 +411,14 @@ describe('what a delivery does in admin mode', () => {
 
   /** Nothing has been folded yet, so there is no ladder to write a master from and nothing to correct. */
   it('writes nothing before the ladder has ever announced', async () => {
-    const harness = makeSink();
+    const harness = makeRegistry();
 
     for (let round = 0; round < ROUNDS_TO_KILL_A_RUNG; round++) {
       for (const name of BOTH_RUNGS) {
-        harness.sink.recordRungDelivered(DECLARED_TOPIC, name);
+        harness.registry.recordRungDelivered(DECLARED_TOPIC, name);
       }
     }
-    harness.sink.recordRungDelivered(DECLARED_TOPIC, '360p');
+    harness.registry.recordRungDelivered(DECLARED_TOPIC, '360p');
 
     await waitAndConfirmNothingHappened(() => harness.masters.length === 0, NOTHING_HAPPENS_WINDOW_MS);
     assert.equal(harness.posted.length, 0, 'and nothing asked the admin about a ladder it has never been told of');

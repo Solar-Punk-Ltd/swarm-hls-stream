@@ -36,7 +36,7 @@ import {
   STATE_REPORT_FAILED,
   StateReportOutcome,
 } from '../src/libs/AdminApiClient.js';
-import { LadderSink, RenditionAnnouncement } from '../src/libs/LadderSink.js';
+import { LadderRegistry, RenditionAnnouncement } from '../src/libs/LadderRegistry.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, Rendition, StreamState } from '../src/types.js';
 
@@ -547,7 +547,7 @@ describe('a replacement session on a declared topic waits for the session it rep
  * master a viewer can open has landed, and `vod` once every rung of the ladder has finalized, carrying
  * the master's index rather than this rung's own.
  *
- * ⛔ The rung's own record goes to the admin through the ladder sink, which is the only thing that can
+ * ⛔ The rung registers its own record through the ladder registry, which is the only thing that can
  * see the other three rungs. That is why the flip is read off an answer rather than off this session's
  * intent: a rung draining while its siblings are live has ended its own recording and nothing else.
  */
@@ -555,7 +555,7 @@ describe('a rung of a declared ladder', () => {
   const RUNG_TOPIC = 'rung-topic-0001';
   const RUNG = { name: '720p', width: 1280, height: 720, configuredKbps: 2800 };
 
-  /** One rendition report the sink was handed. */
+  /** One rendition report registered with the registry. */
   interface Upsert {
     adminStreamId?: string;
     group: string;
@@ -572,7 +572,10 @@ describe('a rung of a declared ladder', () => {
   }
 
   interface LadderSessionOptions {
-    /** What the sink answers for each announce in turn. Defaults to a master at 0 that flipped nothing. */
+    /**
+     * What the registry answers for each announce in turn. Defaults to a master at 0 that flipped
+     * nothing.
+     */
     announce?: (upsert: Upsert, attempt: number) => RenditionAnnouncement;
     /** How long a failed announce waits before the next manifest publish re-attempts it. */
     catalogAnnounceRetryMs?: number;
@@ -602,7 +605,7 @@ describe('a rung of a declared ladder', () => {
       },
     } as unknown as AdminApiClient;
 
-    const ladderSink: LadderSink = {
+    const ladderRegistry: LadderRegistry = {
       upsertRendition: async (identity, rendition) => {
         const upsert = { adminStreamId: identity.adminStreamId, group: identity.group, rendition };
         upserts.push(upsert);
@@ -628,7 +631,7 @@ describe('a rung of a declared ladder', () => {
           return true;
         },
       }),
-      ladderSink,
+      ladderRegistry,
       recoveryStore: makeFakeRecoveryStore(),
       streamKey: TEST_STREAM_KEY,
       redundancyLevel: 0,
@@ -665,7 +668,7 @@ describe('a rung of a declared ladder', () => {
     assert.equal(session.published[0]?.index, 0);
   });
 
-  it('writes nothing to the stream catalog, and announces its rung through the sink instead', async () => {
+  it('writes nothing to the stream catalog, and registers its rung with the ladder registry instead', async () => {
     const session = newLadderSession();
 
     await feedOneSegment(session.uploader, 0);
