@@ -32,6 +32,12 @@ import { NodeUnreachableError } from './NodeUnreachableError.js';
  * period between attempts is the pass plus the wait rather than the wait alone. The ceiling below
  * bounds the idle half only.
  *
+ * ⚠️ A 5xx from a gate read is waited on even when the probe above has just proved the node is there.
+ * That is the wrapped-5xx rule doing what it was written for rather than a hole in the probe: a node
+ * can answer `GET /` and still answer 502 or 503 for a chequebook or a batch, because what is behind
+ * it, an intermediary or the chain itself, is not ready. Waiting is the right answer to both, and a
+ * 4xx from the same read still ends the boot.
+ *
  * ⚠️ Nothing cancels this. A SIGTERM during a wait is handled by `ServiceLifecycle`, which stops the
  * orchestrator, closes the API and calls `process.exit`, and the loop dies with the process rather
  * than being asked to stop. That is why a shutdown works today, and it is also why this file has no
