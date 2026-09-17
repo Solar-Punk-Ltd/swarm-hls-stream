@@ -1,5 +1,7 @@
 import { NodeWaitReport } from '../types.js';
 
+import { safeUrl } from './BeePublisherPool.js';
+
 /**
  * The half of the boot that needs a Bee node, run as a wait rather than as a one-shot.
  *
@@ -56,7 +58,13 @@ interface NodeWaitLogger {
  * nothing takes up.
  */
 interface NodeWaitOptions {
-  /** The node the wait is about, which is the coordinator: the one every boot read reaches. */
+  /**
+   * The node the wait is about, which is the coordinator: the one every boot read reaches.
+   *
+   * Passed as the deployment configured it. Everything this publishes goes through `safeUrl` first,
+   * because a node url may carry basic auth in its userinfo and what is built here reaches `/health`,
+   * which takes no credential of its own.
+   */
   readonly url: string;
   readonly logger: NodeWaitLogger;
   /** Called before the first attempt and after every failure, so `/health` can answer from the start. */
@@ -73,7 +81,9 @@ interface NodeWaitOptions {
  * Returns whatever `init` returned, so the caller keeps the recovered stream ids it needs next.
  */
 export async function waitForNode<T>(init: () => Promise<T>, options: NodeWaitOptions): Promise<T> {
-  const { url, logger, onReport } = options;
+  const { logger, onReport } = options;
+  // Once, here, rather than at each of the three places that publish it. See `NodeWaitOptions.url`.
+  const url = safeUrl(options.url);
   const sleep = options.sleep ?? defaultSleep;
   const waitingSince = (options.now ?? (() => new Date()))().toISOString();
   const maxDelayMs = options.maxDelayMs ?? NODE_WAIT_MAX_DELAY_MS;
