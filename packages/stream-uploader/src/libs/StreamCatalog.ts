@@ -342,11 +342,12 @@ export class StreamCatalog {
         return;
       }
 
-      // Everything else stays as loud as it was. A request that never reached the node — a wrong
-      // url, a wrong port, a node that is down — must fail the boot rather than start an uploader
-      // that cannot publish, and without a persisted index there is no floor to continue above:
-      // the head's index is unknown, and beginning at 0 would write into occupied indices and fork
-      // the feed invisibly for every reader that keeps following the original chain.
+      // Everything else stays as loud as it was. A request that never reached the node, a wrong url,
+      // a wrong port, a node that is down, is rethrown here so the wait around the boot retries it
+      // rather than starting an uploader that cannot publish, and without a persisted index there is
+      // no floor to continue above: the head's index is unknown, and beginning at 0 would write into
+      // occupied indices and fork the feed invisibly for every reader that keeps following the
+      // original chain.
       this.errorHandler.handleError(error, 'StreamCatalog.init');
       throw error;
     }
