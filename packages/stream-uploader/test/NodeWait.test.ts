@@ -224,6 +224,15 @@ describe('an error that says the node is not there', () => {
     'a name that does not resolve': new Error('getaddrinfo ENOTFOUND bee-uploader'),
     'a socket that hung up': new Error('socket hang up'),
     'a fetch that never landed': new Error('fetch failed'),
+    // ⛔ The status is gone by the time a gate has wrapped it, and a 502 from an intermediary is
+    // exactly the 2026-09-16 shape: under refuse the boot ended and docker looped it.
+    'a gate quoting a 502 it was given': new Error(
+      '[PostageGate] 360p batch aaaaaaaa… on http://a:1633 is absent or unreadable: Request failed with ' +
+        'status code 502. The uploader refuses to run without a batch reading.',
+    ),
+    'a gate quoting a 503': new Error(
+      '[ChequebookGate] http://a:1633 chequebook is absent or unreadable: Request failed with status code 503.',
+    ),
   })) {
     it(`reads ${name} as the node not being there`, () => {
       assert.equal(isNodeUnavailable(error), true);
@@ -243,6 +252,11 @@ describe('an error that says the node is not there', () => {
     'a feed whose payload made no sense': new Error('invalid feed payload: unexpected end of JSON input'),
     'a batch the node does not hold': withStatus(404),
     'a request the node refused to read': withStatus(400),
+    // The node answered and said no. Waiting does not produce a batch it does not hold.
+    'a gate quoting a 404 it was given': new Error(
+      '[PostageGate] 360p batch aaaaaaaa… on http://a:1633 is absent or unreadable: Request failed with ' +
+        'status code 404.',
+    ),
     'a chequebook below the floor': new Error(
       `[ChequebookGate] ${NODE_URL} has 0.1000 BZZ available in its chequebook and the floor is 0.5000 BZZ.`,
     ),
@@ -358,5 +372,66 @@ describe('the reachability probe in front of the boot', () => {
 
     assert.equal(init.calls(), 3);
     assert.deepEqual(seen.slept, [1_000, 2_000]);
+  });
+});
+
+/**
+ * ⛔ **Which node the wait is about is decided by what failed, not by which one it started with.**
+ *
+ * The wait is given the coordinator, because that is the node every boot read reaches and the only
+ * one there is on an unsplit deployment. A four rung pool is different: under `refuse` the gate that
+ * ends a pass may be the one reading the 1080p node while the coordinator is up and answering, and a
+ * `/health` payload naming the coordinator then sends an operator to the wrong machine.
+ *
+ * So an error that knows which node it is about says so, and the report follows it.
+ */
+describe('which node the report names', () => {
+  class RefusalAboutANode extends Error {
+    constructor(message: string, readonly nodeUrl: string) {
+      super(message);
+    }
+  }
+
+  /** A gate's refusal about one rung, with a cause the classifier waits on. */
+  const unreachableRung = (url: string) =>
+    new RefusalAboutANode(
+      `[PostageGate] 1080p batch aaaaaaaa… on ${url} is absent or unreadable: timeout of 20000ms exceeded.`,
+      url,
+    );
+
+  it('names the node a refusal was about, rather than the one the wait started with', async () => {
+    const seen = watcher();
+    const init = failingInit(1, () => unreachableRung('http://bee-1080:1663'));
+
+    await waitForNode(init.run, seen.options);
+
+    assert.equal(seen.reports[1].url, 'http://bee-1080:1663');
+    assert.match(seen.warnings[0], /http:\/\/bee-1080:1663/);
+  });
+
+  it('keeps the node it started with in the report it makes before trying anything', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, () => unreachableRung('http://bee-1080:1663')).run, seen.options);
+
+    assert.equal(seen.reports[0].url, NODE_URL, 'nothing has failed yet, so the wait is about the node it was given');
+  });
+
+  it('falls back to the node it started with when the failure names none', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.reports[1].url, NODE_URL);
+  });
+
+  it('strips a credential out of a node a refusal names, like any other url it publishes', async () => {
+    const seen = watcher();
+    const init = failingInit(1, () => unreachableRung('http://operator:hunter2@bee-1080:1663'));
+
+    await waitForNode(init.run, seen.options);
+
+    assert.doesNotMatch(seen.reports[1].url, /hunter2/);
+    assert.match(seen.reports[1].url, /bee-1080:1663/);
   });
 });

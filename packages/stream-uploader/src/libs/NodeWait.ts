@@ -106,8 +106,9 @@ export async function waitForNode<T>(init: () => Promise<T>, options: NodeWaitOp
       }
 
       const lastError = describeFailure(error);
-      onReport({ url, waitingSince, attempts, lastError });
-      logger.warn(`[NodeWait] node not available at ${url}, retrying in ${delayMs / MS_PER_SECOND}s: ${lastError}`);
+      const failed = nodeUrlOf(error) ?? url;
+      onReport({ url: failed, waitingSince, attempts, lastError });
+      logger.warn(`[NodeWait] node not available at ${failed}, retrying in ${delayMs / MS_PER_SECOND}s: ${lastError}`);
 
       await sleep(delayMs);
       delayMs = Math.min(delayMs * 2, maxDelayMs);
@@ -208,15 +209,34 @@ const UNREACHABLE_CODES = new Set([
  * Deliberately narrow. Every alternative names a transport failure that a caller cannot produce by
  * asking for the wrong thing, so a genuine fault in the feed, the key or the batch cannot match one
  * and be waited on for ever.
+ *
+ * ⛔ `status code 5\d\d` is here because the status is lost the same way the code is. A gate wraps
+ * what bee-js threw in a sentence of its own, so a 502 from an intermediary reaches this as text and
+ * `statusOf` finds nothing to read: under `refuse` that ended the boot and docker looped it, which is
+ * the 2026-09-16 failure wearing a different cause. A 4xx deliberately stays out, matching the status
+ * check above: the node answered and said no, and waiting does not change its answer.
  */
 const UNREACHABLE_TEXT =
-  /ECONNREFUSED|ECONNRESET|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up|fetch failed|network error|timeout of \d+ms exceeded/i;
+  /ECONNREFUSED|ECONNRESET|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up|fetch failed|network error|timeout of \d+ms exceeded|status code 5\d\d/i;
 
 /** A status the node answered with, from bee-js or from the axios response under it. */
 function statusOf(error: unknown): number | null {
   const carrier = error as { status?: unknown; response?: { status?: unknown } } | null | undefined;
   const status = typeof carrier?.status === 'number' ? carrier.status : carrier?.response?.status;
   return typeof status === 'number' && Number.isFinite(status) ? status : null;
+}
+
+/**
+ * The node a failure says it was about, or nothing.
+ *
+ * ⛔ Read structurally rather than by class, so this file keeps knowing nothing about gates. What it
+ * needs is the one fact: a pool of four has three nodes besides the one the wait was handed, and a
+ * refusal about the 1080p rung reported against the coordinator sends an operator to a node that is
+ * working. Stripped like every other url this publishes, since a caller may hand over a raw one.
+ */
+function nodeUrlOf(error: unknown): string | null {
+  const named = (error as { nodeUrl?: unknown } | null | undefined)?.nodeUrl;
+  return typeof named === 'string' && named !== '' ? safeUrl(named) : null;
 }
 
 function describeFailure(error: unknown): string {
