@@ -529,9 +529,11 @@ something has failed, `lastError`. No other reason is reported beside it: nothin
 signal on the body is the zero it was initialised with and reading one as health would be wrong in the
 direction nobody checks.
 
-What the service is doing meanwhile is in `libs/NodeWait.ts`: the two start gates, the catalog feed
-lookup and the recovery pass, retried with one log line per attempt, backing off from 1s, doubling, and
-holding at 30s, for as long as the node takes. A failure that says the node is not answering is waited on. A
+What the service is doing meanwhile is in `libs/NodeWait.ts`: a liveness check of the coordinator, then
+the two start gates, the catalog feed lookup and the recovery pass, retried with one log line per
+attempt, backing off from 1s, doubling, and holding at 30s, for as long as the node takes. The liveness
+check is first so that a node which is not there costs one question rather than both gates' budgets,
+and so that nothing further down has to tell "this feed is empty" apart from "this node cannot say". A failure that says the node is not answering is waited on. A
 failure that says anything else, a feed whose payload will not parse or a key this deployment cannot
 sign with, still ends the boot with exit 1, because waiting on those is a service that never starts and
 never says why. Before this the whole boot ran ahead of the listener, so a node that was not there meant
