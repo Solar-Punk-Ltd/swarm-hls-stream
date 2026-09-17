@@ -258,8 +258,8 @@ stop.sh   [--profile=<name>] [service...]   # stop containers; all of them if no
 health.sh [--profile=<name>]                # check service health across all targets
 ```
 
-Both commands take the same service names as `clean.sh`, and both spend money is
-not involved: `stop.sh` stops, it does not remove volumes.
+Both take the same service names as `clean.sh`. Neither removes data: `stop.sh` stops containers and
+leaves every volume in place, and `health.sh` only reads.
 
 ### drain-stage.sh
 
