@@ -25,7 +25,10 @@
 # that runs BEHIND the listener since decision D16 of 2026-09-17, so the port is open and answering
 # `waiting_for_node` throughout, and the container stays up whatever those reads find. On a
 # four-node pool that answers nothing the default budget spends about 160 seconds an attempt under
-# `warn`, which reads every node of both gates, and the wait then goes round again. Under
+# `warn`, which reads every node of both gates, and the wait then goes round again. Since the owner's
+# decision 7 b of 2026-09-17 the shipped `chequebook-warn` spends the same 160 seconds on such a pool,
+# because a batch the postage gate could not read at all is now warned about rather than refused on,
+# so that pass no longer stops at the first rung. Under
 # UPLOADER_START_GATES=refuse the first read that times out ends the pass instead, about 20 seconds
 # in, and that pass is waited on and retried like any other: a node that does not answer is D16's
 # case whatever the mode. What `refuse` still ends the boot for is a node that ANSWERS with a reading
