@@ -1,6 +1,7 @@
 import { PostageBatch } from '@ethersphere/bee-js';
 
 import { safeUrl, shortBatchId } from './BeePublisherPool.js';
+import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
 import { GateCollector } from './StartGates.js';
 
@@ -80,7 +81,7 @@ export class PostageGate {
         continue;
       }
       if (collect === undefined) {
-        throw new Error(refusal);
+        throw new GateRefusalError(refusal, safeUrl(publisher.url));
       }
       collect({ rung: publisher.rung, url: safeUrl(publisher.url), message: refusal });
     }

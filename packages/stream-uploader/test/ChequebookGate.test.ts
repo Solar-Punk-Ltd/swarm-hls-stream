@@ -12,6 +12,7 @@ import {
   FundingLogger,
   PLUR_PER_BZZ,
 } from '../src/libs/ChequebookGate.js';
+import { GateRefusalError } from '../src/libs/GateRefusalError.js';
 import { GateRefusal } from '../src/libs/StartGates.js';
 
 const FLOOR_PLUR = bzzToPlur(0.5);
@@ -291,6 +292,27 @@ describe('what a refusal says about the node url', () => {
 
     assert.doesNotMatch(logger.lines[0], /hunter2/);
     assert.match(logger.lines[0], /bee-a:1633/);
+  });
+
+  // What `waitForNode` reads to say which node the boot is waiting for. A pool of four has three
+  // others, and a refusal reported against the wrong one sends an operator to a node that is working.
+  it('names the node it refused on the error itself, not only in the sentence', async () => {
+    const reads = reader();
+    const gate = new ChequebookGate(
+      [node('http://operator:hunter2@bee-1080:1663', bzzToPlur(0.1), reads)],
+      FLOOR_PLUR,
+      recordingLogger(),
+    );
+
+    await assert.rejects(
+      () => gate.assertFunded(),
+      (error: unknown) => {
+        assert.ok(error instanceof GateRefusalError);
+        // Normalised, since safeUrl rebuilds a url it had to take a credential out of. See its doc.
+        assert.equal(error.nodeUrl, 'http://bee-1080:1663/');
+        return true;
+      },
+    );
   });
 
   it('leaves a url with nothing to hide exactly as the operator wrote it', async () => {
