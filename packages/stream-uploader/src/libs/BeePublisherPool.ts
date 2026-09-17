@@ -113,9 +113,9 @@ export class BeePublisherPool {
    * Every node this pool publishes through, in ladder order.
    *
    * Exists so a startup check can enumerate the deployment rather than rebuild the single-node
-   * versus per-rung decision from the config a second time. `ChequebookGate` is the caller: reading
-   * the pool means a rung added to BEE_PUBLISHERS is funding-checked without anyone remembering to
-   * widen a parallel list.
+   * versus per-rung decision from the config a second time. `index.ts` is the caller, and it hands
+   * the list to both `ChequebookGate` and `PostageGate`: reading the pool means a rung added to
+   * BEE_PUBLISHERS is checked without anyone remembering to widen a parallel list.
    */
   public nodes(): readonly BeePublisher[] {
     return this.ordered;
