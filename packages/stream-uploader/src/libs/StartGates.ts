@@ -64,7 +64,12 @@ export const START_GATE_WARN = 'warn';
  */
 export const START_GATE_REFUSE = 'refuse';
 
-/** The second argument of {@link runStartGates}, and what `parseStartGateMode` below answers with. */
+/**
+ * What a deployment sets, as `parseStartGateMode` answers with it and `gatePolicyFor` reads it.
+ *
+ * Not something {@link runStartGates} is told any more: since the two gates were ruled apart, the
+ * runner asks each gate whether it refuses and never sees the mode itself.
+ */
 export type StartGateMode = typeof START_GATE_CHEQUEBOOK_WARN | typeof START_GATE_WARN | typeof START_GATE_REFUSE;
 
 /**
