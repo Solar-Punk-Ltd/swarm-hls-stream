@@ -323,13 +323,13 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------------- |
-| `BEE_URL`           | Bee node API URL                                                                               |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                          |
-| `STREAM_KEY`        | Private key (hex) for signing feeds                                                            |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                              |
-| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32` |
+| Variable            | Description                                                                                                                                                                   |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BEE_URL`           | Bee node API URL                                                                                                                                                              |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`). Required on a single-node deployment. With `BEE_PUBLISHERS` set it is optional and unread, since each rung's batch is in its own entry |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                                                                                                           |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                                                                                                             |
+| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32`                                                                                |
 
 **Optional:**
 
