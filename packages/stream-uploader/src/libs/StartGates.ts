@@ -43,12 +43,8 @@ export const START_GATE_WARN = 'warn';
 /** Stop the start on the first gate that refuses, which is what every boot did before that date. */
 export const START_GATE_REFUSE = 'refuse';
 
-/**
- * Not exported, and `deploy/scripts/unused-exports.mjs` is why: no caller names this type. Both of
- * them reach it through `parseStartGateMode` below, and an exported name nothing imports is a
- * promise this repository counts.
- */
-type StartGateMode = typeof START_GATE_WARN | typeof START_GATE_REFUSE;
+/** The second argument of {@link runStartGates}, and what `parseStartGateMode` below answers with. */
+export type StartGateMode = typeof START_GATE_WARN | typeof START_GATE_REFUSE;
 
 /**
  * One node a gate could not clear, as the gate hands it over when it is collecting rather than

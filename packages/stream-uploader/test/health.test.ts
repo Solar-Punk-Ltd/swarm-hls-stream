@@ -14,6 +14,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_START_GATE_WARNED,
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HEALTH_REASON_UNRECOVERABLE_STREAM,
@@ -53,6 +54,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     fragmentMismatchStreams: 0,
     publisherGopStreams: [],
     postageRefusedPublishers: 0,
+    startGateWarnings: [],
     ...overrides,
   };
 }
@@ -672,5 +674,57 @@ describe('deriveHealthStatus while the boot is waiting for its node', () => {
 
     assert.equal(report.status, HEALTH_OK);
     assert.deepEqual(report.reasons, []);
+  });
+});
+
+/**
+ * The startup gates' own outcome, latched the way a refused postage batch is.
+ *
+ * Under `UPLOADER_START_GATES=warn`, which is the shipped mode since 2026-09-17, a gate that cannot
+ * clear its node warns and the service starts. Without this the whole record of that was one log line
+ * at boot, and on a pool-backed deployment nothing else in the stack refuses either, so an unfunded
+ * chequebook was invisible within minutes of the line scrolling away.
+ */
+describe('deriveHealthStatus start gate warnings', () => {
+  it('is ok when the pass cleared every gate', () => {
+    const report = deriveHealthStatus(signals({ startGateWarnings: [] }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  it('is degraded from boot on when a gate warned instead of refusing', () => {
+    const report = deriveHealthStatus(
+      signals({ startGateWarnings: [{ gate: 'PostageGate', rung: '360p' }] }),
+      STALL_MS,
+    );
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_START_GATE_WARNED]);
+  });
+
+  // One reason however many rungs warned: the names are on the payload, and a reason per rung would
+  // make a four rung outage read as four different things to fix.
+  it('reports one reason however many gates and rungs warned', () => {
+    const report = deriveHealthStatus(
+      signals({
+        startGateWarnings: [
+          { gate: 'ChequebookGate', rung: '360p' },
+          { gate: 'PostageGate', rung: '360p' },
+          { gate: 'PostageGate', rung: '1080p' },
+        ],
+      }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_START_GATE_WARNED]);
+  });
+
+  it('stands beside the reasons that are about the running service', () => {
+    const report = deriveHealthStatus(
+      signals({ startGateWarnings: [{ gate: 'PostageGate' }], postageRefusedPublishers: 1 }),
+      STALL_MS,
+    );
+
+    assert.equal(report.reasons.length, 2);
   });
 });

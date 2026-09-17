@@ -220,6 +220,7 @@ function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignal
     fragmentMismatchStreams: 0,
     publisherGopStreams: [],
     postageRefusedPublishers: 0,
+    startGateWarnings: [],
     ...overrides,
   };
 }

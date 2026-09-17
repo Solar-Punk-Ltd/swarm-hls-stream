@@ -130,6 +130,8 @@ describe('api server over http (S0.7 test layer)', () => {
         'publisherGopStreams',
         'postageRefusedPublishers',
         'refusedPublishers',
+        // Latched from the startup gate pass, and on the body from boot on. See startGateHealth.test.ts.
+        'startGateWarnings',
         'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
