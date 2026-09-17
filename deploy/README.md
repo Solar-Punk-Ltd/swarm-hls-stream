@@ -254,8 +254,8 @@ clean.sh --yes                           # skip the confirmation prompt (for scr
 ### stop.sh / health.sh
 
 ```bash
-stop.sh   [--profile=<name>] [service...]   # stop containers; all of them if none is named
-health.sh [--profile=<name>] [service...]   # check service health; all of them if none is named
+stop.sh   [--profile=<name>] [service...]   # stop containers, all of them if none is named
+health.sh [--profile=<name>] [service...]   # check service health, all of them if none is named
 ```
 
 Both take the same service names as `clean.sh`. Neither removes data: `stop.sh` stops containers and
