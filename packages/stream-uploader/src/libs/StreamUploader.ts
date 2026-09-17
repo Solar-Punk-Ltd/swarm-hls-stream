@@ -263,7 +263,7 @@ export interface StreamUploaderOptions {
   /**
    * Where a ladder rung's rendition record goes, and where its deliveries are counted.
    *
-   * Defaults to `streamCatalog`, which is the standalone deployment: the catalog folds the four rungs
+   * Defaults to `streamCatalog`, which is the standalone deployment: the catalog merges the four rungs
    * into one entry and writes the master from it. In admin mode the merge state belongs to the admin,
    * so an `AdminLadderRegistry` takes its place — and nothing else in this class changes, because a rung
    * announcing itself is the same act either way. Unread on a stream with no ladder.
@@ -1134,7 +1134,7 @@ export class StreamUploader {
   }
 
   /**
-   * Fold this rung into its ladder, wherever the ladder is kept, and answer what that achieved.
+   * Merge this rung into its ladder, wherever the ladder is kept, and answer what that achieved.
    *
    * @returns `null` when nothing was announced because a newer session holds this rung. Only admin
    * mode reads the announcement: standalone, the catalog carries the ladder's whole state itself and

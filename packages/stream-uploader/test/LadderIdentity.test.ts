@@ -20,7 +20,7 @@ import { waitFor } from './helpers/waiting.js';
 /**
  * One broadcast is one recording, across a crash.
  *
- * The catalog keys a ladder's entry on `(owner, group)`: four rungs fold into a single row and
+ * The catalog keys a ladder's entry on `(owner, group)`: four rungs merge into a single row and
  * `StreamCatalog.withoutGroup` replaces that row only when the group matches. So a source handed a
  * second group is not a cosmetic slip, it is the same broadcast listed twice for viewers, each copy
  * paid for in its own postage and neither reachable from the other.
@@ -234,7 +234,7 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
   /**
    * The other half of the rule, and the reason the record is retired rather than kept forever. A
    * ladder whose last rung finalized is a finished recording, so the next broadcast on that source
-   * must not be folded into it.
+   * must not be merged into it.
    */
   it('gives the next broadcast on the same source a new group once the ladder has finished', async () => {
     const root = makeTempRoot();
@@ -486,7 +486,7 @@ describe('a ladder in admin mode', () => {
       });
 
       const [{ identity, rendition }] = announces;
-      assert.equal(identity.group, DECLARED_TOPIC, 'the ladder is folded under the topic the admin points viewers at');
+      assert.equal(identity.group, DECLARED_TOPIC, 'the ladder is merged under the topic the admin points viewers at');
       assert.equal(identity.adminStreamId, ADMIN_SESSION.id, 'and reported against the declaration');
       assert.equal(rendition.name, '720p');
       assert.notEqual(rendition.topic, DECLARED_TOPIC, 'the rung′s own feed is never the master′s');
@@ -520,7 +520,7 @@ describe('a ladder in admin mode', () => {
 
   /**
    * ⛔ Nothing re-announces a recovered stream, so the entry on disk is the only surviving record of
-   * which declaration this rung belonged to and of which ladder it was folded into. Without the id the
+   * which declaration this rung belonged to and of which ladder it was merged into. Without the id the
    * broadcast finalizes into its feed and stays `live` in the admin's list for ever; without the group
    * its master is written to a topic the admin points nobody at.
    */
@@ -555,7 +555,7 @@ describe('a ladder in admin mode', () => {
 
       // Nothing re-announces a recovered stream, so the first record it registers is its finalize, the
       // announce that carries the recording's index. It goes through the same registry a fresh
-      // session's does, under the same declaration, or the recovered tail of the broadcast is folded
+      // session's does, under the same declaration, or the recovered tail of the broadcast is merged
       // into nothing the admin holds.
       const errors = await errorsDuring(async () => {
         await orch.stopStream(RUNG_720P);

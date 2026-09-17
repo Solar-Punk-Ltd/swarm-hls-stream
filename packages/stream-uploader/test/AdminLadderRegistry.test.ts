@@ -181,7 +181,7 @@ describe('what a rendition announce does in admin mode', () => {
    * report concurrently and each is answered with the whole ladder, so a master built from anything
    * else would offer a viewer only the rungs that happen to share one uploader process.
    */
-  it('writes the master from the ladder the admin folded, not from the rung it was handed', async () => {
+  it('writes the master from the ladder the admin merged, not from the rung it was handed', async () => {
     const ladder = [rung('360p', 360), rung('720p', 720)];
     const harness = makeRegistry({ answer: () => new Response(merged(ladder), { status: 200 }) });
 
@@ -189,7 +189,7 @@ describe('what a rendition announce does in admin mode', () => {
 
     assert.equal(harness.masters.length, 1);
     assert.match(harness.masters[0].playlist, /topic-360p/);
-    assert.match(harness.masters[0].playlist, /topic-720p/, 'the sibling rung is only knowable from the fold');
+    assert.match(harness.masters[0].playlist, /topic-720p/, 'the sibling rung is only knowable from the merge');
     assert.equal(announced.masterIndex, 0, 'the index a vod report would name');
   });
 
@@ -218,7 +218,7 @@ describe('what a rendition announce does in admin mode', () => {
   });
 
   /**
-   * The admin flips once, on the report that completed the fold. If the master write behind that
+   * The admin flips once, on the report that completed the merge. If the master write behind that
    * report failed, the registry threw and the flip is gone: the retry is answered with a finished ladder
    * and `flippedToFinished: false`. Read literally, that is a recording the admin lists as live for
    * good, so a finished ladder the admin still holds as anything but `vod` is a flip to report.
@@ -287,14 +287,14 @@ describe('what a rendition announce does in admin mode', () => {
    * the alternative is a report addressed to `undefined` and a 404 that reads like a deleted stream.
    */
   /**
-   * ⛔ Four rungs report concurrently, the admin folds them in one order, and the answers can land here
-   * in another. Each master used to be written from its own answer, so an older fold landing last
+   * ⛔ Four rungs report concurrently, the admin merges them in one order, and the answers can land here
+   * in another. Each master used to be written from its own answer, so an older merge landing last
    * published a master missing a rung a newer answer had already named — and a steady broadcast can go
    * its whole length without the next announce that would have put it back. The admin's catalog write
-   * index is what orders the folds, and an answer older than one already applied is written from the
+   * index is what orders the merges, and an answer older than one already applied is written from the
    * newer ladder instead.
    */
-  it('writes the master from the newer fold when an older answer lands after it', async () => {
+  it('writes the master from the newer merge when an older answer lands after it', async () => {
     const first = rung('360p', 360);
     const second = rung('720p', 720);
     let releaseFirst: (response: Response) => void = () => {};
@@ -302,7 +302,7 @@ describe('what a rendition announce does in admin mode', () => {
       releaseFirst = resolve;
     });
     const { registry, masters } = makeRegistry({
-      // The admin folded 360p first (write index 3, a ladder of one) and 720p second (index 4, both).
+      // The admin merged 360p first (write index 3, a ladder of one) and 720p second (index 4, both).
       // The first answer is held until the second has landed.
       answer: (rendition) =>
         rendition.name === '360p' ? heldBack : new Response(merged([first, second], {}, 'live', 4)),
@@ -409,7 +409,7 @@ describe('what a delivery does in admin mode', () => {
     assert.equal(harness.posted.length, postsAfterAnnounce, 'a rung dying is nothing the admin has to be asked about');
   });
 
-  /** Nothing has been folded yet, so there is no ladder to write a master from and nothing to correct. */
+  /** Nothing has been merged yet, so there is no ladder to write a master from and nothing to correct. */
   it('writes nothing before the ladder has ever announced', async () => {
     const harness = makeRegistry();
 

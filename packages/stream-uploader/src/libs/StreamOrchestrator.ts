@@ -1890,7 +1890,7 @@ export class StreamOrchestrator {
    *
    * ⛔ **Preferred, never imposed.** What is remembered — in memory, on disk, and in each rung's own
    * recovery entry — stays the single source of truth across a restart, because it is what the rungs
-   * already publishing have been folded under and what the master already written names. A
+   * already publishing have been merged under and what the master already written names. A
    * declaration that disagrees with a remembered group is said out loud rather than acted on: the
    * only way to produce one is a broadcast that crashed and was then re-declared, and adopting the new
    * topic mid-ladder would strand the master the surviving rungs are still writing.
@@ -2036,7 +2036,7 @@ export class StreamOrchestrator {
    * second recording of one broadcast.
    *
    * The persisted record goes with the in-memory one rather than outliving it. A ladder whose last
-   * rung has stopped is a finished recording, and keeping its identity would fold the next broadcast
+   * rung has stopped is a finished recording, and keeping its identity would merge the next broadcast
    * on that source into it, which is the same duplicate pointing the other way. The broadcast's
    * dating retires on exactly that reasoning and at exactly that moment, so nothing here grows for
    * the life of the process either.

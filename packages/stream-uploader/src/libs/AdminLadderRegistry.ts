@@ -23,9 +23,9 @@ export interface AdminLadderRegistryOptions {
  *
  * ## What moves, and what does not
  *
- * Standalone, `StreamCatalog` holds one entry per ladder on the stream list feed, folds each rung's
- * record into it, and writes the master from the folded result. Admin mode moves the fold into the
- * admin's database — each rung posts its own record, the admin folds it by exactly the rule
+ * Standalone, `StreamCatalog` holds one entry per ladder on the stream list feed, merges each rung's
+ * record into it, and writes the master from the merged result. Admin mode moves the merge into the
+ * admin's database — each rung posts its own record, the admin merges it by exactly the rule
  * `StreamCatalog.keepingWhatFinished` states, stores it, writes `renditions` into its own catalog
  * entry, and answers with the merged ladder. What does NOT move is the master: the ladder's
  * multivariant playlist is still a Swarm feed this service signs and writes, and the feed's topic is
@@ -41,15 +41,15 @@ export interface AdminLadderRegistryOptions {
  *
  * A rung dying is not an announce — nothing reports it, and that is the whole of the ⛔⛔⛔ note on
  * `StreamCatalog.republishIfLadderShapeChanged`. The correction is a master rewritten from renditions
- * that are already known, so it needs no fold and no round trip: the merged ladder is held from the
+ * that are already known, so it needs no merge and no round trip: the merged ladder is held from the
  * last report and the rewrite is a single feed write. Asking the admin per delivery would put a
  * request per segment per rung onto it for the length of every broadcast.
  *
  * ## Why the flip is read off the stream's status as well as off `flippedToFinished`
  *
- * The admin flips `flippedToFinished` once, on the report that completed the fold, and
- * {@link upsertRendition} throws if the master write behind that report does not land. The fold has
- * already been committed by then — the master is built from what the fold returns, so it cannot be
+ * The admin flips `flippedToFinished` once, on the report that completed the merge, and
+ * {@link upsertRendition} throws if the master write behind that report does not land. The merge has
+ * already been committed by then — the master is built from what the merge returns, so it cannot be
  * the other way round — and the retry that follows is answered with a ladder that is already finished
  * and no flip. Handed back as-is, that is a broadcast that stays `live` in the admin's list for good.
  * So a finished ladder whose stream the admin does not yet hold as `vod` is reported as a flip too:
@@ -66,10 +66,10 @@ export class AdminLadderRegistry implements LadderRegistry {
   private readonly liveness = new Map<string, LadderLiveness>();
 
   /**
-   * The ladder the admin last folded, by group.
+   * The ladder the admin last merged, by group.
    *
-   * ⛔ The admin's fold and never this process's own accumulation. Four rungs report concurrently and
-   * each is answered with the whole ladder as it stood after its own report, so the newest fold is
+   * ⛔ The admin's merge and never this process's own accumulation. Four rungs report concurrently and
+   * each is answered with the whole ladder as it stood after its own report, so the newest merge is
    * the closest thing to the truth any of them can hold — and a rung rewriting the master from a
    * ladder it assembled itself would name only the rungs that happen to share its process.
    *
@@ -97,7 +97,7 @@ export class AdminLadderRegistry implements LadderRegistry {
    * behaviour a ladder announce has always had, and neither survives this answering quietly.
    *
    * The report goes first and the master second, which is the one ordering available: the master names
-   * every rung of the ladder and only the fold knows what they are. The admin's entry already points
+   * every rung of the ladder and only the merge knows what they are. The admin's entry already points
    * a viewer at this feed — it is the declared topic — so no entry is ever repointed, and there is no
    * window in which one resolves somewhere else.
    */
@@ -148,8 +148,8 @@ export class AdminLadderRegistry implements LadderRegistry {
    * taken, and say which ladder the master is to be written from.
    *
    * ⛔ Ordered by the admin's catalog write index and never by arrival. Four rungs report concurrently,
-   * the admin folds them in one order, and their answers can land here in another. Writing each master
-   * from its own answer let an older fold arriving last publish a master missing a rung a newer answer
+   * the admin merges them in one order, and their answers can land here in another. Writing each master
+   * from its own answer let an older merge arriving last publish a master missing a rung a newer answer
    * had already named — a quality gone from the ladder until the next announce, which a steady
    * broadcast can go its whole length without producing. An answer carrying no index is taken as it
    * comes, which is what every answer was before the index was read.
@@ -160,7 +160,7 @@ export class AdminLadderRegistry implements LadderRegistry {
       const held = this.merged.get(group);
       if (held !== undefined) {
         this.logger.log(
-          `[AdminLadderRegistry] The answer to ${rung} of ladder ${group} is an older fold (catalog index ` +
+          `[AdminLadderRegistry] The answer to ${rung} of ladder ${group} is an older merge (catalog index ` +
             `${report.feedIndex}) than one already applied (${newest}); the master is written from the newer ladder`,
         );
         return held;
@@ -206,7 +206,7 @@ export class AdminLadderRegistry implements LadderRegistry {
     try {
       // ⛔ The ladder as it stands when the write runs, never the one it stood at when this rewrite was
       // scheduled. A rewrite is queued from a segment and settles turns later, so a sibling rung's
-      // announce can land a newer fold in between — and writing the older one over the master that
+      // announce can land a newer merge in between — and writing the older one over the master that
       // announce just published would take a rung back off the ladder until something else moved.
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
       const advertised = advertisableRenditions(this.merged.get(group) ?? [], this.livenessOf(group));

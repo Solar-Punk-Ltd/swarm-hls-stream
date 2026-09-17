@@ -48,14 +48,14 @@ export interface RenditionAnnouncement {
  * Where a rung's rendition record goes, and where a delivery is counted.
  *
  * Two implementations, one per deployment, and the split is the whole of ABR in admin mode.
- * {@link StreamCatalog} folds the four rungs into one catalog entry on Swarm and writes the master
+ * {@link StreamCatalog} merges the four rungs into one catalog entry on Swarm and writes the master
  * from it. `AdminLadderRegistry` posts each record to the admin, which holds the merge state and writes
  * its own catalog entry, and writes the master from the ladder that comes back. Neither knows about
  * the other, and the uploader knows about neither.
  */
 export interface LadderRegistry {
   /**
-   * Fold one rung into its ladder, publish the ladder's master playlist, and say what that achieved.
+   * Merge one rung into its ladder, publish the ladder's master playlist, and say what that achieved.
    */
   upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement>;
 

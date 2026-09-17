@@ -166,8 +166,8 @@ async function start() {
     );
     await streamCatalog.init();
 
-    // Where a ladder rung's rendition record goes. Standalone, the catalog: it folds four rungs into
-    // one entry on the stream list feed and writes the master from it. In admin mode the fold moves
+    // Where a ladder rung's rendition record goes. Standalone, the catalog: it merges four rungs into
+    // one entry on the stream list feed and writes the master from it. In admin mode the merge moves
     // into the admin — the declared topic becomes the master feed's topic, each rung reports its own
     // record, and the admin writes `renditions` into the catalog entry it already owns. See
     // `libs/AdminLadderRegistry.ts` and the "Admin mode" section of the package README.
@@ -176,7 +176,7 @@ async function start() {
     if (adminApi && masterWriter) {
       logger.info(
         '[Admin] ABR ladder in admin mode: the declared topic is the ladder master feed, each rung publishes ' +
-          'to a fresh topic of its own, and the ladder the master is written from is the one the admin folds',
+          'to a fresh topic of its own, and the ladder the master is written from is the one the admin merges',
       );
     }
 

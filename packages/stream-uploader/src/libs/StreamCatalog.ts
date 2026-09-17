@@ -54,7 +54,7 @@ export interface StreamEntry {
   duration?: number;
   /**
    * Ladder identity, absent on single-rendition streams. Present, it — not `topic` — is what
-   * makes the entry unique, because four rungs fold into one entry and each of them writes it.
+   * makes the entry unique, because four rungs merge into one entry and each of them writes it.
    */
   group?: string;
   renditions?: Rendition[];
@@ -362,7 +362,7 @@ export class StreamCatalog implements LadderRegistry {
   }
 
   /**
-   * Folds one rung into its ladder's single catalog entry, creating the entry if this is the
+   * Merges one rung into its ladder's single catalog entry, creating the entry if this is the
    * first rung up, and republishes the ladder's master playlist to match.
    *
    * Four uploaders call this concurrently for the same ladder, each holding only its own rung.
@@ -569,7 +569,7 @@ export class StreamCatalog implements LadderRegistry {
 }
 
 /**
- * The ladder's entry after folding one rung's latest state into it.
+ * The ladder's entry after merging one rung's latest state into it.
  *
  * A ladder goes to VOD only once every rung it has announced has finalized. Doing it per rung
  * would flip the whole entry to VOD on the first one to drain, and the other three are still live.

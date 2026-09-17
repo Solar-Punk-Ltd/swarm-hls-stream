@@ -24,7 +24,7 @@ With `ABR_ENABLED=true` (see [engines/srs](../../engines/srs/)) the engine publi
 rung, and each gets its own `StreamUploader` and its own manifest feed. Two things then tie them
 back together:
 
-- The four rungs fold into a **single catalog entry**, keyed by a shared group id rather than by
+- The four rungs merge into a **single catalog entry**, keyed by a shared group id rather than by
   topic. Four uploaders write that entry concurrently, which is safe only because every catalog
   write goes through one serialized queue.
 - That same point is where the ladder's **master playlist** is written, to a fifth feed whose topic
@@ -52,7 +52,7 @@ The segment path asks it on every delivery and rewrites the master only when the
 actually changes. A version of this filter shipped correct, tested and deployed, and never ran once,
 because only `upsertRendition` wrote a master.
 
-With `ADMIN_API_URL` set as well, everything above still happens, but the fold moves out of the
+With `ADMIN_API_URL` set as well, everything above still happens, but the merge moves out of the
 catalog feed and into the admin and the master's topic is the declared one — see
 [Admin mode](#admin-mode).
 
@@ -637,7 +637,7 @@ mints the feed topic and the publish key; this service stops deciding either:
 | The session mints a random feed topic              | The session publishes on the declared topic, resuming from its feed head    |
 | This service writes the Swarm stream catalog       | It writes none, and reports `live` then `vod` to the admin instead          |
 | `PUBLISH_KEY_SECRET` authenticates publishers      | `PUBLISH_KEY_SECRET` is ignored                                             |
-| A ladder folds its rungs in the catalog feed       | The admin folds them, and the declared topic is the ladder's master feed    |
+| A ladder merges its rungs in the catalog feed      | The admin merges them, and the declared topic is the ladder's master feed   |
 
 A publish is refused when the ingest `app/stream` is not declared, when the admin cannot be reached,
 when the presented `key=` is not the declaration's, when the declaration is owned by a feed key this
@@ -668,13 +668,13 @@ a rung that restarts mid-ladder must never be handed a feed it has just finished
 rungs sharing the master's feed would write over each other and over the master. The ladder's merge
 state, one record per rung, moves out of the catalog feed and into the admin: each rung posts its own
 `Rendition` to `POST /api/internal/streams/:id/renditions` (bearer `ADMIN_API_TOKEN`, the same
-internal-route auth as the state route, and **the admin must serve it**), the admin folds it by the
+internal-route auth as the state route, and **the admin must serve it**), the admin merges it by the
 same "a rung that has already finished stays finished" rule `StreamCatalog.keepingWhatFinished`
 states, writes `renditions` into the catalog entry it already owns, and answers with the merged
 ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
 as ever, and rewrites it when a rung stops without asking the admin again. Answers are applied in the
-order the admin folded them, by the catalog write index each one carries, so four rungs whose answers
-land out of order cannot leave an older fold on the master.
+order the admin merged them, by the catalog write index each one carries, so four rungs whose answers
+land out of order cannot leave an older merge on the master.
 
 `live` and `vod` are then reported for the **ladder** rather than for a rung. `live` goes out once the
 first master has landed, which may be said more than once and is accepted. `vod` goes out from the
