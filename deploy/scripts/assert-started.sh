@@ -15,6 +15,10 @@
 #
 # ⛔⛔ A fixed sleep is blind to that gap in both directions, so this watches instead.
 #
+# ⚠️ What the watch still cannot see: a fatal error that lands after a long warn pass. On a four node
+# pool the gates spend up to 160 seconds before anything else runs, and this window is thirty, so a
+# boot that fails after them fails unwatched and the deploy has already printed its success line.
+#
 # In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one
 # HTTP read per bee node and one per batch, in turn, each bounded by START_GATE_TIMEOUT_MS at
 # 20000ms, and only then does `StreamCatalog.init` look a feed up on a node that may be cold. All of
@@ -67,6 +71,25 @@ LOG_LINES="${DEPLOY_FAILURE_LOG_LINES:-40}"
 
 PROJECT_LABEL='com.docker.compose.project'
 SERVICE_LABEL='com.docker.compose.service'
+
+# What a service says about its own health, asked of the container rather than of docker.
+#
+# ⛔ Docker cannot answer this inside the window. A healthcheck runs on its own interval, 30s for the
+# uploader, so within a 30 second watch `.State.Health.Status` is still `starting` and its log is
+# empty. The distinction that matters here is invisible at that resolution: a service whose gates
+# warned answers 503 for the life of the process and never goes green, and until this it was reported
+# as never having answered, which says nothing about what is wrong.
+#
+# `docker exec` rather than curl, because the only certainty about the host is that it runs docker,
+# and the uploader image carries node. The fetch carries its own deadline, so a container that is up
+# and not answering cannot hold the watch. Anything that goes wrong here, an image with no node, a
+# service that is not the uploader, a body that will not parse, exits non-zero and the watch carries
+# on exactly as it did before.
+HEALTH_REPORT_PROGRAM='fetch("http://127.0.0.1:"+(process.env.API_PORT||3000)+"/health",{signal:AbortSignal.timeout(2000)}).then(r=>r.json()).then(b=>{console.log([b.status,(b.reasons||[]).join(","),(b.startGateWarnings||[]).map(w=>w.gate+(w.rung?"/"+w.rung:"")).join(" ")].join(" "))}).catch(()=>process.exit(1))'
+
+health_report_of() {
+  docker exec "$1" node -e "$HEALTH_REPORT_PROGRAM" 2>/dev/null
+}
 
 # Restart count, docker's own state, and the healthcheck's verdict, one line per container. The
 # `{{if}}` is what keeps this one command for every service: an image with no healthcheck has no
@@ -240,6 +263,16 @@ while :; do
           broken_reasons+=('has no running container')
         elif [ "$observed_health" = 'none' ]; then
           confirmed[index]='running'
+        else
+          # It has a healthcheck and has not gone green. Ask it why, because the answer decides
+          # whether this is a service that started or one that is still starting. Only two readings
+          # are acted on: gates that warned, which is a service that is up and says so, and anything
+          # else, which is left to the window exactly as before.
+          report="$(health_report_of "$observed_running")" || report=''
+          read -r reported_status reported_reasons reported_gates <<<"$report"
+          if [ "$reported_status" = 'degraded' ] && [ "$reported_reasons" = 'start_gate_warned' ]; then
+            confirmed[index]="gates warned on: ${reported_gates:-unnamed}"
+          fi
         fi
       fi
       [ -n "${confirmed[$index]}" ] || waiting=1
@@ -266,6 +299,17 @@ done
 if [ "${#broken_services[@]}" -eq 0 ]; then
   index=0
   while [ "$index" -lt "$service_count" ]; do
+    # A service that started and said its gates warned. Not a refusal and never has been, since a
+    # warning is a deployment's own setting rather than a failure to start, but it is the one reading
+    # here nobody else will go and look for.
+    case "${confirmed[$index]}" in
+      'gates warned on: '*)
+        echo "" >&2
+        echo "${services[$index]} started, ${confirmed[$index]}." >&2
+        echo "  Its startup gates could not clear those, and UPLOADER_START_GATES let it start anyway. It answers /health 503 until it is restarted on a node that clears them." >&2
+        ;;
+    esac
+
     if [ -z "${confirmed[$index]}" ]; then
       if [ "${last_state[$index]}" = 'running' ]; then
         echo "" >&2
