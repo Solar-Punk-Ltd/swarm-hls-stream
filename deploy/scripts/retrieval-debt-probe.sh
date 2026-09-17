@@ -230,18 +230,81 @@ METRICS_TSV="${OUT_DIR}/probe-metrics.tsv"
 
 say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 
-# This probe sets its arms by writing the env file, so the compose file has to read that key. Once it
-# stopped, both arms are one run and the difference comes out as zero, which reads as a finding rather
-# than as a control that is not connected to anything.
-if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${COMPOSE_DIR}/docker-compose.yml"; then
-  echo "ERROR: docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so writing it into the env file changes nothing." >&2
-  echo "The gateway there is hard-coded ultra-light: --blockchain-rpc-endpoint is empty, and an empty endpoint is the whole of what makes a node ultra-light. --swap-enable takes no part in that decision." >&2
-  echo "So both arms of this probe are the same run whatever the env file says." >&2
-  echo "Putting the swap variable back would NOT repair it. This probe has to be reworked to flip --blockchain-rpc-endpoint through a compose override, and that rework is not done." >&2
+RPC_KEY=BEE_GATEWAY_RPC_ENDPOINT
+SWAP_KEY=BEE_GATEWAY_SWAP_ENABLE
+
+# Everything after the first `=`, because an endpoint carries one in a query string and
+# `cut -d= -f2` would take half of it. A key the file does not carry reads as empty.
+env_file_value() { sed -n "s/^$1=//p" "${ENV_FILE}" 2>/dev/null | tail -n 1; }
+
+# This probe sets its arms by writing the env file, so the compose file has to read the keys those
+# arms are made of. Since T27 on 2026-09-17 the gateway's mode is two of them: an endpoint is what
+# puts the node on a chain, an empty one is the whole of what makes it ultra-light, and swap is what
+# lets a node on a chain pay its peers. A stack that reads one and not the other runs both arms on
+# one node, the difference comes out as zero, and zero reads as a finding rather than as a control
+# that is not connected to anything.
+MODE_KEYS_UNREAD=""
+grep -qF "\${${RPC_KEY}" "${COMPOSE_DIR}/docker-compose.yml" || MODE_KEYS_UNREAD="${RPC_KEY}"
+grep -qF "\${${SWAP_KEY}" "${COMPOSE_DIR}/docker-compose.yml" ||
+  MODE_KEYS_UNREAD="${MODE_KEYS_UNREAD:+${MODE_KEYS_UNREAD} and }${SWAP_KEY}"
+if [ -n "${MODE_KEYS_UNREAD}" ]; then
+  echo "ERROR: the stack's docker-compose.yml does not read ${MODE_KEYS_UNREAD}, so writing that into the env file changes nothing." >&2
+  echo "Its gateway takes its mode from ${RPC_KEY} and ${SWAP_KEY} together: an endpoint is what puts the node on a chain, an empty one is the whole of what makes it ultra-light, and swap is what lets a node on a chain pay its peers." >&2
+  echo "A stack that does not read both cannot produce the light arm, so both arms of this probe would be the same run whatever the env file says." >&2
   exit 1
 fi
-BASELINE_SWAP="$(grep '^BEE_GATEWAY_SWAP_ENABLE=' "${ENV_FILE}" | cut -d= -f2)"
+
+# The chain a light arm points the gateway at, which is the one the stack's own publisher nodes
+# already talk to.
+#
+# ⚠️ Read out of the stack's env file under its own name rather than out of this shell under the
+# gateway's, because a deployment host exports endpoint settings for its stack and a probe that took
+# one from the environment would put a node on a chain nobody chose.
+STACK_RPC_ENDPOINT="${LIGHT_ARM_RPC_ENDPOINT:-$(env_file_value RPC_ENDPOINT)}"
+PLAN_HAS_LIGHT_ARM=0
+for spec in ${ARM_PLAN}; do
+  IFS=':' read -r _ planSwap _ <<<"${spec}"
+  if [ "${planSwap}" = "true" ]; then
+    PLAN_HAS_LIGHT_ARM=1
+  fi
+done
+if [ "${PLAN_HAS_LIGHT_ARM}" = "1" ] && [ -z "${STACK_RPC_ENDPOINT}" ]; then
+  echo "ERROR: this plan plans a light arm, which is an arm with swap=true, and ${ENV_FILE} names no RPC_ENDPOINT." >&2
+  echo "A light node is one with a chain behind it, so the arm cannot be produced without an endpoint, and bee refuses to start at all with swap asked for and no chain." >&2
+  echo "Set RPC_ENDPOINT in that file, or pass LIGHT_ARM_RPC_ENDPOINT to this probe." >&2
+  exit 1
+fi
+
+# The endpoint one arm runs on. An ultra-light arm states its empty endpoint rather than leaving the
+# key alone, so that neither a value left in the env file by something else nor one the host exports
+# can make that node light.
+rpc_for_arm() {
+  case "$1" in
+    true) printf '%s' "${STACK_RPC_ENDPOINT}" ;;
+    *) printf '' ;;
+  esac
+}
+
+BASELINE_SWAP="$(env_file_value "${SWAP_KEY}")"
+BASELINE_RPC_ENDPOINT="$(env_file_value "${RPC_KEY}")"
+# Absent from the env file is a distinct state from present-and-empty, and this key is absent from
+# every stack that has not been through an arm, so putting it back means taking it out again.
+if grep -q "^${RPC_KEY}=" "${ENV_FILE}" 2>/dev/null; then
+  RPC_WAS_PRESENT=1
+else
+  RPC_WAS_PRESENT=0
+fi
 CURRENT_ARM_SWAP="${BASELINE_SWAP}"
+# What the gateway is meant to be running right now. Both the env file and the compose call below are
+# told it, and the two are kept in step here rather than at each call site.
+WANTED_SWAP="${BASELINE_SWAP}"
+WANTED_RPC_ENDPOINT="${BASELINE_RPC_ENDPOINT}"
+write_gateway_mode() {
+  WANTED_SWAP="$1"
+  WANTED_RPC_ENDPOINT="$2"
+  set_env_value "${SWAP_KEY}" "${WANTED_SWAP}" || return 1
+  set_env_value "${RPC_KEY}" "${WANTED_RPC_ENDPOINT}" || return 1
+}
 ARM_CHANGED=0
 
 CACHE_KEY=BEE_GATEWAY_CACHE_CAPACITY
@@ -324,8 +387,13 @@ settle_host() {
 recreate_gateway() {
   (
     cd "${COMPOSE_DIR}" || exit 1
+    # ⛔ The two mode keys are exported as well as written, because compose prefers a value from the
+    # shell it runs in over the same key in its `--env-file`, and this host exports endpoint settings
+    # for the stack. Written alone, the arm would be whatever the host had already decided.
     BEE_GATEWAY_API_PORT="${GATEWAY_BEE_PORT}" \
       BEE_GATEWAY_P2P_PORT="$((GATEWAY_BEE_PORT + 1))" \
+      BEE_GATEWAY_SWAP_ENABLE="${WANTED_SWAP}" \
+      BEE_GATEWAY_RPC_ENDPOINT="${WANTED_RPC_ENDPOINT}" \
       docker compose -p "${COMPOSE_PROJECT}" \
       -f docker-compose.yml -f docker-compose.host.yml -f docker-compose.nat.yml \
       --env-file "${ENV_FILE}" \
@@ -364,8 +432,10 @@ set_arm() {
 
   CURRENT_ARM_SWAP="${wantSwap}"
   CURRENT_ARM_CACHE="${wantCache}"
-  say "  setting swap=${CURRENT_ARM_SWAP} cache=${CURRENT_ARM_CACHE} and recreating the gateway"
-  sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP}/" "${ENV_FILE}" || return 1
+  local wantRpc
+  wantRpc="$(rpc_for_arm "${wantSwap}")"
+  say "  setting swap=${CURRENT_ARM_SWAP} endpoint=${wantRpc:-none} cache=${CURRENT_ARM_CACHE} and recreating the gateway"
+  write_gateway_mode "${CURRENT_ARM_SWAP}" "${wantRpc}" || return 1
   set_env_value "${CACHE_KEY}" "${CURRENT_ARM_CACHE}" || return 1
   ARM_CHANGED=1
   recreate_gateway || { say "  compose failed to recreate the gateway"; return 1; }
@@ -403,13 +473,14 @@ restore_gateway() {
     [ "${CURRENT_ARM_CACHE}" = "${BASELINE_CACHE}" ]; then
     return
   fi
-  say "restoring the gateway to swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}"
-  sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}/" "${ENV_FILE}"
+  say "restoring the gateway to swap=${BASELINE_SWAP} endpoint=${BASELINE_RPC_ENDPOINT:-none} cache=${BASELINE_CACHE}"
+  write_gateway_mode "${BASELINE_SWAP}" "${BASELINE_RPC_ENDPOINT}"
+  [ "${RPC_WAS_PRESENT}" = "1" ] || unset_env_value "${RPC_KEY}"
   if [ "${CACHE_WAS_PRESENT}" = "1" ]; then
     set_env_value "${CACHE_KEY}" "${BASELINE_CACHE}"
   else
     # It was never in the file, so leaving it behind at the compose default is still a change.
-    sed -i "/^${CACHE_KEY}=/d" "${ENV_FILE}"
+    unset_env_value "${CACHE_KEY}"
   fi
   CURRENT_ARM_SWAP="${BASELINE_SWAP}"
   CURRENT_ARM_CACHE="${BASELINE_CACHE}"
@@ -744,7 +815,7 @@ run_arm() {
 }
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
-say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
+say "gateway found at swap=${BASELINE_SWAP} endpoint=${BASELINE_RPC_ENDPOINT:-none} cache=${BASELINE_CACHE}, which is what it will be left at"
 [ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\trefs\tbudgetMs\tspentArmPlur\tspentIdlePlur\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 

@@ -153,6 +153,22 @@ STOPS="$(dirname "${BASH_SOURCE[0]}")/publisher-stop.sh"
   echo "cannot read ${STOPS}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+# Only for `set_env_value` and `unset_env_value`, which write this sitting's arm into the stack's env
+# file. Shared rather than copied because the how of that write is subtle: one of the two values is a
+# chain endpoint, and a URL breaks an in-place sed twice over.
+PROBE="$(dirname "${BASH_SOURCE[0]}")/gateway-probe.sh"
+# shellcheck source=deploy/scripts/gateway-probe.sh
+. "${PROBE}" || {
+  echo "cannot read ${PROBE}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
+RPC_KEY=BEE_GATEWAY_RPC_ENDPOINT
+SWAP_KEY=BEE_GATEWAY_SWAP_ENABLE
+
+# Everything after the first `=`, because an endpoint carries one in a query string and
+# `cut -d= -f2` would take half of it. A key the file does not carry reads as empty.
+env_file_value() { sed -n "s/^$1=//p" "${ENV_FILE}" 2>/dev/null | tail -n 1; }
 
 bzz() {
   printf '%d.%04d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 1000000000000))"
@@ -217,25 +233,50 @@ container_spec() {
 
 BASELINE_SPEC=""
 BASELINE_SWAP=""
+BASELINE_RPC_ENDPOINT=""
+
+# One spec with both mode flags taken out of it, which is everything an arm must not change.
+spec_without_mode() {
+  printf '%s' "$1" | sed -e 's/"--swap-enable=[^"]*",\{0,1\}//' -e 's/"--blockchain-rpc-endpoint=[^"]*",\{0,1\}//'
+}
 
 # The recreate is asserted against the container found at startup rather than against the compose file
 # it was supposed to come from. Reconstructing this stack's environment by hand is how a node comes
 # back on a default port or with an empty data directory and still looks like it started, and the
 # whole arm would then be a measurement of a node that had never seen the stream.
-spec_matches_baseline_except_swap() {
-  local now expected
+#
+# Both mode flags move between arms since T27, so the comparison is made with both taken out and each
+# one is then read off the container on its own. A check that expected only swap to move would report
+# every light arm as a container that had changed by more than its mode.
+spec_matches_baseline_except_mode() {
+  local now wantSwapFlag wantRpcFlag
   now="$(container_spec)"
   if [ -z "${now}" ]; then
     say "  the gateway container could not be inspected after the recreate"
     return 1
   fi
-  expected="${BASELINE_SPEC//--swap-enable=${BASELINE_SWAP}/--swap-enable=${CURRENT_ARM_SWAP}}"
-  if [ "${now}" != "${expected}" ]; then
-    say "  the recreated gateway differs from the one found at startup by more than --swap-enable"
-    say "    wanted: ${expected}"
-    say "    got:    ${now}"
+  if [ "$(spec_without_mode "${now}")" != "$(spec_without_mode "${BASELINE_SPEC}")" ]; then
+    say "  the recreated gateway differs from the one found at startup by more than its mode"
+    say "    wanted: $(spec_without_mode "${BASELINE_SPEC}")"
+    say "    got:    $(spec_without_mode "${now}")"
     return 1
   fi
+  wantSwapFlag="\"--swap-enable=${CURRENT_ARM_SWAP}\""
+  wantRpcFlag="\"--blockchain-rpc-endpoint=${CURRENT_ARM_RPC_ENDPOINT}\""
+  case "${now}" in
+    *"${wantSwapFlag}"*) ;;
+    *)
+      say "  the recreated gateway is not running --swap-enable=${CURRENT_ARM_SWAP}: ${now}"
+      return 1
+      ;;
+  esac
+  case "${now}" in
+    *"${wantRpcFlag}"*) ;;
+    *)
+      say "  the recreated gateway is not running the arm's endpoint (${CURRENT_ARM_RPC_ENDPOINT:-none}): ${now}"
+      return 1
+      ;;
+  esac
   return 0
 }
 
@@ -276,8 +317,9 @@ ARM_CHANGED=0
 
 set_arm() {
   CURRENT_ARM_SWAP="$1"
-  say "  setting BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP} and recreating the gateway"
-  if ! sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP}/" "${ENV_FILE}"; then
+  CURRENT_ARM_RPC_ENDPOINT="$2"
+  say "  setting ${SWAP_KEY}=${CURRENT_ARM_SWAP} ${RPC_KEY}=${CURRENT_ARM_RPC_ENDPOINT:-none} and recreating the gateway"
+  if ! set_env_value "${SWAP_KEY}" "${CURRENT_ARM_SWAP}" || ! set_env_value "${RPC_KEY}" "${CURRENT_ARM_RPC_ENDPOINT}"; then
     say "  could not write ${ENV_FILE}"
     return 1
   fi
@@ -285,10 +327,16 @@ set_arm() {
   # `--no-deps` so nothing else in the stack is touched, and the port variables are exported because
   # they are resolved by `apply_port_slot` at deploy time and are not in the env file. Without them
   # compose falls back to the 1733 defaults in the compose file and the node comes up unreachable.
+  #
+  # ⛔ The two mode keys are exported as well as written, because compose prefers a value from the
+  # shell it runs in over the same key in its `--env-file`, and this host exports endpoint settings
+  # for the stack. Written alone, the arm would be whatever the host had already decided.
   (
     cd "${COMPOSE_DIR}" || exit 1
     BEE_GATEWAY_API_PORT="${GATEWAY_BEE_PORT}" \
       BEE_GATEWAY_P2P_PORT="$((GATEWAY_BEE_PORT + 1))" \
+      BEE_GATEWAY_SWAP_ENABLE="${CURRENT_ARM_SWAP}" \
+      BEE_GATEWAY_RPC_ENDPOINT="${CURRENT_ARM_RPC_ENDPOINT}" \
       docker compose -p "${COMPOSE_PROJECT}" \
       -f docker-compose.yml -f docker-compose.host.yml -f docker-compose.nat.yml \
       --env-file "${ENV_FILE}" \
@@ -299,9 +347,19 @@ set_arm() {
     return 1
   }
   wait_for_gateway_api || return 1
-  spec_matches_baseline_except_swap || return 1
+  spec_matches_baseline_except_mode || return 1
   chequebook_shape_matches_arm || return 1
   return 0
+}
+
+# The endpoint one arm runs on. An ultra-light arm states its empty endpoint rather than leaving the
+# key alone, so that neither a value left in the env file by something else nor one the host exports
+# can make that node light.
+rpc_for_arm() {
+  case "$1" in
+    true) printf '%s' "${STACK_RPC_ENDPOINT}" ;;
+    *) printf '' ;;
+  esac
 }
 
 # Always leaves the gateway the way it was found. An interrupted sitting that left the node
@@ -315,14 +373,17 @@ restore_light() {
     say "the gateway was never changed, so there is nothing to restore"
     return 0
   fi
-  say "restoring the gateway to the arm it was found in (swap-enable=${BASELINE_SWAP})"
+  say "restoring the gateway to the arm it was found in (swap-enable=${BASELINE_SWAP}, endpoint ${BASELINE_RPC_ENDPOINT:-none})"
   if [ -n "${BASELINE_SWAP}" ]; then
     CURRENT_ARM_SWAP="${BASELINE_SWAP}"
-    if set_arm "${BASELINE_SWAP}"; then
+    if set_arm "${BASELINE_SWAP}" "${BASELINE_RPC_ENDPOINT}"; then
+      # Absent from the env file is a distinct state from present-and-empty, and the endpoint key is
+      # absent from every stack that has not been through an arm.
+      [ "${RPC_WAS_PRESENT}" = "1" ] || unset_env_value "${RPC_KEY}"
       say "gateway restored"
     else
       say "⛔ THE GATEWAY COULD NOT BE RESTORED. It may still be running the unfunded arm."
-      say "⛔ Put it back with: sed -i 's/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}/' ${ENV_FILE}"
+      say "⛔ Put it back by setting ${SWAP_KEY}=${BASELINE_SWAP} and ${RPC_KEY}=${BASELINE_RPC_ENDPOINT} in ${ENV_FILE}"
       say "⛔ then recreate bee-gateway with the compose command this script logs above."
     fi
   fi
@@ -471,7 +532,7 @@ run_arm() {
   started="$(date -u +%s)"
   say "round ${round}: arm ${label} (swap-enable=${swap}, ${watch_seconds}s watch) starting"
 
-  if ! set_arm "${swap}"; then
+  if ! set_arm "${swap}" "$(rpc_for_arm "${swap}")"; then
     record_row "${round}" "${label}" "${swap}" "${watch_seconds}" "ARM-NOT-SET"
     return 1
   fi
@@ -567,17 +628,24 @@ if [ -z "${BASELINE_SPEC}" ]; then
   exit 1
 fi
 # The arms of this comparison are set by writing the env file, so the compose file has to be the
-# thing that reads it. The gateway command below carries --swap-enable either way.
+# thing that reads it, and since T27 on 2026-09-17 that is two keys rather than one. An endpoint is
+# what puts the node on a chain, an empty one is the whole of what makes it ultra-light, and swap is
+# what lets a node on a chain pay its peers. A stack that reads one and not the other cannot produce
+# the light arm, so both arms would be the same run and the contrast this sitting exists to draw
+# could not appear.
 #
 # Inlined rather than called from `_lib.sh`, because this file is copied to the measurement host on
 # its own and a bare call to a function that is not there is a `command not found` line and a sitting
 # that carries on regardless. Through `say` rather than to standard error, because the documented way
 # to start this sitting discards both streams and leaves the log as the only record.
-if ! grep -qF "\${BEE_GATEWAY_SWAP_ENABLE" "${COMPOSE_DIR}/docker-compose.yml"; then
-  say "REFUSING TO START: docker-compose.yml no longer reads \${BEE_GATEWAY_SWAP_ENABLE}, so writing it into the env file changes nothing."
-  say "  The gateway there is hard-coded ultra-light: --blockchain-rpc-endpoint is empty, and an empty endpoint is the whole of what makes a node ultra-light. --swap-enable takes no part in that decision."
-  say "  So both arms of this sitting are the same run whatever the env file says, and the contrast it exists to draw cannot appear."
-  say "  Putting the swap variable back would NOT repair it. This driver has to be reworked to flip --blockchain-rpc-endpoint through a compose override, and that rework is not done."
+MODE_KEYS_UNREAD=""
+grep -qF "\${${RPC_KEY}" "${COMPOSE_DIR}/docker-compose.yml" || MODE_KEYS_UNREAD="${RPC_KEY}"
+grep -qF "\${${SWAP_KEY}" "${COMPOSE_DIR}/docker-compose.yml" ||
+  MODE_KEYS_UNREAD="${MODE_KEYS_UNREAD:+${MODE_KEYS_UNREAD} and }${SWAP_KEY}"
+if [ -n "${MODE_KEYS_UNREAD}" ]; then
+  say "REFUSING TO START: the stack's docker-compose.yml does not read ${MODE_KEYS_UNREAD}, so writing that into the env file changes nothing."
+  say "  Its gateway takes its mode from ${RPC_KEY} and ${SWAP_KEY} together: an endpoint is what puts the node on a chain, an empty one is the whole of what makes it ultra-light, and swap is what lets a node on a chain pay its peers."
+  say "  A stack that does not read both cannot produce the light arm, so both arms of this sitting would be one run whatever the env file says."
   exit 1
 fi
 case "${BASELINE_SPEC}" in
@@ -588,8 +656,42 @@ case "${BASELINE_SPEC}" in
     exit 1
     ;;
 esac
+# Read off the container rather than off the env file, for the same reason the swap arm is: the file
+# says what was asked for and the container says what is running, and this is the value the sitting
+# has to put back when it is over.
+case "${BASELINE_SPEC}" in
+  *'--blockchain-rpc-endpoint='*)
+    BASELINE_RPC_ENDPOINT="$(printf '%s' "${BASELINE_SPEC}" | sed -n 's/.*"--blockchain-rpc-endpoint=\([^"]*\)".*/\1/p')"
+    ;;
+  *)
+    say "REFUSING TO START: the gateway command has no --blockchain-rpc-endpoint, so this stack is not the one this script was written against."
+    exit 1
+    ;;
+esac
+# Absent from the env file is a distinct state from present-and-empty, and the endpoint key is absent
+# from every stack that has not been through an arm, so putting it back means taking it out again.
+if grep -q "^${RPC_KEY}=" "${ENV_FILE}" 2>/dev/null; then
+  RPC_WAS_PRESENT=1
+else
+  RPC_WAS_PRESENT=0
+fi
+
+# The chain the light arm points the gateway at, which is the one the stack's own publisher nodes
+# already talk to.
+#
+# ⚠️ Read out of the stack's env file under its own name rather than out of this shell under the
+# gateway's, because a deployment host exports endpoint settings for its stack and a sitting that
+# took one from the environment would put a node on a chain nobody chose.
+STACK_RPC_ENDPOINT="${LIGHT_ARM_RPC_ENDPOINT:-$(env_file_value RPC_ENDPOINT)}"
+if [ -z "${STACK_RPC_ENDPOINT}" ]; then
+  say "REFUSING TO START: this sitting runs a light arm and ${ENV_FILE} names no RPC_ENDPOINT."
+  say "  A light node is one with a chain behind it, so the arm cannot be produced without an endpoint, and bee refuses to start at all with swap asked for and no chain."
+  say "  Set RPC_ENDPOINT in that file, or pass LIGHT_ARM_RPC_ENDPOINT to this sitting."
+  exit 1
+fi
 CURRENT_ARM_SWAP="${BASELINE_SWAP}"
-say "found the gateway at swap-enable=${BASELINE_SWAP}, and that is what it will be put back to"
+CURRENT_ARM_RPC_ENDPOINT="${BASELINE_RPC_ENDPOINT}"
+say "found the gateway at swap-enable=${BASELINE_SWAP} endpoint=${BASELINE_RPC_ENDPOINT:-none}, and that is what it will be put back to"
 trap restore_light EXIT INT TERM
 
 ACTIVE="$(curl -s --max-time 10 "http://127.0.0.1:${UPLOADER_API_PORT}/health" 2>/dev/null |
