@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 
 import { GateRefusalError } from '../src/libs/GateRefusalError.js';
 import { PostageGate, StampedPublisher } from '../src/libs/PostageGate.js';
-import { GateRefusal } from '../src/libs/StartGates.js';
+import { GateReading, GateRefusal } from '../src/libs/StartGates.js';
 
 const MIN_TTL_S = 24 * 3_600;
 const MAX_UTILIZATION = 0.9;
@@ -379,5 +379,123 @@ describe('which node a postage refusal names', () => {
         return true;
       },
     );
+  });
+});
+
+/**
+ * ⛔⛔⛔ **Which of two facts a refusal is, because only one of them is about the batch.**
+ *
+ * A 404 from `/stamps/<id>` is the node saying it does not hold this batch, and every upload on that
+ * rung would fail the same way. A timeout, a 502 or an answer with nothing readable in it says only
+ * that no reading arrived, which is what the live host hit on 2026-09-16 against a pool address with
+ * no node behind it. The owner ruled on 2026-09-17, decision 7 option b, that the shipped mode
+ * refuses the first and warns about the second, so the gate marks every refusal with which one it is
+ * and `runStartGates` decides what the boot does about it.
+ *
+ * The gate reads the status off the error rather than out of its text, because bee-js throws
+ * `BeeResponseError` with a `status` field on it. An error carrying no status at all is unreadable,
+ * since a transport failure never reached a node that could have answered.
+ */
+describe('which reading a postage refusal carries', () => {
+  /** A node whose batch read rejects with `failure`, the way bee-js does for a status it was given. */
+  function throwing(failure: unknown, reads: Reads): StampedPublisher {
+    return {
+      rung: '360p',
+      url: 'http://a:1633',
+      stamp: 'a'.repeat(64),
+      bee: {
+        getPostageBatch: async (batchId: string): Promise<PostageBatch> => {
+          reads.asked.push(batchId);
+          throw failure;
+        },
+      },
+    };
+  }
+
+  async function readingOf(publishers: readonly StampedPublisher[]): Promise<GateReading | undefined> {
+    const collected: GateRefusal[] = [];
+    await new PostageGate(publishers, MIN_TTL_S, MAX_UTILIZATION, silent).assertUsable((refusal) =>
+      collected.push(refusal),
+    );
+    assert.equal(collected.length, 1, 'exactly one refusal was expected');
+    return collected[0].reading;
+  }
+
+  function beeResponseError(message: string, status: number | undefined): Error {
+    return Object.assign(new Error(message), { name: 'BeeResponseError', status });
+  }
+
+  it('reads a 404 as the node answering that it does not hold the batch', async () => {
+    const reads: Reads = { asked: [] };
+
+    assert.equal(await readingOf([throwing(beeResponseError('issuer does not exist', 404), reads)]), 'answered');
+  });
+
+  it('reads a 5xx as no reading at all, the way the node wait reads one', async () => {
+    const reads: Reads = { asked: [] };
+
+    assert.equal(await readingOf([throwing(beeResponseError('bad gateway', 502), reads)]), 'unreadable');
+  });
+
+  it('reads a transport failure with no status as no reading at all', async () => {
+    const reads: Reads = { asked: [] };
+    const refused = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:1633'), { code: 'ECONNREFUSED' });
+
+    assert.equal(await readingOf([throwing(refused, reads)]), 'unreadable');
+  });
+
+  it('reads the timeout that ended the boot on 2026-09-16 as no reading at all', async () => {
+    const reads: Reads = { asked: [] };
+
+    assert.equal(await readingOf([throwing(new Error('timeout of 20000ms exceeded'), reads)]), 'unreadable');
+  });
+
+  // An axios error reaching the gate unwrapped carries its status one level down. Both are read,
+  // because this gate's client contract is any client rather than bee-js in particular.
+  it('reads a status carried on the response under the error', async () => {
+    const reads: Reads = { asked: [] };
+    const forbidden = Object.assign(new Error('Request failed with status code 403'), { response: { status: 403 } });
+
+    assert.equal(await readingOf([throwing(forbidden, reads)]), 'answered');
+  });
+
+  it('reads an answer with no readable batch fields as no reading at all', async () => {
+    const reads: Reads = { asked: [] };
+    const unreadable = publisher(
+      '360p',
+      'http://a:1633',
+      'a'.repeat(64),
+      batch({ duration: undefined as unknown as Duration }),
+      reads,
+    );
+
+    assert.equal(await readingOf([unreadable]), 'unreadable');
+  });
+
+  it('reads usable=false as the node answering about the batch', async () => {
+    const reads: Reads = { asked: [] };
+    const unusable = publisher('360p', 'http://a:1633', 'a'.repeat(64), batch({ usable: false }), reads);
+
+    assert.equal(await readingOf([unusable]), 'answered');
+  });
+
+  it('reads a batch under the time floor as the node answering about the batch', async () => {
+    const reads: Reads = { asked: [] };
+    const expiring = publisher(
+      '360p',
+      'http://a:1633',
+      'a'.repeat(64),
+      batch({ duration: Duration.fromSeconds(MIN_TTL_S - 1) }),
+      reads,
+    );
+
+    assert.equal(await readingOf([expiring]), 'answered');
+  });
+
+  it('reads a batch over the utilization ceiling as the node answering about the batch', async () => {
+    const reads: Reads = { asked: [] };
+    const full = publisher('360p', 'http://a:1633', 'a'.repeat(64), batch({ usage: 0.99 }), reads);
+
+    assert.equal(await readingOf([full]), 'answered');
   });
 });

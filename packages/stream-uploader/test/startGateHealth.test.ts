@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import { runStartGates, StartGate } from '../src/libs/StartGates.js';
+import { GateRefusalPolicy, runStartGates, StartGate } from '../src/libs/StartGates.js';
 import { HEALTH_REASON_START_GATE_WARNED, HEALTH_WAITING_FOR_NODE, StartGateWarning } from '../src/types.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
@@ -14,7 +14,11 @@ after(async () => {
 });
 
 /** A gate that refuses the rungs it is given, the way both real ones do under a collector. */
-function refusingGate(name: string, rungs: readonly (string | undefined)[], refuses = false): StartGate {
+function refusingGate(
+  name: string,
+  rungs: readonly (string | undefined)[],
+  refuses: GateRefusalPolicy = 'none',
+): StartGate {
   return {
     name,
     refuses,
@@ -23,14 +27,19 @@ function refusingGate(name: string, rungs: readonly (string | undefined)[], refu
         throw new Error(`${name} refused`);
       }
       for (const rung of rungs) {
-        collect({ rung, url: 'http://bee-uploader:1633', message: `${name} refused ${rung ?? 'the node'}` });
+        collect({
+          rung,
+          url: 'http://bee-uploader:1633',
+          message: `${name} refused ${rung ?? 'the node'}`,
+          reading: 'unreadable',
+        });
       }
     },
   };
 }
 
 function passingGate(name: string): StartGate {
-  return { name, refuses: false, run: async () => {} };
+  return { name, refuses: 'none', run: async () => {} };
 }
 
 function collectedWarnings(gates: readonly StartGate[]): Promise<StartGateWarning[]> {
@@ -105,7 +114,7 @@ describe('a gate that warned reaches /health', () => {
   });
 
   it('latches nothing for a gate that refuses, where a failure ends the boot instead', async () => {
-    await assert.rejects(() => collectedWarnings([refusingGate('ChequebookGate', ['360p'], true)]));
+    await assert.rejects(() => collectedWarnings([refusingGate('ChequebookGate', ['360p'], 'all')]));
   });
 
   it('reaches the health signals through the orchestrator', () => {

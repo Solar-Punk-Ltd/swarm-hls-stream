@@ -250,25 +250,27 @@ describe('the environment contract', () => {
       (await loadConfig(mode === undefined ? requiredEnv() : { ...requiredEnv(), UPLOADER_START_GATES: mode }))
         .startGates;
 
-    it('warns on the chequebook and refuses on postage by default', async () => {
-      assert.deepEqual(await gatesFor(), { chequebookRefuses: false, postageRefuses: true });
+    // Postage refuses what the node answered about and warns what it could not read, which is the
+    // owner's decision 7 option b of the same day. See `libs/StartGates.ts`.
+    it('warns on the chequebook and refuses an answered postage reading by default', async () => {
+      assert.deepEqual(await gatesFor(), { chequebookRefuses: 'none', postageRefuses: 'answered' });
     });
 
     it('takes warn as both gates warning', async () => {
-      assert.deepEqual(await gatesFor('warn'), { chequebookRefuses: false, postageRefuses: false });
+      assert.deepEqual(await gatesFor('warn'), { chequebookRefuses: 'none', postageRefuses: 'none' });
     });
 
     it('takes refuse as both gates refusing, which is what every boot did before that date', async () => {
-      assert.deepEqual(await gatesFor('refuse'), { chequebookRefuses: true, postageRefuses: true });
+      assert.deepEqual(await gatesFor('refuse'), { chequebookRefuses: 'all', postageRefuses: 'all' });
     });
 
     // An operator writing the mode into a `.env` by hand should not be refused over a capital.
     it('reads a mode written with padding or capitals as the mode it spells', async () => {
-      assert.deepEqual(await gatesFor('  Refuse '), { chequebookRefuses: true, postageRefuses: true });
+      assert.deepEqual(await gatesFor('  Refuse '), { chequebookRefuses: 'all', postageRefuses: 'all' });
     });
 
     it('reads a blank setting as the default rather than refusing during import', async () => {
-      assert.deepEqual(await gatesFor('   '), { chequebookRefuses: false, postageRefuses: true });
+      assert.deepEqual(await gatesFor('   '), { chequebookRefuses: 'none', postageRefuses: 'answered' });
     });
 
     for (const written of ['on', 'strict', 'warn refuse', 'postage-warn']) {

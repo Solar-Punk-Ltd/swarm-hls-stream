@@ -1,7 +1,8 @@
 import { safeUrl } from './BeePublisherPool.js';
+import { gateReadingOfError } from './gateReadingOfError.js';
 import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
-import { GateCollector } from './StartGates.js';
+import { GateCollector, GateReading } from './StartGates.js';
 
 /**
  * Read every Bee node's chequebook before the uploader touches anything paid, and refuse or warn
@@ -88,27 +89,40 @@ export class ChequebookGate {
         continue;
       }
       if (collect === undefined) {
-        throw new GateRefusalError(refusal, safeUrl(node.url));
+        throw new GateRefusalError(refusal.message, safeUrl(node.url));
       }
-      collect({ rung: node.rung, url: safeUrl(node.url), message: refusal });
+      collect({ rung: node.rung, url: safeUrl(node.url), ...refusal });
     }
   }
 
-  /** The refusal this node earns, or null once its reading is in the log. */
-  private async refusalFor(node: ChequebookNode): Promise<string | null> {
+  /**
+   * The refusal this node earns, or null once its reading is in the log.
+   *
+   * A balance under the floor is the node answering with a number, and a body with no readable
+   * `availableBalance` is no reading at all. A read that threw is either, which is what
+   * {@link gateReadingOfError} decides. This gate warns under the shipped mode whichever it is, and
+   * the fact belongs to the gate that established it rather than to whoever acts on it.
+   */
+  private async refusalFor(node: ChequebookNode): Promise<ChequebookRefusal | null> {
     let body: unknown;
     try {
       body = await node.bee.getChequebookBalance();
     } catch (error) {
-      return this.unreadableRefusal(node.url, describeFailure(error));
+      return {
+        message: this.unreadableRefusal(node.url, describeFailure(error)),
+        reading: gateReadingOfError(error),
+      };
     }
 
     const availablePlur = parseAvailablePlur(body);
     if (availablePlur === null) {
-      return this.unreadableRefusal(node.url, 'the response carried no readable availableBalance');
+      return {
+        message: this.unreadableRefusal(node.url, 'the response carried no readable availableBalance'),
+        reading: 'unreadable',
+      };
     }
     if (availablePlur < this.floorPlur) {
-      return this.unfundedRefusal(node.url, availablePlur);
+      return { message: this.unfundedRefusal(node.url, availablePlur), reading: 'answered' };
     }
 
     this.logger.info(
@@ -136,6 +150,12 @@ export class ChequebookGate {
       `${plurToBzz(this.floorPlur)} BZZ.`
     );
   }
+}
+
+/** What a node earns when it cannot pay: the sentence, and which kind of fact it is. */
+interface ChequebookRefusal {
+  readonly message: string;
+  readonly reading: GateReading;
 }
 
 /** 1 BZZ = 1e16 PLUR. PLUR is bee's integer base unit, and every balance it reports is denominated in it. */

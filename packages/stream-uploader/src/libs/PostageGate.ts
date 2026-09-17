@@ -1,9 +1,10 @@
 import { PostageBatch } from '@ethersphere/bee-js';
 
 import { safeUrl, shortBatchId } from './BeePublisherPool.js';
+import { gateReadingOfError } from './gateReadingOfError.js';
 import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
-import { GateCollector } from './StartGates.js';
+import { GateCollector, GateReading } from './StartGates.js';
 
 /**
  * Read every postage batch this stage pays with before the uploader touches anything paid, and refuse
@@ -28,13 +29,22 @@ import { GateCollector } from './StartGates.js';
  *
  * ## What happens to that refusal, 2026-09-17
  *
- * ⛔ **This gate still refuses by default, and it is the only one that does.** The owner ruled the two
- * apart on 2026-09-17: a chequebook under its floor is a node that publishes slowly, while a batch
- * that is full or expired fails every write while the broadcast looks live to the room, the viewer
- * and the catalog, and the recording it was meant to buy is never kept. So the shipped
- * `chequebook-warn` has `ChequebookGate` warning and this one refusing, `warn` has both warning, and
- * `refuse` has both refusing. A node that never answers is waited for under all three, which is
- * `libs/NodeWait.ts` rather than this. The account of the ruling is in `libs/StartGates.ts`.
+ * ⛔ **This gate still refuses by default, and it is the only one that does, but only about a batch
+ * the node answered for.** The owner ruled the two gates apart on 2026-09-17: a chequebook under its
+ * floor is a node that publishes slowly, while a batch that is full or expired fails every write
+ * while the broadcast looks live to the room, the viewer and the catalog, and the recording it was
+ * meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
+ * same way, in his words: "PostageGate refuses only a batch the node answered about and warns on an
+ * unreadable one." A `usable=false`, a batch under the time floor, a batch over the utilization
+ * ceiling and a 4xx are the node answering, and they still end the boot under the shipped
+ * `chequebook-warn`. A timeout, a 5xx and an answer with no readable fields are no reading at all,
+ * and under that mode they are warned about and the uploader starts, because a rung whose node is
+ * not talking has said nothing about any batch. `warn` has both gates warning about both readings,
+ * `refuse` has both refusing both, and neither changed. A node that never answers is waited for
+ * under all three, which is `libs/NodeWait.ts` rather than this: under `refuse` an unreadable
+ * refusal is still thrown and that wait still reads its timeout text, and under the shipped mode
+ * that text is a warning line that never reaches the wait at all. Which refusal is which is
+ * {@link GateReading}, and the account of both rulings is in `libs/StartGates.ts`.
  *
  * ## Why per publisher rather than per node
  *
@@ -83,9 +93,9 @@ export class PostageGate {
         continue;
       }
       if (collect === undefined) {
-        throw new GateRefusalError(refusal, safeUrl(publisher.url));
+        throw new GateRefusalError(refusal.message, safeUrl(publisher.url));
       }
-      collect({ rung: publisher.rung, url: safeUrl(publisher.url), message: refusal });
+      collect({ rung: publisher.rung, url: safeUrl(publisher.url), ...refusal });
     }
   }
 
@@ -97,26 +107,32 @@ export class PostageGate {
    * 2026-08-31, so bee-js throws instead of returning something with `exists: false` on it. There is
    * no field to read for absence, and looking for one is what this gate used to do.
    */
-  private async refusalFor(publisher: StampedPublisher): Promise<string | null> {
+  private async refusalFor(publisher: StampedPublisher): Promise<BatchRefusal | null> {
     let body: PostageBatch;
     try {
       body = await publisher.bee.getPostageBatch(publisher.stamp);
     } catch (error) {
-      return this.unreadableRefusal(publisher, describeFailure(error));
+      return {
+        message: this.unreadableRefusal(publisher, describeFailure(error)),
+        reading: gateReadingOfError(error),
+      };
     }
 
     const batch = parseBatch(body);
     if (batch === null) {
-      return this.unreadableRefusal(publisher, 'the response carried no readable batch fields');
+      return {
+        message: this.unreadableRefusal(publisher, 'the response carried no readable batch fields'),
+        reading: 'unreadable',
+      };
     }
     if (!batch.usable) {
-      return this.unusableRefusal(publisher, batch);
+      return { message: this.unusableRefusal(publisher, batch), reading: 'answered' };
     }
     if (batch.ttlSeconds < this.minTtlSeconds) {
-      return this.expiringRefusal(publisher, batch);
+      return { message: this.expiringRefusal(publisher, batch), reading: 'answered' };
     }
     if (batch.utilization > this.maxUtilization) {
-      return this.fullRefusal(publisher, batch);
+      return { message: this.fullRefusal(publisher, batch), reading: 'answered' };
     }
 
     this.logger.info(
@@ -166,6 +182,12 @@ export class PostageGate {
       'STAMP_MAX_UTILIZATION moves the ceiling.'
     );
   }
+}
+
+/** What a batch earns when it cannot carry a broadcast: the sentence, and which kind of fact it is. */
+interface BatchRefusal {
+  readonly message: string;
+  readonly reading: GateReading;
 }
 
 /** One rung's node and the batch it spends. `BeePublisher` satisfies this. */
