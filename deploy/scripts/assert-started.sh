@@ -22,8 +22,11 @@
 # `waiting_for_node` throughout, and the container stays up whatever those reads find. On a
 # four-node pool that answers nothing the default budget spends about 160 seconds an attempt under
 # `warn`, which reads every node of both gates, and the wait then goes round again. Under
-# UPLOADER_START_GATES=refuse each gate stops at its first node, so the container exits about 40
-# seconds in and loops. Either way a five second look has already called it started.
+# UPLOADER_START_GATES=refuse the first read that times out ends the pass instead, about 20 seconds
+# in, and that pass is waited on and retried like any other: a node that does not answer is D16's
+# case whatever the mode. What `refuse` still ends the boot for is a node that ANSWERS with a reading
+# the gate will not accept, a chequebook under its floor or a batch that has filled, and that arrives
+# within a second or two. Either way a five second look has already called the container started.
 #
 # And in one instant: the state alone cannot tell a loop from a healthy start, whichever order it is
 # asked in. Early in a loop docker's restart backoff is a tenth of a second against a container that

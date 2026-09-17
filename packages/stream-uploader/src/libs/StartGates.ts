@@ -112,10 +112,11 @@ export function parseStartGateMode(written: string): StartGateMode {
 /**
  * Run every gate in order, and do with a refusal whatever the mode says.
  *
- * Under `warn` every gate is read even after an earlier one refused, because the chequebook and the
- * postage batch are separate questions with separate fixes. An operator who has to restart once per
- * finding learns them one boot at a time. Under `refuse` the first failure is rethrown untouched, so
- * the caller's crash report carries the gate's own message rather than a wrapper around it.
+ * Under `warn` every gate is read even after an earlier one refused, and so is every node inside
+ * each gate, because the chequebook and the postage batch are separate questions with separate
+ * fixes and so is every rung. An operator who has to restart once per finding learns them one boot
+ * at a time. Under `refuse` the first failure is rethrown untouched, so the caller's crash report
+ * carries the gate's own message rather than a wrapper around it.
  */
 export async function runStartGates(
   gates: readonly StartGate[],

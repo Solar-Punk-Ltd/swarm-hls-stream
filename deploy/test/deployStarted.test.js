@@ -109,8 +109,10 @@ describe('a deploy reports whether the services it started are up', () => {
  * time. On a four-node ABR pool that answers nothing the default budget spends about 160 seconds an
  * attempt under `warn`, which reads every node of both gates, and then waits and goes round again.
  * At five seconds the container is `running` with its node process inside an HTTP call, and the
- * deploy prints its success line. Under UPLOADER_START_GATES=refuse each gate stops at its first
- * node, so about 40 seconds in the container exits 1 and loops unwatched.
+ * deploy prints its success line. Under UPLOADER_START_GATES=refuse the first read that times out
+ * ends the pass instead, about 20 seconds in, and that pass is waited on and retried like any other.
+ * What exits 1 and loops unwatched is a node that ANSWERS with a reading the gate will not accept,
+ * which is the case this watch still has to be able to see.
  *
  * The second half is the same blindness in one instant rather than over time: a crash loop spends
  * most of its life `running`, because `restarting` is the brief moment between attempts. So a look
