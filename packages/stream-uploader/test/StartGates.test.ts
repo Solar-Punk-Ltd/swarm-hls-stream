@@ -261,7 +261,7 @@ describe('the start gates', () => {
  * which of the two it was running.
  */
 describe('the start gate mode a deployment asks for', () => {
-  it('reads the two modes there are', () => {
+  it('reads warn and refuse', () => {
     assert.equal(parseStartGateMode('warn'), START_GATE_WARN);
     assert.equal(parseStartGateMode('refuse'), START_GATE_REFUSE);
   });
@@ -272,7 +272,7 @@ describe('the start gate mode a deployment asks for', () => {
   });
 
   for (const written of ['on', 'off', 'true', 'strict', 'warn refuse', 'refuses']) {
-    it(`refuses "${written}", naming the variable and both modes`, () => {
+    it(`refuses "${written}", naming the variable and every mode`, () => {
       assert.throws(() => parseStartGateMode(written), /UPLOADER_START_GATES/);
       assert.throws(() => parseStartGateMode(written), /warn/);
       assert.throws(() => parseStartGateMode(written), /refuse/);
