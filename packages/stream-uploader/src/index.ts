@@ -158,11 +158,13 @@ async function start() {
           [
             {
               name: 'ChequebookGate',
+              refuses: config.startGates.chequebookRefuses,
               run: (collect) =>
                 new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(collect),
             },
             {
               name: 'PostageGate',
+              refuses: config.startGates.postageRefuses,
               run: (collect) =>
                 new PostageGate(
                   gateNodes,
@@ -172,7 +174,6 @@ async function start() {
                 ).assertUsable(collect),
             },
           ],
-          config.startGateMode,
           logger,
           (warnings) => streamOrchestrator.recordStartGateWarnings(warnings),
         );

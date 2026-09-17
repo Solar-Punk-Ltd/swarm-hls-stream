@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import { runStartGates, START_GATE_REFUSE, START_GATE_WARN, StartGate, StartGateMode } from '../src/libs/StartGates.js';
+import { runStartGates, StartGate } from '../src/libs/StartGates.js';
 import { HEALTH_REASON_START_GATE_WARNED, HEALTH_WAITING_FOR_NODE, StartGateWarning } from '../src/types.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
@@ -14,9 +14,10 @@ after(async () => {
 });
 
 /** A gate that refuses the rungs it is given, the way both real ones do under a collector. */
-function refusingGate(name: string, rungs: readonly (string | undefined)[]): StartGate {
+function refusingGate(name: string, rungs: readonly (string | undefined)[], refuses = false): StartGate {
   return {
     name,
+    refuses,
     run: async (collect) => {
       if (collect === undefined) {
         throw new Error(`${name} refused`);
@@ -29,16 +30,13 @@ function refusingGate(name: string, rungs: readonly (string | undefined)[]): Sta
 }
 
 function passingGate(name: string): StartGate {
-  return { name, run: async () => {} };
+  return { name, refuses: false, run: async () => {} };
 }
 
-function collectedWarnings(
-  gates: readonly StartGate[],
-  mode: StartGateMode = START_GATE_WARN,
-): Promise<StartGateWarning[]> {
+function collectedWarnings(gates: readonly StartGate[]): Promise<StartGateWarning[]> {
   const silent = { warn: () => {} };
   return new Promise((resolve, reject) => {
-    runStartGates(gates, mode, silent, (warnings) => resolve([...warnings])).catch(reject);
+    runStartGates(gates, silent, (warnings) => resolve([...warnings])).catch(reject);
   });
 }
 
@@ -106,8 +104,8 @@ describe('a gate that warned reaches /health', () => {
     assert.deepEqual(orchestrator.getHealthSignals().startGateWarnings, []);
   });
 
-  it('latches nothing under refuse, where a gate that fails ends the boot instead', async () => {
-    await assert.rejects(() => collectedWarnings([refusingGate('ChequebookGate', ['360p'])], START_GATE_REFUSE));
+  it('latches nothing for a gate that refuses, where a failure ends the boot instead', async () => {
+    await assert.rejects(() => collectedWarnings([refusingGate('ChequebookGate', ['360p'], true)]));
   });
 
   it('reaches the health signals through the orchestrator', () => {

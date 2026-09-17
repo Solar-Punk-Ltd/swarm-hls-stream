@@ -1,5 +1,5 @@
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
-import { parseStartGateMode, START_GATE_WARN } from '../libs/StartGates.js';
+import { gatePolicyFor, parseStartGateMode, START_GATE_CHEQUEBOOK_WARN } from '../libs/StartGates.js';
 
 import { readAbrConfig } from './abrConfig.js';
 import { optional, optionalInt, optionalNumber, required } from './env.js';
@@ -165,18 +165,19 @@ export const config = {
   publishers,
   beeRequestTimeoutMs: optionalInt('BEE_REQUEST_TIMEOUT_MS', DEFAULT_BEE_REQUEST_TIMEOUT_MS, { min: 1 }),
   /**
-   * Whether a startup gate that cannot clear its node stops the uploader, or only says so.
+   * Which of the two startup gates stops the uploader when it cannot clear a node.
    *
-   * Warn is the shipped mode on the owner's ruling of 2026-09-17: the uploader starts whatever the
-   * chequebook says, and a gate that refuses leaves its whole message in the log as a warning.
-   * `refuse` is the behaviour every boot had before that date. See `libs/StartGates.ts`.
+   * The owner ruled the two apart on 2026-09-17: the chequebook gate warns and the postage gate
+   * refuses, which is `chequebook-warn` and the shipped default. `warn` is both warning, `refuse` is
+   * both refusing. See `libs/StartGates.ts` for why a full batch is not the same risk as a low
+   * chequebook.
    *
    * The name is written out here rather than taken from the constant `StartGates.ts` quotes it by,
    * because `deploy/test/uploaderEnv.test.js` scrapes these reads for their literal to prove every
    * knob reaches the container and is documented. A knob read through a constant is one that gate
    * cannot see, which is the shape it exists to catch.
    */
-  startGateMode: parseStartGateMode(optional('UPLOADER_START_GATES', START_GATE_WARN)),
+  startGates: gatePolicyFor(parseStartGateMode(optional('UPLOADER_START_GATES', START_GATE_CHEQUEBOOK_WARN))),
   startGateTimeoutMs: optionalInt('START_GATE_TIMEOUT_MS', DEFAULT_START_GATE_TIMEOUT_MS, {
     min: 1,
     max: MAX_START_GATE_TIMEOUT_MS,
