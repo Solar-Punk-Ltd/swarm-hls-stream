@@ -6,8 +6,9 @@
 # container whose process throws on its first line has been started. With `restart: unless-stopped`
 # docker then loops it, and the deploy that asked for it has already printed its success line. Every
 # startup refusal this repository has on purpose lands in that gap: the five `required()` reads in
-# `utils/config.ts`, and the chequebook floor and `PostageGate` on a deployment that sets
-# UPLOADER_START_GATES=refuse, which since 2026-09-17 is what asks those two to stop a start at all.
+# `utils/config.ts`, the chequebook floor on a deployment that sets UPLOADER_START_GATES=refuse, and
+# `PostageGate` under every mode but warn when the node answers that the batch is absent, unusable,
+# expired or full, which is decision 7 b of 2026-09-17.
 # A node that does not answer is no longer one of them, since decision D16 of the same day: the
 # uploader listens first and waits for its node, so it stays up and says `waiting_for_node` on
 # /health instead of exiting into a restart loop. The compose healthcheck does not close the gap

@@ -41,9 +41,10 @@ function looks(sandbox, service) {
  * ⛔⛔⛔ `docker compose up -d` returns as soon as a container has been created and started, and a
  * container whose process throws on its first line has been started. With `restart: unless-stopped`
  * it then loops, and `deploy.sh` printed "Local deploy complete" over the top of it. Every startup
- * refusal this repository has on purpose lands in that gap: the five `required()` reads, and the
- * chequebook floor and `PostageGate` on a deployment that sets UPLOADER_START_GATES=refuse. The compose healthcheck cannot close it either, because it
- * deliberately reports without acting and nothing declares a dependency on it.
+ * refusal this repository has on purpose lands in that gap: the five `required()` reads, the
+ * chequebook floor on a deployment that sets UPLOADER_START_GATES=refuse, and `PostageGate` under
+ * every mode but warn on a batch the node answered about. The compose healthcheck cannot close it
+ * either, because it deliberately reports without acting and nothing declares a dependency on it.
  *
  * Found by a cross-provider review on 2026-09-14, prompted by the commit that made
  * STAMP_MIN_TTL_HOURS and STAMP_MAX_UTILIZATION reach the container: two settings that were inert
