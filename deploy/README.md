@@ -406,8 +406,9 @@ behind it cannot answer. Since the owner's rulings of 2026-09-17 that no longer 
 the air. The boot asks each node whether it is there before anything else, and a node that is not is
 waited for rather than refused on, so the service listens, answers `/health` with `waiting_for_node`
 naming that url, and keeps retrying until the node is there. A node that does answer and reads badly
-is the mode's question rather than the wait's: the chequebook gate warns by default and the postage
-gate still refuses.
+is the mode's question rather than the wait's: the chequebook gate warns by default, and since the
+owner's decision 7 b of 2026-09-17 the postage gate refuses a batch the node answered about while
+warning about one it could not read at all.
 `UPLOADER_START_GATES=refuse` in the root `.env` has both gates refusing again, `warn` has both
 warning, and `chequebook-warn` is the shipped middle. `START_GATE_TIMEOUT_MS` is how long each of
 those reads may take, twenty seconds by default and ten minutes at most. What a deployment cannot ask

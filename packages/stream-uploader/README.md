@@ -333,22 +333,22 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable                | Default           | Description                                                                                                                                                                     |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLISH_KEY_SECRET`    | _(empty)_         | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below                                                            |
-| `API_PORT`              | `3000`            | HTTP API port                                                                                                                                                                   |
-| `STATE_DIR`             | `./state`         | Directory for crash recovery state                                                                                                                                              |
-| `MAX_QUEUE_SIZE`        | `100`             | Max queued segments per stream                                                                                                                                                  |
-| `RECOVERY_TIMEOUT`      | `60000`           | Crash recovery timeout (ms)                                                                                                                                                     |
-| `SEGMENT_STALL_MS`      | `30000`           | Silence after which `/health` reads degraded                                                                                                                                    |
-| `UPLOADER_START_GATES`  | `chequebook-warn` | Which startup gate stops the boot when it cannot clear a node. `chequebook-warn` warns on the chequebook and refuses on postage, `warn` warns on both, `refuse` refuses on both |
-| `START_GATE_TIMEOUT_MS` | `20000`           | How long one startup gate's read of one node may take, 600000 at most. Separate from `BEE_REQUEST_TIMEOUT_MS`, which the upload loop derives                                    |
-| `HLS_FRAGMENT`          | `0.5`             | Nominal seconds per fragment, the grid a segment's date snaps to within one percent. Same variable the engine reads                                                             |
-| `SEGMENT_DEDUP_WINDOW`  | `10000`           | Segment indexes remembered per stream, twice this many held at most                                                                                                             |
-| `SEGMENT_REDUNDANCY`    | `1`               | Erasure-coding parity on segment uploads, `0` turns it off                                                                                                                      |
-| `ENGINE`                | _(empty)_         | Engine plugin to load (`srs`, `ome` or empty)                                                                                                                                   |
-| `LOG_LEVEL`             | `debug`           | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                                                                        |
-| `LOG_FORMAT`            | _(empty)_         | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                                                                      |
+| Variable                | Default           | Description                                                                                                                                                                                                                                        |
+| ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLISH_KEY_SECRET`    | _(empty)_         | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below                                                                                                                               |
+| `API_PORT`              | `3000`            | HTTP API port                                                                                                                                                                                                                                      |
+| `STATE_DIR`             | `./state`         | Directory for crash recovery state                                                                                                                                                                                                                 |
+| `MAX_QUEUE_SIZE`        | `100`             | Max queued segments per stream                                                                                                                                                                                                                     |
+| `RECOVERY_TIMEOUT`      | `60000`           | Crash recovery timeout (ms)                                                                                                                                                                                                                        |
+| `SEGMENT_STALL_MS`      | `30000`           | Silence after which `/health` reads degraded                                                                                                                                                                                                       |
+| `UPLOADER_START_GATES`  | `chequebook-warn` | Which startup gate stops the boot, and on which reading. `chequebook-warn` warns on the chequebook and refuses on a postage batch the node answered about, warning on one it could not read at all. `warn` warns on both, `refuse` refuses on both |
+| `START_GATE_TIMEOUT_MS` | `20000`           | How long one startup gate's read of one node may take, 600000 at most. Separate from `BEE_REQUEST_TIMEOUT_MS`, which the upload loop derives                                                                                                       |
+| `HLS_FRAGMENT`          | `0.5`             | Nominal seconds per fragment, the grid a segment's date snaps to within one percent. Same variable the engine reads                                                                                                                                |
+| `SEGMENT_DEDUP_WINDOW`  | `10000`           | Segment indexes remembered per stream, twice this many held at most                                                                                                                                                                                |
+| `SEGMENT_REDUNDANCY`    | `1`               | Erasure-coding parity on segment uploads, `0` turns it off                                                                                                                                                                                         |
+| `ENGINE`                | _(empty)_         | Engine plugin to load (`srs`, `ome` or empty)                                                                                                                                                                                                      |
+| `LOG_LEVEL`             | `debug`           | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                                                                                                                                           |
+| `LOG_FORMAT`            | _(empty)_         | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                                                                                                                                         |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -547,9 +547,11 @@ since its counters describe this process and not the node.
 **What a warned gate leaves behind.** A gate that warns reads every node rather than stopping at the
 first that refuses, so one boot names every rung an operator has to fix rather than one per restart,
 and the outcome of the pass that finished the boot is latched into `startGateWarnings`. Under the
-shipped `chequebook-warn` that is the chequebook gate: a postage batch that cannot carry a broadcast
-still ends the boot, because every write against it fails while the broadcast looks live to the room,
-the viewer and the catalog. The
+shipped `chequebook-warn` that is the chequebook gate, and the postage gate on a batch it could not
+read at all: a batch the node answered about and the gate will not accept still ends the boot,
+because every write against it fails while the broadcast looks live to the room, the viewer and the
+catalog, while a rung whose node answered nothing has said nothing about any batch. That second half
+is the owner's decision 7 b of 2026-09-17. The
 service is degraded from then on, which is what the container's healthcheck reads and what
 `deploy/scripts/assert-started.sh` reports. A later pass replaces an earlier one, because the gates
 are read again on every attempt while the uploader waits for its node and only the last of those

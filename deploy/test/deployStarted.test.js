@@ -108,6 +108,9 @@ describe('a deploy reports whether the services it started are up', () => {
  * all of it runs behind the listener, so the port is open and answering `waiting_for_node` the whole
  * time. On a four-node ABR pool that answers nothing the default budget spends about 160 seconds an
  * attempt under `warn`, which reads every node of both gates, and then waits and goes round again.
+ * The shipped `chequebook-warn` spends the same budget on such a pool since the owner's decision 7 b
+ * of 2026-09-17, because a batch the postage gate could not read at all is warned about rather than
+ * refused on.
  * At five seconds the container is `running` with its node process inside an HTTP call, and the
  * deploy prints its success line. Under UPLOADER_START_GATES=refuse the first read that times out
  * ends the pass instead, about 20 seconds in, and that pass is waited on and retried like any other.
