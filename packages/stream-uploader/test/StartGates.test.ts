@@ -59,12 +59,12 @@ function silentPublisher(rung: string, url: string): StampedPublisher {
 
 function chequebookGate(nodes: readonly ChequebookNode[], logger: { info: (message: string) => void }): StartGate {
   const gate = new ChequebookGate(nodes, FLOOR_PLUR, logger);
-  return { name: 'ChequebookGate', run: () => gate.assertFunded() };
+  return { name: 'ChequebookGate', run: (collect) => gate.assertFunded(collect) };
 }
 
 function postageGate(publishers: readonly StampedPublisher[], logger: { info: (message: string) => void }): StartGate {
   const gate = new PostageGate(publishers, MIN_TTL_S, MAX_UTILIZATION, logger);
-  return { name: 'PostageGate', run: () => gate.assertUsable() };
+  return { name: 'PostageGate', run: (collect) => gate.assertUsable(collect) };
 }
 
 /** A gate that does nothing but record that it was reached, for the ordering cases. */
@@ -269,4 +269,75 @@ describe('the start gate mode a deployment asks for', () => {
       assert.throws(() => parseStartGateMode(written), /refuse/);
     });
   }
+});
+
+/**
+ * Whether a gate is asked to establish everything it can, or to stop at the first thing it cannot.
+ *
+ * Both are right, in their own mode. Under `refuse` the first refusal ends the boot, so reading the
+ * second node buys nothing and delays the answer. Under `warn` the service runs, so every node that
+ * cannot be cleared is one an operator has to learn about now rather than at the next restart, which
+ * is what a four rung stage turns into when it reports one rung per boot.
+ */
+describe('how much a gate is asked to read', () => {
+  /** A gate that refuses `count` nodes when it is given somewhere to put them, and throws otherwise. */
+  function manyBadNodes(name: string, count: number): StartGate & { collected: boolean } {
+    const gate = {
+      name,
+      collected: false,
+      run: async (collect?: (refusal: { rung?: string; url: string; message: string }) => void) => {
+        if (!collect) {
+          throw new Error(`${name} refused http://bee-1:1633`);
+        }
+        gate.collected = true;
+        for (let index = 1; index <= count; index += 1) {
+          collect({ rung: `rung-${index}`, url: `http://bee-${index}:1633`, message: `${name} refused rung-${index}` });
+        }
+      },
+    };
+    return gate;
+  }
+
+  it('warns once per node a gate could not clear, not once per gate', async () => {
+    const logger = recordingLogger();
+
+    await runStartGates([manyBadNodes('PostageGate', 3)], START_GATE_WARN, logger);
+
+    assert.equal(logger.warnings.length, 3);
+    assert.match(logger.warnings[0], /rung-1/);
+    assert.match(logger.warnings[2], /rung-3/);
+  });
+
+  it('names the rung in the warning when the gate knew one', async () => {
+    const logger = recordingLogger();
+
+    await runStartGates([manyBadNodes('PostageGate', 1)], START_GATE_WARN, logger);
+
+    assert.match(logger.warnings[0], /PostageGate/);
+    assert.match(logger.warnings[0], /rung-1/);
+    assert.match(logger.warnings[0], /UPLOADER_START_GATES/);
+  });
+
+  it('gives a gate nowhere to put a refusal under refuse, so the first one still ends the boot', async () => {
+    const gate = manyBadNodes('ChequebookGate', 3);
+
+    await assert.rejects(() => runStartGates([gate], START_GATE_REFUSE, recordingLogger()), /refused http/);
+    assert.equal(gate.collected, false, 'refuse mode must not ask a gate to carry on past a refusal');
+  });
+
+  // A gate that throws under warn is still warned about: an empty node set and an unexpected error
+  // both arrive that way, and neither may pass silently.
+  it('still warns about a gate that threw rather than collected', async () => {
+    const logger = recordingLogger();
+    const reached: string[] = [];
+
+    await runStartGates(
+      [refusingGate('ChequebookGate', 'asked to clear no Bee node at all', reached)],
+      START_GATE_WARN,
+      logger,
+    );
+
+    assert.equal(logger.warnings.length, 1);
+    assert.match(logger.warnings[0], /no Bee node/);
+  });
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { PostageGate, StampedPublisher } from '../src/libs/PostageGate.js';
+import { GateRefusal } from '../src/libs/StartGates.js';
 
 const MIN_TTL_S = 24 * 3_600;
 const MAX_UTILIZATION = 0.9;
@@ -270,5 +271,62 @@ describe('PostageGate', () => {
 
     assert.match(message, /480p/);
     assert.equal(reads.asked.length, 2, 'it should stop at the first refusal rather than reading on');
+  });
+});
+
+/**
+ * ⛔ **One rung per boot is what the first-failure throw reports once the service starts anyway.**
+ *
+ * Stopping at the first refusal is right when the refusal stops the boot, and wrong from the owner's
+ * ruling of 2026-09-17 onwards: under `warn` the uploader runs, so a stage with two exhausted batches
+ * told an operator about one of them and kept the other until the next restart. Given somewhere to
+ * put a refusal this reads every rung and hands each one over. With no collector nothing changes,
+ * which is what `refuse` still needs.
+ */
+describe('the postage gate with somewhere to put a refusal', () => {
+  it('reads every rung rather than stopping at the first that fails', async () => {
+    const reads: Reads = { asked: [] };
+    const collected: GateRefusal[] = [];
+
+    await new PostageGate(
+      [
+        publisher('360p', 'http://a:1633', 'a'.repeat(64), batch({ usage: 0.99 }), reads),
+        publisher('480p', 'http://b:1633', 'b'.repeat(64), batch(), reads),
+        failingPublisher('720p', 'http://c:1633', 'c'.repeat(64), 'connection refused', reads),
+      ],
+      MIN_TTL_S,
+      MAX_UTILIZATION,
+      silent,
+    ).assertUsable((refusal) => collected.push(refusal));
+
+    assert.equal(reads.asked.length, 3, 'every rung has to be read, not just the ones before the first failure');
+    assert.deepEqual(
+      collected.map((refusal) => refusal.rung),
+      ['360p', '720p'],
+    );
+    assert.match(collected[0].message, /99\.0% used/);
+    assert.match(collected[1].message, /connection refused/);
+  });
+
+  it('carries the node url on each refusal, for the log rather than for /health', async () => {
+    const reads: Reads = { asked: [] };
+    const collected: GateRefusal[] = [];
+
+    await new PostageGate(
+      [failingPublisher('1080p', 'http://d:1633', 'd'.repeat(64), 'no such batch', reads)],
+      MIN_TTL_S,
+      MAX_UTILIZATION,
+      silent,
+    ).assertUsable((refusal) => collected.push(refusal));
+
+    assert.equal(collected[0].url, 'http://d:1633');
+    assert.equal(collected[0].rung, '1080p');
+  });
+
+  it('still refuses an empty publisher set while collecting', async () => {
+    await assert.rejects(
+      () => new PostageGate([], MIN_TTL_S, MAX_UTILIZATION, silent).assertUsable(() => {}),
+      /no postage batch at all/,
+    );
   });
 });

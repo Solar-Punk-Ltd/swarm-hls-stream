@@ -239,6 +239,7 @@ export const HEALTH_REASON_FRAGMENT_MISMATCH = 'fragment_mismatch' as const;
 export const HEALTH_REASON_FRAGMENT_PUBLISHER_GOP = 'fragment_publisher_gop' as const;
 export const HEALTH_REASON_POSTAGE_REFUSED = 'postage_refused' as const;
 export const HEALTH_REASON_NODE_UNAVAILABLE = 'node_unavailable' as const;
+export const HEALTH_REASON_START_GATE_WARNED = 'start_gate_warned' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -253,7 +254,22 @@ export type HealthReason =
   | typeof HEALTH_REASON_FRAGMENT_MISMATCH
   | typeof HEALTH_REASON_FRAGMENT_PUBLISHER_GOP
   | typeof HEALTH_REASON_POSTAGE_REFUSED
-  | typeof HEALTH_REASON_NODE_UNAVAILABLE;
+  | typeof HEALTH_REASON_NODE_UNAVAILABLE
+  | typeof HEALTH_REASON_START_GATE_WARNED;
+
+/**
+ * A startup gate that warned instead of refusing, as `/health` reports it.
+ *
+ * ⛔ The gate's own message is deliberately not here. `/health` takes no credential and is published
+ * on every interface the deployment binds, and those messages name node URLs and postage batch ids.
+ * The gate's name and the rung are enough to act on, and the log has the rest.
+ */
+export interface StartGateWarning {
+  /** The gate's class name, `ChequebookGate` or `PostageGate`. */
+  readonly gate: string;
+  /** The ABR rung, absent on a single-node deployment and on a gate that threw before reading one. */
+  readonly rung?: string;
+}
 
 /**
  * What the boot is waiting for, as `/health` reports it while the node has not answered.

@@ -1,4 +1,5 @@
 import { Logger } from './Logger.js';
+import { GateCollector } from './StartGates.js';
 
 /**
  * Refuse to start unless every Bee node this stage publishes through can still pay for bandwidth.
@@ -53,15 +54,20 @@ export class ChequebookGate {
   ) {}
 
   /**
-   * Read every distinct node's chequebook, throw on the first that cannot pay, and otherwise leave
-   * one funding reading per node in the log.
+   * Read every distinct node's chequebook and leave one funding reading per node in the log.
    *
-   * Sequential rather than concurrent, so "the first failure" is the first node in ladder order
-   * rather than whichever request happened to lose the race. The nodes are deduplicated by URL
-   * because two rungs may sit behind one bee, and one bee has one chequebook however many rungs
-   * route through it.
+   * With no `collect` the first node that cannot pay throws, which is what a deployment asking for a
+   * refusal needs. Given one, every node is read and each refusal is handed over with the message it
+   * would have thrown, because under `warn` the service runs and an operator who hears about one
+   * rung per boot fixes a four rung stage one restart at a time.
+   *
+   * Sequential rather than concurrent either way, so "the first failure" is the first node in ladder
+   * order rather than whichever request happened to lose the race. The nodes are deduplicated by URL
+   * because two rungs may sit behind one bee, and one bee has one chequebook however many rungs route
+   * through it. That is also why a collected refusal names the first rung routed through the node
+   * rather than all of them.
    */
-  public async assertFunded(): Promise<void> {
+  public async assertFunded(collect?: GateCollector): Promise<void> {
     const distinct = distinctByUrl(this.nodes);
     if (distinct.length === 0) {
       throw new Error(
@@ -71,32 +77,39 @@ export class ChequebookGate {
     }
 
     for (const node of distinct) {
-      const availablePlur = await this.readAvailablePlur(node);
-
-      if (availablePlur < this.floorPlur) {
-        throw new Error(this.unfundedRefusal(node.url, availablePlur));
+      const refusal = await this.refusalFor(node);
+      if (refusal === null) {
+        continue;
       }
-
-      this.logger.info(
-        `[ChequebookGate] ${node.url} chequebook available ${plurToBzz(availablePlur)} BZZ, ` +
-          `floor ${plurToBzz(this.floorPlur)} BZZ`,
-      );
+      if (collect === undefined) {
+        throw new Error(refusal);
+      }
+      collect({ rung: node.rung, url: node.url, message: refusal });
     }
   }
 
-  private async readAvailablePlur(node: ChequebookNode): Promise<bigint> {
+  /** The refusal this node earns, or null once its reading is in the log. */
+  private async refusalFor(node: ChequebookNode): Promise<string | null> {
     let body: unknown;
     try {
       body = await node.bee.getChequebookBalance();
     } catch (error) {
-      throw new Error(this.unreadableRefusal(node.url, describeFailure(error)));
+      return this.unreadableRefusal(node.url, describeFailure(error));
     }
 
     const availablePlur = parseAvailablePlur(body);
     if (availablePlur === null) {
-      throw new Error(this.unreadableRefusal(node.url, 'the response carried no readable availableBalance'));
+      return this.unreadableRefusal(node.url, 'the response carried no readable availableBalance');
     }
-    return availablePlur;
+    if (availablePlur < this.floorPlur) {
+      return this.unfundedRefusal(node.url, availablePlur);
+    }
+
+    this.logger.info(
+      `[ChequebookGate] ${node.url} chequebook available ${plurToBzz(availablePlur)} BZZ, ` +
+        `floor ${plurToBzz(this.floorPlur)} BZZ`,
+    );
+    return null;
   }
 
   private unfundedRefusal(url: string, availablePlur: bigint): string {
@@ -126,6 +139,12 @@ export const PLUR_PER_BZZ = 10n ** 16n;
 export interface ChequebookNode {
   /** The node's API URL, and the only thing that tells an operator which node a refusal is about. */
   readonly url: string;
+  /**
+   * The rung this node carries, where the caller knows one. `BeePublisher` has it, which is how the
+   * pool's nodes arrive with it, and it is the only part of a refusal that is safe to publish on an
+   * unauthenticated `/health`. Optional because a caller with a bare URL is still a legal caller.
+   */
+  readonly rung?: string;
   readonly bee: ChequebookClient;
 }
 

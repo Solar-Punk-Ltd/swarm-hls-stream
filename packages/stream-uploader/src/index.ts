@@ -147,17 +147,18 @@ async function start() {
           [
             {
               name: 'ChequebookGate',
-              run: () => new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(),
+              run: (collect) =>
+                new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(collect),
             },
             {
               name: 'PostageGate',
-              run: () =>
+              run: (collect) =>
                 new PostageGate(
                   gateNodes,
                   config.stampMinTtlHours * SECONDS_PER_HOUR,
                   config.stampMaxUtilization,
                   logger,
-                ).assertUsable(),
+                ).assertUsable(collect),
             },
           ],
           config.startGateMode,
