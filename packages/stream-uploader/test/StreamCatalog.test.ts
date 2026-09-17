@@ -545,7 +545,7 @@ describe('StreamCatalog unreadable-head hardening', () => {
     );
   });
 
-  it('keeps the boot fatal when the node does not answer a liveness check', async () => {
+  it("rethrows a liveness check the node did not answer, which the boot's wait then retries", async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
     const catalog = new StreamCatalog(
@@ -557,8 +557,18 @@ describe('StreamCatalog unreadable-head hardening', () => {
 
     await assert.rejects(
       () => catalog.init(),
-      /aborted/,
-      'the same error code covers a timeout, so an unresponsive node stays a boot failure',
+      (error: unknown) => {
+        // The same code covers a request that timed out and a body that was dropped, so this is the
+        // one the node's own answer had to settle.
+        assert.match((error as Error).message, /aborted/);
+        // ⛔ The property that matters, and the one this case asserted the opposite of until
+        // 2026-09-17: bee-js leaves the code on `statusText`, so a wait reading `code` alone ended
+        // the boot here. A node that went away mid-lookup is D16's case like any other.
+        assert.equal(isNodeUnavailable(error), true, 'the wait would have ended the boot on this');
+        return true;
+      },
+      'a node that went away mid-lookup must not read as a payload problem, so the catalog rethrows ' +
+        'it for the wait',
     );
   });
 
