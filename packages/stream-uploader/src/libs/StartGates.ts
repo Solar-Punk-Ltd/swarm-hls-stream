@@ -1,5 +1,7 @@
 import { StartGateWarning } from '../types.js';
 
+import { SINGLE_PUBLISHER } from './BeePublisherPool.js';
+
 /**
  * What the uploader does about a startup gate it cannot clear.
  *
@@ -129,8 +131,9 @@ export async function runStartGates(
       mode === START_GATE_REFUSE
         ? undefined
         : (refusal: GateRefusal) => {
-            warnings.push({ gate: gate.name, rung: refusal.rung });
-            logger.warn(warningLine(gate.name, refusal.rung, refusal.message));
+            const rung = namedRung(refusal.rung);
+            warnings.push({ gate: gate.name, rung });
+            logger.warn(warningLine(gate.name, rung, refusal.message));
           };
 
     try {
@@ -151,6 +154,18 @@ export async function runStartGates(
   // pass that did not. The gates are re-read on every attempt of a node wait, and only the last of
   // those describes the service that is now running.
   onWarnings(warnings);
+}
+
+/**
+ * The rung worth naming, or nothing.
+ *
+ * A single-node deployment routes everything through one publisher whose rung is the placeholder
+ * `all`, which nobody configured and which reads as broken English in a sentence: "ChequebookGate on
+ * all did not clear". {@link StartGateWarning} already documents the rung as absent there, so this is
+ * the code agreeing with its own contract.
+ */
+function namedRung(rung: string | undefined): string | undefined {
+  return rung === SINGLE_PUBLISHER ? undefined : rung;
 }
 
 function warningLine(gate: string, rung: string | undefined, message: string): string {
