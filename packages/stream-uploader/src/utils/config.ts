@@ -172,9 +172,9 @@ export const config = {
    * Which of the two startup gates stops the uploader when it cannot clear a node.
    *
    * The owner ruled the two apart on 2026-09-17: the chequebook gate warns and the postage gate
-   * refuses, which is `chequebook-warn` and the shipped default. `warn` is both warning, `refuse` is
-   * both refusing. See `libs/StartGates.ts` for why a full batch is not the same risk as a low
-   * chequebook.
+   * refuses a reading the node answered while warning on one it could not get, which is
+   * `chequebook-warn` and the shipped default. `warn` is both warning, `refuse` is both refusing. See
+   * `libs/StartGates.ts` for why a full batch is not the same risk as a low chequebook.
    *
    * The name is written out here rather than taken from the constant `StartGates.ts` quotes it by,
    * because `deploy/test/uploaderEnv.test.js` scrapes these reads for their literal to prove every
