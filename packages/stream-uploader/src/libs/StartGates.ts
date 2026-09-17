@@ -53,6 +53,9 @@ export type StartGateMode = typeof START_GATE_WARN | typeof START_GATE_REFUSE;
  * `url` and `message` are for the log and nothing else. `/health` is unauthenticated and published on
  * every interface this deployment binds, and a gate's message carries node URLs and batch ids, so
  * what is latched there is {@link StartGateWarning}: the gate's name and the rung, and no more.
+ *
+ * Both arrive with any credential already stripped, through the same helper `BeePublisherPool.routing`
+ * answers with, because a URL that has travelled this far is one nobody remembers to strip later.
  */
 export interface GateRefusal {
   /** The ABR rung, where the gate's nodes carry one. A single-node deployment has none to name. */
