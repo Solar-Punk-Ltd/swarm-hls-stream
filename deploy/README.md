@@ -402,11 +402,14 @@ Running the four-rung ladder one Bee node per rung takes both halves: the three 
 here, and `BEE_PUBLISHERS` in the root `.env` pointing at them. A rung node enabled and left out of
 `BEE_PUBLISHERS` is a node nothing publishes through, and the reverse is a rung pointing at nothing,
 because `ChequebookGate` reads every publisher's chequebook before the first broadcast and a URL with
-no node behind it cannot answer. Since the owner's ruling of 2026-09-17 that read times out into a
-warning and the uploader starts, so a rung named without its node shows as one warning per boot
-rather than as a container that will not stay up. `UPLOADER_START_GATES=refuse` in the root `.env`
-puts the old refusal back, and `START_GATE_TIMEOUT_MS` is how long each of those reads may take,
-twenty seconds by default. `bee-uploader` is the 360p rung as well as the shared default, so the
+no node behind it cannot answer. Since the owner's rulings of 2026-09-17 that read no longer takes the
+uploader off the air twice over. The gate warns instead of refusing, so a rung named without its node
+costs a warning per boot rather than a container that will not stay up, and the whole node-dependent
+half of the boot is a wait rather than a one-shot, so the service listens, answers `/health` with
+`waiting_for_node` naming that url, and keeps retrying until the node is there.
+`UPLOADER_START_GATES=refuse` in the root `.env` puts the old gate refusal back, and
+`START_GATE_TIMEOUT_MS` is how long each of those reads may take, twenty seconds by default. What a
+deployment cannot ask for is an exit on an absent node, which is the state the ruling removed. `bee-uploader` is the 360p rung as well as the shared default, so the
 catalog and every ladder master go through it. Their ports, data directories and what each one has to
 hold are in [.env.sample](../.env.sample) under "Per-rung Bee nodes".
 
