@@ -43,10 +43,9 @@ import { GateCollector, GateFinding } from './StartGates.js';
  * is exactly the state this gate is here to catch. `availableBalance` is what remains uncommitted,
  * and it is the only one of the two that answers "can this node pay for the next segment".
  *
- * Note that the e2e preflight at `e2e/suites/preflight/chequebook-funding.test.ts` reads
- * `totalBalance` against the same 0.5 BZZ number. That is a deliberate difference and not drift: the
- * preflight is asking an operator to top up before a paid sitting, where the total is the figure they
- * will deposit against.
+ * Note that the e2e preflight, through `e2e/src/harness/chequebookFunding.ts`, refuses on the same
+ * `availableBalance` against the same 0.5 BZZ floor and prints `totalBalance` beside it, so the gap
+ * between the two shows what the peers are holding.
  *
  * ## Scope
  *
