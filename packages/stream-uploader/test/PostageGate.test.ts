@@ -293,8 +293,9 @@ describe('PostageGate', () => {
  * Stopping at the first refusal is right when the refusal stops the boot, and wrong from the owner's
  * ruling of 2026-09-17 onwards: under `warn` the uploader runs, so a stage with two exhausted batches
  * told an operator about one of them and kept the other until the next restart. Given somewhere to
- * put a refusal this reads every rung and hands each one over. With no collector nothing changes,
- * which is what `refuse` still needs.
+ * put a refusal this reads every rung and hands each one over. The runner always hands one over, and
+ * under `refuse` that collector throws at the first refusal, so the no-collector path below is a
+ * direct caller's rather than a mode's.
  */
 describe('the postage gate with somewhere to put a refusal', () => {
   it('reads every rung rather than stopping at the first that fails', async () => {
