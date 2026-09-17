@@ -25,6 +25,18 @@ import { NodeUnreachableError } from './NodeUnreachableError.js';
  * exiting: a node that is down for an hour is a node that comes back in an hour, and a process that
  * is up and saying so the whole time is worth more than one that died at attempt ten.
  *
+ * ## Two things worth knowing before reading a timeline of this
+ *
+ * ⚠️ The backoff is not what paces the retries. A pass is the probe, both gates and a catalog read,
+ * and on a four node pool at the shipped budget the gates alone can spend 160 seconds of it, so the
+ * period between attempts is the pass plus the wait rather than the wait alone. The ceiling below
+ * bounds the idle half only.
+ *
+ * ⚠️ Nothing cancels this. A SIGTERM during a wait is handled by `ServiceLifecycle`, which stops the
+ * orchestrator, closes the API and calls `process.exit`, and the loop dies with the process rather
+ * than being asked to stop. That is why a shutdown works today, and it is also why this file has no
+ * cancellation to test: if the exit ever becomes conditional, this loop is what keeps the process up.
+ *
  * ## What still ends the boot
  *
  * Everything else. A feed whose payload cannot be parsed, a key this deployment cannot sign with, a
