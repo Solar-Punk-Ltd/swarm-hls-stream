@@ -21,8 +21,13 @@ Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swar
 ### ABR ladder
 
 With `ABR_ENABLED=true` (see [engines/srs](../../engines/srs/)) the engine publishes one stream per
-rung, and each gets its own `StreamUploader` and its own manifest feed. Two things then tie them
-back together:
+rung, and each gets its own `StreamUploader` and its own manifest feed, whose topic is **derived from
+the ladder's group id and the rung's name** (`src/utils/rungTopic.ts`, a version-5 UUID). That feed
+therefore outlives any one session: a rung that restarts mid-broadcast — SRS bouncing a transcoder,
+an encoder reconnecting — comes back onto the feed the master already names, reads its head, and
+numbers its playlist on from there with a single `#EXT-X-DISCONTINUITY` at the seam, rather than
+appearing on a feed nothing points at until it re-announces. Recordings sit back to back on one
+rung's feed and the catalog entry lists the latest. Two things then tie the rungs back together:
 
 - The four rungs merge into a **single catalog entry**, keyed by a shared group id rather than by
   topic. Four uploaders write that entry concurrently, which is safe only because every catalog
@@ -296,13 +301,13 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------------- |
-| `BEE_URL`           | Bee node API URL                                                                               |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                          |
-| `STREAM_KEY`        | Private key (hex) for signing feeds                                                            |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                              |
-| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32` |
+| Variable            | Description                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BEE_URL`           | Bee node API URL                                                                                                                                                   |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`). Required only when `BEE_PUBLISHERS` is empty — a node-per-rung deployment leaves it blank and each publisher brings its own |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                                                                                                |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                                                                                                  |
+| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32`                                                                     |
 
 **Optional:**
 
@@ -631,13 +636,13 @@ this service changes.
 With it set, a stream must be **declared in the admin before anything may publish to it**. The admin
 mints the feed topic and the publish key; this service stops deciding either:
 
-| Without `ADMIN_API_URL`                            | With it                                                                     |
-| -------------------------------------------------- | --------------------------------------------------------------------------- |
-| Any publisher with the right derived key may start | Only an ingest id the admin has declared, presenting that declaration's key |
-| The session mints a random feed topic              | The session publishes on the declared topic, resuming from its feed head    |
-| This service writes the Swarm stream catalog       | It writes none, and reports `live` then `vod` to the admin instead          |
-| `PUBLISH_KEY_SECRET` authenticates publishers      | `PUBLISH_KEY_SECRET` is ignored                                             |
-| A ladder merges its rungs in the catalog feed      | The admin merges them, and the declared topic is the ladder's master feed   |
+| Without `ADMIN_API_URL`                            | With it                                                                       |
+| -------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Any publisher with the right derived key may start | Only an ingest id the admin has declared, presenting that declaration's key   |
+| A lone rendition mints a random feed topic         | A lone rendition publishes on the declared topic, resuming from its feed head |
+| This service writes the Swarm stream catalog       | It writes none, and reports `live` then `vod` to the admin instead            |
+| `PUBLISH_KEY_SECRET` authenticates publishers      | `PUBLISH_KEY_SECRET` is ignored                                               |
+| A ladder merges its rungs in the catalog feed      | The admin merges them, and the declared topic is the ladder's master feed     |
 
 A publish is refused when the ingest `app/stream` is not declared, when the admin cannot be reached,
 when the presented `key=` is not the declaration's, when the declaration is owned by a feed key this
@@ -663,15 +668,22 @@ admin that cannot be reached yet only warns; and again on every publish, against
 becomes the ladder's master playlist feed**. It has to be: the master's feed topic is the group id,
 and the declared topic is the one address the admin hands a viewer before anything has published.
 
-Everything else follows. Each rung still mints a **fresh random topic** for its own media playlists —
-a rung that restarts mid-ladder must never be handed a feed it has just finished writing, and four
-rungs sharing the master's feed would write over each other and over the master. The ladder's merge
-state, one record per rung, moves out of the catalog feed and into the admin: each rung posts its own
+Everything else follows. Each rung publishes its own media playlists on a topic **derived from the
+group and its rung name** — four rungs sharing the master's feed would write over each other and over
+the master, and a rung's feed has to be found again by name after a restart rather than re-minted.
+That topic is stable for the life of the declaration, so a rung that restarts continues the same feed
+above its own last session's head, its recordings sit back to back there, and the entry lists the
+latest. **The admin therefore accepts `live` after `vod`**: a broadcaster who stops and comes back is
+a stream going live again under a declaration the admin already holds as a recording. (That admin
+change ships from the `feat/ladder-feed-sessions` branch of the streaming-monorepo repository.)
+
+The ladder's merge state, one record per rung, moves out of the catalog feed and into the admin: each rung posts its own
 `Rendition` to `POST /api/internal/streams/:id/renditions` (bearer `ADMIN_API_TOKEN`, the same
 internal-route auth as the state route, and **the admin must serve it**), the admin merges it by the
 same "a rung that has already finished stays finished" rule `StreamCatalog.keepingWhatFinished`
-states, writes `renditions` into the catalog entry it already owns, and answers with the merged
-ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
+states — additionally requiring the report to name the rung's own feed, which is true of every
+report a well-formed ladder sends — writes `renditions` into the catalog entry it already owns, and
+answers with the merged ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
 as ever, and rewrites it when a rung stops without asking the admin again. Answers are applied in the
 order the admin merged them, by the catalog write index each one carries, so four rungs whose answers
 land out of order cannot leave an older merge on the master.
@@ -685,10 +697,12 @@ finished while the admin still holds the stream as anything but `vod`: the admin
 once, and if the master write behind that one report failed, the next announce is the only chance
 left to list the recording. `vod -> vod` is accepted, so the repeat is harmless.
 
-Two things a single-rendition declared stream does that a rung does not: resume its SOC index from the
-declared topic's feed head, and hold its publishes for a re-announced predecessor's drain. Both exist
-because two sessions share one declared feed there; a rung's manifest feed is its own, and the master
-feed writer establishes its own index.
+Two things a declared stream does that a **standalone single-rendition** stream does not: resume its
+SOC index and its media sequence from its topic's feed head, and hold its publishes for a re-announced
+predecessor's drain. Both exist because two sessions share one feed there. A rung now owes both as
+well, in either deployment, because its derived topic outlives its session in exactly the same way —
+the standalone lone rendition, whose topic is a fresh uuid per session, is the only one that owes
+neither. The master feed writer still establishes its own index.
 
 ### Local loop with the admin API
 

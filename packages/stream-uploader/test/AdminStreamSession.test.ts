@@ -5,7 +5,7 @@
  *
  * ## The three properties, and why each one is here
  *
- * 1. **The topic belongs to the declaration.** Outside admin mode every session mints a fresh
+ * 1. **The topic belongs to the declaration.** A standalone single-rendition session mints a fresh
  *    `crypto.randomUUID()` topic, so an empty feed and index 0 cannot collide with anything. A
  *    declared stream keeps one topic for its whole life, which is what makes it reachable before it
  *    has ever published — and what makes a second session on it dangerous.
@@ -242,10 +242,12 @@ describe('the feed index a declared topic resumes from', () => {
   });
 
   /**
-   * The standalone deployment is untouched. Its topic is a fresh uuid, so there is nothing to resume
-   * from and asking would spend a retrieval per session to be told so.
+   * A standalone single-rendition stream is untouched, and it is the only session left that is. Its
+   * topic is a fresh uuid, so there is nothing to resume from and asking would spend a retrieval per
+   * session to be told so. A standalone RUNG is not this case: its topic is derived from its ladder
+   * and outlives it, so it reads the head like any declared stream — see `LadderIdentity.test.ts`.
    */
-  it('is not run at all without an admin', async () => {
+  it('is not run at all for a standalone single-rendition stream', async () => {
     let reads = 0;
     const session = newSession({
       standalone: true,
@@ -540,18 +542,25 @@ describe('a replacement session on a declared topic waits for the session it rep
  * ## What is the same, and what is not
  *
  * The three properties above hold, with one substitution each. The declared topic still belongs to the
- * declaration — but it is the **ladder's master feed**, not this rung's, so this session mints a fresh
- * `crypto.randomUUID()` for its own manifests exactly as a standalone rung does, and neither the head
- * resume nor the predecessor gate is owed here. Nothing is written to the stream catalog, and the
- * admin is told instead — but the two reports are now statements about the LADDER: `live` once a
- * master a viewer can open has landed, and `vod` once every rung of the ladder has finalized, carrying
- * the master's index rather than this rung's own.
+ * declaration — but it is the **ladder's master feed**, not this rung's, so this session publishes its
+ * own manifests on a topic derived from the ladder group and its rung name. That topic outlives the
+ * session exactly as a declared one does, so the head resume and the predecessor gate are both owed
+ * here too. Nothing is written to the stream catalog, and the admin is told instead — but the two
+ * reports are now statements about the LADDER: `live` once a master a viewer can open has landed, and
+ * `vod` once every rung of the ladder has finalized, carrying the master's index rather than this
+ * rung's own.
  *
  * ⛔ The rung registers its own record through the ladder registry, which is the only thing that can
  * see the other three rungs. That is why the flip is read off an answer rather than off this session's
  * intent: a rung draining while its siblings are live has ended its own recording and nothing else.
  */
 describe('a rung of a declared ladder', () => {
+  /**
+   * This rung's own manifest feed, which the orchestrator derives from the ladder group and the rung
+   * name. Spelled out rather than computed with `rungTopicFor`, because what these cases turn on is
+   * that it is NOT the declared topic and that it outlives the session, not what the derivation
+   * produces — `rungTopic.test.ts` pins that.
+   */
   const RUNG_TOPIC = 'rung-topic-0001';
   const RUNG = { name: '720p', width: 1280, height: 720, configuredKbps: 2800 };
 
@@ -636,8 +645,8 @@ describe('a rung of a declared ladder', () => {
       streamKey: TEST_STREAM_KEY,
       redundancyLevel: 0,
       streamId: `${STREAM_ID}_720p`,
-      // A topic of this session's own, which is what the orchestrator mints for a rung. The
-      // declaration's topic is the group below.
+      // The rung's own derived topic, never the declaration's. The declaration's topic is the group
+      // below, which is the ladder's master feed.
       streamTopic: RUNG_TOPIC,
       mediatype: MEDIA_TYPE_VIDEO,
       ladder: { group: DECLARED_TOPIC, rung: RUNG },
@@ -649,23 +658,50 @@ describe('a rung of a declared ladder', () => {
   }
 
   /**
-   * ⛔ The declared topic is the ladder's, so reading its head here would establish this rung's SOC
-   * index from the master feed and start every rung above whatever the master had reached. The rung's
-   * own feed is fresh and starts at 0, exactly as it does standalone.
+   * ⛔⛔ **A rung reads the head of its OWN feed, and it is the only feed it ever reads.** Its topic is
+   * derived from the ladder group and the rung name, so it outlives the session: a rung that restarts
+   * mid-broadcast comes back onto the feed it was already writing, and starting at index 0 there would
+   * write over its own last session's playlists. Reading the DECLARED topic would be the opposite
+   * mistake and is what the session is built to make impossible — that feed is the ladder's master,
+   * whose writer establishes its own index, and this session never names it.
    */
-  it('publishes from zero on a topic of its own, without reading the declared topic', async () => {
-    let reads = 0;
-    const session = newLadderSession({
-      feedHead: () => {
-        reads++;
-        return { index: 7, manifest: SOME_PLAYLIST };
-      },
-    });
+  it('continues above the head its own derived topic already holds', async () => {
+    const session = newLadderSession({ feedHead: () => ({ index: 7, manifest: SOME_PLAYLIST }) });
 
     await feedOneSegment(session.uploader, 0);
 
-    assert.equal(reads, 0, 'the head of the declared topic belongs to the master feed writer, not to a rung');
-    assert.equal(session.published[0]?.index, 0);
+    assert.equal(session.published[0]?.index, 8, 'a rung that restarts must not write over the feed it left');
+  });
+
+  it('starts at zero when its own topic has never been written, which is a new ladder', async () => {
+    const session = newLadderSession();
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(session.published[0]?.index, 0, 'a 404 is an answer: the feed is empty, so 0 is right');
+  });
+
+  /**
+   * ⛔ The numbering continues too, not just the index. A viewer following this rung's feed head is
+   * handed the new session's first playlist as the next update of the one they are playing, and
+   * hls.js reads a media sequence that moved backwards as a parsing error rather than as a new
+   * broadcast. `ManifestManager.test.ts` drives the seam itself; this pins that the head read is
+   * where the number comes from.
+   */
+  it('numbers its playlist on from what the head it read was numbered to', async () => {
+    const previous = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-MEDIA-SEQUENCE:12', '', '#EXTINF:2,', 'ref-a', ''].join(
+      '\n',
+    );
+    const session = newLadderSession({ feedHead: () => ({ index: 4, manifest: previous }) });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.match(
+      session.published[0]?.playlist ?? '',
+      /#EXT-X-MEDIA-SEQUENCE:13/,
+      'the new session restarted the numbering over a feed a viewer is already following',
+    );
+    assert.match(session.published[0]?.playlist ?? '', /#EXT-X-DISCONTINUITY/, 'the seam must be marked');
   });
 
   it('writes nothing to the stream catalog, and registers its rung with the ladder registry instead', async () => {

@@ -294,9 +294,11 @@ describe('the tail of a broadcast after a crash goes into the recording already 
   });
 
   /**
-   * The rung comes back on a fresh feed topic, which is deliberate and unchanged: a rung that
-   * restarts must never be handed the topic it just finished writing, or it overwrites it from SOC
-   * index 0. Only the group is stable, and the group is what decides how many recordings there are.
+   * ⛔ The merge is keyed on the rung's NAME and never on its topic, and these cases drive it with a
+   * topic that changed to pin that. In production a returning rung carries the same derived topic it
+   * carried before — it resumes the feed it was already on — so this is the harder case rather than
+   * the real one, and keying on the name is what makes both of them one entry. The group is what
+   * decides how many recordings there are.
    */
   it('updates the one entry when a rung returns on a new topic, rather than appending a second', () => {
     const beforeTheCrash = buildLadderEntry(identity, [], rendition('720p', 720));
@@ -346,11 +348,12 @@ describe('the tail of a broadcast after a crash goes into the recording already 
 /**
  * A ladder under a declaration, which is what admin mode and `ABR_ENABLED` together produce.
  *
- * ⛔ **The declared topic becomes the ladder's GROUP, and a rung's own feed topic stays random.** The
- * group is the master playlist's feed topic, and the master is what a viewer opens: the admin hands
- * out the declared topic before anything has published, so the two have to be the same string or the
- * admin's catalog entry points at a feed nothing ever writes. Handing the rung that topic as well
- * would put four rungs and the master on one feed, all claiming the same indexes.
+ * ⛔ **The declared topic becomes the ladder's GROUP, and a rung's own feed topic is derived from it.**
+ * The group is the master playlist's feed topic, and the master is what a viewer opens: the admin
+ * hands out the declared topic before anything has published, so the two have to be the same string or
+ * the admin's catalog entry points at a feed nothing ever writes. Handing the rung that topic as well
+ * would put four rungs and the master on one feed, all claiming the same indexes, so a rung publishes
+ * on `rungTopicFor(group, rung)` instead — one feed per rung, stable for the life of the ladder.
  *
  * ⛔ **What is remembered still wins after a restart.** The group store and each rung's recovery entry
  * are the two records of the identity the surviving rungs are already publishing under, and a
@@ -571,13 +574,32 @@ describe('a ladder in admin mode', () => {
   });
 
   /**
-   * ⛔ A rung is not handed its predecessor's drain, and this is what says so. The gate exists because
-   * two admin-mode sessions share one declared feed; a rung's manifest feed is its own, so holding its
-   * playlist for a finalize would freeze one quality of a live ladder and buy nothing.
+   * ⛔⛔ **A re-announced rung is handed its predecessor's drain, exactly as a declared single stream
+   * is.** It was not, while a rung minted a fresh topic per session and the two sessions therefore
+   * wrote to different feeds. A rung's topic is now derived from its ladder group and its rung name,
+   * so the retired session's closing and VOD playlists are SOC writes onto the very feed the
+   * replacement is about to publish into. Without the gate the two claim the same indexes and the
+   * retired session's recording lands above the live broadcast, leaving the feed head saying a
+   * running broadcast had ended.
+   *
+   * ⚠️ What this costs is the replacement's live playlist for the length of one finalize, and it is
+   * paid on purpose. Segments keep uploading throughout; only naming them in a playlist waits, and
+   * the next segment re-attempts. The other way round corrupts the feed.
    */
-  it('lets a re-announced rung publish without waiting for the session it replaced', async () => {
+  it('holds a re-announced rung until its predecessor has drained, then continues above it', async () => {
     const root = makeTempRoot();
-    const published: number[] = [];
+    /** Every SOC write, in order, with what it carried, so a media playlist can be told from a master. */
+    const writes: { index: number; payload: string }[] = [];
+    const mediaPlaylists = () => writes.filter((write) => !write.payload.includes('#EXT-X-STREAM-INF'));
+
+    /** Held open so the retired session's finalize cannot settle until the test lets it. */
+    let releaseTheDrain = () => {};
+    const drainHeld = new Promise<void>((resolve) => {
+      releaseTheDrain = resolve;
+    });
+    /** The retired session's recording, which is the last thing it writes before its drain settles. */
+    let vodIndex: number | null = null;
+
     const orch = makeTestOrchestrator(
       {
         ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
@@ -589,9 +611,20 @@ describe('a ladder in admin mode', () => {
         }),
       },
       {
-        uploadPayload: async (index) => {
-          published.push(index);
+        uploadPayload: async (index, data) => {
+          const payload = String(data);
+          if (payload.includes('#EXT-X-PLAYLIST-TYPE:VOD')) {
+            vodIndex = index;
+            await drainHeld;
+          }
+          writes.push({ index, payload });
           return { reference: { toHex: () => `soc${index}` } };
+        },
+        // The feed answers with whatever was last written to it, which is what the replacement reads
+        // to find where it continues from.
+        feedHead: () => {
+          const newest = writes[writes.length - 1];
+          return newest === undefined ? null : { index: newest.index, manifest: newest.payload };
         },
       },
     );
@@ -599,16 +632,31 @@ describe('a ladder in admin mode', () => {
     try {
       orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
       orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('seg'));
-      await waitFor(() => published.length > 0, SETTLE_CEILING_MS);
-      const before = published.length;
+      await waitFor(() => mediaPlaylists().length > 0, SETTLE_CEILING_MS);
 
-      // The transcoder restarts and re-announces the same rung. The retired session drains in the
-      // background; the replacement must not be waiting on it.
+      // The transcoder restarts and re-announces the same rung, onto the same derived topic.
       orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
-      orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('seg'));
+      orch.handleSegment(RUNG_720P, 1, 2, Buffer.from('seg'));
 
-      await waitFor(() => published.length > before, SETTLE_CEILING_MS);
+      // The retired session gets as far as its recording and stops there, holding the drain open.
+      await waitFor(() => vodIndex !== null, SETTLE_CEILING_MS);
+      const heldAt = mediaPlaylists().length;
+      orch.handleSegment(RUNG_720P, 2, 2, Buffer.from('seg'));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(
+        mediaPlaylists().length,
+        heldAt,
+        'the replacement published onto a feed its predecessor had not finished writing',
+      );
+
+      // The predecessor finishes, and the next segment is the one that re-attempts. The replacement
+      // reads the head its predecessor left and writes above it rather than over it.
+      releaseTheDrain();
+      await waitFor(() => vodIndex !== null && writes.some((write) => write.index === vodIndex), SETTLE_CEILING_MS);
+      orch.handleSegment(RUNG_720P, 3, 2, Buffer.from('seg'));
+      await waitFor(() => mediaPlaylists().some((write) => write.index > vodIndex!), SETTLE_CEILING_MS);
     } finally {
+      releaseTheDrain();
       await orch.cleanup();
     }
   });

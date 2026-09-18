@@ -52,7 +52,7 @@ import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
-import { ManifestManager } from './ManifestManager.js';
+import { continuesFrom, ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
@@ -131,14 +131,15 @@ interface FeedHeadQuestion {
    * this stream wrote itself — so its feed is known non-empty and a 404 is a chunk that will not
    * retrieve right now: false here, and {@link FeedHeadNotRetrievedError} sends it back through the
    * retry window rather than answering "nothing was published" to a question nobody asked. An
-   * admin-mode start asks where a declared topic has got to, and the admin mints that topic and hands
-   * it to viewers before anything has ever published on it, so 404 is the answer and index 0 is right:
-   * true here.
+   * start on a topic that outlived the last session asks where that topic has got to, and such a
+   * topic is handed out — by the admin, or by the master playlist — before anything has ever
+   * published on it, so 404 is the answer and index 0 is right: true here.
    *
-   * Taking the recording path's reading for the admin one refuses the first publish of every newly
-   * declared stream, for ever, since the read is re-attempted at each segment and never settles.
-   * Taking the admin path's reading for the recording one publishes a second recording over one that
-   * has already been paid for. See `5aedcd83`, which closed the second before the first existed.
+   * Taking the recording path's reading for the start one refuses the first publish of every newly
+   * declared stream and every new ladder, for ever, since the read is re-attempted at each segment and
+   * never settles. Taking the start path's reading for the recording one publishes a second recording
+   * over one that has already been paid for. See `5aedcd83`, which closed the second before the first
+   * existed.
    */
   emptyFeedIsAnAnswer: boolean;
 }
@@ -152,8 +153,8 @@ const RECORDING_ALREADY_PUBLISHED: FeedHeadQuestion = {
   emptyFeedIsAnAnswer: false,
 };
 
-const ADMIN_FEED_HEAD: FeedHeadQuestion = {
-  asked: 'where its declared topic has got to',
+const FEED_HEAD_ON_START: FeedHeadQuestion = {
+  asked: 'where the topic it continues has got to',
   consequence:
     'Refusing this manifest publish and retrying at the next segment, rather than starting again at ' +
     'SOC index 0 and writing over the previous session on the same topic',
@@ -216,18 +217,11 @@ const BITRATE_REFRESH_INTERVAL_MS = 30_000;
  *    streams in admin mode, and a second writer would publish entries nothing reconciles.
  * 2. **A state report in each of their places**, at the same two moments and in the same order, so
  *    the memoization and the ordering the comments here describe go on meaning what they say.
- * 3. **The feed index is resumed from the feed head on start**, because the topic came from the
- *    declaration and outlives the session. See {@link resumeAdminFeedIndex}.
- * 4. **A replacement session publishes nothing until the session it replaced has finished.** (3) reads
- *    the head once and latches it, which is only sound once the head has stopped moving — and a
- *    re-announce leaves the retired session writing its closing and VOD playlists onto this same
- *    topic. See {@link StreamUploaderOptions.predecessorDrained}.
- *
- * ⚠️ **A rung of a ladder is the exception to (3) and (4), and only to those two.** There the declared
- * topic is the ladder's MASTER feed rather than any rung's, so this session's manifest feed is a fresh
- * `crypto.randomUUID()` exactly as it is standalone: nothing has ever written on it, there is no head
- * to resume from and no retired session to share it with. (1) and (2) hold unchanged, with the
- * reports made at ladder granularity — see {@link notifyStart} and {@link completeFinalize}.
+ * ⚠️ A rung of a ladder in admin mode holds (1) and (2) unchanged, with the reports made at ladder
+ * granularity — see {@link notifyStart} and {@link completeFinalize}. Its own manifest topic is not
+ * the declared one, which is the ladder's master feed; what it publishes on is derived from its
+ * ladder group and its rung name, and outlives its session for reasons of its own. See
+ * {@link topicOutlivesThisSession}.
  */
 interface AdminReporting {
   client: AdminApiClient;
@@ -246,6 +240,8 @@ interface RestoreState {
   bitrate?: BitrateSample;
   /** Absent on an entry written before playlists carried a wall clock. See {@link BroadcastAnchor}. */
   anchor?: BroadcastAnchor;
+  /** Absent on an entry written before a rung's feed outlived its session. See {@link StreamState}. */
+  sequenceOffset?: number;
 }
 
 export interface StreamUploaderOptions {
@@ -312,15 +308,15 @@ export interface StreamUploaderOptions {
   /**
    * The finalize of the session this one replaced under the same stream id, when there was one.
    *
-   * ⛔ **Admin mode only, and it is what keeps two sessions off one feed.** A re-announce retires the
-   * live session and starts this one in the same synchronous turn, then drains the retired one in the
-   * background. Outside admin mode that is safe because each session mints its own topic. In admin
-   * mode the topic comes from the declaration and both sessions hold it, so the retired session's
-   * closing and VOD manifests are SOC writes onto the feed this one is about to publish into — and
-   * `retire()` does not stop them, it only gives up the recovery entry, the admin report and the
-   * catalog entry.
+   * ⛔ **It is what keeps two sessions off one feed.** A re-announce retires the live session and
+   * starts this one in the same synchronous turn, then drains the retired one in the background. Both
+   * sessions hold the same topic wherever that topic outlives a session — a declared stream in admin
+   * mode, and a rung of a ladder in either deployment — so the retired session's closing and VOD
+   * manifests are SOC writes onto the feed this one is about to publish into, and `retire()` does not
+   * stop them: it only gives up the recovery entry, the admin report and the catalog entry.
    *
-   * Unset means nothing to wait for: a first session on an id, or a standalone deployment.
+   * Unset means nothing to wait for: a first session on an id, or a standalone single-rendition
+   * stream, whose topic is a fresh uuid nothing else has ever held.
    *
    * See {@link predecessorHasDrained}.
    */
@@ -409,13 +405,14 @@ export class StreamUploader {
 
   /** The admin service and this stream's id in it, or undefined in the standalone deployment. */
   private readonly admin?: AdminReporting;
-  /** Whether the feed head has been read for this session. See {@link resumeAdminFeedIndex}. */
-  private adminFeedIndexResumed = false;
+  /** Whether the feed head has been read for this session. See {@link resumeFeedIndex}. */
+  private feedIndexResumed = false;
   /**
-   * Whether the session this one replaced has finished writing to the shared declared topic.
+   * Whether the session this one replaced has finished writing to the topic the two of them share.
    *
-   * True from the start for everything except an admin-mode replacement, which is the only case where
-   * another live uploader holds the same feed. See {@link StreamUploaderOptions.predecessorDrained}.
+   * True from the start for everything except a replacement on a topic that outlives its sessions,
+   * which is the only case where another live uploader holds the same feed. See
+   * {@link StreamUploaderOptions.predecessorDrained} and {@link topicOutlivesThisSession}.
    */
   private predecessorHasDrained = true;
 
@@ -477,6 +474,12 @@ export class StreamUploader {
         this.bitrate = restoreState.bitrate;
       }
       this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
+      // After the segments, because it is about how they are published rather than about what they
+      // are: `restoreState` replays a numbering that is already in a feed, and this is the offset
+      // that numbering was published under.
+      if (restoreState.sequenceOffset) {
+        this.manifestManager.continueFrom(restoreState.sequenceOffset);
+      }
       this.logger.info(`[StreamUploader] Restored stream ${options.streamId} at SOC index ${this.socIndex}`);
     }
   }
@@ -701,6 +704,15 @@ export class StreamUploader {
     // from zero into the same feed that live viewers are still walking. They read whatever is newest,
     // and a media sequence moving backwards restarts their player at the beginning of the recording.
     // This one ends the playlist they are already on, so they play out what they hold and stop.
+    //
+    // Settled before either playlist below is built, for the same reason the live path settles before
+    // its own: both are built in full and only then published, and where this session's feed stands
+    // decides the numbering they are built with. Ordinarily the live path settled it at the first
+    // segment and this answers immediately; a broadcast whose every live publish failed arrives here
+    // unsettled, and a read that still cannot answer leaves `commitManifest` refusing both writes
+    // rather than publishing playlists numbered from zero over a feed that already holds some.
+    await this.manifestQueue.add(() => this.settleFeedPosition());
+
     const closingManifest = this.manifestManager.buildClosingLiveManifest();
     if ((await this.manifestQueue.add(() => this.commitManifest(closingManifest))) === null) {
       // Not fatal to finalization. The recording below is what the catalog points at and it is still
@@ -864,15 +876,39 @@ export class StreamUploader {
   }
 
   /**
-   * Where this session's SOC writes must continue from, when the admin minted the topic. See
-   * {@link StreamUploaderOptions.admin}.
+   * Whether this session's topic was written on before it started, so where the feed has got to has
+   * to be read rather than assumed.
    *
-   * ⛔⛔ **This is what pays for reusing a topic, and without it the second broadcast on a declared
-   * stream overwrites the first.** Outside admin mode every session mints a fresh `crypto.randomUUID()`
-   * topic for exactly this reason, spelled out in `StreamOrchestrator.spawnUploader`: an empty feed
-   * starts at index 0 and cannot collide with anything. A declared stream keeps one topic for its
-   * life, so a second session starting at 0 writes over its own first session's playlists — including,
-   * at index 0, whatever the recording's opening was.
+   * Two kinds of session own a topic that outlives them, and they are the two this returns true for.
+   * A **declared** stream in admin mode: the admin mints the topic when the stream is created and
+   * hands it to viewers before anything has ever published on it, so one declaration is many
+   * broadcasts on one feed. And a **rung** of a ladder, in either deployment: its topic is derived
+   * from its ladder group and its rung name (`rungTopicFor`), so a rung that restarts mid-broadcast
+   * comes back onto the feed it was already writing.
+   *
+   * ⛔ A standalone single-rendition stream is the one that does not, and it is the only one. Its
+   * topic is a fresh `crypto.randomUUID()` per session, so the feed is empty by construction and
+   * asking would spend a retrieval per broadcast to be told so.
+   *
+   * ⚠️ Nor does a session rebuilt from a recovery entry, whatever kind it is. That one already holds
+   * the index and the numbering it published, and asking the feed now would read its own last
+   * playlist — see {@link StreamState.sequenceOffset}. `publishedRecordingIndex` asks the feed the
+   * sharper question a recovered session actually has.
+   */
+  private topicOutlivesThisSession(): boolean {
+    return (this.admin !== undefined || this.ladder !== undefined) && !this.resumedFromCrash;
+  }
+
+  /**
+   * Where this session's SOC writes and its playlist numbering must continue from, on a topic that
+   * outlived the session before it. See {@link topicOutlivesThisSession}.
+   *
+   * ⛔⛔ **This is what pays for reusing a topic, and without it the second broadcast on one
+   * overwrites the first.** A standalone single-rendition session mints a fresh
+   * `crypto.randomUUID()` topic for exactly this reason: an empty feed starts at index 0 and cannot
+   * collide with anything. Every other session opens over a feed that may already hold playlists, so
+   * starting at 0 writes over them — including, at index 0, whatever the previous recording's opening
+   * was.
    *
    * The feed is the only thing that knows how far the previous session got. This process may never
    * have seen it, the recovery entry was cleared when that session finalized, and the admin holds a
@@ -883,26 +919,23 @@ export class StreamUploader {
    *
    * A 404 is an answer, not a failure: nothing has ever been written on this topic, so 0 is right.
    *
-   * ⚠️ Not run for a session rebuilt from a recovery entry. That one already holds the index it
-   * wrote, and `publishedRecordingIndex` above asks the feed its own, sharper question.
-   *
-   * ⚠️ **Not run for a rung of a ladder either, and that is not a weakening of the guard above.** The
-   * debt it pays is owed by a session whose topic it did not mint, and a rung mints its own: in admin
-   * mode the declared topic is the ladder's master feed, which `MasterFeedWriter.nextIndex` probes for
-   * itself on the first write of a process, and this session's manifest feed is fresh. Running it here
-   * would read the head of a topic this stream never publishes on and start every rung above the
-   * master's index.
+   * ⛔ **Two numbers come off that one read, not one.** Where the feed has got to says where this
+   * session's SOC writes go. What the playlist at the head is numbered to says where this session's
+   * `#EXT-X-MEDIA-SEQUENCE` carries on from — a viewer following the feed head is handed this
+   * session's first playlist as the next update of the one they are playing, and hls.js reads a media
+   * sequence that moved backwards as a parsing error rather than as a new broadcast. See
+   * {@link continuesFrom} and `ManifestManager.continueFrom`.
    *
    * @returns whether the index is settled and a manifest may be committed.
    */
-  private async resumeAdminFeedIndex(): Promise<boolean> {
-    if (this.admin === undefined || this.ladder !== undefined || this.adminFeedIndexResumed || this.resumedFromCrash) {
+  private async resumeFeedIndex(): Promise<boolean> {
+    if (!this.topicOutlivesThisSession() || this.feedIndexResumed) {
       return true;
     }
 
     let head: { index: number; manifest: string } | null;
     try {
-      head = await this.readManifestFeedHead(ADMIN_FEED_HEAD);
+      head = await this.readManifestFeedHead(FEED_HEAD_ON_START);
     } catch (error) {
       this.logger.error(getErrorMessage(error));
       return false;
@@ -910,15 +943,45 @@ export class StreamUploader {
 
     // Latched only on an answer, so a read that failed is asked again at the next segment rather
     // than leaving the session permanently unable to publish.
-    this.adminFeedIndexResumed = true;
+    this.feedIndexResumed = true;
     if (head !== null) {
       this.socIndex = head.index;
+      const continueAt = continuesFrom(head.manifest);
+      if (continueAt !== null) {
+        this.manifestManager.continueFrom(continueAt);
+      }
       this.logger.info(
-        `[StreamUploader] Stream ${this.streamId} resumes its declared topic at SOC index ${head.index}, ` +
-          'so this session continues the feed rather than writing over the last one',
+        `[StreamUploader] Stream ${this.streamId} resumes its topic at SOC index ${head.index}, numbering ` +
+          `its playlist from media sequence ${continueAt ?? 0}, so this session continues the feed rather ` +
+          'than writing over the last one',
       );
     }
     return true;
+  }
+
+  /**
+   * Settle where this session stands in its feed, which every manifest it builds depends on.
+   *
+   * ⛔ Run **before a playlist is built** and not only before it is published. The head decides the
+   * `#EXT-X-MEDIA-SEQUENCE` the playlist is written with, so a manifest built ahead of the answer
+   * carries the wrong numbering however correct the index it lands at. {@link commitManifest} checks
+   * the same two facts synchronously and refuses rather than settling them, so nothing built before
+   * the answer can reach the feed.
+   */
+  private async settleFeedPosition(): Promise<boolean> {
+    if (!this.predecessorHasDrained) {
+      this.logger.warn(
+        `[StreamUploader] Holding the manifest publish for ${this.streamId}: the session it replaced is ` +
+          'still finalizing onto the topic they share. Re-attempting at the next segment.',
+      );
+      return false;
+    }
+    return this.resumeFeedIndex();
+  }
+
+  /** Whether {@link settleFeedPosition} has already answered, which it has to before any publish. */
+  private feedPositionSettled(): boolean {
+    return this.predecessorHasDrained && (this.feedIndexResumed || !this.topicOutlivesThisSession());
   }
 
   /**
@@ -1047,6 +1110,10 @@ export class StreamUploader {
       // Read from the manifest manager rather than from what this session was constructed with,
       // because a restart re-anchors it mid-session. See `ManifestManager.broadcastAnchor`.
       anchor: this.manifestManager.broadcastAnchor(),
+      // Persisted for the same reason the anchor is: it is a property of the numbering already in the
+      // feed, and a recovered session that lost it would publish this broadcast's history again from
+      // a number a viewer has already been handed.
+      sequenceOffset: this.manifestManager.publishedSequenceOffset(),
       // Absent outside admin mode, and absent on every entry written before admin mode existed. See
       // {@link StreamState.adminStreamId} for why a recovered session cannot resolve it again.
       adminStreamId: this.admin?.id,
@@ -1202,6 +1269,14 @@ export class StreamUploader {
     this.liveManifestQueued = true;
     void this.manifestQueue.add(async () => {
       this.liveManifestQueued = false;
+      // ⛔ Before the build and not only before the publish. Where this session's feed stands decides
+      // the `#EXT-X-MEDIA-SEQUENCE` the playlist below is written with, so a manifest built ahead of
+      // that answer is wrong in the one number a viewer following the feed head cannot survive being
+      // wrong. Answers immediately once settled, which is after the first segment of the session.
+      if (!(await this.settleFeedPosition())) {
+        this.recordManifestPublishFailure();
+        return;
+      }
       // Unreachable from the only caller, which queues this straight after adding a segment, so the
       // manager always holds one by the time the job runs and no test can drive this branch. Kept
       // because publishing an empty manifest is a paid SOC write that tells viewers the playlist is
@@ -1219,11 +1294,7 @@ export class StreamUploader {
 
       const index = await this.commitManifest(manifest);
       if (index === null) {
-        this.consecutiveManifestFailures += 1;
-        this.metrics?.recordManifestPublishFailure();
-        this.logger.warn(
-          `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
-        );
+        this.recordManifestPublishFailure();
         return;
       }
 
@@ -1231,6 +1302,15 @@ export class StreamUploader {
       this.reportSegmentsNeverNamed(neverNamed);
       this.announcedThrough = newestNamed;
     });
+  }
+
+  /** One live manifest that did not reach the feed, however far down the publish it got. */
+  private recordManifestPublishFailure(): void {
+    this.consecutiveManifestFailures += 1;
+    this.metrics?.recordManifestPublishFailure();
+    this.logger.warn(
+      `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
+    );
   }
 
   /**
@@ -1273,25 +1353,22 @@ export class StreamUploader {
     // land above this session's live playlist and leave the feed head claiming a live broadcast had
     // finished.
     //
-    // Refused rather than awaited, and that is the same asymmetry `resumeAdminFeedIndex` states: the
-    // caller treats a null as a failed manifest publish and re-attempts at the next segment, so the
-    // cost is a stale live playlist for the length of the drain. Waiting here instead would hold the
-    // manifest queue for a drain that may never finish. Segments keep uploading throughout — only
-    // naming them in a playlist waits — so nothing is lost, and a drain that hangs stalls the live
-    // playlist rather than corrupting the recording.
-    if (!this.predecessorHasDrained) {
+    // Refused rather than awaited or settled here, and that is the asymmetry
+    // {@link settleFeedPosition} states: the caller treats a null as a failed manifest publish and
+    // re-attempts at the next segment, so the cost is a stale live playlist for the length of the
+    // drain. Waiting here instead would hold the manifest queue for a drain that may never finish.
+    // Segments keep uploading throughout — only naming them in a playlist waits — so nothing is lost,
+    // and a drain that hangs stalls the live playlist rather than corrupting the recording.
+    //
+    // ⛔ Synchronous, so it refuses `manifestContent` rather than settling anything: the caller built
+    // that string, and it was numbered from whatever this session knew at the time. Settling here
+    // would publish a playlist numbered from zero onto a feed the read has just said already holds
+    // one.
+    if (!this.feedPositionSettled()) {
       this.logger.warn(
-        `[StreamUploader] Holding the manifest publish for ${this.streamId}: the session it replaced is ` +
-          'still finalizing onto the declared topic they share. Re-attempting at the next segment.',
+        `[StreamUploader] Refusing the manifest publish for ${this.streamId}: where its feed stands is ` +
+          'not settled, so this playlist was numbered without it. Re-attempting at the next segment.',
       );
-      return null;
-    }
-
-    // Ahead of the index arithmetic below rather than at construction, because it is a network read
-    // and this is the last moment before the first write, so nothing can be published on a topic
-    // whose head has not been established. Answers `true` immediately outside admin mode and after
-    // the first resolved read inside it. See {@link resumeAdminFeedIndex}.
-    if (!(await this.resumeAdminFeedIndex())) {
       return null;
     }
 

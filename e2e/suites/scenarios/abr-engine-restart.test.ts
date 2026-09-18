@@ -43,11 +43,13 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * Not a theory: the first live run of this suite (2026-08-27) timed out all three waits while the
  * log showed the ladder fully re-formed 22 seconds after the restart.
  *
- * What does rotate per session is the topic. Every rung announce carries it, a retired session
- * never announces again, and its finalize lines carry no topic at all, so announces on topics first
- * seen after the restart are exactly the recovered session and nothing else. The same scoping is
- * what makes the suite go red when nothing recovers: with no fresh topic, the wait times out rather
- * than latching onto the retirement.
+ * The topic does not separate them either: a rung's feed topic is derived from its ladder group and
+ * its rung name, so the rung that comes back announces the one it announced before. What separates
+ * them is TIME. A retired session never announces again and its finalize lines carry no topic at
+ * all, so the announces after the restart instant are exactly the recovered session and nothing
+ * else — see `restartAndReconnect`. The same scoping is what makes the suite go red when nothing
+ * recovers: with no announce after the restart, the wait times out rather than latching onto the
+ * retirement.
  *
  * ## Why a restart rather than a per-rung outage
  *
@@ -102,38 +104,42 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
   });
 
   /**
-   * Restart the engine and bring the broadcaster back, returning the instant the restart began and
-   * the session topics already seen by then. The dying publisher is stopped and a fresh one started
-   * after the engine's own reconnect grace, so the recovered rungs announce on topics not in
-   * `priorTopics`, which is how a caller tells recovery from the retired session finalizing.
+   * Restart the engine and bring the broadcaster back, returning the instant the restart began.
+   *
+   * ⛔ **The recovered session is told from the retired one by TIME, not by topic.** A rung's feed
+   * topic is derived from its ladder group and its rung name and is stable for the life of the
+   * ladder, so a rung that comes back announces the topic it announced before — it resumes that feed
+   * above its own last session's head. This used to filter announces against the topics already seen,
+   * which is now a filter that discards exactly the announces it is looking for. `logsSince` is the
+   * scope, and only a session that started announces at all: the retired one is finalizing, not
+   * announcing.
    */
-  async function restartAndReconnect(): Promise<{ restartedAt: string; priorTopics: Set<string> }> {
-    const priorTopics = new Set(announcedRungs(await host.logsSince(uploader, startedAt)).map((a) => a.topic));
+  async function restartAndReconnect(): Promise<{ restartedAt: string }> {
     const restartedAt = await host.nowIso();
     await host.restart(mediaContainer);
     await publisher.stop();
     await sleep(engine.reconnectGraceMs); // let the engine accept SRT again before reconnecting
     publisher = startPublisher(cfg);
-    return { restartedAt, priorTopics };
+    return { restartedAt };
   }
 
-  /** Announces on topics first seen after the restart: the recovered session, never the retired one. */
-  const recoveredAnnounces = async (restartedAt: string, priorTopics: ReadonlySet<string>): Promise<AnnouncedRung[]> =>
-    announcedRungs(await host.logsSince(uploader, restartedAt)).filter((a) => !priorTopics.has(a.topic));
+  /** Announces made after the restart began, which are the recovered session's and nothing else. */
+  const recoveredAnnounces = async (restartedAt: string): Promise<AnnouncedRung[]> =>
+    announcedRungs(await host.logsSince(uploader, restartedAt));
 
-  const recoveredRungCount = async (restartedAt: string, priorTopics: ReadonlySet<string>): Promise<number> =>
-    new Set((await recoveredAnnounces(restartedAt, priorTopics)).map((a) => a.rung)).size;
+  const recoveredRungCount = async (restartedAt: string): Promise<number> =>
+    new Set((await recoveredAnnounces(restartedAt)).map((a) => a.rung)).size;
 
   it('brings every rung back after the engine restarts', async () => {
-    const { restartedAt, priorTopics } = await restartAndReconnect();
+    const { restartedAt } = await restartAndReconnect();
 
-    await waitFor(async () => (await recoveredRungCount(restartedAt, priorTopics)) >= rungsBefore.length, {
+    await waitFor(async () => (await recoveredRungCount(restartedAt)) >= rungsBefore.length, {
       timeoutMs: RECOVERY_WAIT_MS,
       intervalMs: 3_000,
-      label: `all ${rungsBefore.length} rungs re-announce on fresh topics after the restart`,
+      label: `all ${rungsBefore.length} rungs re-announce after the restart`,
     });
 
-    const recovered = await recoveredAnnounces(restartedAt, priorTopics);
+    const recovered = await recoveredAnnounces(restartedAt);
     const recoveredRungs = [...new Set(recovered.map((a) => a.rung))].sort();
     assert.deepEqual(
       recoveredRungs,
@@ -150,15 +156,15 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
    * have nowhere to step up to, with nothing in the logs calling it an error.
    */
   it('groups the recovered rungs into one ladder, not one per rung', async () => {
-    const { restartedAt, priorTopics } = await restartAndReconnect();
+    const { restartedAt } = await restartAndReconnect();
 
-    await waitFor(async () => (await recoveredRungCount(restartedAt, priorTopics)) >= rungsBefore.length, {
+    await waitFor(async () => (await recoveredRungCount(restartedAt)) >= rungsBefore.length, {
       timeoutMs: RECOVERY_WAIT_MS,
       intervalMs: 3_000,
-      label: 'the ladder re-forms on fresh topics after the restart',
+      label: 'the ladder re-forms after the restart',
     });
 
-    const recovered = await recoveredAnnounces(restartedAt, priorTopics);
+    const recovered = await recoveredAnnounces(restartedAt);
     const groups = new Set(recovered.map((a) => a.ladder));
     assert.equal(groups.size, 1, `the recovered rungs split across ${groups.size} ladders: ${[...groups].join(', ')}`);
   });
@@ -172,15 +178,15 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
    * segment counter moving, which the segment lines can be scoped to because they carry the stream id.
    */
   it('keeps uploading segments after the restart rather than stalling on one rung', async () => {
-    const { restartedAt, priorTopics } = await restartAndReconnect();
+    const { restartedAt } = await restartAndReconnect();
 
-    await waitFor(async () => (await recoveredRungCount(restartedAt, priorTopics)) >= rungsBefore.length, {
+    await waitFor(async () => (await recoveredRungCount(restartedAt)) >= rungsBefore.length, {
       timeoutMs: RECOVERY_WAIT_MS,
       intervalMs: 3_000,
-      label: 'every rung re-announces on a fresh topic after the restart',
+      label: 'every rung re-announces after the restart',
     });
 
-    const recoveredStreams = new Set((await recoveredAnnounces(restartedAt, priorTopics)).map((a) => a.streamId));
+    const recoveredStreams = new Set((await recoveredAnnounces(restartedAt)).map((a) => a.streamId));
     await waitFor(
       async () => {
         const byStream = new Map<string, number>();
@@ -217,12 +223,12 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
    * each rung declared. See `docs/e2e-coverage.md` under "What the sequence column is saying".
    */
   it('dates every recovered rung off one anchor, with a timeline no log line carries', async () => {
-    const { restartedAt, priorTopics } = await restartAndReconnect();
+    const { restartedAt } = await restartAndReconnect();
 
-    await waitFor(async () => (await recoveredRungCount(restartedAt, priorTopics)) >= rungsBefore.length, {
+    await waitFor(async () => (await recoveredRungCount(restartedAt)) >= rungsBefore.length, {
       timeoutMs: RECOVERY_WAIT_MS,
       intervalMs: 3_000,
-      label: 'the ladder re-forms on fresh topics after the restart',
+      label: 'the ladder re-forms after the restart',
     });
 
     const recoveredLog = async (): Promise<string> => host.logsSince(uploader, restartedAt);

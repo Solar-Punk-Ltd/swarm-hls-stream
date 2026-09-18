@@ -304,7 +304,7 @@ describe('admin mode', () => {
    * ⛔ The two used to refuse each other at boot, on the grounds that admin mode gives a broadcast one
    * topic and a ladder needs one feed per rung plus a master feed the admin knows nothing about. They
    * now agree about what a stream is: **the declared topic is the ladder's master feed**, the rungs
-   * keep their own fresh topics, and the ladder's merge state lives in the admin rather than in the
+   * publish on topics derived from the group, and the ladder's merge state lives in the admin rather than in the
    * catalog feed. Both halves have to reach their fields, because a deployment that reads as admin
    * mode with no ladder publishes a single rendition where four were configured, which is the shape of
    * failure this repository keeps paying for.

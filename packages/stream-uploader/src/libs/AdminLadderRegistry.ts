@@ -25,9 +25,12 @@ export interface AdminLadderRegistryOptions {
  *
  * Standalone, `StreamCatalog` holds one entry per ladder on the stream list feed, merges each rung's
  * record into it, and writes the master from the merged result. Admin mode moves the merge into the
- * admin's database — each rung posts its own record, the admin merges it by exactly the rule
- * `StreamCatalog.keepingWhatFinished` states, stores it, writes `renditions` into its own catalog
- * entry, and answers with the merged ladder. What does NOT move is the master: the ladder's
+ * admin's database — each rung posts its own record, the admin merges it by the rule
+ * `StreamCatalog.keepingWhatFinished` states (a rung that has already finished stays finished when
+ * it reports again without an index), stores it, writes `renditions` into its own catalog entry, and
+ * answers with the merged ladder. The admin's rule additionally requires the report to name the same
+ * feed, which the rule here deliberately does not compare — see `keepingWhatFinished` for why the
+ * uploader has no reason to. What does NOT move is the master: the ladder's
  * multivariant playlist is still a Swarm feed this service signs and writes, and the feed's topic is
  * the **declared** topic, because that is where the admin's catalog entry already points a viewer.
  *
@@ -36,6 +39,13 @@ export interface AdminLadderRegistryOptions {
  * no stream catalog entry; a registry that could reach one is a registry a later change can make
  * write one.
  * The only feed it can address at all is the master's.
+ *
+ * ⛔ **The admin has to accept `live` after `vod`, and a rung's stable feed is why.** A declared
+ * stream is one ladder for the life of the declaration, and its rungs' feeds outlive their sessions:
+ * a broadcaster who stops and comes back is a ladder going `live` again under a stream the admin
+ * already holds as `vod`, with its recordings sitting back to back on the same feeds and the entry
+ * naming the latest. The admin ships that transition on its own branch; this service simply reports
+ * what happened.
  *
  * ## Why `recordRungDelivered` never asks the admin
  *
