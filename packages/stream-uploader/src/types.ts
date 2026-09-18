@@ -30,6 +30,39 @@ export interface StreamState {
   bitrate?: BitrateSample;
   /** Absent on state written before playlists carried a wall clock. See {@link BroadcastAnchor}. */
   anchor?: BroadcastAnchor;
+  /**
+   * What this session adds to every sequence it publishes, because it opened over a feed that already
+   * held one. Absent means zero, which is every entry written before a feed outlived its session.
+   *
+   * ⛔ Persisted rather than read off the feed again after a crash. The head this was derived from is
+   * this session's own live playlist by then, so re-deriving it would add this session's own length
+   * to its own numbering and every recovered segment would jump forward by a whole broadcast. See
+   * `ManifestManager.continueFrom`.
+   */
+  sequenceOffset?: number;
+  /**
+   * The admin's id for this broadcast, when the service is in admin mode. See {@link AdminSession}.
+   *
+   * ⛔ Persisted rather than resolved again after a crash, and it has to be. A recovered session is
+   * rebuilt from this entry alone — no engine re-announces it, so nothing looks the draft up a second
+   * time — and without the id there is nothing to address the VOD report to. The broadcast would then
+   * finalize correctly into its feed and stay `live` in the admin's list for ever.
+   */
+  adminStreamId?: string;
+}
+
+/**
+ * The broadcast a resolved ingest session belongs to, in admin mode. See `engines/adminGate.ts`.
+ *
+ * Two fields because two things move out of this service when an admin owns the stream list: the feed
+ * topic, which the admin minted when the stream was declared and which the uploader must publish
+ * into rather than minting one of its own, and the admin's own id for the stream, which every state
+ * report names.
+ */
+export interface AdminSession {
+  id: string;
+  /** Raw feed topic, exactly as handed to `Topic.fromString`. */
+  topic: string;
 }
 
 /**

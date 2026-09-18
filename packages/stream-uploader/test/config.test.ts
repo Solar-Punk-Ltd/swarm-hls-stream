@@ -252,6 +252,83 @@ describe('the environment contract', () => {
 });
 
 /**
+ * Admin mode, which `ADMIN_API_URL` alone turns on. See `readAdminConfig` in `src/utils/config.ts`.
+ *
+ * ⛔ Its own block rather than rows in the tables above, and deliberately so. Those tables assert
+ * that every name is also declared in `deploy/docker-compose.yml`, which is right for a setting the
+ * shipped deployment carries and wrong for one that switches the service into a different mode: what
+ * matters here is not that a name reaches a field but that a half-configured admin deployment
+ * **refuses to start** rather than quietly running as a standalone one.
+ */
+describe('admin mode', () => {
+  const ADMIN_URL = 'http://admin.internal:9877';
+  const ADMIN_TOKEN = 'admin-api-token-0123456789abcdef';
+
+  it('is off, and reads as off, when ADMIN_API_URL is absent', async () => {
+    const config = await loadConfig(requiredEnv());
+    assert.equal(config.admin, null, 'without the url nothing about this service changes');
+  });
+
+  it('carries the url and the token through when both are set', async () => {
+    const config = await loadConfig({
+      ...requiredEnv(),
+      ADMIN_API_URL: ADMIN_URL,
+      ADMIN_API_TOKEN: ADMIN_TOKEN,
+    });
+
+    assert.deepEqual(config.admin, { apiUrl: ADMIN_URL, apiToken: ADMIN_TOKEN });
+  });
+
+  /**
+   * ⛔ Required rather than optional-with-a-warning, for the same reason `API_AUTH_TOKEN` is: it is
+   * the only thing between the admin's internal routes and anyone who can reach them. Starting
+   * without it would put a deployment on the air whose publish gate authenticates against an admin
+   * that refuses every call, so every broadcast is refused and the cause is one line in a log.
+   */
+  it('refuses to start when ADMIN_API_URL is set without a token', async () => {
+    await assert.rejects(
+      () => loadConfig({ ...requiredEnv(), ADMIN_API_URL: ADMIN_URL }),
+      /ADMIN_API_TOKEN/,
+      'a half-configured admin deployment must not come up as a standalone one',
+    );
+  });
+
+  it('refuses a token below the length floor the other service tokens use', async () => {
+    await assert.rejects(
+      () => loadConfig({ ...requiredEnv(), ADMIN_API_URL: ADMIN_URL, ADMIN_API_TOKEN: 'short' }),
+      /ADMIN_API_TOKEN/,
+    );
+  });
+
+  /**
+   * ⛔ The two used to refuse each other at boot, on the grounds that admin mode gives a broadcast one
+   * topic and a ladder needs one feed per rung plus a master feed the admin knows nothing about. They
+   * now agree about what a stream is: **the declared topic is the ladder's master feed**, the rungs
+   * publish on topics derived from the group, and the ladder's merge state lives in the admin rather than in the
+   * catalog feed. Both halves have to reach their fields, because a deployment that reads as admin
+   * mode with no ladder publishes a single rendition where four were configured, which is the shape of
+   * failure this repository keeps paying for.
+   */
+  it('runs the ABR ladder and admin mode together', async () => {
+    const config = await loadConfig({
+      ...requiredEnv(),
+      ADMIN_API_URL: ADMIN_URL,
+      ADMIN_API_TOKEN: ADMIN_TOKEN,
+      ABR_ENABLED: 'true',
+    });
+
+    assert.deepEqual(config.admin, { apiUrl: ADMIN_URL, apiToken: ADMIN_TOKEN });
+    assert.ok(config.abr, 'the ladder must survive admin mode being on, or four rungs publish as one');
+  });
+
+  it('leaves the ladder alone when admin mode is off', async () => {
+    const config = await loadConfig({ ...requiredEnv(), ABR_ENABLED: 'true' });
+    assert.equal(config.admin, null);
+    assert.ok(config.abr, 'ABR on its own is still a supported deployment');
+  });
+});
+
+/**
  * One batch per rung, which is what a deployment that splits its bees carries instead of a single
  * STAMP. Sixty-four hex characters because that is what a batch id is, and a shorter one is the
  * shape a truncated paste takes.

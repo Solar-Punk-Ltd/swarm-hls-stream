@@ -7,6 +7,7 @@ import {
 import crypto from 'crypto';
 
 import {
+  AdminSession,
   ANONYMOUS_CLAIMANT,
   BroadcastAnchor,
   BroadcastEpoch,
@@ -38,9 +39,11 @@ import {
   StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
+import { rungTopicFor } from '../utils/rungTopic.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { AbrLadder } from './AbrLadder.js';
+import { AdminApiClient } from './AdminApiClient.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
@@ -58,6 +61,7 @@ import {
   watchFragment,
 } from './fragmentAgreement.js';
 import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
+import { LadderRegistry } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -128,6 +132,17 @@ export interface StreamOrchestratorConfig {
    * in memory only and a crash costs the broadcast its identity. See {@link LadderGroupStore}.
    */
   ladderGroupStore?: LadderGroupStore;
+  /**
+   * The admin service, when `ADMIN_API_URL` is set. Its presence is what puts this orchestrator in
+   * admin mode: a stream must then arrive with the declaration an engine resolved for it, and each
+   * uploader reports state to the admin instead of writing the Swarm stream catalog.
+   */
+  adminApi?: AdminApiClient;
+  /**
+   * Where a ladder rung's rendition record goes. Absent is the stream catalog this orchestrator was
+   * built with, which is the standalone deployment. See {@link LadderRegistry}.
+   */
+  ladderRegistry?: LadderRegistry;
 }
 
 /**
@@ -346,8 +361,28 @@ export class StreamOrchestrator {
    * @param claimant who is announcing, so a takeover of a live id can be judged. Defaults to naming
    * nobody, which fails open: an engine that does not pass one loses SEC-26's protection rather than
    * refusing its broadcasters.
+   * @param admin the declaration this ingest session resolved to, in admin mode. Required there and
+   * meaningless without it — see the refusal at the top of the body.
    */
-  public startStream(streamId: string, mediatype: MediaType, claimant: StreamClaimant = ANONYMOUS_CLAIMANT): boolean {
+  public startStream(
+    streamId: string,
+    mediatype: MediaType,
+    claimant: StreamClaimant = ANONYMOUS_CLAIMANT,
+    admin?: AdminSession,
+  ): boolean {
+    // ⛔ In admin mode there is no such thing as a stream nobody declared. The engines always resolve
+    // one before they announce, so the caller this refuses is the generic `POST /stream/start`, which
+    // has no way to: it would mint a random topic and publish a broadcast the admin never learns
+    // about, and — because the uploader writes no catalog entry in admin mode — one that no viewer
+    // could find either. The route answers 409 and points at this log line.
+    if (this.config.adminApi && !admin) {
+      this.logger.warn(
+        `[StreamOrchestrator] Refused an announce for ${streamId}: this service is in admin mode, so a stream ` +
+          'has to be declared through the admin API before anything may publish to it',
+      );
+      return false;
+    }
+
     // If recovering, cancel the recovery timeout and resume
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
@@ -419,12 +454,28 @@ export class StreamOrchestrator {
       stale.retire();
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
-      this.spawnUploader(streamId, mediatype, claimant);
-      void this.finalizeRetiredSession(streamId, stale);
+      // Started before the replacement rather than after it, so the replacement can be handed the
+      // promise. The drain itself is unchanged and still nobody awaits it here; what is new is that
+      // the replacement holds its manifest publishes until this settles. `retire()` gives up the
+      // recovery entry, the admin report and the catalog entry, but not the SOC writes, so wherever
+      // both sessions hold one topic the retired session's closing and VOD manifests race the
+      // replacement's live ones for the same feed indexes.
+      const drained = this.finalizeRetiredSession(streamId, stale);
+      // ⛔ The gate is owed wherever the two sessions publish their own manifests onto one topic, and
+      // that is now every session whose topic outlives it: a declared stream in admin mode, and a RUNG
+      // in either deployment, whose topic is derived from its ladder group and its rung name and is
+      // therefore the same one the retired session is still closing. Without the gate the two claim
+      // the same feed indexes and the retired session's VOD lands above the live broadcast, leaving
+      // the feed head saying a running broadcast had ended.
+      //
+      // A standalone single-rendition stream is the one that owes nothing: it mints a fresh uuid per
+      // session, so the retired session is writing to a feed this one will never touch.
+      const sharesOneFeed = admin !== undefined || (this.config.ladder?.match(streamId) ?? null) !== null;
+      this.spawnUploader(streamId, mediatype, claimant, admin, sharesOneFeed ? drained : undefined);
       return true;
     }
 
-    this.spawnUploader(streamId, mediatype, claimant);
+    this.spawnUploader(streamId, mediatype, claimant, admin);
     return true;
   }
 
@@ -631,17 +682,44 @@ export class StreamOrchestrator {
    * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
    * and a uuid.
    */
-  private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant): void {
+  private spawnUploader(
+    streamId: string,
+    mediatype: MediaType,
+    claimant: StreamClaimant,
+    admin?: AdminSession,
+    predecessorDrained?: Promise<void>,
+  ): void {
     // Resolved before the uploader is built: the rungs of one ladder publish within milliseconds of
     // each other, and a group id assigned later would let two of them create two groups for one source.
     const match = this.config.ladder?.match(streamId) ?? null;
     let ladder: LadderMembership | undefined;
 
-    // A fresh topic per uploader, ladder or not. Deriving a rung's topic from (group, rung) would be
-    // tidier to read, but a rung that stops and restarts while its siblings keep the ladder alive
-    // would be handed the topic it just finished writing and, with no state to resume from, would
-    // start overwriting it at SOC index 0. What has to be stable across a ladder is the group.
-    const streamTopic = crypto.randomUUID();
+    // Three kinds of topic, and which one this session gets is the whole of where its playlists land.
+    //
+    // ⛔ **A RUNG's topic is DERIVED from its ladder group and its rung name**, in both deployments,
+    // so it is the same string every time that rung of that ladder publishes. Its feed therefore
+    // outlives the session, and a rung that restarts mid-broadcast — SRS bouncing a transcoder, an
+    // encoder reconnecting — continues the feed the master already names instead of appearing on one
+    // nothing points at until it re-announces. Sessions sit back to back on it: the replacement reads
+    // the head, numbers its playlist on from there with a discontinuity at the seam, and its recording
+    // is the latest of however many that feed holds. See `rungTopicFor` and
+    // `StreamUploader.resumeFeedIndex`. Uniqueness per broadcast is the group's, which is a fresh uuid
+    // standalone and the declared topic in admin mode.
+    //
+    // ⛔ **A rung never takes the declared topic itself, and in admin mode the declaration becomes its
+    // GROUP instead.** The declared topic is the one identifier a viewer is handed, and for a ladder
+    // what a viewer has to find there is the master playlist, whose feed topic *is* the group — so
+    // declaring the group is what makes the admin's catalog entry resolve without the admin knowing
+    // anything about renditions. Handing the rung that topic as well would put four rungs and the
+    // master on one feed, all writing over each other.
+    //
+    // ⛔ **A lone rendition in admin mode publishes on the declared topic**, which the admin mints
+    // when the stream is created and hands to viewers before anything has ever published on it. That
+    // topic outlives its sessions for the same reason a rung's does, and is paid for the same way.
+    //
+    // Standalone and single-rendition is the only session left with a topic nothing has ever held, and
+    // a fresh uuid is what makes its feed empty by construction.
+    let streamTopic = admin ? admin.topic : crypto.randomUUID();
 
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
     // same way only because they all read this one instant, and a rung admitted a moment later
@@ -649,9 +727,13 @@ export class StreamOrchestrator {
     let anchor: BroadcastAnchor = { startedAtMs: this.wallClock(), fragmentSeconds: this.config.fragmentSeconds };
 
     if (match) {
-      const remembered = this.groupFor(match.baseStreamId);
+      const remembered = this.groupFor(match.baseStreamId, admin?.topic);
       anchor = this.anchorOf(remembered);
       ladder = { group: remembered.group, rung: match.rung };
+      // The remembered group and never a fresh one, which is what makes the topic stable across a
+      // restart: `groupFor` answers with whatever the surviving rungs and the group store are already
+      // publishing under, so a rung coming back derives the same string it derived the first time.
+      streamTopic = rungTopicFor(remembered.group, match.rung.name);
       this.streamBases.set(streamId, match.baseStreamId);
       this.logger.info(
         `[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, remembered.group, streamTopic)}`,
@@ -673,6 +755,7 @@ export class StreamOrchestrator {
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
+      ladderRegistry: this.config.ladderRegistry,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
       redundancyLevel: this.config.segmentRedundancy,
@@ -683,6 +766,8 @@ export class StreamOrchestrator {
       anchor,
       dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
       metrics: this.metrics,
+      admin: this.adminReportingFor(admin?.id),
+      predecessorDrained,
     });
 
     this.activeStreams.set(streamId, uploader);
@@ -698,6 +783,21 @@ export class StreamOrchestrator {
     }
     this.armStallReaper(streamId);
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
+  }
+
+  /**
+   * What an uploader needs to report its state, or undefined when there is nothing to report to.
+   *
+   * Both halves have to be present. The client is the service-level half, from `ADMIN_API_URL`; the
+   * id is the per-stream half, from a resolved declaration or from a recovery entry that persisted
+   * it. A stream with one and not the other is a broadcast nobody can be told about, and leaving the
+   * uploader with `admin` undefined there is deliberate: it then takes the standalone path, which at
+   * least writes a catalog entry a viewer could find, rather than reporting nowhere and listing
+   * nowhere. The refusal in `startStream` is what keeps that from happening on the live path.
+   */
+  private adminReportingFor(adminStreamId: string | undefined): { client: AdminApiClient; id: string } | undefined {
+    const client = this.config.adminApi;
+    return client && adminStreamId ? { client, id: adminStreamId } : undefined;
   }
 
   /**
@@ -1291,6 +1391,7 @@ export class StreamOrchestrator {
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
+      ladderRegistry: this.config.ladderRegistry,
       recoveryStore: this.recoveryStore,
       streamKey: this.config.streamKey,
       redundancyLevel: this.config.segmentRedundancy,
@@ -1310,8 +1411,18 @@ export class StreamOrchestrator {
         pendingDiscontinuity: state.pendingDiscontinuity,
         bitrate: state.bitrate,
         anchor: state.anchor,
+        // ⛔ Carried for the same reason the anchor is, and it is load-bearing:
+        // a recovered session never reads its feed head (`topicOutlivesThisSession`
+        // is false for one), so this entry is the only record of how far the
+        // numbering it is resuming had already got. Dropping it republishes the
+        // broadcast from a media sequence viewers were handed minutes ago.
+        sequenceOffset: state.sequenceOffset,
       },
       metrics: this.metrics,
+      // From the entry rather than from a fresh lookup: nothing re-announces a recovered stream, so
+      // this is the only surviving record of which declaration it belongs to. Absent on an entry
+      // written before admin mode, and on every entry written outside it.
+      admin: this.adminReportingFor(state.adminStreamId),
     });
 
     this.activeStreams.set(streamId, uploader);
@@ -1782,15 +1893,34 @@ export class StreamOrchestrator {
    * survive. A crash around finalize is exactly the case with none, because `StreamUploader.finalize`
    * deletes each rung's entry as that rung completes, so the broadcast came back under a second
    * group and was listed for viewers a second time.
+   *
+   * @param preferredGroup the group to mint with instead of a fresh uuid, which in admin mode is the
+   * declared topic: the master feed's topic is the group, and the admin's catalog entry already points
+   * a viewer at the declared topic, so the two have to be the same string or the entry resolves to a
+   * feed nothing writes.
+   *
+   * ⛔ **Preferred, never imposed.** What is remembered — in memory, on disk, and in each rung's own
+   * recovery entry — stays the single source of truth across a restart, because it is what the rungs
+   * already publishing have been merged under and what the master already written names. A
+   * declaration that disagrees with a remembered group is said out loud rather than acted on: the
+   * only way to produce one is a broadcast that crashed and was then re-declared, and adopting the new
+   * topic mid-ladder would strand the master the surviving rungs are still writing.
    */
-  private groupFor(base: string): RememberedLadder {
+  private groupFor(base: string, preferredGroup?: string): RememberedLadder {
     const existing = this.ladderGroups.get(base) ?? this.readPersistedLadder(base);
     if (existing) {
+      if (preferredGroup !== undefined && existing.group !== preferredGroup) {
+        this.logger.warn(
+          `[StreamOrchestrator] Ladder ${base} is remembered under group ${existing.group} and its declaration ` +
+            `now names topic ${preferredGroup}. Keeping the remembered group, which is where the master its ` +
+            'rungs are publishing under already lives; the declaration will point viewers elsewhere.',
+        );
+      }
       this.rememberLadder(base, existing);
       return existing;
     }
 
-    const identity = { group: crypto.randomUUID(), startedAtMs: this.wallClock() };
+    const identity = { group: preferredGroup ?? crypto.randomUUID(), startedAtMs: this.wallClock() };
     this.rememberLadder(base, identity);
     return identity;
   }
@@ -1917,7 +2047,7 @@ export class StreamOrchestrator {
    * second recording of one broadcast.
    *
    * The persisted record goes with the in-memory one rather than outliving it. A ladder whose last
-   * rung has stopped is a finished recording, and keeping its identity would fold the next broadcast
+   * rung has stopped is a finished recording, and keeping its identity would merge the next broadcast
    * on that source into it, which is the same duplicate pointing the other way. The broadcast's
    * dating retires on exactly that reasoning and at exactly that moment, so nothing here grows for
    * the life of the process either.

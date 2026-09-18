@@ -2,9 +2,10 @@ import { NextFunction, Request, RequestHandler, Response, Router } from 'express
 import fs from 'fs';
 import path from 'path';
 
+import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
+import { AdminSession, MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { AbrGuard, readAbrConfig } from '../utils/abrConfig.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, required } from '../utils/env.js';
@@ -13,7 +14,8 @@ import { isUsableStreamId } from '../utils/streamId.js';
 import { redactUrlSecrets } from '../utils/urlSecrets.js';
 
 import { assertUsableWebhookToken, hasValidWebhookToken } from './srs/webhookToken.js';
-import { EnginePlugin } from './types.js';
+import { ADMIN_PUBLISH_ALLOWED, isAuthRefusal, resolveAdminPublish } from './adminGate.js';
+import { EngineFactoryDeps, EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
 
@@ -34,8 +36,22 @@ export interface SrsEngineOptions {
    * deployment and its broadcasters, who have to be issued keys before any of them can publish, so
    * defaulting it on would take every existing broadcaster off the air the moment the service was
    * upgraded.
+   *
+   * ⚠️ Ignored entirely when `adminApi` is set. See {@link SrsEngineOptions.adminApi}.
    */
   publishKeySecret?: string;
+  /**
+   * The admin service, when `ADMIN_API_URL` is set. Present, it **replaces** `publishKeySecret`
+   * rather than adding to it: a publish is resolved against a stream the admin has declared and
+   * authenticated with the key that declaration carries, so there is no local secret to derive from
+   * and nothing for a deployment to configure per broadcaster. See `engines/adminGate.ts`.
+   */
+  adminApi?: AdminApiClient;
+  /**
+   * The address this service signs its feeds with. Read only in admin mode, where the gate refuses a
+   * declaration owned by another feed key. See {@link EngineFactoryDeps.signerOwner}.
+   */
+  signerOwner?: string;
 }
 
 // SRS webhook response codes
@@ -113,11 +129,17 @@ function publisherAddress(payload: SrsStreamPayload): string | null {
   return typeof payload?.ip === 'string' && payload.ip.length > 0 ? payload.ip : null;
 }
 
-export function createSrsEngineFromEnv(): EnginePlugin {
+export function createSrsEngineFromEnv(deps: EngineFactoryDeps = {}): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
   const webhookToken = required('SRS_WEBHOOK_TOKEN');
   const publishKeySecret = optional('PUBLISH_KEY_SECRET', '');
-  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret, abr: readAbrConfig() ?? undefined });
+  const engine = createSrsEngine(mediaPath, {
+    webhookToken,
+    publishKeySecret,
+    abr: readAbrConfig() ?? undefined,
+    adminApi: deps.adminApi,
+    signerOwner: deps.signerOwner,
+  });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
   // engine and then threw for a token that was merely too short.
@@ -152,8 +174,21 @@ function createWebhookGate(webhookToken: string): RequestHandler {
 
 export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
   const webhookToken = options.webhookToken ?? '';
-  const publishKeySecret = options.publishKeySecret ?? '';
-  if (publishKeySecret) {
+  const adminApi = options.adminApi;
+  const signerOwner = options.signerOwner;
+  // Blanked rather than read alongside, so no later change can accidentally consult both. The two
+  // modes answer the same question — is this publisher the owner of this stream — from two different
+  // sources of truth, and a deployment in which they disagree has no right answer.
+  const publishKeySecret = adminApi ? '' : options.publishKeySecret ?? '';
+  if (adminApi) {
+    // The one boot line that says which mode this engine is in. Loud rather than debug: an operator
+    // reading a refusal has to be able to tell "no declaration for this ingest id" from "wrong
+    // derived key" without reading the source, and this is the line that tells them which gate ran.
+    logger.info(
+      `[SRS] Admin mode: every publish is resolved against ${adminApi.describe()} and authenticated with the ` +
+        'key that declaration carries. PUBLISH_KEY_SECRET is ignored.',
+    );
+  } else if (publishKeySecret) {
     assertUsablePublishKeySecret(publishKeySecret);
   } else {
     // Not an error, but it is the one control that separates a broadcaster from anyone who knows the
@@ -196,12 +231,30 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
 
       // Base streams that authenticated, so their rungs — republished onto the ABR vhost with no key
       // of their own — can be admitted by that origin. Empty and unread without a ladder. See SEC-28.
-      const authenticatedBases = new Set<string>();
+      //
+      // ⛔ A map rather than a set, because in admin mode the base carries the declaration its rungs
+      // publish under: the source is what presents the key and is resolved against the admin, and the
+      // rungs that follow it inherit that session without a lookup of their own. `null` is the
+      // standalone deployment, where membership alone is the whole of what the base proved. Reading a
+      // base as "present" therefore still means exactly what it meant, which is what keeps SEC-28's
+      // rule — a rung is admitted only because its base authenticated — unchanged.
+      const authenticatedBases = new Map<string, AdminSession | null>();
 
       router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
-        handleStreams(req, res, streamOrchestrator, publishKeySecret, abr, authenticatedBases);
+        // `void` rather than awaited, because express does not await a handler and a returned
+        // rejection would be an unhandled one. Nothing is lost: `handleStreams` has its own catch
+        // around everything, and outside admin mode it reaches no `await` before it answers, so a
+        // deployment that has not opted in still responds in the same synchronous turn it always did.
+        void handleStreams(
+          req,
+          res,
+          streamOrchestrator,
+          { publishKeySecret, adminApi, signerOwner },
+          abr,
+          authenticatedBases,
+        );
       });
 
       router.post('/hls', (req: Request, res: Response) => {
@@ -269,10 +322,12 @@ function isLoopbackPublisher(payload: SrsStreamPayload): boolean {
  *
  * `single` the ladder is off. The publish authenticates by its own key, exactly as it always has.
  * `source` the untranscoded broadcast, which a real broadcaster sends to the ingest vhost. It
- *   authenticates by its publish key like a single-rendition publish, and is then left for SRS to
- *   transcode rather than ingested, because the ingest vhost stops segmenting once the ladder is on.
+ *   authenticates exactly as a single-rendition publish does — by its publish key, or in admin mode
+ *   against the declaration for its ingest id — and is then left for SRS to transcode rather than
+ *   ingested, because the ingest vhost stops segmenting once the ladder is on.
  * `rung` a transcode republish SRS dials from loopback onto the ABR vhost. It presents no key, so it
- *   is admitted only by that loopback origin and by its base stream having authenticated.
+ *   is admitted only by that loopback origin and by its base stream having authenticated, and in
+ *   admin mode it publishes under the declaration that base resolved. See {@link reasonToRefuseRung}.
  * `stray` a rendition whose `?vhost=` missed the ABR vhost, or a name on the ABR vhost that is no
  *   configured rung. Neither is ingested. A misrouted rendition is logged loudly, because otherwise
  *   the only symptom is a stream that never appears.
@@ -300,6 +355,37 @@ function classifyLadderStream(payload: SrsStreamPayload, streamId: string, abr?:
   return match ? { kind: 'stray', misroutedRendition: true } : { kind: 'source' };
 }
 
+/**
+ * Why a transcode republish may not be admitted, or null to admit it. See SEC-28.
+ *
+ * A rung carries no key: the transcode URL in `engines/srs/entrypoint.sh` has no `?key=`. Its base
+ * stream having authenticated is what an attacker who merely knows the name cannot forge, and the
+ * loopback origin is what keeps a co-tenant on the shared host from publishing a rung of its own.
+ *
+ * ⛔ In admin mode a base that authenticated always carries the declaration it resolved to, so a base
+ * recorded with no session is a state no live sequence can produce. Refused rather than admitted
+ * anyway: a rung started without one would mint a group of its own and publish a ladder the admin
+ * never learns about and no viewer could find, which is precisely what `StreamOrchestrator.startStream`
+ * refuses the generic `POST /stream/start` for.
+ */
+function reasonToRefuseRung(
+  payload: SrsStreamPayload,
+  baseStreamId: string,
+  authenticatedBases: Map<string, AdminSession | null>,
+  adminMode: boolean,
+): string | null {
+  if (!isLoopbackPublisher(payload)) {
+    return 'it is not from the transcode loopback';
+  }
+  if (!authenticatedBases.has(baseStreamId)) {
+    return 'its base stream never authenticated';
+  }
+  if (adminMode && !authenticatedBases.get(baseStreamId)) {
+    return 'its base stream authenticated without a declaration, which admin mode has nothing to publish under';
+  }
+  return null;
+}
+
 function stopStreamQuietly(streamOrchestrator: StreamOrchestrator, streamId: string): void {
   streamOrchestrator.stopStream(streamId).catch((error) => {
     const msg = getErrorMessage(error);
@@ -307,14 +393,31 @@ function stopStreamQuietly(streamOrchestrator: StreamOrchestrator, streamId: str
   });
 }
 
-function handleStreams(
+/**
+ * What a publish has to prove, in whichever of the two mutually exclusive ways this deployment uses.
+ *
+ * Both fields together rather than one parameter each, because they are one decision: exactly one of
+ * them is ever set, `createSrsEngine` is where that is enforced, and a signature that takes them
+ * separately invites a later call site to pass both.
+ */
+interface SrsPublishGate {
+  /** Derived-key mode. Empty means publishers are not authenticated, which is the default. */
+  publishKeySecret: string;
+  /** Admin mode. Set, the secret above is empty and every publish is resolved against a declaration. */
+  adminApi?: AdminApiClient;
+  /** The owner every feed this service writes resolves under, compared with each declaration's. */
+  signerOwner?: string;
+}
+
+async function handleStreams(
   req: Request,
   res: Response,
   streamOrchestrator: StreamOrchestrator,
-  publishKeySecret: string,
+  gate: SrsPublishGate,
   abr?: AbrGuard,
-  authenticatedBases: Set<string> = new Set(),
-): void {
+  authenticatedBases: Map<string, AdminSession | null> = new Map(),
+): Promise<void> {
+  const { publishKeySecret, adminApi, signerOwner } = gate;
   // Read before the try, so the catch below can tell a publish from anything else. A handler error on
   // a publish has to refuse when a secret is configured, and the action is the only thing that says
   // which kind of webhook was being handled.
@@ -363,6 +466,13 @@ function handleStreams(
       // `single` or `source`: authenticated by the broadcaster's own key, which SRS repeats on the
       // unpublish. Extracted before anything is answered, so a `param` that cannot be parsed reaches
       // the catch below with the response still unsent. See SEC-29.
+      //
+      // ⚠️ In admin mode `publishKeySecret` is blank, so this check is off and an unpublish is
+      // gated only by the webhook token — exactly as it is for every deployment that never set
+      // PUBLISH_KEY_SECRET. Deliberate rather than overlooked: the expected key lives in the
+      // declaration, so proving one here would mean a second lookup on the stop path, with an admin
+      // outage then able to keep a finished broadcast from finalizing. The caller still has to hold
+      // the webhook token, which is a service-to-service secret SRS is configured with.
       const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromParam(payload.param));
 
       // SRS reads any non-zero answer as a failure to retry, and an unpublish is not a request that
@@ -396,31 +506,6 @@ function handleStreams(
       return;
     }
 
-    if (role.kind === 'rung') {
-      // A rung carries no key: the transcode URL in entrypoint.sh has no `?key=`. Its base stream
-      // having authenticated is what an attacker who merely knows the name cannot forge, and the
-      // loopback origin is what keeps a co-tenant on the shared host from publishing a rung of its own.
-      if (!isLoopbackPublisher(payload) || !authenticatedBases.has(role.baseStreamId)) {
-        const reason = isLoopbackPublisher(payload)
-          ? 'its base stream never authenticated'
-          : 'it is not from the transcode loopback';
-        logger.warn(`[SRS] Rejected a rung publish of ${streamId}: ${reason}`);
-        // Reported rather than observed. SRS_REJECT rides inside a 200, so the status-code observer
-        // never sees it. See OBS-15.
-        streamOrchestrator.recordAuthRejection();
-        srsResponse(res, SRS_REJECT);
-        return;
-      }
-
-      logger.info(`[SRS] Rung published: ${streamId}`);
-      const accepted = streamOrchestrator.startStream(streamId, resolveMediaType(payload.app), {
-        address: publisherAddress(payload),
-        isAuthenticated: true,
-      });
-      srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
-      return;
-    }
-
     if (role.kind === 'stray') {
       // Not a stream the uploader publishes. Accept so SRS keeps running, ingest nothing. The
       // misrouted case is loud because otherwise the only symptom is a stream that never appears.
@@ -430,6 +515,85 @@ function handleStreams(
         logger.debug(`[SRS] Ignoring ${streamId} on vhost '${payload.vhost}', no configured rung by that name`);
       }
       srsResponse(res, SRS_ACCEPT);
+      return;
+    }
+
+    if (role.kind === 'rung') {
+      const refusal = reasonToRefuseRung(payload, role.baseStreamId, authenticatedBases, adminApi !== undefined);
+      if (refusal) {
+        logger.warn(`[SRS] Rejected a rung publish of ${streamId}: ${refusal}`);
+        // Reported rather than observed. SRS_REJECT rides inside a 200, so the status-code observer
+        // never sees it. See OBS-15.
+        streamOrchestrator.recordAuthRejection();
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+
+      logger.info(`[SRS] Rung published: ${streamId}`);
+      const accepted = streamOrchestrator.startStream(
+        streamId,
+        resolveMediaType(payload.app),
+        {
+          address: publisherAddress(payload),
+          isAuthenticated: true,
+        },
+        // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
+        // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the ladder
+        // is one declared stream and the rungs are what the transcoder makes of it. The session the
+        // source resolved is therefore the only thing that can tell this rung which broadcast it
+        // belongs to, and `reasonToRefuseRung` has already refused a rung that has none.
+        authenticatedBases.get(role.baseStreamId) ?? undefined,
+      );
+      srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
+      return;
+    }
+
+    if (adminApi) {
+      // `single` or `source`, and both resolve the same way: by the ingest id the broadcaster
+      // published under — `video/<uuid>` either way, since a source is what a rung is transcoded from
+      // — and by the key that declaration carries. What differs is what happens next, and only that.
+      const mediatype = resolveMediaType(payload.app);
+      const verdict = await resolveAdminPublish(
+        adminApi,
+        '[SRS]',
+        streamId,
+        mediatype,
+        publishKeyFromParam(payload.param),
+        signerOwner,
+      );
+
+      if (verdict.kind !== ADMIN_PUBLISH_ALLOWED) {
+        if (isAuthRefusal(verdict.kind)) {
+          // Reported rather than observed: SRS_REJECT rides inside a 200, so the status-code observer
+          // never sees it. See OBS-15.
+          streamOrchestrator.recordAuthRejection();
+        }
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+
+      if (role.kind === 'source') {
+        // Not ingested, exactly as outside admin mode: the uploader publishes the ladder's rungs and
+        // the source exists to be transcoded into them. What is remembered is the declaration rather
+        // than a bare "this name authenticated", because the rungs that follow carry no key AND no
+        // ingest id the admin has ever heard of, so this is the only point at which the broadcast
+        // they belong to can be established. SRS_ACCEPT lets SRS go on to transcode it.
+        authenticatedBases.set(streamId, verdict.session);
+        logger.info(`[SRS] Ladder source authenticated: ${streamId}, declared as admin stream ${verdict.session.id}`);
+        srsResponse(res, SRS_ACCEPT);
+        return;
+      }
+
+      logger.info(`[SRS] Stream published: ${streamId} (${mediatype})`);
+      const admitted = streamOrchestrator.startStream(
+        streamId,
+        mediatype,
+        // Proven by the declaration's own key, so the takeover rules in `reasonToRefuseTakeover`
+        // apply exactly as they do for a derived key. See SEC-26 and SEC-28.
+        { address: publisherAddress(payload), isAuthenticated: true },
+        verdict.session,
+      );
+      srsResponse(res, admitted ? SRS_ACCEPT : SRS_REJECT);
       return;
     }
 
@@ -451,7 +615,10 @@ function handleStreams(
       // The uploader ingests the ladder's rungs, not the untranscoded source. Recording that the
       // source authenticated is the only thing that later admits those rungs, which arrive on the ABR
       // vhost with no key of their own. SRS_ACCEPT lets SRS go on to transcode it.
-      authenticatedBases.add(streamId);
+      //
+      // `null` rather than a session: outside admin mode there is no declaration, and membership of
+      // this map is the whole of what the base proved.
+      authenticatedBases.set(streamId, null);
       logger.info(`[SRS] Ladder source authenticated: ${streamId}`);
       srsResponse(res, SRS_ACCEPT);
       return;
@@ -475,8 +642,10 @@ function handleStreams(
     // catch already honours `failOpen` and defaults to refusing, so this is the asymmetric half.
     //
     // Only when a secret is configured: without one nothing is authenticated anyway, and refusing
-    // here would change the behaviour of a deployment that never opted in.
-    if (publishKeySecret && action === SRS_ACTION_PUBLISH) {
+    // here would change the behaviour of a deployment that never opted in. Admin mode counts as
+    // configured — it is the *only* thing standing between a publisher and a declared stream there,
+    // and `publishKeySecret` is blanked in that mode, so reading it alone would fail this open.
+    if ((publishKeySecret || adminApi) && action === SRS_ACTION_PUBLISH) {
       srsResponse(res, SRS_REJECT);
       return;
     }

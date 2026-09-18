@@ -100,6 +100,17 @@ function makeBee(segmentControl: SegmentUploadControl, feedControl: SegmentUploa
         return { reference: { toHex: () => `soc${opts.index}` } };
       },
     }),
+    // A feed nothing has ever written, which is what every uploader in this file publishes onto.
+    // Needed since a rung's topic started outliving its session: a rung reads its own head before
+    // its first SOC write, and a bee with no reader at all fails that read rather than answering it,
+    // which refuses every publish. 404 is the answer for an empty feed, so the write starts at 0
+    // exactly as it did when nothing asked. See `StreamUploader.resumeFeedIndex`, and
+    // `AdminStreamSession.test.ts` for the cases where the head holds something.
+    makeFeedReader: () => ({
+      downloadPayload: async () => {
+        throw new BeeResponseError('GET', '/feeds', 'Not Found.', undefined, 404, 'Not Found');
+      },
+    }),
   };
   return bee as unknown as Bee;
 }
