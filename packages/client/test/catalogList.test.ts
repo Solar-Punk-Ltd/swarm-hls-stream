@@ -38,6 +38,54 @@ describe('the catalog a poll leaves on screen', () => {
     assert.equal(nextStreamList({ held: HELD, fetched: 'not a catalog', isSameGateway: true }), null);
   });
 
+  it('rejects the whole catalog when an entry lacks the fields every catalog consumer needs', () => {
+    assert.equal(nextStreamList({ held: HELD, fetched: [null], isSameGateway: true }), null);
+    assert.deepEqual(nextStreamList({ held: HELD, fetched: [null], isSameGateway: false }), []);
+  });
+
+  it('rejects the whole catalog when a rendition would break the player', () => {
+    const malformed = [{ ...streamAt(300), renditions: [null] }];
+
+    assert.equal(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: true }), null);
+    assert.deepEqual(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: false }), []);
+  });
+
+  it('keeps compatible optional and unknown fields on entries that pass validation', () => {
+    const scheduled = {
+      ...streamAt(300, 'scheduled stream'),
+      state: 'scheduled',
+      duration: 42,
+      thumbnail: 'thumbnail-reference',
+      scheduledStartTime: null,
+      renditions: [
+        {
+          name: '360p',
+          width: 640,
+          height: 360,
+          topic: 'rung-topic',
+          bandwidth: 800_000,
+          avgBandwidth: 700_000,
+        },
+      ],
+      legacyField: { kept: true },
+    };
+    const futureState = {
+      ...streamAt(400, 'future stream'),
+      state: 'announced-by-a-future-writer',
+      scheduledStartTime: 1_800_000_000_000,
+    };
+
+    const result = nextStreamList({
+      held: HELD,
+      fetched: [scheduled, futureState],
+      isSameGateway: false,
+    });
+
+    assert.deepEqual(result, [scheduled, futureState]);
+    assert.equal(result?.[0], scheduled, 'validation projected the entry and discarded fields it did not know');
+    assert.equal(result?.[1], futureState, 'an unknown future state was treated as an invalid entry');
+  });
+
   it('takes the first catalog of a session, which has nothing to be newer than', () => {
     const fetched = [streamAt(1)];
 
