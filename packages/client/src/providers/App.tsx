@@ -6,23 +6,10 @@ import { exposeFetchBackendForInstrumentation } from '@/components/SwarmHlsPlaye
 import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { Stream } from '@/types/stream';
 import { CatalogFeedReader } from '@/utils/catalogFeed';
-import { nextStreamList } from '@/utils/catalogList';
 import { config } from '@/utils/config';
 
+import { CatalogRead, catalogUpdater, StreamCatalog } from './catalogState';
 import { exposeGatewayForInstrumentation } from './gatewayTestHandle';
-
-/**
- * One catalog read, carrying the gateway it went to.
- *
- * ⛔ The gateway travels with the body rather than being read again when the body lands, because a
- * viewer can switch node while a poll is in flight. Attributing the answer to whichever gateway is
- * selected by the time it arrives is how another node's catalog came to be shown as this node's.
- */
-interface CatalogRead {
-  gateway: string;
-  /** The parsed catalog, or null when the gateway had nothing newer to give. */
-  streams: unknown;
-}
 
 type AppContextState = {
   streamList: Stream[];
@@ -51,13 +38,6 @@ type AppContextState = {
   gatewayUrl: string;
   setGatewayUrl: (url: string) => void;
 };
-
-/** The streams on screen and the gateway that served them, held together so they cannot disagree. */
-interface StreamCatalog {
-  streams: Stream[];
-  /** Null before any read has landed. */
-  gateway: string | null;
-}
 
 const AppContext = createContext<AppContextState | undefined>(undefined);
 
@@ -157,12 +137,7 @@ export const AppContextProvider = ({ children }: Props) => {
    * them.
    */
   const setNewStreamList = useCallback((read: CatalogRead) => {
-    setCatalog((held) => ({
-      streams:
-        nextStreamList({ held: held.streams, fetched: read.streams, isSameGateway: held.gateway === read.gateway }) ??
-        held.streams,
-      gateway: read.gateway,
-    }));
+    setCatalog(catalogUpdater(read, gatewayRef));
   }, []);
 
   const initAppState = useCallback(async () => {

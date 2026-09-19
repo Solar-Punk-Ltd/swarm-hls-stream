@@ -9,6 +9,17 @@ function streamAt(timestamp: number, title: string): Stream {
 }
 
 describe('the catalog provider state update', () => {
+  it('applies a response from the gateway that is still selected', () => {
+    const selectedGateway = { current: 'https://gateway-b.example' };
+    const gatewayB = [streamAt(500, 'selected gateway B')];
+    const updater = catalogUpdater({ gateway: selectedGateway.current, streams: gatewayB }, selectedGateway);
+
+    assert.deepEqual(updater({ gateway: null, streams: [] }), {
+      gateway: selectedGateway.current,
+      streams: gatewayB,
+    });
+  });
+
   it('discards gateway A when the viewer selects gateway B before the queued update runs', () => {
     const selectedGateway = { current: 'https://gateway-a.example' };
     const lateGatewayA = [streamAt(600, 'stale gateway A')];
