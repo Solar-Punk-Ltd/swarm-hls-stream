@@ -179,6 +179,7 @@ describe('the admission secret the entrypoint splices into Server.xml', () => {
   for (const [bad, why] of [
     [`ab&cd${'0'.repeat(58)}`, 'an ampersand, which sed expands to the whole match'],
     [`ab|cd${'0'.repeat(58)}`, 'a pipe, which ends the substitution'],
+    [`ab<cd${'0'.repeat(58)}`, 'a less-than sign, which starts XML markup'],
   ]) {
     it(`refuses an OME_ADMISSION_SECRET carrying ${why}`, () => {
       const refusal = renderRefusal({ OME_ADMISSION_SECRET: bad });
@@ -194,6 +195,14 @@ describe('the admission secret the entrypoint splices into Server.xml', () => {
    */
   it('writes a hex secret into the key element, unchanged', () => {
     const secret = 'a3f9'.repeat(16);
+
+    const xml = renderServerXml({ OME_ADMISSION_SECRET: secret });
+
+    assert.match(xml, new RegExp(`<SecretKey>${secret}</SecretKey>`));
+  });
+
+  it('writes a secret containing a slash into the key element, unchanged', () => {
+    const secret = `ab/cd${'0'.repeat(59)}`;
 
     const xml = renderServerXml({ OME_ADMISSION_SECRET: secret });
 
