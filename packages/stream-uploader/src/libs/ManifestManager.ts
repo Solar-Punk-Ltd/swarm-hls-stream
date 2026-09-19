@@ -4,6 +4,7 @@ import { BroadcastAnchor, SegmentEntry } from '../types.js';
 import {
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
+  HLS_EXTINF,
   HLS_GAP,
   HLS_M3U,
   HLS_MEDIA_SEQUENCE,
@@ -96,6 +97,36 @@ function sequenceOf(seg: SegmentEntry): number {
  */
 function gapUri(sequence: number): string {
   return `gap-${sequence}`;
+}
+
+/**
+ * The media sequence a session opening over this playlist must number its own first entry from, or
+ * null when the playlist names nothing.
+ *
+ * ⛔⛔ **A media sequence that goes backwards is what hls.js reports as a parsing error**, escalates
+ * to fatal on a single-variant stream, and the client answers by remounting the player at the
+ * beginning. A rung's feed now outlives its session, so a viewer following the head is handed this
+ * session's first live playlist straight after the last one's, and the numbering has to carry on
+ * across that seam rather than restart at zero.
+ *
+ * ⛔ Only two things are read out of the previous playlist, and deliberately nothing else. The
+ * sequence its entries are numbered from, and how many entries it lists — every entry carries
+ * exactly one `#EXTINF`, gap entries included, so counting those counts entries. Nothing is parsed
+ * out of the segment lines: the previous recording stays whole at its own VOD index and this session
+ * neither names nor inherits any of its media.
+ *
+ * Works on a live playlist, a closing one and a recording alike, which matters because any of the
+ * three can be the head: a broadcast that ended cleanly leaves the VOD there, one that was killed
+ * leaves whatever it published last.
+ */
+export function continuesFrom(manifest: string): number | null {
+  const mediaSequence = new RegExp(`^${HLS_MEDIA_SEQUENCE}:(\\d+)`, 'm').exec(manifest);
+  if (mediaSequence === null) {
+    return null;
+  }
+
+  const entries = manifest.match(new RegExp(`^${HLS_EXTINF}:`, 'gm'))?.length ?? 0;
+  return Number(mediaSequence[1]) + entries;
 }
 
 /**
@@ -224,6 +255,22 @@ export class ManifestManager {
   /** Where a restart's re-anchoring is minted, once for the whole ladder. See {@link BroadcastDating}. */
   private readonly dating: BroadcastDating;
 
+  /**
+   * What this session adds to every sequence it publishes, because the feed already held a session.
+   *
+   * ⛔⛔ **Applied where a number is written into a playlist and nowhere else.** Everything this class
+   * holds — the anchor, the sort order, the high-water mark a restart resumes above, the dates — goes
+   * on counting from 0 at this session's own first segment. Two things depend on that. The dating is
+   * derived from the sequence and the broadcast anchor, and an offset folded into it would date this
+   * session's first segment however many fragments the previous one ran into the future. And the
+   * anchor is shared across a ladder whose rungs each resume a different feed head, so a per-rung
+   * offset in the numbering the dating reads would put four rungs on four different clocks for the
+   * same media.
+   *
+   * @see continuesFrom
+   */
+  private sequenceOffset = 0;
+
   constructor(anchor: BroadcastAnchor, dating?: BroadcastDating) {
     this.anchor = anchor;
     this.dating = dating ?? soleRungDating(() => this.anchor);
@@ -239,6 +286,54 @@ export class ManifestManager {
    */
   public broadcastAnchor(): BroadcastAnchor {
     return this.anchor;
+  }
+
+  /**
+   * Number this session's playlists from `mediaSequence` on, over a session that has already written
+   * to this feed, and mark the join.
+   *
+   * Called once, before the first segment, with what {@link continuesFrom} read off the feed head —
+   * and again beside {@link restoreState} for a session rebuilt off disk, from the offset its
+   * recovery entry carries. That is how the offset survives a crash rather than being re-derived from
+   * a head which by then is this session's own last playlist.
+   *
+   * ⛔ The recording the previous session left is not touched and not inherited. It stays whole at
+   * its own index and this session's own VOD lists only its own segments, from this number. What the
+   * seam buys is the viewer who was following the feed head: they are handed this playlist as the
+   * next update of the one they are playing, and a media sequence that moved backwards would restart
+   * them at the beginning of a recording instead.
+   *
+   * @see sequenceOffset for why nothing but the published numbering moves.
+   */
+  public continueFrom(mediaSequence: number): void {
+    this.sequenceOffset = mediaSequence;
+  }
+
+  /** What a recovery entry has to carry for {@link continueFrom} to be re-applied after a crash. */
+  public publishedSequenceOffset(): number {
+    return this.sequenceOffset;
+  }
+
+  /** The number `sequence` is written into a playlist as. See {@link sequenceOffset}. */
+  private published(sequence: number): number {
+    return sequence + this.sequenceOffset;
+  }
+
+  /**
+   * Whether this segment is where this session's media opens over a previous session's, which is a
+   * break and has to be said.
+   *
+   * ⛔ Derived from the sequence rather than latched onto whichever segment arrived first. A segment
+   * arriving out of order before anything is published takes the sequence below the one that came
+   * first, so a latched tag would end up in the middle of this session's own media, announcing a
+   * break that is not there. Sequence 0 is this session's earliest by construction: an out-of-order
+   * arrival shifts the whole broadcast up and takes that number itself.
+   *
+   * It also means the tag leaves the live window exactly when the media either side of the join
+   * does, and is written into this session's recording at the same place, with no state to carry.
+   */
+  private isSeam(seg: SegmentEntry): boolean {
+    return this.sequenceOffset > 0 && sequenceOf(seg) === 0;
   }
 
   /**
@@ -412,7 +507,7 @@ export class ManifestManager {
     // would drift across an ABR ladder the moment one rung started a fragment later than another,
     // and every level switch would land that far off. The sequence is derived from the anchor all
     // four rungs share, so it agrees across them by construction.
-    const mediaSequence = windowSegments.length > 0 ? sequenceOf(windowSegments[0]) : 0;
+    const mediaSequence = windowSegments.length > 0 ? this.published(sequenceOf(windowSegments[0])) : 0;
 
     this.sequenceHasBeenPublished = true;
     return [...this.liveHeaderLines(mediaSequence), ...this.timelineLines(windowSegments)];
@@ -432,7 +527,7 @@ export class ManifestManager {
       // It has to be the same one: a viewer whose live playlist ended is handed the closing playlist
       // and then the recording, and hls.js reports a media sequence that moves between them as a
       // parsing error rather than as a change of resource.
-      `${HLS_MEDIA_SEQUENCE}:${sequenceOf(this.segments[0])}`,
+      `${HLS_MEDIA_SEQUENCE}:${this.published(sequenceOf(this.segments[0]))}`,
       '',
       ...this.timelineLines(this.segments),
       HLS_ENDLIST,
@@ -547,7 +642,8 @@ export class ManifestManager {
     // answer, and under-reserving spends a budget that is one bee chunk. The newest sequence is the
     // upper bound rather than the segment count, because an engine restart re-anchors the numbering
     // forwards and leaves the sequence above the count.
-    const newestSequence = this.segments.length === 0 ? 0 : sequenceOf(this.segments[this.segments.length - 1]);
+    const newestSequence =
+      this.segments.length === 0 ? 0 : this.published(sequenceOf(this.segments[this.segments.length - 1]));
     const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestSequence));
 
     let spent = 0;
@@ -581,7 +677,7 @@ export class ManifestManager {
    * the wall clock the media after the break resumes at, then the segment itself.
    */
   private segmentLines(seg: SegmentEntry): string[] {
-    const discontinuity = seg.discontinuity ? [HLS_DISCONTINUITY] : [];
+    const discontinuity = seg.discontinuity || this.isSeam(seg) ? [HLS_DISCONTINUITY] : [];
     return [...discontinuity, buildProgramDateTime(this.presentedAtMsOf(seg)), buildExtinf(seg.duration), seg.ref];
   }
 
@@ -616,7 +712,7 @@ export class ManifestManager {
         HLS_GAP,
         buildProgramDateTime(presentationMsOf(this.anchor, sequence, previous)),
         buildExtinf(this.anchor.fragmentSeconds),
-        gapUri(sequence),
+        gapUri(this.published(sequence)),
       );
     }
     return lines;

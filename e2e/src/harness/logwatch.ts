@@ -703,9 +703,14 @@ export interface AnnouncedRung {
 }
 
 /**
- * Every rung announce, in order. A session announces once at start, so a recovered rung is visible
- * here as the same rung on a fresh topic. The ladder group deliberately survives an engine restart
- * while any sibling is still draining, so recovery must be read off topics, never off groups.
+ * Every rung announce, in order. A session announces once at start, and only a session that started
+ * announces at all.
+ *
+ * ⛔ **Neither the topic nor the ladder tells one session from another, so scope by TIME.** A rung's
+ * topic is derived from its ladder group and its rung name, so a restarted rung announces the one it
+ * announced before — it resumes that feed rather than taking a new one — and the group deliberately
+ * survives a restart while any sibling is still draining. A caller wanting the session that came back
+ * takes the announces made after the restart began.
  */
 export function announcedRungs(text: string): AnnouncedRung[] {
   return [...messageText(text).matchAll(rungAnnouncedPattern('g'))].map((match) => ({

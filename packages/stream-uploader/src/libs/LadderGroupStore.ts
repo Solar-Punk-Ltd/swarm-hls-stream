@@ -7,7 +7,15 @@ import { Logger } from './Logger.js';
 
 /** What every rung of one source's ladder has to agree on, and which outlives any one of them. */
 export interface RememberedLadder {
-  /** The ladder's group id, which is the catalog entry's identity and the master feed's topic. */
+  /**
+   * The ladder's group id, which is the catalog entry's identity, the master feed's topic, and what
+   * every rung's own feed topic is derived from.
+   *
+   * ⛔ Losing it costs more than a duplicate catalog entry now. `rungTopicFor` hashes this together
+   * with the rung name, so a ladder handed a second group publishes its rungs onto a second set of
+   * feeds as well: the master the surviving rungs are still writing names feeds nobody is filling,
+   * and the recordings on the first set stay reachable only through what already names them.
+   */
   group: string;
   /** Epoch milliseconds this broadcast was admitted. See `BroadcastAnchor`. */
   startedAtMs: number;
@@ -54,7 +62,7 @@ function readEpochs(epochs: unknown): BroadcastEpoch[] {
  * Which ladder each source's rungs belong to and when its broadcast started, kept where a restart of
  * this process can find them.
  *
- * The group is the identity a broadcast's single catalog entry is written under. Four rungs fold
+ * The group is the identity a broadcast's single catalog entry is written under. Four rungs merge
  * into one entry keyed by `(owner, group)`, and `StreamCatalog` replaces an entry only when the
  * group matches, so a source handed a second group is not a cosmetic slip: it is the same broadcast
  * listed twice for viewers, each copy paid for in its own postage and neither reachable from the
@@ -67,7 +75,7 @@ function readEpochs(epochs: unknown): BroadcastEpoch[] {
  * carries the identity across that gap.
  *
  * A record is retired the moment the ladder's last rung stops, which is when its recording is
- * complete. Keeping it any longer would fold the next broadcast on that source into a finished
+ * complete. Keeping it any longer would merge the next broadcast on that source into a finished
  * recording, which is the same defect pointing the other way.
  */
 export class LadderGroupStore {

@@ -137,6 +137,39 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
   });
 
   /**
+   * ⛔ The wiring, not the mechanism. `ManifestManager.continueFrom` is pinned on its own, and it
+   * passed the whole time the orchestrator was rebuilding sessions without ever handing it the
+   * offset — the field is optional, so nothing complained. A recovered session never reads its feed
+   * head, so this entry is the only surviving record of how far the numbering it resumes had got:
+   * losing it republishes the broadcast from a media sequence viewers were handed minutes ago.
+   */
+  it('hands a recovered session the numbering its entry saved', async () => {
+    const id = 'live/stream_720p';
+    const saved: StreamState[] = [];
+    const state: StreamState = { ...makeRecoveredState(id), sequenceOffset: 42 };
+    const orch = makeOrchestrator(
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(id)],
+        load: () => state,
+        save: (_streamId: string, next: StreamState) => {
+          saved.push(next);
+        },
+      }),
+    );
+
+    await orch.recoverStreams();
+    orch.handleSegment(id, 7, 2, Buffer.from('seg7'));
+    await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+
+    assert.equal(
+      saved.at(-1)?.sequenceOffset,
+      42,
+      'the resumed session carries the offset it was recovered with, rather than restarting at zero',
+    );
+    await orch.cleanup();
+  });
+
+  /**
    * The other side of the test above, and the one nothing pinned. The finalize timer deletes its own
    * `recoveryTimers` entry before it calls `stopStream`, so the cancel branch that test exercises is
    * unreachable once the timeout has fired. What stops a late segment from being taken anyway is the

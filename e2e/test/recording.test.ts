@@ -119,8 +119,8 @@ describe('how far a recording has got, per rung', () => {
   });
 
   /**
-   * A rung re-announces on a fresh topic when it recovers, and that is one rung publishing twice
-   * rather than two rungs. Counting the announces would put a phantom rung at zero into the minimum
+   * A rung re-announces when it recovers — on its own topic, which it keeps across sessions — and
+   * that is one rung publishing twice rather than two rungs. Counting the announces would put a phantom rung at zero into the minimum
    * and hold the driver at zero for the rest of the run.
    */
   it('treats a rung that re-announced after a recovery as the one rung it is', () => {

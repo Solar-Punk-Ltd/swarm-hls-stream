@@ -398,8 +398,8 @@ function abrOff({ abrEnabled }: { abrEnabled: boolean }): string | false {
  * The newest announce per rung, which is the session this broadcast is publishing.
  *
  * ⛔ Newest, for the reason `rungFeedsOf` records: a session an engine restart replaced announces
- * again on a fresh topic while the retired one keeps its own, and the retired stream is mid-finalize
- * as the read happens.
+ * again on the rung's own derived topic, the same one the retired session holds, and that retired
+ * stream is mid-finalize as the read happens. Only arrival order separates them.
  */
 function newestStreamIdByRung(logText: string): ReadonlyMap<string, string> {
   const byRung = new Map<string, string>();

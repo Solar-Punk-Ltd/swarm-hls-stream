@@ -1,5 +1,6 @@
 import { Request, Response, Router } from 'express';
 
+import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../utils/common.js';
@@ -11,6 +12,7 @@ import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions, OmeEngineSeams } from './ome/interfaces.js';
 import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller } from './ome/OmeHlsPuller.js';
 import { buildStreamId, parseAppStream, parseStreamId, resolveMediaType } from './ome/utils.js';
+import { ADMIN_PUBLISH_ALLOWED, isAuthRefusal, resolveAdminPublish } from './adminGate.js';
 import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
@@ -34,6 +36,8 @@ export function createOmeEngineFromEnv(seams: OmeEngineSeams = {}): EnginePlugin
     failOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
     fetchTimeoutMs,
     fetcher: seams.fetcher,
+    adminApi: seams.adminApi,
+    signerOwner: seams.signerOwner,
   });
 }
 
@@ -74,7 +78,12 @@ export function createOmeEngine(
   const pullers = new Map<string, OmeHlsPuller>();
   const observedSegmentTimes = new Map<string, ObservedSegmentTime>();
   const admissionSecret = options.admissionSecret ?? '';
-  const publishKeySecret = options.publishKeySecret ?? '';
+  const adminApi = options.adminApi;
+  const signerOwner = options.signerOwner;
+  // Blanked rather than read alongside, for the reason `srs.ts` gives: the two modes answer the same
+  // question from two different sources of truth, and a deployment where they disagree has no right
+  // answer. Admin mode is the one that wins, because it is the one a stream was declared in.
+  const publishKeySecret = adminApi ? '' : options.publishKeySecret ?? '';
   if (publishKeySecret) {
     assertUsablePublishKeySecret(publishKeySecret);
   }
@@ -200,7 +209,14 @@ export function createOmeEngine(
       if (!admissionSecret) {
         logger.warn('[OME] No admission secret configured, every admission request will be rejected');
       }
-      if (!publishKeySecret) {
+      if (adminApi) {
+        // The one line that says which gate is running, for the reason `srs.ts` logs its own: a
+        // refusal reads completely differently depending on which mode produced it.
+        logger.info(
+          `[OME] Admin mode: every admission is resolved against ${adminApi.describe()} and authenticated with ` +
+            'the key that declaration carries. PUBLISH_KEY_SECRET is ignored.',
+        );
+      } else if (!publishKeySecret) {
         // The signature above authenticates OME, and says nothing about who is publishing into it.
         // Without this an operator has no way to tell a deployment where SEC-28 applies from one
         // where ownership is still decided by the address alone.
@@ -217,7 +233,13 @@ export function createOmeEngine(
           reply(res, { allowed: false, reason: 'invalid signature' });
           return;
         }
-        handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen, sessions, publishKeySecret);
+        // `void` for the reason the SRS router gives: express does not await a handler, the handler
+        // catches everything itself, and outside admin mode it reaches no `await` before it replies.
+        void handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen, sessions, {
+          publishKeySecret,
+          adminApi,
+          signerOwner,
+        });
       });
 
       return router;
@@ -408,7 +430,19 @@ interface SessionRegistry {
   reasonToIgnoreClosing(streamId: string, identity: SessionIdentity): IgnoredClosingReason | null;
 }
 
-function handleAdmission(
+/**
+ * What an admission has to prove, in whichever of the two mutually exclusive ways this deployment
+ * uses. The same shape and the same reason as `SrsPublishGate` in `srs.ts`: exactly one of the two
+ * is ever set, and a signature taking them separately invites a call site that passes both.
+ */
+interface OmePublishGate {
+  publishKeySecret: string;
+  adminApi?: AdminApiClient;
+  /** The owner every feed this service writes resolves under, compared with each declaration's. */
+  signerOwner?: string;
+}
+
+async function handleAdmission(
   req: Request,
   res: Response,
   orchestrator: StreamOrchestrator,
@@ -416,8 +450,9 @@ function handleAdmission(
   stopPuller: StopPuller,
   failOpen: boolean,
   sessions: SessionRegistry,
-  publishKeySecret: string,
-): void {
+  gate: OmePublishGate,
+): Promise<void> {
+  const { publishKeySecret, adminApi, signerOwner } = gate;
   try {
     const payload = req.body as OmeAdmissionPayload;
     const request = payload?.request;
@@ -449,6 +484,11 @@ function handleAdmission(
       // and their stream finalizes at the recovery timeout instead of promptly. Bounded, one-time, and
       // the alternative is honouring an unproven closing for the whole life of every such session.
       // See SEC-29.
+      //
+      // ⚠️ In admin mode `publishKeySecret` is blank, so this check is off and a closing is gated
+      // only by the admission signature. Deliberate, and the same choice `srs.ts` makes on its
+      // unpublish: the expected key lives in the declaration, so proving one here would put a lookup
+      // on the stop path and let an admin outage keep a finished broadcast from finalizing.
       if (publishKeySecret && !hasValidPublishKey(publishKeySecret, streamId, publishKeyFromUrl(request.url))) {
         logger.warn(`[OME] Ignored a closing for ${streamId} with a missing or invalid publish key`);
         // Reported rather than observed, because this answers 200 and the observer counts 401. See OBS-15.
@@ -479,6 +519,52 @@ function handleAdmission(
     }
 
     // status === 'opening' (or absent — treat as opening)
+    // Read once, above the branch, because both gates decide on it: admin mode compares it against
+    // the declaration and the standalone path hands it straight to the orchestrator.
+    const mediatype = resolveMediaType(parsed.app);
+
+    if (adminApi) {
+      const verdict = await resolveAdminPublish(
+        adminApi,
+        '[OME]',
+        streamId,
+        mediatype,
+        publishKeyFromUrl(request.url),
+        signerOwner,
+      );
+
+      if (verdict.kind !== ADMIN_PUBLISH_ALLOWED) {
+        if (isAuthRefusal(verdict.kind)) {
+          // Reported rather than observed: this answers 200 with an admission verdict, which is what
+          // OME's protocol wants, so the status-code observer never sees it. See OBS-15.
+          orchestrator.recordAuthRejection();
+        }
+        // The same uninformative reason for every refusal, deliberately. The gate has already said
+        // which one it was in the log, and a reason naming the cause would tell a prober whether an
+        // ingest id has a declaration behind it.
+        reply(res, { allowed: false, reason: 'not admitted' });
+        return;
+      }
+
+      const admitted = orchestrator.startStream(
+        streamId,
+        mediatype,
+        // Proven by the declaration's own key, so SEC-26's takeover rules apply unchanged.
+        { address: publisherAddress(payload), isAuthenticated: true },
+        verdict.session,
+      );
+      if (!admitted) {
+        reply(res, { allowed: false, reason: 'orchestrator rejected' });
+        return;
+      }
+
+      sessions.opened(streamId, session);
+      logger.info(`[OME] Stream opening: ${streamId} (${mediatype})`);
+      startPuller(orchestrator, streamId, parsed.app, parsed.stream);
+      reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
+      return;
+    }
+
     const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromUrl(request.url));
     if (publishKeySecret && !isAuthenticated) {
       // Named as its own refusal rather than folded into the one below, and this is the opposite
@@ -495,7 +581,6 @@ function handleAdmission(
       return;
     }
 
-    const mediatype = resolveMediaType(parsed.app);
     const accepted = orchestrator.startStream(streamId, mediatype, {
       address: publisherAddress(payload),
       isAuthenticated,
@@ -522,7 +607,7 @@ function handleAdmission(
   } catch (error) {
     const msg = getErrorMessage(error);
     logger.error(`[OME] Admission handler error: ${msg}`);
-    if (failOpen) {
+    if (failOpen && !adminApi) {
       reply(res, { allowed: true, reason: 'handler error (fail-open)' });
     } else {
       reply(res, { allowed: false, reason: 'handler error' });

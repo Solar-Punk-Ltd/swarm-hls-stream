@@ -249,10 +249,12 @@ services:
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
       # What the two startup gates below do about a node they cannot read, and how long each of their
       # reads gets. The owner ruled the two apart on 2026-09-17, so `chequebook-warn`, the default,
-      # has the chequebook gate warning and starting while the postage gate still refuses: a batch
-      # that is full or expired fails every write while the broadcast looks live. `warn` is both
-      # warning, `refuse` is both refusing. A refusal is only ever about a node that ANSWERED, since
-      # one that does not answer at all is waited for whatever this says, which is D16 of the same day.
+      # has the chequebook gate warning and starting while the postage gate still refuses a batch
+      # that the node answered about as full or expired. `warn` has both gates warning. `refuse` has
+      # both gates refusing. The coordinator is always waited for when it does not answer. Under
+      # `refuse`, an unavailable rung node is waited for too. Under either warning mode, an unavailable
+      # non-coordinator rung becomes a warning and the service starts degraded. This is D16 of the
+      # same day.
       #
       # The timeout is deliberately not the one above: a chequebook balance and a batch are answered
       # off the chain, and 4000ms borrowed from the upload loop's retry windows is what held a live
@@ -279,6 +281,19 @@ services:
       # publisher authentication rather than rejecting everything, so an existing deployment keeps
       # working across the upgrade that introduced it. See SEC-28 and `publish-key.sh`.
       PUBLISH_KEY_SECRET: ${PUBLISH_KEY_SECRET:-}
+      # Admin mode, which ADMIN_API_URL alone turns on: set, the uploader publishes each stream on
+      # the topic the admin minted and reports state back instead of writing the catalog itself;
+      # empty leaves the deployment standalone, exactly as it was. The token is required whenever the
+      # URL is set, so a half-configured admin deployment refuses to start rather than running as a
+      # standalone one. Both default to empty so an existing deployment upgrades unchanged.
+      # With ABR_ENABLED as well, the declared topic is the ladder's master playlist feed and each
+      # rung publishes on a topic derived from the group and its rung name, so a rung's feed outlives
+      # its session: a restarted rung or a reconnected encoder continues the same feed with a
+      # discontinuity, recordings sit back to back on it and the entry names the latest, which is why
+      # the admin accepts `live` after `vod`. The admin merges the rungs and the uploader writes the
+      # master from what it hands back. See the uploader README's "Admin mode".
+      ADMIN_API_URL: ${ADMIN_API_URL:-}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
       API_PORT: ${API_PORT:-3000}
       STATE_DIR: /app/state
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-100}

@@ -132,7 +132,7 @@ describe('announcedRungs', () => {
     assert.equal(announcedRungs(log)[0]?.topic, 'topic-2');
   });
 
-  it('keeps every announce, so a recovered session is visible as the same rung on a fresh topic', () => {
+  it('keeps every announce, so both sessions of a rung that restarted are visible', () => {
     const log = [announce('live/stream_720p', '720p', 'before'), announce('live/stream_720p', '720p', 'after')]
       .map(textLine)
       .join('\n');

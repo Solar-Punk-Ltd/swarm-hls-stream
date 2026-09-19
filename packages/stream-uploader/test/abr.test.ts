@@ -153,7 +153,7 @@ describe('buildLadderEntry', () => {
     );
   });
 
-  it('folds later rungs into the same entry, lowest rung first', () => {
+  it('merges later rungs into the same entry, lowest rung first', () => {
     let previous: StreamEntry[] = [];
     for (const [name, height] of [
       ['720p', 720],

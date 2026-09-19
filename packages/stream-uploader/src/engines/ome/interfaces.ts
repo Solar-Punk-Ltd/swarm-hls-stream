@@ -1,3 +1,6 @@
+import { AdminApiClient } from '../../libs/AdminApiClient.js';
+import { EngineFactoryDeps } from '../types.js';
+
 /**
  * The subset of `fetch` the puller uses, injected so its network paths are testable. Typed as the
  * global so a caller can pass `fetch` itself and a test can pass anything shaped like it.
@@ -96,6 +99,18 @@ export interface OmeEngineOptions {
    * off the air on upgrade.
    */
   publishKeySecret?: string;
+  /**
+   * The admin service, when `ADMIN_API_URL` is set. Present, it **replaces** `publishKeySecret`
+   * rather than adding to it: an admission is resolved against a stream the admin has declared and
+   * authenticated with the key that declaration carries, so there is no local secret to derive from.
+   * See `engines/adminGate.ts`.
+   */
+  adminApi?: AdminApiClient;
+  /**
+   * The address this service signs its feeds with. Read only in admin mode, where the gate refuses a
+   * declaration owned by another feed key. See `EngineFactoryDeps.signerOwner`.
+   */
+  signerOwner?: string;
   failOpen?: boolean;
   /** Passed straight to every puller this engine starts. See `PullerOptions.fetchTimeoutMs`. */
   fetchTimeoutMs?: number;
@@ -113,8 +128,13 @@ export interface OmeEngineOptions {
  * Seams the environment cannot supply, for tests that need to observe what the engine hands its
  * pullers. Deliberately holds no configuration: every operator-facing value still comes from the
  * environment, so a test cannot prove a plumbing path a deployment does not have.
+ *
+ * It extends {@link EngineFactoryDeps} because the admin client is the one thing the factory cannot
+ * build for itself: the orchestrator has to report through the same instance the gate resolves
+ * against, so it is constructed once at boot and handed in. That is a dependency rather than a
+ * setting, which is why it does not breach the paragraph above.
  */
-export interface OmeEngineSeams {
+export interface OmeEngineSeams extends EngineFactoryDeps {
   fetcher?: Fetcher;
 }
 

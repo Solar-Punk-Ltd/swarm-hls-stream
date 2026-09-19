@@ -299,18 +299,20 @@ that holds in one and not the other is a finding rather than a flake.
 
 ## The playlist timeline: asserted on the playlists a broadcast published
 
-**Added 2026-09-03, wired live the same day.** Every playlist the uploader writes opens at
-`#EXT-X-MEDIA-SEQUENCE:0` and carries an `#EXT-X-PROGRAM-DATE-TIME` on every segment. Since
-2026-09-15 each stamp is the one in front of it plus the media that entry declares, read as the
-deployment's nominal fragment length wherever the two agree to within 1%, which under a ladder is
-every segment. The contract is described in
-[the uploader's README](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+**Added 2026-09-03, wired live the same day.** A session on a fresh topic opens at
+`#EXT-X-MEDIA-SEQUENCE:0`. A declared stream or ladder rung reusing a topic continues after the
+entries in its previous feed head, so its published sequence can open above zero. Both carry an
+`#EXT-X-PROGRAM-DATE-TIME` on every segment. Since 2026-09-15 each stamp is the one in front of it
+plus the media that entry declares, read as the deployment's nominal fragment length wherever the
+two agree to within 1%, which under a ladder is every segment. The contract is described in
+[the uploader's README](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-continuous-published-numbering).
 
 `manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the rulebook, and
-`e2e/test/manifestContract.test.ts` proves it against playlist text: sequence 0 on the first playlist
-of a broadcast, a readable wall clock on every entry, strictly rising stamps, and a step between
-entries carrying no `#EXT-X-DISCONTINUITY` that matches the media the earlier one declares, which
-under a ladder is exactly one fragment. That is free and it runs in CI.
+`e2e/test/manifestContract.test.ts` proves it against playlist text. A first session on a fresh topic
+starts at zero. A reused topic continues from its predecessor. Every entry carries a readable wall
+clock with strictly rising stamps, and a step between entries carrying no
+`#EXT-X-DISCONTINUITY` matches the media the earlier one declares. Under a ladder that is exactly one
+fragment. That is free and it runs in CI.
 
 Across a discontinuity a forward step of any size is legal, decided by the owner on 2026-09-03. An
 engine restart inside a broadcast re-anchors the dating on the wall clock the engine came back at, so
@@ -328,9 +330,10 @@ clock, so the media behind the hole is a continuation.
 
 ⛔ **The uploader's log cannot falsify any of it, by design.** The log names the engine's own segment
 index and the feed's SOC index, because those are what correlate with the engine's logs and with a
-segment reference. The playlist publishes a different number, a media sequence counting from 0 at
-this broadcast's first segment, and a date derived from one anchor the whole ladder shares. So a
-suite has to read the playlist.
+segment reference. The playlist publishes a different number. Its session-local media sequence
+counts from zero, then a reused feed adds the offset read from its previous head. Its date comes from
+one anchor the whole ladder shares and never includes that feed offset. A suite has to read the
+playlist.
 
 `e2e/src/harness/manifestContractLive.ts` is what reads it, and
 `e2e/test/manifestContractLive.test.ts` covers everything in it but the feed read. Eight live suites
