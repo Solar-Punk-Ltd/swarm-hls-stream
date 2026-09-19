@@ -227,15 +227,17 @@ describe('LadderGroupStore', () => {
     });
 
     it('clears the report once a write lands', () => {
-      const store = new LadderGroupStore(unwritablePath(makeTempRoot()));
+      const root = makeTempRoot();
+      const blocker = path.join(root, 'blocker');
+      const store = new LadderGroupStore(unwritablePath(root));
       capturingErrors(() => store.remember(BASE, LADDER));
       assert.notEqual(store.getMsSinceSaveFailed(), null, 'the failure has to be recorded for this to mean anything');
 
-      const { store: writable } = storeIn(makeTempRoot());
-      writable.remember(BASE, LADDER);
+      fs.rmSync(blocker);
+      store.remember(BASE, LADDER);
 
-      assert.equal(writable.getMsSinceSaveFailed(), null);
-      assert.deepEqual(writable.load(BASE), LADDER, 'a write that reports success must have actually landed');
+      assert.equal(store.getMsSinceSaveFailed(), null);
+      assert.deepEqual(store.load(BASE), LADDER, 'a write that reports success must have actually landed');
     });
   });
 });
