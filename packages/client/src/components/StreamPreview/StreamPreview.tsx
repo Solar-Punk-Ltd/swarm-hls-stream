@@ -72,7 +72,7 @@ interface StreamPreviewProps {
   owner: string;
   topic: string;
   state?: StreamState;
-  duration?: string;
+  duration?: string | number;
   mediatype: MediaType;
   title: string;
   /** The SOC index of this stream's final manifest, published by the uploader on a finished stream. */
@@ -80,7 +80,7 @@ interface StreamPreviewProps {
   /** A Swarm reference to a still image the publisher uploaded. Absent or '' when there is none. */
   thumbnail?: string;
   /** Only ever set on a scheduled entry, and null there until a time is fixed. */
-  scheduledStartTime?: string | null;
+  scheduledStartTime?: string | number | null;
 }
 
 /** The preview plays one segment, so the target duration only has to be at least that long. */
@@ -286,7 +286,9 @@ export const StreamPreview = ({
             )}
             {isScheduled && startsAt && <span className="stream-preview-button-schedule">{startsAt}</span>}
             {duration && (
-              <span className="stream-preview-button-duration">{formatDuration(Number.parseFloat(duration))}</span>
+              <span className="stream-preview-button-duration">
+                {formatDuration(Number.parseFloat(String(duration)))}
+              </span>
             )}
           </div>
         </div>

@@ -11,10 +11,10 @@ export {
   STREAM_STATUS_VOD,
 } from '@swarm-hls-stream/shared';
 
-import type { MediaType, Rendition, StreamStatus } from '@swarm-hls-stream/shared';
+import type { MediaType, Rendition } from '@swarm-hls-stream/shared';
 
-/** The uploader's name for this is `StreamStatus`, which is what the catalog entry actually says. */
-export type StreamState = StreamStatus;
+/** Known values are `StreamStatus`. Future publisher values remain valid and are treated as not-live. */
+export type StreamState = string;
 
 export interface Stream {
   owner: string;
@@ -24,7 +24,7 @@ export interface Stream {
    */
   topic: string;
   state?: StreamState;
-  duration?: string;
+  duration?: string | number;
   index?: number;
   timestamp: number;
   mediatype: MediaType;
@@ -46,6 +46,7 @@ export interface Stream {
   /**
    * When an announced broadcast is meant to begin. Only the admin layer writes it, and it is
    * explicitly `null` on an entry that has no time fixed yet, which is why null is in the type.
+   * Numeric epoch timestamps are accepted for publishers that mirror the adjacent `timestamp`.
    */
-  scheduledStartTime?: string | null;
+  scheduledStartTime?: string | number | null;
 }
