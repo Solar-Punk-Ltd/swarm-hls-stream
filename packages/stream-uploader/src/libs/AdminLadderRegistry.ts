@@ -8,7 +8,7 @@ import { Logger } from './Logger.js';
 import { MasterFeedWriter } from './MasterFeedWriter.js';
 import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
 
-export interface AdminLadderRegistryOptions {
+interface AdminLadderRegistryOptions {
   client: AdminApiClient;
   masterWriter: MasterFeedWriter;
   /**
