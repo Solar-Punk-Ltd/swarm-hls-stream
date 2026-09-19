@@ -18,10 +18,15 @@ services:
     # port variables there is what keeps the port that gets published and the port SRS binds resolving
     # from one place. Without it an operator who sets either one gets an SRT socket with nothing
     # behind it.
+    #
+    # The two HTTP ports take a bind address, the same knob and the same default as in
+    # `deploy/docker-compose.yml`. The control API authenticates nobody and names every live stream
+    # and every publisher's address, and the file server serves the segment directory. On this path
+    # the variables are read from `.env` beside this file rather than from the root one.
     ports:
       - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
-      - '${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
-      - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
+      - '${SRS_HTTP_API_BIND:-0.0.0.0}:${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
+      - '${SRS_HTTP_BIND:-0.0.0.0}:${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
       - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
     # Enumerated rather than inherited, deliberately. This used to be `env_file: ../../.env`, which
     # fills the container with **every** root variable, including PUBLISH_KEY_SECRET: the master
@@ -66,7 +71,10 @@ services:
       # settled length by that constant before ramping back down. At 2.1 the common 2.0s GOP was
       # force-closed intermittently. 0.5 * 5.0 = 2.5s, the ceiling latbench has always run.
       HLS_FRAGMENT: ${HLS_FRAGMENT:-0.5}
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
+      # In seconds, and derived into SRS's own ratio by the entrypoint. Set HLS_AOF_RATIO to drive
+      # that ratio directly instead, which the deploy/scripts probes do.
+      HLS_SEGMENT_MAX: ${HLS_SEGMENT_MAX:-2.5}
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
       # The ABR ladder, read by this entrypoint. Off by default.

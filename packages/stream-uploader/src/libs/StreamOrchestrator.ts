@@ -18,6 +18,7 @@ import {
   PRESSURE_HIGH,
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
+  PublisherGopStream,
   QueuePressure,
   RECOVERY_ENTRY_MISSING,
   RECOVERY_ENTRY_UNREADABLE,
@@ -27,6 +28,7 @@ import {
   REJECT_UNUSABLE_DURATION,
   SegmentEntry,
   SegmentResult,
+  StartGateWarning,
   STOP_FAILURE_DRAIN_TIMEOUT,
   STOP_FAILURE_FINALIZE_FAILED,
   STREAM_LIFECYCLE_DRAINING,
@@ -45,7 +47,7 @@ import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from
 import { AbrLadder } from './AbrLadder.js';
 import { AdminApiClient } from './AdminApiClient.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
-import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } from './broadcastDating.js';
+import { BroadcastDating, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -99,8 +101,8 @@ export interface StreamOrchestratorConfig {
   orphanReapMs: number;
   segmentStallMs: number;
   /**
-   * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is what every segment's
-   * `#EXT-X-PROGRAM-DATE-TIME` steps by. See {@link BroadcastAnchor}.
+   * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
+   * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
    */
   fragmentSeconds: number;
   /** How many further segments an index stays remembered for, so a duplicate inside that is refused. */
@@ -325,6 +327,12 @@ export class StreamOrchestrator {
   private segmentLossAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
   private stopOutcomes = new Map<string, RetainedStopOutcome>();
+  /** Actual pending writes for topics shared across sessions, independently of bounded stop reports. */
+  private sharedFeedWrites = new Map<string, Promise<void>>();
+  /** Which stable topic an uploader writes, absent for a per-session standalone topic. */
+  private sharedFeedTopics = new WeakMap<StreamUploader, string>();
+  /** Uploaders whose inherited and own write completion is already registered. */
+  private trackedSharedFeedDrains = new WeakSet<StreamUploader>();
   /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
   private readonly metrics = new ServiceMetrics();
   /** Ladder id per base stream, so the four rungs of one source share a catalog entry. */
@@ -454,13 +462,14 @@ export class StreamOrchestrator {
       stale.retire();
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
-      // Started before the replacement rather than after it, so the replacement can be handed the
-      // promise. The drain itself is unchanged and still nobody awaits it here; what is new is that
-      // the replacement holds its manifest publishes until this settles. `retire()` gives up the
+      // Started before the replacement is built. `drainUploader` synchronously registers the
+      // retired uploader's actual write completion under its topic before it begins the bounded
+      // wait. The replacement reads that topic entry below and holds its manifest publishes until
+      // the writes finish, even when the stop report has already timed out. `retire()` gives up the
       // recovery entry, the admin report and the catalog entry, but not the SOC writes, so wherever
       // both sessions hold one topic the retired session's closing and VOD manifests race the
       // replacement's live ones for the same feed indexes.
-      const drained = this.finalizeRetiredSession(streamId, stale);
+      void this.finalizeRetiredSession(streamId, stale);
       // ⛔ The gate is owed wherever the two sessions publish their own manifests onto one topic, and
       // that is now every session whose topic outlives it: a declared stream in admin mode, and a RUNG
       // in either deployment, whose topic is derived from its ladder group and its rung name and is
@@ -470,8 +479,7 @@ export class StreamOrchestrator {
       //
       // A standalone single-rendition stream is the one that owes nothing: it mints a fresh uuid per
       // session, so the retired session is writing to a feed this one will never touch.
-      const sharesOneFeed = admin !== undefined || (this.config.ladder?.match(streamId) ?? null) !== null;
-      this.spawnUploader(streamId, mediatype, claimant, admin, sharesOneFeed ? drained : undefined);
+      this.spawnUploader(streamId, mediatype, claimant, admin);
       return true;
     }
 
@@ -682,13 +690,7 @@ export class StreamOrchestrator {
    * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
    * and a uuid.
    */
-  private spawnUploader(
-    streamId: string,
-    mediatype: MediaType,
-    claimant: StreamClaimant,
-    admin?: AdminSession,
-    predecessorDrained?: Promise<void>,
-  ): void {
+  private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant, admin?: AdminSession): void {
     // Resolved before the uploader is built: the rungs of one ladder publish within milliseconds of
     // each other, and a group id assigned later would let two of them create two groups for one source.
     const match = this.config.ladder?.match(streamId) ?? null;
@@ -748,6 +750,9 @@ export class StreamOrchestrator {
     const datingKey = this.datingKeyOf(streamId, match?.baseStreamId ?? null);
     this.broadcastAnchors.set(datingKey, anchor);
 
+    const sharedFeedTopic = admin !== undefined || ladder !== undefined ? streamTopic : undefined;
+    const predecessorDrained = sharedFeedTopic ? this.sharedFeedWrites.get(sharedFeedTopic) : undefined;
+
     // Which node's postage batch pays for this rung. A stream with no rung, single-rendition or
     // anything arriving through the generic API, rides the coordinator: the longest-lived batch.
     const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
@@ -769,6 +774,10 @@ export class StreamOrchestrator {
       admin: this.adminReportingFor(admin?.id),
       predecessorDrained,
     });
+
+    if (sharedFeedTopic) {
+      this.sharedFeedTopics.set(uploader, sharedFeedTopic);
+    }
 
     this.activeStreams.set(streamId, uploader);
     this.processedSegments.set(streamId, this.newDuplicateFilter());
@@ -966,6 +975,21 @@ export class StreamOrchestrator {
       }
     }
     return mismatched;
+  }
+
+  /**
+   * The same streams on a stage with no ladder, where the publisher's keyframe interval decides the
+   * segment, named with both lengths because the gap between them is what picks the remedy.
+   */
+  private getPublisherGopStreams(): PublisherGopStream[] {
+    const { configuredSeconds } = this.fragmentStage();
+    const segmentedByPublisher: PublisherGopStream[] = [];
+    for (const [streamId, watch] of this.fragmentWatches) {
+      if (watch.verdict.kind === FRAGMENT_PUBLISHER_GOP) {
+        segmentedByPublisher.push({ streamId, configuredSeconds, measuredSeconds: watch.verdict.measuredSeconds });
+      }
+    }
+    return segmentedByPublisher;
   }
 
   /**
@@ -1425,6 +1449,10 @@ export class StreamOrchestrator {
       admin: this.adminReportingFor(state.adminStreamId),
     });
 
+    if (state.ladder || (state.adminStreamId && this.config.adminApi)) {
+      this.sharedFeedTopics.set(uploader, state.streamRawTopic);
+    }
+
     this.activeStreams.set(streamId, uploader);
     this.streamActivityAt.set(streamId, this.clock.now());
     this.streamIngestAt.set(streamId, this.clock.now());
@@ -1602,15 +1630,25 @@ export class StreamOrchestrator {
 
   /**
    * How long this service has been unable to write the state it needs to survive a restart, from the
-   * oldest unresolved failure across both stores. `null` while every write is landing.
+   * oldest unresolved failure across all three stores. `null` while every write is landing.
    *
-   * One signal for two stores because it is one fact: they write into the same `STATE_DIR`, so a full
-   * disk, a read-only mount or a permissions change takes out both, and the operator's next move is
-   * the same either way. What follows a restart differs, a stream resuming from stale segments versus
-   * a catalog feed forked at an occupied index, and neither is visible until the restart happens.
+   * One signal for three stores because it is one fact: they write into the same `STATE_DIR`, so a
+   * full disk, a read-only mount or a permissions change takes out all of them, and the operator's
+   * next move is the same whichever it was. What follows a restart differs, a stream resuming from
+   * stale segments, a catalog feed forked at an occupied index, or a broadcast handed a second
+   * ladder group and therefore a second catalog entry, and none of it is visible until the restart
+   * happens.
+   *
+   * The ladder groups joined this in 2026-09-16, having been the one store with no alarm. A
+   * directory with mixed ownership is the realistic way to lose that one alone, and a container job
+   * running as root is how a state directory acquires one.
    */
   public getMsSinceStatePersistFailed(): number | null {
     let oldest = this.streamCatalog.getMsSinceIndexSaveFailed();
+    const ladderGroups = this.config.ladderGroupStore?.getMsSinceSaveFailed() ?? null;
+    if (ladderGroups !== null && (oldest === null || ladderGroups > oldest)) {
+      oldest = ladderGroups;
+    }
     for (const uploader of this.activeStreams.values()) {
       const age = uploader.getMsSinceStatePersistFailed();
       if (age !== null && (oldest === null || age > oldest)) {
@@ -1845,11 +1883,24 @@ export class StreamOrchestrator {
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
       quarantinedRecoveryEntries: this.recoveryStore.listQuarantined().length,
       fragmentMismatchStreams: this.getFragmentMismatchStreams(),
+      publisherGopStreams: this.getPublisherGopStreams(),
       // Read off the latch itself rather than off the rendered list below it, so a refusal recorded
       // against a publisher the routing no longer names still turns this service degraded. The signal
       // must never under-report, and a payload that cannot place one is the lesser failure.
       postageRefusedPublishers: this.metrics.getPostageRefusals().length,
+      startGateWarnings: [...this.metrics.getStartGateWarnings()],
     };
+  }
+
+  /**
+   * What the startup gates warned about instead of refusing, from the pass that finished the boot.
+   *
+   * Here rather than anywhere closer to the gates because `/health` is derived from this object and
+   * nothing else, so a finding that does not reach it is a finding an operator cannot see. Replaces
+   * the previous pass: see `ServiceMetrics.setStartGateWarnings`.
+   */
+  public recordStartGateWarnings(warnings: readonly StartGateWarning[]): void {
+    this.metrics.setStartGateWarnings(warnings);
   }
 
   public async cleanup(): Promise<void> {
@@ -2016,9 +2067,12 @@ export class StreamOrchestrator {
       joined
         ? `[StreamOrchestrator] Broadcast ${datingKey} joined the dating line already minted for this ` +
             `restart, at sequence ${resumeAt}: ${new Date(epoch.atMs).toISOString()}`
-        : `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
-            `${new Date(programDateTimeMsOf(anchor, resumeAt)).toISOString()} becomes ` +
-            `${new Date(epoch.atMs).toISOString()}`,
+        : // The date the asking rung would really have carried, which is what it offered as its floor.
+          // Not this anchor's own arithmetic: a rung whose segments ran longer than HLS_FRAGMENT has
+          // dated its media past that, so the arithmetic would name an instant nothing ever published
+          // and understate how far the restart moved the dating.
+          `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
+            `${new Date(notBeforeMs).toISOString()} becomes ${new Date(epoch.atMs).toISOString()}`,
     );
     return epoch;
   }
@@ -2074,8 +2128,20 @@ export class StreamOrchestrator {
   private async performDrain(streamId: string): Promise<void> {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
-      this.logger.warn(`[StreamOrchestrator] No uploader found for ${streamId}`);
-      this.recoveryStore.remove(streamId);
+      // ⛔⛔⛔ Nothing on disk is touched here, and that is the whole point of this branch. The only
+      // recovery entry it can reach belongs to a session that has already drained, and a drain whose
+      // finalize failed keeps its entry deliberately: `drainUploader` retires the uploader so the
+      // file survives for the next boot to publish the recording from. Removing it here threw that
+      // recording away on the second stop of an id, which is an ordinary event rather than a rare
+      // one, since OME sends its closing after the puller has already stopped the stream, SRS sends
+      // `on_unpublish` for a session that outlived a reap, and an operator reading `failed` from
+      // `GET /stream/status` retries the stop. The media it stranded was bought and paid for, the
+      // catalog entry stays `live` for ever, and no health reason fires, because the entry was
+      // deleted rather than quarantined.
+      this.logger.warn(
+        `[StreamOrchestrator] Stop of ${streamId} found no live session, so any recovery entry on ` +
+          'disk is left for the next boot',
+      );
       this.releaseLadder(streamId);
       return;
     }
@@ -2116,8 +2182,9 @@ export class StreamOrchestrator {
    * Answers rather than throws, deliberately. A stop that fails still has to leave the live maps, and
    * rethrowing would skip `retireSession`, leaving the id in `activeStreams` with nothing feeding it
    * and the stall signal reporting a stream that had already ended for the life of the process. The
-   * drain really does complete here. It just completes unsuccessfully, and that is a result rather
-   * than an exception.
+   * bounded wait really does complete here. It can complete unsuccessfully while `notifyStop`
+   * continues its I/O in the background, and that is a result rather than an exception. Sessions on
+   * the same topic still wait for that actual completion through `trackSharedFeedWrites`.
    */
   private async drainUploader(streamId: string, uploader: StreamUploader): Promise<StreamStatusReport> {
     let drainTimer: Timer | undefined;
@@ -2130,8 +2197,11 @@ export class StreamOrchestrator {
       );
     });
 
+    const actualDrain = uploader.notifyStop();
+    this.trackSharedFeedWrites(uploader, actualDrain);
+
     try {
-      await Promise.race([uploader.notifyStop(), drainTimeout]);
+      await Promise.race([actualDrain, drainTimeout]);
       return { streamId, state: STREAM_LIFECYCLE_FINALIZED, settledAt: Date.now() };
     } catch (error) {
       const msg = getErrorMessage(error);
@@ -2155,6 +2225,42 @@ export class StreamOrchestrator {
       // timer holding the event loop open, one per stopped stream.
       drainTimer?.cancel();
     }
+  }
+
+  /**
+   * Keep the real end of an uploader's writes under the stable topic they can still change.
+   *
+   * A stop deadline answers the caller and retires the session, but it cannot cancel Bee I/O already
+   * in progress. A new session may ingest while that I/O is pending, but it cannot safely read the
+   * head or publish a manifest until every writer before it has settled. The inherited completion is
+   * included because an intermediate session can fail its own finalize while the session before it
+   * is still writing. If old I/O never settles, publishing on this topic stays held until process
+   * recovery rather than risking two writers at one feed index.
+   */
+  private trackSharedFeedWrites(uploader: StreamUploader, actualDrain: Promise<void>): void {
+    if (this.trackedSharedFeedDrains.has(uploader)) {
+      return;
+    }
+
+    const topic = this.sharedFeedTopics.get(uploader);
+    if (!topic) {
+      return;
+    }
+
+    const ownCompletion = actualDrain.then(
+      () => undefined,
+      () => undefined,
+    );
+    const inherited = this.sharedFeedWrites.get(topic);
+    const completion = inherited ? Promise.all([inherited, ownCompletion]).then(() => undefined) : ownCompletion;
+
+    this.trackedSharedFeedDrains.add(uploader);
+    this.sharedFeedWrites.set(topic, completion);
+    void completion.finally(() => {
+      if (this.sharedFeedWrites.get(topic) === completion) {
+        this.sharedFeedWrites.delete(topic);
+      }
+    });
   }
 }
 

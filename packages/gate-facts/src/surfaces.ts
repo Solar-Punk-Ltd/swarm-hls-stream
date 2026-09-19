@@ -49,9 +49,9 @@ export function surfacesTouched(paths: readonly string[]): string[] {
  * Three states rather than two, because "no runner exists for this package" and "there is no source
  * here at all" are different facts and only the second one means the check was not owed.
  */
-export type MutationState = 'applies' | 'unavailable' | 'not-applicable';
+type MutationState = 'applies' | 'unavailable' | 'not-applicable';
 
-export interface MutationApplicability {
+interface MutationApplicability {
   state: MutationState;
   /**
    * Changed source the harness does not reach, even when `state` is `applies`.

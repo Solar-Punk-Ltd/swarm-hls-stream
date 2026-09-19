@@ -243,7 +243,7 @@ export function recordFragmentLog(page: Page, into: FragmentLog): void {
 }
 
 /** One level the player asked for in a stretch, and how much of that stretch it accounted for. */
-export interface LevelRequestCount {
+interface LevelRequestCount {
   /** The level index as the client wrote it. */
   level: string;
   requests: number;

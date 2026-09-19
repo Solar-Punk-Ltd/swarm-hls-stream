@@ -1,5 +1,7 @@
 # Handover to the loadtest repo: what to test, what is already known, and where every number lives
 
+**Frozen at hand-over, 2026-08-16.** Nothing here has been updated since. Later findings and corrections live in [`docs/bench/INDEX.md`](../bench/INDEX.md).
+
 **Written 2026-08-10, rewritten the same day once the Pilot architecture was settled.** This repository
 measures **one gateway at current scale**. The loadtest repo runs the load tests this one cannot. This
 file is the bridge: what is settled, what is open, what to run first, and the file to open for each

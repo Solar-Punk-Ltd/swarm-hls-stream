@@ -312,7 +312,7 @@ export class ManifestStateManager {
 }
 
 /** A stream's ABR ladder, as the loader needs it: who owns the feeds, and what the rungs are. */
-export interface LadderSource {
+interface LadderSource {
   owner: string;
   renditions: Rendition[];
 }
@@ -324,7 +324,7 @@ export interface LadderSource {
  * having — but only up to the moment hls.js reads the master, which for a live stream is once. A
  * supplier picks up whatever has landed by then; a snapshot taken at registration could not.
  */
-export type LadderResolver = () => LadderSource;
+type LadderResolver = () => LadderSource;
 
 /**
  * A source known to be a ladder, and the topics actually handed to the poller.
@@ -336,6 +336,49 @@ export type LadderResolver = () => LadderSource;
 interface RegisteredLadder {
   resolve?: LadderResolver;
   topics: Topic[];
+}
+
+/**
+ * How many of the poller's own polls a level request waits for a rung's first playlist.
+ *
+ * ⛔ **The wait it bounds had no bound at all, and a bound is the whole fix.** A rung is served out
+ * of what {@link LadderFeedPoller} has already read, so a level request for a rung that has read
+ * nothing yet waits on `ready()`, which resolves on the first playlist and on a teardown and on
+ * nothing else. A gateway that cannot resolve one rung's feed therefore left that promise pending
+ * for the life of the session, and our loader is the only thing hls.js has: it starts no timer of
+ * its own, so hls.js was given no timeout, no retry and no error for that level. The viewer got a
+ * black player, no spinner and no message, with three healthy rungs one level switch away.
+ *
+ * ## Why twenty polls
+ *
+ * Counted in polls rather than milliseconds because the poller's cadence is what decides how often
+ * a rung gets a chance to become ready. A deployment that slows the poll interval slows this in
+ * step, which a wall time written here would not.
+ *
+ * It has to clear one whole read of the feed, since a first read that is merely slow still succeeds
+ * and must not be cut off: `fetchWithTimeout` gives a single read 10s, which is 13.3 polls at the
+ * shipped 750ms interval. Twenty polls is 15s there, so it clears that ceiling with five seconds
+ * over, and stays under the 20s hls.js itself allows a playlist load before its own loader would
+ * have errored, so the level error arrives no later than the stock loader's would have.
+ *
+ * Expiry costs a level rather than the session: hls.js retries a playlist error twice before it
+ * switches level, each retry re-enters this wait with a fresh deadline, and the poller's walk keeps
+ * running throughout, so a rung that becomes readable later is picked up by the next retry.
+ */
+export const RUNG_READY_DEADLINE_POLLS = 20;
+
+/**
+ * A rung that had produced no playlist by the time {@link RUNG_READY_DEADLINE_POLLS} polls had
+ * passed.
+ *
+ * Its own type rather than a {@link ManifestFetchError}, because no response was refused and no
+ * status was read. Nothing arrived at all.
+ */
+export class RungNotReadyError extends Error {
+  constructor(readonly hexTopic: string, readonly deadlineMs: number) {
+    super(`Rung ${hexTopic} had no playlist within ${deadlineMs}ms`);
+    this.name = 'RungNotReadyError';
+  }
 }
 
 export class ManifestFetcher {
@@ -511,9 +554,11 @@ export class ManifestFetcher {
     const hexTopic = topic.toString();
 
     // A rung the poller owns is already being kept current, so a playlist request is a read of
-    // what is there — the only wait is for the very first response to arrive.
+    // what is there. The only wait is for the very first response to arrive, and it is bounded,
+    // because a rung whose feed this gateway cannot resolve never has one. See
+    // {@link RUNG_READY_DEADLINE_POLLS}.
     if (this.poller.isPolling(hexTopic)) {
-      await this.poller.ready(hexTopic);
+      await this.awaitRungReady(hexTopic);
       return this.stateManager.serialize(hexTopic, this.bytesBaseUrl());
     }
 
@@ -526,6 +571,45 @@ export class ManifestFetcher {
       return this.handleInitialFetch(owner, topic);
     }
     return this.handleFollowupFetch(owner, topic, knownIndex);
+  }
+
+  /**
+   * Waits for a rung to hold a playlist, and gives up rather than waiting for ever.
+   *
+   * The expiry is a rejection because that is the only answer hls.js can act on: our loader hands a
+   * rejection to `callbacks.onError`, which errors the level, retries it and then switches away from
+   * it. Resolving with the empty playlist the state manager would serialize reaches hls.js as a
+   * fatal parse error instead, which restarts the whole player rather than leaving the three rungs
+   * that are fine playing.
+   *
+   * The poller's promise is raced as it is rather than wrapped in a `then`, and that is what settles
+   * the case where both are due in the same tick: a rung that is already ready has an already
+   * resolved promise, and an expiry one hop behind it cannot overtake it.
+   *
+   * A teardown during the wait ends it rather than being caught by it. `LadderFeedPoller.stop`
+   * resolves `ready` for every rung it stops, so the wait returns and this topic's cleared state
+   * serializes exactly as it did before there was a deadline. Nothing is left holding the rung: the
+   * expiry's own timer fires into a race that has already settled, and its rejection is one the race
+   * subscribed to.
+   */
+  private async awaitRungReady(hexTopic: string): Promise<void> {
+    const deadlineMs = RUNG_READY_DEADLINE_POLLS * this.poller.pollIntervalMs;
+    const expired = this.delay(deadlineMs).then(() => {
+      throw new RungNotReadyError(hexTopic, deadlineMs);
+    });
+
+    try {
+      await Promise.race([this.poller.ready(hexTopic), expired]);
+    } catch (error) {
+      // The only rejection reachable here. The poller resolves `ready` and never rejects it, so a
+      // line at this point is the deadline and nothing else. Logged where it fires rather than left
+      // to hls.js, because the level error it becomes names a URL and not the rung that went quiet.
+      console.warn(
+        `Rung ${hexTopic} produced no playlist in ${deadlineMs}ms, so this level is failed rather ` +
+          'than waited on. This gateway may not hold that rung.',
+      );
+      throw error;
+    }
   }
 
   /**

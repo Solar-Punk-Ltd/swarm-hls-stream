@@ -46,10 +46,11 @@ import {
   type FragmentSettleReading,
   type FragmentSettleState,
 } from '../browser/fragmentRequests.js';
+import { describeProofs, type InstrumentProof, PROVEN_SENSORS, type ProvenSensor } from '../browser/instrument.js';
 import { type QualityPhase, type QualitySwitchVerdict, type RungTimeline } from '../browser/qualitySwitch.js';
 import { type E2EConfig, runProfile } from '../config.js';
 
-import { type Host } from './host.js';
+import { type Host, type RunResult } from './host.js';
 import { shellQuoted } from './shellQuote.js';
 
 /** Where the bench image mounts the checkout, and the working directory the driver runs in. */
@@ -176,11 +177,12 @@ const WROTE_ARTIFACT_RE = /^browser: wrote (.+)\.md$/gm;
  */
 const ARM_NARRATION_RE = /^\s*(browser: |page (log|warning|error|info|debug): ).*$/gm;
 
-/** Distinct things the arm said, bounded so a chatty arm cannot bury the TAP output. */
+/** Distinct things the arm said on one stream, bounded so a chatty arm cannot bury the TAP output. */
 const ARM_NARRATION_KINDS = 60;
 
 /**
- * Print what the arm said, one line per distinct thing said, with how many times it said it.
+ * Print a stream of the arm's output, one line per distinct thing said, with how many times it said
+ * it, under a heading naming both counts.
  *
  * ⛔⛔⛔ **Keeping the newest N lines is the wrong bound, and it wasted a run proving it.** The first
  * version kept the last 80 of 480, and a viewer at the live edge asks for a slot the publisher has
@@ -192,16 +194,12 @@ const ARM_NARRATION_KINDS = 60;
  * ⭐ **Repetition is not information, and it must not be able to crowd information out.** Collapsing
  * to distinct lines in first-appearance order makes a flood cost one line however long it runs, so
  * the bound now falls on how many DIFFERENT things happened, which is a number that stays small.
- *
- * Printed even when the arm succeeded: a green run's narration is the baseline the next red one is
- * read against, and it is the only place the client's own account of a broadcast is ever written.
  */
-export function reportArmNarration(stdout: string, log: (line: string) => void = console.log): void {
-  const lines = stdout.match(ARM_NARRATION_RE)?.map((line) => line.trim()) ?? [];
-  if (lines.length === 0) {
-    return;
-  }
-
+function reportStream(
+  lines: readonly string[],
+  heading: (said: number, kinds: string) => string,
+  log: (line: string) => void,
+): void {
   const timesSaid = new Map<string, number>();
   for (const line of lines) {
     timesSaid.set(line, (timesSaid.get(line) ?? 0) + 1);
@@ -211,11 +209,44 @@ export function reportArmNarration(stdout: string, log: (line: string) => void =
   const kindsDropped = timesSaid.size - shown.length;
   // Named rather than silently truncated. A bound nobody is told about reads as "that was all of it".
   log(
-    `  arm said ${lines.length} line(s), ${timesSaid.size} distinct` +
-      `${kindsDropped > 0 ? `, ${kindsDropped} kind(s) not shown` : ''}:`,
+    heading(lines.length, `${timesSaid.size} distinct${kindsDropped > 0 ? `, ${kindsDropped} kind(s) not shown` : ''}`),
   );
   for (const [line, times] of shown) {
     log(`  | ${line}${times > 1 ? `  (x${times})` : ''}`);
+  }
+}
+
+/**
+ * Print what the arm said about itself, on both of the streams it said it on.
+ *
+ * ⛔⛔⛔ **And stderr was the half still being binned, which is where a failed restore says so.**
+ * `runBrowserArm` destructured `stdout` alone and the arm's `docker run` line carries no `2>&1`, so
+ * on an arm that exited zero its stderr went nowhere at all. The crash driver prints
+ * `could not restore <container>` there, from the `finally` that puts a stopped gateway or a paused
+ * bee node back, so an arm whose `docker start` failed finished quietly, the suite red with a viewer
+ * that never got its picture back, and nothing in the whole log said the container had never been
+ * restarted. A non-zero exit was never the gap: node builds an `execFile` rejection out of stderr, so
+ * a failed arm always said why. It is the arm that succeeds and leaves the stage broken behind it
+ * that had no channel.
+ *
+ * ⭐ Bounded the same way as the narration and for the same reason: Chrome and Xvfb write freely to
+ * stderr, and a repeated warning must not be able to crowd out the one line about the stage.
+ *
+ * Printed even when the arm succeeded: a green run's narration is the baseline the next red one is
+ * read against, and it is the only place the client's own account of a broadcast is ever written.
+ */
+export function reportArmNarration(arm: RunResult, log: (line: string) => void = console.log): void {
+  const said = arm.stdout.match(ARM_NARRATION_RE)?.map((line) => line.trim()) ?? [];
+  if (said.length > 0) {
+    reportStream(said, (lines, kinds) => `  arm said ${lines} line(s), ${kinds}:`, log);
+  }
+
+  const wrote = arm.stderr
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (wrote.length > 0) {
+    reportStream(wrote, (lines, kinds) => `  arm wrote ${lines} line(s) to stderr, ${kinds}:`, log);
   }
 }
 
@@ -411,6 +442,22 @@ export interface BrowserArmResult {
    */
   instrumentSound: boolean;
   instrumentFailures: readonly string[];
+  /**
+   * Why {@link instrumentSound} above is not evidence on this run, one sentence per sensor. Empty
+   * where every sensor was shown able to report a failure.
+   *
+   * ⛔⛔⛔ **A guard that cannot fail is not evidence, and until 2026-09-16 nothing that could fail a
+   * run ever read this.** The drivers take the proof, write it into the artifact and render it into
+   * the markdown, and the arm refusals could not see it, so a run that had proved its own instrument
+   * incapable of failing passed the assertion every viewer suite opens with. That is not
+   * hypothetical here: `proveVisibilityCanFail` shipped broken once and was found twenty minutes
+   * into a paid broadcast, and the two sensors both pass on the subject page by construction,
+   * because Playwright forces focus and unthrottles timers.
+   *
+   * ⛔ Empty is also what an artifact that names no proofs at all gives, and that is a silence about
+   * the FILE rather than about the run. See {@link readInstrumentProofs}.
+   */
+  instrumentUnproven: readonly string[];
   samples: number;
 }
 
@@ -497,6 +544,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
   const latency = asObject(summary.latency, 'run.summary.latency');
   const network = asObject(run.network, 'run.network');
   const instrument = asObject(run.instrument, 'run.instrument');
+  const proofs = readInstrumentProofs(run);
 
   const feedStatesSeen = asArray(summary.feedStatesSeen, 'run.summary.feedStatesSeen').map((state, i) =>
     asFeedState(state, `run.summary.feedStatesSeen[${i}]`),
@@ -529,6 +577,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
     ),
+    instrumentUnproven: proofs === null ? [] : describeProofs(proofs),
     samples: asNumber(summary.samples, 'run.summary.samples'),
   };
 }
@@ -561,6 +610,49 @@ function readProof(value: unknown): BrowserArmProof {
  * so is the scenario beside it: a fault verdict that does not say which fault it is could have one
  * scenario's thresholds applied to another scenario's run.
  */
+/**
+ * The falsifiability proofs the driver took, or null where the artifact names none.
+ *
+ * ⛔ **Null is a silence about the FILE and not about the run**, which is the same distinction
+ * `fragmentRequests` above carries and it is the reason this is not simply handed to
+ * {@link describeProofs}. That function reports an absent proof as an untested verdict, which is the
+ * right thing for a report being rendered and the wrong thing for a reader that has to open every
+ * artifact ever written: every driver here has recorded `instrumentProofs` since 2026-08-12, so a
+ * file without one came from a browser image older than the proof itself, and a reader that refused
+ * it could not re-derive the archive it exists to re-derive.
+ *
+ * ⛔ A file that HAS the field and says the instrument could not have failed is the opposite case. It
+ * is a fault in the run, it is the one E4 of the 2026-09-16 review describes, and
+ * {@link parseBrowserArmState} turns it into sentences the arm refusals read.
+ */
+function readInstrumentProofs(run: Record<string, unknown>): readonly InstrumentProof[] | null {
+  if (run.instrumentProofs === undefined || run.instrumentProofs === null) {
+    return null;
+  }
+  return asArray(run.instrumentProofs, 'run.instrumentProofs').map((value, i) => {
+    const at = `run.instrumentProofs[${i}]`;
+    const proof = asObject(value, at);
+    return {
+      sensor: asProvenSensor(proof.sensor, `${at}.sensor`),
+      degradation: asString(proof.degradation, `${at}.degradation`),
+      rejected: asBoolean(proof.rejected, `${at}.rejected`),
+      firedChecks: asArray(proof.firedChecks, `${at}.firedChecks`).map((check, n) =>
+        asString(check, `${at}.firedChecks[${n}]`),
+      ),
+    };
+  });
+}
+
+function asProvenSensor(value: unknown, at: string): ProvenSensor {
+  if (!PROVEN_SENSORS.includes(value as ProvenSensor)) {
+    throw new Error(
+      `the arm's state has no sensor this harness proves at ${at}, got ${shownValue(value)}. The ` +
+        'instrument gained a sensor, or the file was written by a driver this reader does not match.',
+    );
+  }
+  return value as ProvenSensor;
+}
+
 function readCrashRecovery(run: Record<string, unknown>): CrashRecoveryResult | null {
   if (run.recovery === undefined || run.recovery === null) {
     return null;
@@ -1249,15 +1341,15 @@ export async function runBrowserArm(host: Host, cfg: E2EConfig, options: Browser
     .catch(() => undefined);
 
   const timeoutMs = options.watchMinutes * 60_000 + BROWSER_ARM_OVERHEAD_MS;
-  const { stdout } = await host.run(command, timeoutMs);
+  const arm = await host.run(command, timeoutMs);
 
   // Before anything below can throw. An arm whose artifact line is missing is exactly the arm whose
   // narration is worth reading, and printing it afterwards would print it never.
-  reportArmNarration(stdout);
+  reportArmNarration(arm);
 
   // Quoted like everything else. This path is read out of the container's own output, so it is data
   // from the far side of the run rather than something the suite chose.
-  const artifact = artifactReadPath(artifactJsonFromArmLog(stdout), setup.repoDir, host.isLocal);
+  const artifact = artifactReadPath(artifactJsonFromArmLog(arm.stdout), setup.repoDir, host.isLocal);
   const state = await host.run(`cat ${shellQuoted(artifact)}`);
   return parseBrowserArmState(JSON.parse(state.stdout));
 }

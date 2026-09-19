@@ -20,7 +20,6 @@ packages/client/public/weeb-3
 # Ignore everything bee/srs persists on the host
 deploy/data
 nodes/data
-nodes/backups
 state
 
 # Misc dev junk

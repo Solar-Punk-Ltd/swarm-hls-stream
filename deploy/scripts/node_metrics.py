@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import sys
 
-DASH = "—"
+DASH = "-"
 
 
 def parse_prometheus(text: str) -> dict[str, float]:

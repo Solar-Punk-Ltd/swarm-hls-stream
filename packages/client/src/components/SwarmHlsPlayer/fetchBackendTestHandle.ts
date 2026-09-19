@@ -10,7 +10,7 @@ import { weeb3FetchBackend } from './Weeb3FetchBackend';
 export const FETCH_BACKEND_HANDLE = '__swarmFetchBackendSwitch';
 
 /** What one retrieval cost, which is everything about it except the bytes. */
-export interface RetrievalMeasurement {
+interface RetrievalMeasurement {
   /** The payload's size once the Swarm span came off, so it is what a gateway would have served. */
   byteLength: number;
   /** Wall time from the call to the answer, on the page's own monotonic clock. */

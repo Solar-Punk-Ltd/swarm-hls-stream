@@ -15,10 +15,10 @@
  *
  * ## Why a ratchet rather than a threshold
  *
- * There are 148 of these today and fixing them is not this gate's job. A number written down is not
- * a control, so this exits non-zero the moment the count rises above the recorded baseline, which is
- * the one moment the information is cheap to act on. Lowering the baseline is a normal part of
- * removing an export, and the gate prints the exact command.
+ * The baseline file beside this script holds today's count, and fixing them is not this gate's job.
+ * A number written down is not a control, so this exits non-zero the moment the count rises above
+ * the recorded baseline, which is the one moment the information is cheap to act on. Lowering the
+ * baseline is a normal part of removing an export, and the gate prints the exact command.
  *
  * Usage:
  *   node deploy/scripts/unused-exports.mjs            # check against the baseline, exit 1 if worse

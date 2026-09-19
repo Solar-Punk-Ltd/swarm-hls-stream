@@ -131,8 +131,9 @@ loses rungs, or the ceiling is understood and raised, 0.5 is the value to come b
 | `any`                  | the check stands down, and the preflight prints that it did                                                                      |
 
 ⛔⛔⛔ **Two containers work to that one number, and the gate reads both.** `HLS_FRAGMENT` is one value
-in the profile env. The engine **cuts** segments by it, and the uploader **dates** them by it, because
-`#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from the broadcast start. On
+in the profile env. The engine **cuts** segments by it, and the uploader **reads** them against it, because
+`#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds for every segment that measures within the
+tolerance of it. On
 2026-09-04 an uploader running 1.0 sat in front of an SRS cutting 2.0, all ten gates passed, and the
 only thing that noticed was the ABR ladder suite's timeline subtest mid-sitting. The gate now refuses
 a pair that disagrees, and a pair that agrees on a length the run cannot use.
@@ -147,9 +148,14 @@ A refused run names the one knob. With the ladder on, `engines/srs/entrypoint.sh
 GOP from `HLS_FRAGMENT`, so the fragment IS the segment:
 
 ```bash
-echo 'HLS_FRAGMENT=2.0' >> engines/srs/.env.<profile>
-deploy/scripts/deploy.sh --profile=<profile> [--portSlot=<N>] srs
+echo 'HLS_FRAGMENT=2.0' >> .env.<profile>
+deploy/scripts/deploy.sh --profile=<profile> [--portSlot=<N>] srs stream-uploader
 ```
+
+⛔ **Both halves of those two lines matter.** The profile's own root `.env.<profile>` is where a
+Docker deployment sets this, because both services read it. And a container re-reads it only when it
+is recreated, so a run naming `srs` alone leaves the uploader on its old value and the pair
+disagrees in the other direction, which this gate refuses again.
 
 `any` is for a run that genuinely pins no length, and for OME, whose segmenter config this gate
 cannot read. It is a declaration and is never asked again.
@@ -633,6 +639,14 @@ looked exactly like runs configured for the gateway.
 
 ## The latency bench (LAT-1)
 
+From a workstation, which is the supported way and the one `bench/longrun.ts` already names:
+
+```bash
+deploy/scripts/bench-on-host.sh --script bench:latency
+```
+
+On the deployment host itself, where the publisher and the gateway are already the same machine:
+
 ```bash
 pnpm bench:latency
 ```
@@ -641,9 +655,10 @@ Publishes a real stream, follows it through the feed a viewer reads, and reports
 that viewer is and split across segment duration, upload, feed write, propagation and fetch, plus the
 player's own configured buffer. Writes a markdown report and its JSON to `docs/bench/`.
 
-Nothing else in this repository can measure that, which is why `liveSyncDuration` is still 10: every
-other LAT row asks for an improvement, and Sprint 5 grades them against a baseline that has to exist
-first.
+Nothing else in this repository can measure that. `liveSyncDuration` was 10 when this bench was written
+and the client ships 6 today (`LIVE_SYNC_DURATION_S` in `packages/client/src/components/SwarmHlsPlayer/playerConfig.ts`),
+so a report is read against the value the client carried on the day. Every other LAT row asks for an
+improvement, and Sprint 5 grades them against a baseline that has to exist first.
 
 **How the picture is timed.** ffmpeg publishes with `-use_wallclock_as_timestamps 1 -copyts`, so each
 frame carries the bench machine's clock, and the segment fetched at the far end is handed to ffprobe
@@ -663,7 +678,8 @@ whether the engine reports itself correctly, it just no longer depends on the an
 over HTTP rather than through ssh, so no clock skew enters the total. That is also the path a real
 viewer takes. It does mean the gateway has to be reachable from wherever you run this: set
 `BENCH_GATEWAY_URL`, or forward the port with `ssh -L`. The run refuses to start otherwise rather than
-publishing first and failing after.
+publishing first and failing after. Launched through `bench-on-host.sh` the run happens on the
+deployment host over loopback, so there is nothing to forward and nothing to set.
 
 **It checks itself before it spends anything.** The first thing a run does is publish to a local file,
 probe it, and recover the capture instants, the whole chain, offline, in about fifteen seconds. If
@@ -672,6 +688,14 @@ for free, instead of producing a number that becomes a baseline. It also checks 
 something the spans never touched: consecutive segments are contiguous, so each one's measured media
 has to reach exactly as far as the next one's first frame. Checking them against the segment duration
 the check was configured with would compare the instrument to its own input.
+
+**And it refuses before it spends.** Publishing costs real postage and real bandwidth, so after the
+free checks and before the first frame the run reads the owner's authorisation in `.spend-ledger.env`,
+every publisher node's SWAP chequebook and every publisher's postage TTL, and stops on the first no.
+Those are the three gates a scenario suite runs, in the same words, because the bench calls the same
+helpers (`src/bench/authorisation.ts`). A missing ledger is a refusal rather than an unlimited
+allowance. `bench-on-host.sh` still puts the whole preflight directory in front of a run launched
+through it, which asks a good deal more than these three, so the wrapper stays worth using.
 
 **What it refuses to guess.** A media engine may rebase timestamps when it repackages. If it does, the
 arithmetic still yields a plausible-looking number, so the reading is bounded by the two things that

@@ -14,7 +14,7 @@ import {
   frozenOverlayRefusal,
   resumeRefusal,
 } from '../../src/harness/crashArm.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -121,7 +121,7 @@ describe("V9 — a viewer plays through the hole a writer's outage tears", { ski
     // ⛔ The driver starts the node again itself, from a `finally` that runs inside the browser
     // container, which an arm killed by the harness timeout never reaches. This is the node holding
     // the postage batch every measurement on this host is paid for with, so it must not stay down.
-    await host.start(broken).catch(() => undefined);
+    await host.start(broken).catch(reportFailedRestore(broken));
   });
 
   it('stops while nothing is being written, then resumes across the break', async () => {

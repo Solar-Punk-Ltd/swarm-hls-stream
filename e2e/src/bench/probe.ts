@@ -71,7 +71,7 @@ function fail(source: string, why: string): never {
 }
 
 /** What one downloaded segment's own video packets say about it. */
-export interface ProbedSegment {
+interface ProbedSegment {
   /**
    * The earliest frame in presentation order, which is the one the capture instant is recovered from.
    *

@@ -11,7 +11,7 @@ export interface StreamCleanup {
  * How the process ends. Injected because the alternative is a module that calls `process.exit` and can
  * therefore only be run once, by the process it kills.
  */
-export type ExitProcess = (code: number) => void;
+type ExitProcess = (code: number) => void;
 
 /**
  * Everything the service is holding, and the order it has to let go of them in.

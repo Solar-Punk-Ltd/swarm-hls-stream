@@ -2,22 +2,26 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  datedDurationMs,
+  DATING_SNAP_TOLERANCE,
+  presentationMsOf,
   programDateTimeMsOf,
   reanchorDecision,
   reanchorEpoch,
   SAME_RESTART_TOLERANCE_MS,
   withEpoch,
 } from '../src/libs/broadcastDating.js';
+import { FRAGMENT_TOLERANCE } from '../src/libs/fragmentAgreement.js';
 import { BroadcastAnchor } from '../src/types.js';
 
 /**
  * What dates a broadcast's playlists once the engine has restarted inside it.
  *
- * A broadcast's dating is a list of epochs rather than one instant. Segment N is dated from the
- * newest epoch that starts at or below N, stepping by the declared fragment length, and the
- * broadcast's own start is the implicit first epoch. An engine restart adds one, so the media after
- * the gap carries the real time it happened while the media before it keeps the date it was
- * published with.
+ * A broadcast's dating is a list of epochs rather than one instant. The first segment placed at or
+ * after an epoch takes that epoch's instant, every segment after it is dated from the one in front
+ * of it plus the media that one holds, and the broadcast's own start is the implicit first epoch. An
+ * engine restart adds one, so the media after the gap carries the real time it happened while the
+ * media before it keeps the date it was published with.
  *
  * ⛔ The two things these hold together pull in opposite directions. A restart must move the dating
  * on to the wall clock, and every rung of one ABR ladder must still date a given sequence
@@ -76,6 +80,143 @@ describe('the date a playlist sequence carries', () => {
 
     assert.equal(programDateTimeMsOf(third, 1), 333);
     assert.equal(programDateTimeMsOf(third, 3), 1000);
+  });
+});
+
+/**
+ * How much media a segment contributes to the date of the one after it.
+ *
+ * ⛔ The snapping is what keeps a ladder's rungs agreeing. Under `ABR_ENABLED` every rung is
+ * re-encoded with a keyframe every `ABR_FPS x HLS_FRAGMENT` frames, so each rung's segment holds the
+ * configured length to within 90kHz tick rounding, and reading every one of those as the configured
+ * length makes four rungs date the same media identically. Outside the tolerance the measurement is
+ * the only honest answer: on a single rendition the publisher's own keyframe interval decides the
+ * segment, and dating a 10 second segment as 2 puts the recording's clock 8 seconds behind its own
+ * media and leaves it there.
+ */
+describe('the media a segment contributes to the date of the next one', () => {
+  it('reads a measurement inside the tolerance as the configured length, so a ladder agrees', () => {
+    assert.equal(datedDurationMs(1.001, 1), 1000);
+    assert.equal(datedDurationMs(0.999, 1), 1000);
+    assert.equal(datedDurationMs(2.015, 2), 2000);
+  });
+
+  it('reads a measurement outside the tolerance as itself', () => {
+    assert.equal(datedDurationMs(2.067, 2), 2067);
+    assert.equal(datedDurationMs(2.4, 2), 2400);
+    assert.equal(datedDurationMs(10.033, 2), 10_033);
+    assert.equal(datedDurationMs(1, 2), 1000);
+  });
+
+  /**
+   * ⛔ The two tolerances answer different questions and must not be made one number. The agreement
+   * check asks whether this stage is misconfigured, so it is wide enough to survive a force-closed
+   * segment. This one only absorbs the tick rounding several encoders put on one keyframe grid.
+   *
+   * ⛔ The gap between them is not academic: it is exactly the live reading this dating exists for.
+   * 2.067 seconds against a configured 2 is inside five percent, so the agreement check calls the
+   * stage healthy, which it is. Dating it as 2.000 would lose 67ms per segment for ever, about two
+   * minutes an hour.
+   */
+  it('snaps on its own band rather than on the agreement check’s, which is five times wider', () => {
+    const justInside = 2 * (1 + DATING_SNAP_TOLERANCE) - 0.001;
+    const justOutside = 2 * (1 + DATING_SNAP_TOLERANCE) + 0.001;
+
+    assert.equal(datedDurationMs(justInside, 2), 2000);
+    assert.equal(datedDurationMs(justOutside, 2), Math.round(justOutside * 1000));
+
+    assert.ok(DATING_SNAP_TOLERANCE < FRAGMENT_TOLERANCE, 'the dating snapped on the agreement check’s band');
+    assert.ok(Math.abs(2.067 - 2) <= 2 * FRAGMENT_TOLERANCE, 'the agreement check no longer calls 2.067 a healthy 2');
+    assert.equal(datedDurationMs(2.067, 2), 2067);
+  });
+
+  /**
+   * ⭐ The band is inclusive, and this pins that rather than sitting a millisecond either side of it.
+   * A fragment of 1.21 is chosen because its band is exactly 0.0121 in binary floating point, so
+   * `1.2221` and `1.1979` land ON the edge rather than near it. At a fragment of 2 the same attempt
+   * is not honest: `Math.abs(1.98 - 2)` is 0.020000000000000018 against a band of 0.02, a float hair
+   * outside.
+   *
+   * Without these the comparison could be narrowed from `<=` to `<` with the suite still green:
+   * every measured value the suite used sat clear of the edge on one side or the other, so the
+   * mutant survived. One millisecond of band is small, and an arithmetic line nothing pins is not.
+   */
+  it('takes a measurement exactly on the band as the configured length, on both sides of it', () => {
+    const fragment = 1.21;
+    const band = fragment * DATING_SNAP_TOLERANCE;
+    assert.equal(band, 0.0121, 'the point of this fragment length is that its band is exact');
+
+    assert.equal(datedDurationMs(fragment + band, fragment), 1210);
+    assert.equal(datedDurationMs(fragment - band, fragment), 1210);
+  });
+
+  /**
+   * The lower side of the band, which nothing covered at all. A segment measuring 1.98 against a
+   * configured 2 is dated as the 1.980 it really held, so a stage cutting short keeps its clock the
+   * same way a stage cutting long does. `ManifestManager.test.ts` used to carry this value and moved
+   * off it, which left the direction untested everywhere.
+   */
+  it('reads a measurement just below the band as itself, not as the configured length', () => {
+    assert.equal(datedDurationMs(1.98, 2), 1980);
+  });
+
+  it('rounds to the millisecond, which is all a stamp can carry', () => {
+    assert.equal(datedDurationMs(2.4567, 2), 2457);
+  });
+});
+
+/**
+ * When a segment is presented, which is decided once as it is placed and then never derived again.
+ *
+ * The anchor plus the media held in front of it, never an arrival time. A missing sequence is media
+ * nobody observed, so it is charged at the configured length, which is also the `#EXTINF` its gap
+ * entry carries.
+ */
+describe('when a placed segment is presented', () => {
+  it('dates the first segment of a broadcast at the anchor itself', () => {
+    assert.equal(presentationMsOf(BROADCAST, 0, null), STARTED_AT_MS);
+  });
+
+  it('dates a segment from the one in front of it plus the media that one holds', () => {
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(BROADCAST, 5, previous), STARTED_AT_MS + 2400);
+  });
+
+  it('steps by the configured length where the one in front measured within tolerance', () => {
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 1.995 };
+
+    assert.equal(presentationMsOf(BROADCAST, 5, previous), STARTED_AT_MS + STEP_MS);
+  });
+
+  it('charges the configured length for every sequence nobody observed', () => {
+    const previous = { sequence: 4, presentedAtMs: STARTED_AT_MS, durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(BROADCAST, 8, previous), STARTED_AT_MS + 2400 + 3 * STEP_MS);
+  });
+
+  it('takes the epoch itself for the first segment placed at or after a re-anchoring', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: STARTED_AT_MS + 600_000 });
+    const before = { sequence: 9, presentedAtMs: nominalDateOf(9), durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(restarted, 10, before), STARTED_AT_MS + 600_000);
+  });
+
+  it('carries on from the media held once a segment of that epoch has been placed', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: STARTED_AT_MS + 600_000 });
+    const resumed = { sequence: 10, presentedAtMs: STARTED_AT_MS + 600_000, durationSeconds: 2.4 };
+
+    assert.equal(presentationMsOf(restarted, 11, resumed), STARTED_AT_MS + 600_000 + 2400);
+  });
+
+  /**
+   * Nothing is held where a restart is asking what its resuming sequence would have been dated, and
+   * the epoch's own arithmetic is the answer that was right before any media was observed.
+   */
+  it('falls back to the epoch’s own arithmetic where nothing has been placed', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: STARTED_AT_MS + 600_000 });
+
+    assert.equal(presentationMsOf(restarted, 12, null), STARTED_AT_MS + 600_000 + 2 * STEP_MS);
   });
 });
 
@@ -197,9 +338,10 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
 
     /**
      * A rung behind its siblings still dates its own first post-restart segment after the segment in
-     * front of it, and that holds without a floor because every rung was on one line before the
-     * restart too. The minted instant is at or after the date the leader's resuming sequence would
-     * have carried, so a rung `k` sequences behind lands at or after its own.
+     * front of it. The line the leader minted is at or after the date the leader's own resuming
+     * sequence would have carried, so a rung a few sequences behind lands that many fragments earlier
+     * on the same line, which is at or after its own. That argument is about a rung whose media kept
+     * to the grid, and the two cases below are the ones it does not reach.
      */
     it('still moves forwards from the segment in front of it', () => {
       const epoch = reanchorEpoch(minted, {
@@ -213,6 +355,56 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
         `a rung one behind its siblings dated its resuming segment at ${new Date(epoch.atMs).toISOString()}, ` +
           `at or before the ${new Date(nominalDateOf(38)).toISOString()} of the segment in front of it`,
       );
+    });
+
+    /**
+     * ⛔⛔⛔ A line is grid arithmetic and the media is not, so a rung can join a line that names an
+     * instant its own playlist has already gone past. The stage measured on 2026-09-15 cut 2.067
+     * seconds against a configured 2, so every segment since the restart put the real stamps another
+     * 67 milliseconds ahead of the line. A hundred segments in, the line dates the resuming sequence
+     * 6.7 seconds behind the segment in front of it, and the clock is still close enough to the line
+     * for this to read as the same restart.
+     *
+     * A date that goes backwards is not a late date. hls.js reads it as a parsing error rather than
+     * as a restart, the e2e manifest contract refuses the shape before it excuses a discontinuity,
+     * and a recording is sealed with it for ever.
+     */
+    it('never lands below the date this rung’s own media had already reached', () => {
+      // What the 2026-09-15 stage really cut against a configured 2 seconds, in milliseconds.
+      const MEASURED_MS = 2_067;
+      const SEGMENTS_SINCE_THE_RESTART = 100;
+      const resumeAt = 40 + SEGMENTS_SINCE_THE_RESTART;
+      const wouldHaveBeen = RESTARTED_AT_MS + SEGMENTS_SINCE_THE_RESTART * MEASURED_MS;
+
+      const { epoch, joined } = reanchorDecision(minted, {
+        resumeAt,
+        // A twenty second outage. The line dates this sequence 26.7 seconds ago, well inside the
+        // tolerance, so a second restart here is read as a sibling crossing the first one.
+        nowMs: wouldHaveBeen + 20_000,
+        notBeforeMs: wouldHaveBeen,
+      });
+
+      assert.equal(joined, true, 'the case is about the joining branch, so a mint here tests nothing');
+      assert.ok(
+        epoch.atMs >= wouldHaveBeen,
+        `the rung dated its resuming segment at ${new Date(epoch.atMs).toISOString()}, ` +
+          `${wouldHaveBeen - epoch.atMs}ms behind the ${new Date(wouldHaveBeen).toISOString()} its own media ` +
+          'had already reached',
+      );
+    });
+
+    /** The floor takes nothing from a rung whose media kept to the grid: the two are the same date. */
+    it('lands on the line itself where the media has kept to the grid', () => {
+      const onTheLine = RESTARTED_AT_MS + STEP_MS;
+
+      const { epoch, joined } = reanchorDecision(minted, {
+        resumeAt: 41,
+        nowMs: onTheLine + 1_200,
+        notBeforeMs: onTheLine,
+      });
+
+      assert.equal(joined, true);
+      assert.deepEqual(epoch, { fromSequence: 41, atMs: onTheLine });
     });
 
     it('keeps taking that line for as long as the restart is recognisable', () => {

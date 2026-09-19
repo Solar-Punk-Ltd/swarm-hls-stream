@@ -1,5 +1,6 @@
 import { assertUsableAdminApiToken } from '../libs/AdminApiClient.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
+import { gatePolicyFor, parseStartGateMode, START_GATE_CHEQUEBOOK_WARN } from '../libs/StartGates.js';
 
 import { readAbrConfig } from './abrConfig.js';
 import { optional, optionalInt, optionalNumber, required } from './env.js';
@@ -16,8 +17,9 @@ import { optional, optionalInt, optionalNumber, required } from './env.js';
  * two that answers whether the next segment can be paid for.
  *
  * Zero is a legal setting and means "read every chequebook but accept any balance". It does not
- * disable the check: a chequebook that cannot be read at all is still a refusal, because a node
- * running with SWAP off has none to fill.
+ * disable the check: a chequebook that cannot be read at all is still reported, because a node
+ * running with SWAP off has none to fill. Under the shipped `chequebook-warn` that report is a
+ * warning on `/health` and the uploader starts. Under `refuse` it stops the boot.
  */
 const DEFAULT_CHEQUEBOOK_MIN_BZZ = 0.5;
 
@@ -64,8 +66,9 @@ const DEFAULT_STAMP_MAX_UTILIZATION = 0.9;
  * ⚠️ It is what the deployment **asks** the engine to cut at, never what a segment measured. Under
  * a ladder the two agree, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT` and SRS then
  * cuts exactly there. On a single-rendition stream the publisher's own keyframe interval decides the
- * segment and this is only a floor, so a broadcaster sending a longer GOP produces longer segments
- * than the wall clock derived from this steps by. See `deploy/README.md`.
+ * segment and this is only a floor, so a broadcaster sending a longer GOP produces segments longer
+ * than this. Those are dated by what they really held, and it is the gap entries and the budgets
+ * derived from this that then describe a stage nobody is running. See `deploy/README.md`.
  *
  * The bounds are the range SRS itself will work in: below a frame the entrypoint refuses the GOP
  * arithmetic outright, and an hour is `isUsableDuration`'s own ceiling on a segment.
@@ -91,8 +94,47 @@ const MAX_HLS_FRAGMENT_SECONDS = 3600;
  * attempts fit inside 10s for any timeout up to 4825ms. 4s is that with room left over, and it keeps a
  * retry worth having: shorten a window below 8.35s and this becomes the wrong number, which is why
  * `test/config.test.ts` reads those windows out of the files that declare them and re-derives it.
+ *
+ * The two startup gates and the reachability probe in front of them are what this no longer bounds.
+ * The gates' reads have no retry around them and answer off the chain rather than out of the node, so
+ * they were the calls this derivation was never about, and the probe reads through the same pool so
+ * that a node the gates would wait twenty seconds for is not failed in four. All three run on
+ * START_GATE_TIMEOUT_MS below, since 2026-09-17.
  */
 const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
+
+/**
+ * How long one startup gate's read of a node, or the liveness probe in front of the gates, may take
+ * before it gives up on that node.
+ *
+ * ⛔ Separate from BEE_REQUEST_TIMEOUT_MS above, and the separation is the fix rather than a tidy-up.
+ * A chequebook balance and a postage batch are answered from the chain, not from the node's own
+ * memory, so they are the slowest reads the service makes, while the 4000ms above is derived from
+ * the retry windows of the upload loop and describes nothing about them. On 2026-09-16 a live ABR
+ * uploader spent its whole life restarting on "timeout of 4000ms exceeded" from a chequebook read,
+ * which was a number borrowed from another question being applied to this one.
+ *
+ * Twenty seconds is long enough for a cold node to answer a chain-backed read and short enough that a
+ * `warn` pass over a hanging pool of four nodes finishes in under three minutes before the wait goes
+ * round again. The API is listening throughout either way, since D16. It costs nothing on a healthy
+ * boot, where both gates finish in milliseconds.
+ */
+const DEFAULT_START_GATE_TIMEOUT_MS = 20_000;
+
+/**
+ * Ten minutes, and a ceiling rather than decoration.
+ *
+ * A chain-backed read that has not answered in ten minutes is a node that is not answering, and since
+ * decision D16 this budget is spent per node per attempt of a wait that retries for as long as it
+ * takes.
+ *
+ * ⚠️ What this ceiling catches is the two-zero slip: 2000000 is 33 minutes for one read and over four
+ * hours for a `warn` pass over four nodes, and it is refused here. The one-zero slip is not caught
+ * and cannot be without refusing settings an operator may mean: 200000 sits under this ceiling, is
+ * accepted, and costs about 26 minutes a pass. `CHEQUEBOOK_MIN_BZZ` has a maximum for the same
+ * reason and with the same limit: a typo must not be a setting, as far as a range can tell.
+ */
+const MAX_START_GATE_TIMEOUT_MS = 600_000;
 
 /**
  * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.
@@ -163,6 +205,24 @@ export const config = {
   stamp: publishers.length === 0 ? required('STAMP') : optional('STAMP', ''),
   publishers,
   beeRequestTimeoutMs: optionalInt('BEE_REQUEST_TIMEOUT_MS', DEFAULT_BEE_REQUEST_TIMEOUT_MS, { min: 1 }),
+  /**
+   * Which of the two startup gates stops the uploader when it cannot clear a node.
+   *
+   * The owner ruled the two apart on 2026-09-17: the chequebook gate warns and the postage gate
+   * refuses a reading the node answered while warning on one it could not get, which is
+   * `chequebook-warn` and the shipped default. `warn` is both warning, `refuse` is both refusing. See
+   * `libs/StartGates.ts` for why a full batch is not the same risk as a low chequebook.
+   *
+   * The name is written out here rather than taken from the constant `StartGates.ts` quotes it by,
+   * because `deploy/test/uploaderEnv.test.js` scrapes these reads for their literal to prove every
+   * knob reaches the container and is documented. A knob read through a constant is one that gate
+   * cannot see, which is the shape it exists to catch.
+   */
+  startGates: gatePolicyFor(parseStartGateMode(optional('UPLOADER_START_GATES', START_GATE_CHEQUEBOOK_WARN))),
+  startGateTimeoutMs: optionalInt('START_GATE_TIMEOUT_MS', DEFAULT_START_GATE_TIMEOUT_MS, {
+    min: 1,
+    max: MAX_START_GATE_TIMEOUT_MS,
+  }),
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
     max: MAX_CHEQUEBOOK_MIN_BZZ,

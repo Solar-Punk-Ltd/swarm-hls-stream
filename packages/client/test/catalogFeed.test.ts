@@ -251,3 +251,64 @@ describe('CatalogFeedReader', () => {
     expect(reader.getIndex()?.toBigInt()).toBe(7n);
   });
 });
+
+/**
+ * ⛔ A gateway switch resets this reader, and a poll in flight when it lands used to undo the reset.
+ *
+ * The position is written after an await, so the read against the node the viewer just left finished
+ * and wrote that node's slot number back. Every poll after it asked the new node for the slot after
+ * one it does not hold, the walk broke with nothing read, and the browse page kept the previous
+ * gateway's streams for the life of the tab. Reloading the page was the only way out, and nothing on
+ * it said so.
+ *
+ * The reads here are overlapped by hand rather than awaited in turn, because a reset between two
+ * awaited reads is the case that already worked and is covered above.
+ */
+describe('CatalogFeedReader when a gateway switch lands mid-read', () => {
+  /** Every request is held until the test answers it, so two reads can be in flight at once. */
+  function deferredFetcher() {
+    const pending: { url: string; answer: (response: TimedResponse) => void }[] = [];
+    const fetcher = (url: string) =>
+      new Promise<TimedResponse>((resolve) => {
+        pending.push({ url, answer: resolve });
+      });
+    return { pending, fetcher: fetcher as never };
+  }
+
+  it('keeps the position the new gateway resolved when the old gateway answers after the switch', async () => {
+    const { pending, fetcher } = deferredFetcher();
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    const beforeSwitch = reader.read('http://gw-old');
+    reader.reset();
+    const afterSwitch = reader.read('http://gw-new');
+
+    pending[1].answer(respond({ headers: headerFor(7), text: '[{"new":true}]' }));
+    await afterSwitch;
+    pending[0].answer(respond({ headers: headerFor(40), text: '[{"old":true}]' }));
+    await beforeSwitch;
+
+    expect(pending[0].url).toContain('gw-old');
+    expect(pending[1].url).toContain('gw-new');
+    expect(reader.getIndex()?.toBigInt()).toBe(7n);
+  });
+
+  it('writes no position at all from a walk the switch interrupted, so the next poll resolves the head', async () => {
+    const { pending, fetcher } = deferredFetcher();
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    const head = reader.read('http://gw-old');
+    pending[0].answer(respond({ headers: headerFor(5), text: '[{"old":true}]' }));
+    await head;
+
+    const walk = reader.read('http://gw-old');
+    reader.reset();
+    pending[1].answer(respond({ text: '[{"old":true,"more":true}]' }));
+    await walk;
+
+    expect(reader.getIndex()).toBeNull();
+    // The walk stopped at the slot that was already in flight rather than asking the node the viewer
+    // has left for another one.
+    expect(pending).toHaveLength(2);
+  });
+});

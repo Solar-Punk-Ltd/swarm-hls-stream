@@ -24,7 +24,8 @@
  * per tick, and `edge` asked for a slot that did not exist zero times in 150 polls. The two walkers
  * returned identical figures to two decimals, which is what a coupled rig looks like from outside.
  *
- * RUN IT FROM `e2e`, which is the only workspace package that still declares `cafe-utility`. This is
+ * RUN IT FROM `e2e`, one of the three workspace packages that declare `cafe-utility` and the one
+ * this file lives in (`packages/shared` and `packages/stream-uploader` declare it too). This is
  * plain ESM rather than TypeScript, so it cannot import the shared module the bench and the player
  * now follow feeds through, and it resolves its dependencies from wherever it is started:
  *

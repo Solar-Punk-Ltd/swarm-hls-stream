@@ -210,9 +210,9 @@ function describeFailure(reading: NodeStampReading, minTtlS: number): string {
 /**
  * Read every publisher node's postage, one attributable read at a time.
  *
- * Sequential rather than concurrent, the way `suites/preflight/chequebook-funding.test.ts` reads
- * balances: these go over one multiplexed ssh connection, and a failure that cannot be attributed to
- * a node is worth less than the seconds it saves.
+ * Sequential rather than concurrent, the way `chequebookFunding.ts` reads balances: these go over one
+ * multiplexed ssh connection, and a failure that cannot be attributed to a node is worth less than
+ * the seconds it saves.
  *
  * Each node is polled rather than read once, because a scenario that restarts a bee leaves its stamp
  * reporting `usable: false` for tens of seconds while the batch re-syncs even though uploads already

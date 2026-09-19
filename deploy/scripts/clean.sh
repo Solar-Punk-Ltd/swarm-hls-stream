@@ -190,7 +190,7 @@ clean_target() {
     ssh "$target" bash -s <<REMOTE_SCRIPT
       set -e
       if [ ! -d $REMOTE_BASE/deploy ]; then
-        echo "  (no $REMOTE_BASE/deploy on this host — nothing to clean)"
+        echo "  (no $REMOTE_BASE/deploy on this host, nothing to clean)"
         exit 0
       fi
       cd $REMOTE_BASE/deploy
@@ -228,7 +228,7 @@ REMOTE_SCRIPT
 print_services
 
 if [ "$REMOVE_VOLUMES" = "true" ]; then
-  log_warn "This will remove Docker volumes — data will be lost!"
+  log_warn "This will remove Docker volumes. Data will be lost!"
 fi
 if [ "$REMOVE_ALL" = "true" ]; then
   log_warn "This will also remove all remote files!"
@@ -259,7 +259,7 @@ if [ "$visited_local" = "false" ]; then
   local_leftover=$(sweep_container_ids "${sweep_scope_list[@]}")
   if [ -n "$local_leftover" ]; then
     echo ""
-    log_warn "Found local containers labelled com.docker.compose.project=$PROFILE (config.json doesn't include localhost — sweeping anyway)"
+    log_warn "Found local containers labelled com.docker.compose.project=$PROFILE (config.json doesn't include localhost, sweeping anyway)"
     # shellcheck disable=SC2086
     docker rm -f $local_leftover
     # Volumes carry only the project label, with no per-service equivalent to narrow by, so a

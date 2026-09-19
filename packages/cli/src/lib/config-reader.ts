@@ -16,7 +16,7 @@ const CONFIG_PATH = resolve(DEPLOY_DIR, 'config.json');
 const ENV_PATH = resolve(ROOT_DIR, '.env');
 
 export const SVC_BEE_UPLOADER = 'bee-uploader';
-export const SVC_BEE_GATEWAY = 'bee-gateway';
+const SVC_BEE_GATEWAY = 'bee-gateway';
 
 const DEFAULT_BEE_UPLOADER_PORT = 1633;
 const DEFAULT_BEE_GATEWAY_PORT = 1733;
@@ -25,7 +25,7 @@ interface DeployConfig {
   services: Record<string, string | false>;
 }
 
-export interface BeeTarget {
+interface BeeTarget {
   url: string;
   host: string;
   port: number;

@@ -36,6 +36,48 @@ after(() => {
   }
 });
 
+/**
+ * A piece of the shipped entrypoint, lifted out by shape so that a test runs the real code rather
+ * than a copy of it. See `shippedGuard` below for what a second copy costs.
+ */
+function shippedBlock(pattern, what) {
+  const found = pattern.exec(readFileSync(ENTRYPOINT, 'utf8'));
+  assert.ok(found, `${ENTRYPOINT} no longer carries ${what}`);
+  return found[1] ?? found[0];
+}
+
+const REQUIRE_NUMBER = /^require_number\(\) \{\n[\s\S]*?\n\}$/m;
+
+/**
+ * Where the ceiling is turned into the ratio SRS takes.
+ *
+ * ⛔ Replaying only the `sed -i ` lines was not enough, and the gap was invisible: the ratio's sed
+ * line carried a `:-5.0` of its own, so this harness substituted that literal, the assertion that
+ * the shipped ceiling is 2.5s passed against it, and deleting `aof_ratio_for` and its call left the
+ * whole file green. The fallback is gone from the script and the derivation runs here instead, so
+ * the number asserted below is the one a container gets.
+ */
+const HLS_TUNING = /^# --- hls tuning ---\n([\s\S]*?)^# --- end hls tuning ---$/m;
+
+const REQUIRE_SECRET = /^require_secret\(\) \{\n[\s\S]*?\n\}$/m;
+
+/**
+ * The credential guard and every call the script makes to it.
+ *
+ * The calls are lifted as well as the definition, because a guard that is defined and never reached
+ * is the shape this repository has just paid for: `require_compose_reads` sat in `_lib.sh` while two
+ * probes called it from scripts that never sourced it, and nothing was red. If a call disappears
+ * from the entrypoint the count below drops and this fails, rather than the refusal cases quietly
+ * proving a function nothing runs.
+ */
+function shippedSecretChecks(expected) {
+  const calls = readFileSync(ENTRYPOINT, 'utf8')
+    .split('\n')
+    .filter((line) => line.startsWith('require_secret '));
+  assert.equal(calls.length, expected, `the entrypoint checks ${calls.length} credentials, not ${expected}`);
+  return [shippedBlock(REQUIRE_SECRET, 'require_secret'), ...calls].join('\n');
+}
+
 /** Runs the real entrypoint's substitution step and returns the srs.conf it produced. */
 function renderSrsConf(env) {
   const dir = mkdtempSync(join(tmpdir(), 'srs-conf-'));
@@ -56,9 +98,19 @@ function renderSrsConf(env) {
   // untouched template. Only the in-place flag is adapted; the expressions run verbatim.
   const localSeds = process.platform === 'darwin' ? seds.map((line) => line.replace(/^sed -i /, "sed -i '' ")) : seds;
 
-  execFileSync('bash', ['-c', `set -e\nCONF=${JSON.stringify(conf)}\n${localSeds.join('\n')}`], {
-    env: { ...process.env, ...env },
-  });
+  const program = [
+    'set -e',
+    `CONF=${JSON.stringify(conf)}`,
+    shippedBlock(REQUIRE_NUMBER, 'require_number'),
+    shippedSecretChecks(2),
+    shippedBlock(HLS_TUNING, 'the hls tuning block'),
+    ...localSeds,
+  ].join('\n');
+
+  // PATH and the case's own values, and nothing else of this machine's. Every value replayed here
+  // is read from the environment with a `:-` default, so an ambient HLS_SEGMENT_MAX or HLS_AOF_RATIO
+  // would decide what these cases assert.
+  execFileSync('bash', ['-c', program], { env: { PATH: process.env.PATH, ...env }, stdio: 'pipe' });
 
   const rendered = readFileSync(conf, 'utf8');
   assert.notEqual(rendered, readFileSync(TEMPLATE, 'utf8'), 'the harness substituted nothing, so it proves nothing');
@@ -125,10 +177,13 @@ describe('the SRS latency knobs', () => {
     // rather than the segment, so it has to sit at or below the GOP broadcasters are told to
     // publish, or their request is silently rounded up.
     assert.match(conf, /hls_fragment\s+0\.5;/);
-    // 5.0 gives a 2.5s ceiling at the 0.5s fragment. It was 4.2 for one commit, chosen to hold the
-    // product at SRS's own 2.1s, and 2.1 turned out to be 35ms short of what a 2.0s GOP needs. See
-    // the overshoot test below.
-    assert.match(conf, /hls_aof_ratio\s+5\.0;/);
+    // The ceiling is 2.5s, and it is set in seconds now rather than as the ratio SRS takes, so what
+    // is asserted is the product. It was 2.1s for weeks, which turned out to be 35ms short of what a
+    // 2.0s GOP needs. See the overshoot test below. The ratio read here is derived from
+    // HLS_SEGMENT_MAX's own default by the block the harness replays, so moving that default moves
+    // this number, which is what the dead `:-5.0` in the sed line used to hide.
+    const shippedRatio = Number(conf.match(/hls_aof_ratio\s+([\d.]+);/)[1]);
+    assert.equal(Number((0.5 * shippedRatio).toFixed(3)), 2.5);
     assert.match(conf, /hls_window\s+15;/);
     assert.match(conf, /latency\s+200;/);
   });
@@ -225,9 +280,7 @@ describe('the SRS latency knobs', () => {
    * the same constant the implementation returns. Task #104.
    */
   function shippedGuard() {
-    const declared = /^require_number\(\) \{\n[\s\S]*?\n\}$/m.exec(readFileSync(ENTRYPOINT, 'utf8'));
-    assert.ok(declared, `${ENTRYPOINT} no longer declares require_number, so there is no guard to test`);
-    return declared[0];
+    return shippedBlock(REQUIRE_NUMBER, 'require_number, so there is no guard to test');
   }
 
   const runGuard = (name, value) =>
@@ -255,6 +308,63 @@ describe('the SRS latency knobs', () => {
       assert.doesNotThrow(() => runGuard('HLS_FRAGMENT', good));
     });
   }
+});
+
+/**
+ * The two credentials this entrypoint writes into srs.conf.
+ *
+ * ⛔ `&` is the dangerous one and it is silent. sed expands a bare `&` in a replacement to the whole
+ * match, so a token of `ab&cd` reaches the config as `abSRS_WEBHOOK_TOKEN_PLACEHOLDERcd`. SRS starts,
+ * every webhook is rejected by the uploader as unauthorised, nothing in any log says the token was
+ * mangled, and the symptom reads as the uploader refusing SRS. `/` is this file's delimiter and
+ * crash-loops the container instead, which is at least loud. An operator reaching for
+ * `openssl rand -base64 32` rather than the `-hex 32` the file recommends gets one or both in most
+ * outputs.
+ */
+describe('the credentials the entrypoint splices into its config', () => {
+  /**
+   * What the render printed on standard error when it refused.
+   *
+   * ⛔ Not `assert.throws(..., /must not contain/)`. The error a failed `execFileSync` raises carries
+   * the whole command in its message, and the command here is the shipped script, so that regex
+   * matches the guard's own source text and passes however the run actually died. Measured with the
+   * guard deliberately neutered: the slash case stayed green on a sed crash.
+   */
+  function renderRefusal(env) {
+    try {
+      renderSrsConf(env);
+    } catch (error) {
+      return String(error.stderr ?? '');
+    }
+    return assert.fail('the entrypoint wrote a config instead of refusing');
+  }
+
+  for (const [name, bad, why] of [
+    ['SRS_WEBHOOK_TOKEN', `ab&cd${'0'.repeat(58)}`, 'an ampersand, which sed expands to the whole match'],
+    ['SRS_WEBHOOK_TOKEN', `ab/cd${'0'.repeat(58)}`, 'a slash, which ends the substitution'],
+    ['SRT_PASSPHRASE', 'pass&phrase', 'an ampersand'],
+  ]) {
+    it(`refuses a ${name} carrying ${why}`, () => {
+      const refusal = renderRefusal({ ...VALID, [name]: bad });
+
+      assert.match(refusal, new RegExp(`^${name} must not contain`, 'm'));
+      assert.doesNotMatch(refusal, new RegExp(bad.slice(0, 5)), 'the refusal printed the credential');
+    });
+  }
+
+  /**
+   * The other half, without which a guard that refused everything would pass all three cases above
+   * and no deployment could start. A hex secret is what the file tells the operator to generate, and
+   * it has to reach all three hook URLs unchanged.
+   */
+  it('writes a hex token into every hook URL, unchanged', () => {
+    const token = 'a3f9'.repeat(16);
+
+    const conf = renderSrsConf({ SRS_WEBHOOK_TOKEN: token });
+
+    assert.doesNotMatch(conf, /SRS_WEBHOOK_TOKEN_PLACEHOLDER/);
+    assert.equal(conf.split(`token=${token};`).length - 1, 3, 'the token did not reach all three hooks verbatim');
+  });
 });
 
 /**

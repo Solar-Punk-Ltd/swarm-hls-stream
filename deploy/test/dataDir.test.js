@@ -38,7 +38,7 @@ function deployBeeNode(envFiles, service = 'bee-uploader') {
 describe('bee data dir from .env (SEC-21)', () => {
   // `ssh host "...$data_dir..."` hands one string to the far side's login shell, which word-splits
   // and evaluates it. The value arrives from the root `.env`, and `.env.sample` is tracked while
-  // `setup.sh` appends new sample keys into an existing `.env` — so a single line in a commit that
+  // `setup.sh` appends new sample keys into an existing `.env`, so a single line in a commit that
   // touches no shell script used to run a command on every operator's deployment host. Measured on
   // the unfixed tree, three runs of three: the payload below executed FOUR times, once per unquoted
   // expansion of the value in the block that used to live here, and `deploy.sh` reported success for
@@ -151,7 +151,7 @@ describe('bee data dir initialisation (SEC-21)', () => {
   });
 
   // An absolute value used to be pasted after `<base>/deploy/`, so the password landed in a nested
-  // path while `docker-compose.yml` bind-mounted the absolute one — a node started against an empty
+  // path while `docker-compose.yml` bind-mounted the absolute one, so a node started against an empty
   // directory. Running the same `init-node.sh` on whichever host owns the directory is what makes
   // the two agree.
   it('honours an absolute dir instead of nesting it under deploy/', async () => {

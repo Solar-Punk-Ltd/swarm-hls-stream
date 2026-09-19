@@ -23,10 +23,10 @@ usage() {
   echo "Services: ${ALL_SERVICES[*]}"
   echo "Targets read from config.json."
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
-  echo "Engine env files are per-profile too: engines/<engine>/.env.<profile> — created"
+  echo "Engine env files are per-profile too: engines/<engine>/.env.<profile>, created"
   echo "automatically from the engine's .env (or .env.sample) on first deploy."
   echo "--portSlot=<N> (1-99) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
-  echo "When set, the slot is authoritative — port lines in .env.<profile> are ignored."
+  echo "When set, the slot is authoritative: port lines in .env.<profile> are ignored."
   echo "--host=<target> ignores per-service targets in config.json and sends every enabled"
   echo "service to <target> (\"localhost\" or any host reachable via ~/.ssh/config)."
   echo "Disabled services (\"false\" in config.json) remain disabled."
@@ -44,7 +44,7 @@ set -- "${REST_ARGS[@]}"
 require_env
 load_env
 
-# Engine env files are per-profile too (engines/<engine>/.env.<profile>) —
+# Engine env files are per-profile too (engines/<engine>/.env.<profile>),
 # created from the base engine .env / .env.sample when missing, then loaded
 # as defaults below the root env (so .env.<profile> wins on duplicate keys).
 for engine in "${ENGINE_SERVICES[@]}"; do
@@ -96,7 +96,7 @@ check_stamp() {
     publishers_val=$(grep -E '^BEE_PUBLISHERS=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')
     stamp_val=$(grep -E '^STAMP=' "$ENV_FILE" | cut -d= -f2-)
     if [ -z "$publishers_val" ] && [ -z "$stamp_val" ]; then
-      log_warn "STAMP is empty in .env — stream-uploader needs a valid postage stamp."
+      log_warn "STAMP is empty in .env: stream-uploader needs a valid postage stamp."
       log_warn "Run: pnpm stamp:setup, or name one batch per rung in BEE_PUBLISHERS."
       # Nobody is there to answer on a deploy the manager runs: it spawns a script with standard
       # input closed, so `read` reaches end of file and the empty answer reads as a refusal. The
@@ -123,7 +123,7 @@ check_stamp
 # --- Engine guard ---
 
 # ENGINE selects the uploader's engine plugin. Warn when the matching engine
-# service is disabled in config.json — the uploader would wait on webhooks /
+# service is disabled in config.json: the uploader would wait on webhooks /
 # poll an HLS URL that nothing serves.
 check_engine() {
   local deploys_uploader=false
@@ -152,15 +152,88 @@ check_engine() {
 
 check_engine
 
+# --- Local Bee node guard ---
+
+# LOCAL_BEE_UPLOADER is the profile's own statement of whether this deployment runs a Bee node,
+# written into .env.<profile> by the deployment manager and read by resolve_bee_url below.
+#
+# Checked up here rather than where it is read, because resolve_bee_url runs inside two nested
+# command substitutions and an `exit` there leaves only the innermost subshell. Measured on the
+# bash this repo ships to (3.2): a refusal raised inside it is swallowed, the deploy carries on
+# and exits 0, and the only trace is a line on standard error. A refusal that depends on which
+# bash is running is not a refusal.
+#
+# Anything that is not one of the two values has to stop the deploy rather than fall through to
+# the old rule, because falling through is indistinguishable from the key working: a profile with
+# an external node and LOCAL_BEE_UPLOADER=flase would quietly get the compose service back and
+# crash-loop exactly as it did before the key existed.
+# Whether this invocation brings up the stream-uploader, which is the only service in the compose
+# file that reads BEE_URL.
+deploys_uploader() {
+  local target svc
+  for target in $(get_targets); do
+    for svc in $(get_filtered_services_for_target "$target"); do
+      [ "$svc" = "$SVC_UPLOADER" ] && return 0
+    done
+  done
+  return 1
+}
+
+check_local_bee_uploader() {
+  case "${LOCAL_BEE_UPLOADER:-}" in
+    true | false | '') ;;
+    *)
+      log_error "LOCAL_BEE_UPLOADER must be true or false. $ENV_FILE says \"$LOCAL_BEE_UPLOADER\"."
+      log_error "It states whether this deployment runs a Bee node of its own, and the deployment manager writes it."
+      exit 1
+      ;;
+  esac
+
+  # `false` leaves BEE_URL in .env.<profile> as the only address the uploader has, and an empty one
+  # is not an address. The compose file reads `${BEE_URL:-http://bee-uploader:1633}`, and `:-`
+  # substitutes its default for an EMPTY value as well as for an unset one, so a half-configured
+  # profile hands the uploader the very compose service this key exists to keep it away from. That
+  # is the `getaddrinfo ENOTFOUND bee-uploader` crash loop named above, arriving by the one route
+  # the key did not close.
+  #
+  # Refused here rather than left to `assert-started.sh`, which does catch it: what it can report is
+  # a container that fell over, and the cause is a default in a file the operator never edited and
+  # that appears in neither the env file nor the guard.
+  if [ "${LOCAL_BEE_UPLOADER:-}" = "false" ] && [ -z "${BEE_URL:-}" ] && deploys_uploader; then
+    log_error "LOCAL_BEE_UPLOADER=false and BEE_URL is empty in $ENV_FILE."
+    log_error "A deployment that runs no Bee node of its own has to name the one it publishes through."
+    log_error "Set BEE_URL=http://<host>:<port> in $ENV_FILE, or LOCAL_BEE_UPLOADER=true to run a node here."
+    exit 1
+  fi
+}
+
+check_local_bee_uploader
+
 # --- Build ---
 
+# What `Dockerfile.uploader` COPYs instead of building, so a deployment host needs this and never a
+# toolchain.
+UPLOADER_DIST="$ROOT_DIR/packages/stream-uploader/dist"
+
+# The file the image runs, and the only honest age of a build. `pnpm build` rewrites the files in
+# place, and a directory's own time moves only when an entry is added or removed, so dating the
+# directory reports a rebuild that happened minutes ago as weeks old.
+UPLOADER_ENTRY="$UPLOADER_DIST/index.js"
+
+# The entry file rather than the directory, for the reason above and for one more: an interrupted
+# build, or a `tsc` run that got as far as writing `.tsbuildinfo`, leaves the directory there with
+# nothing the image can run. Testing the directory called that built, skipped the build, and handed
+# compose a container that exits on `Cannot find module '/app/dist/index.js'` and restarts. The
+# pnpm-absent path below has read the entry file since 2026-09-16 and this one had not been told.
 build_if_needed() {
-  if [ ! -d "$ROOT_DIR/packages/stream-uploader/dist" ]; then
+  if [ ! -f "$UPLOADER_ENTRY" ]; then
     log_info "Building packages"
     cd "$ROOT_DIR"
     pnpm install
     pnpm build
+    return
   fi
+  log_info "packages/stream-uploader/dist/index.js is already built, $(modified_at "$UPLOADER_ENTRY"). Not rebuilding."
 }
 
 build_force() {
@@ -170,33 +243,66 @@ build_force() {
   pnpm build
 }
 
+# BSD `stat` on macOS, GNU or busybox `stat` on a deployment host, and a deploy is run on both.
+modified_at() {
+  local when
+  when=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$1" 2>/dev/null) ||
+    when=$(stat -c '%y' "$1" 2>/dev/null) ||
+    when="an unknown time"
+  echo "${when%%.*}"
+}
+
 # --- Cross-target URL resolution ---
 
 # When bee-uploader is on a different host than stream-uploader,
-# the uploader can't use the docker service name — it needs the real IP.
+# the uploader can't use the docker service name: it needs the real IP.
 resolve_bee_url() {
+  # A profile that runs no Bee node of its own has no local address to compute, so the BEE_URL in
+  # .env.<profile> is both the only answer available and a deliberate one.
+  #
+  # is_enabled cannot answer this. It reads config.json, which says what the CHECKOUT is configured
+  # for, and the deployment manager writes that file once at bootstrap listing bee-uploader as
+  # "localhost". So every profile carrying a stream-uploader had its BEE_URL replaced by
+  # http://bee-uploader:<port> in the override file, which compose takes as a second --env-file and
+  # therefore ranks above .env.<profile>. An uploader pointed at a compose service that is not
+  # running died on `getaddrinfo ENOTFOUND bee-uploader` and restarted for ever, behind a deploy
+  # that had already exited 0.
+  #
+  # The service filter cannot answer it either. It says which services THIS invocation was asked to
+  # bring up, and the manager holds an uploader back until a batch is bought and then deploys it
+  # alone, for a profile that does own a node and does need the local address computed.
+  #
+  # Only the writer of .env.<profile> knows the profile's full service list, so it states it.
+  # Absent means decide as before, which leaves a hand-run deploy.sh and an older manager untouched.
+  # true falls through to the same computation rather than forcing an address, because the branches
+  # below still need config.json to name a target they can take a host from. check_local_bee_uploader
+  # has already refused every other value.
+  if [ "${LOCAL_BEE_UPLOADER:-}" = "false" ]; then
+    return
+  fi
+
   local bee_target uploader_target
   bee_target=$(get_target "$SVC_BEE_UPLOADER")
   uploader_target=$(get_target "$SVC_UPLOADER")
 
   if ! is_enabled "$bee_target"; then
-    # bee-uploader disabled — use whatever BEE_URL is in .env
+    # bee-uploader disabled: use whatever BEE_URL is in .env
     return
   fi
 
   if [ "$bee_target" = "$uploader_target" ]; then
     local bee_port="${BEE_UPLOADER_API_PORT:-$DEFAULT_BEE_UPLOADER_PORT}"
     if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
-      # Host network — no docker DNS, use localhost
+      # Host network: no docker DNS, use localhost
       echo "http://localhost:${bee_port}"
     else
-      # Bridge network — docker service name works
+      # Bridge network: docker service name works
       echo "http://bee-uploader:${bee_port}"
     fi
     return
   fi
 
-  # Different targets — use the bee host's IP
+  # Different targets: use the bee host's IP
   local bee_host
   bee_host=$(host_from_target "$bee_target")
   local bee_port="${BEE_UPLOADER_API_PORT:-$DEFAULT_BEE_UPLOADER_PORT}"
@@ -231,7 +337,7 @@ resolve_adapter_host() {
   fi
 }
 
-# The dockerized uploader can't use the OME_HLS_URL from .env — that value is
+# The dockerized uploader can't use the OME_HLS_URL from .env: that value is
 # written for native dev (http://localhost:8081) and would point at the
 # uploader container itself. Resolve the URL the same way as resolve_bee_url.
 # Prints nothing when OME is disabled (keep whatever the env says).
@@ -248,13 +354,13 @@ resolve_ome_hls_url() {
     if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
       echo "http://localhost:${OME_HLS_PORT:-8081}"
     else
-      # Bridge network — docker DNS, container-internal port.
+      # Bridge network: docker DNS, container-internal port.
       echo "http://ome:8081"
     fi
     return
   fi
 
-  # Different targets — use OME's published port on its host.
+  # Different targets: use OME's published port on its host.
   local ome_host
   ome_host=$(host_from_target "$ome_target")
   echo "http://${ome_host}:${OME_HLS_PORT:-8081}"
@@ -391,7 +497,7 @@ sync_to_remote() {
     # The client consumes `@swarm-hls-stream/shared` as TypeScript and vite compiles it into the
     # bundle, so `Dockerfile.client` COPYs the package twice: its manifest for the install layer, and
     # its sources for the build. Neither is reachable unless it is synced, and the failure is a build
-    # that never starts — `failed to compute cache key: "/packages/shared": not found` — rather than
+    # that never starts, `failed to compute cache key: "/packages/shared": not found`, rather than
     # anything the deploy itself reports. The uploader block above sends the manifest for its own
     # reason and never these sources: the shared code it runs is the copy `vendor-shared.mjs`
     # compiled into `dist/node_modules`, which rides along in the dist sync.
@@ -469,17 +575,13 @@ generate_env_overrides() {
   # Start with the resolved engine env values (engines/<engine>/.env.<profile>),
   # then the slot-resolved port lines (apply_port_slot populates this). All of it
   # needs to land in the override file passed to docker compose so the values
-  # actually reach interpolation — `--env-file=<.env.profile>` alone causes shell
+  # actually reach interpolation: `--env-file=<.env.profile>` alone causes shell
   # exports to be ignored in some Compose versions for vars not present in that file.
   # Engine lines go FIRST: on duplicate keys the later lines win, so slot ports and
   # the auto-resolved keys below (BEE_URL, OME_HLS_URL, *_ADAPTER_HOST) take over.
   local overrides
   overrides="$(engine_env_overrides_text)"
   overrides+="$PORT_OVERRIDES_TEXT"
-
-  # Per-deployment parameter overrides supplied on the CLI (feed_owner, feed_topic,
-  # private_key, stamp_id). When set they take precedence over .env.<profile>.
-  overrides+="$(parameter_overrides_text)"
 
   for svc in "${services[@]}"; do
     if [ "$svc" = "$SVC_UPLOADER" ]; then
@@ -513,9 +615,18 @@ generate_env_overrides() {
     fi
   done
 
-  # printf '%b' interprets backslash escapes in $overrides — and unlike `echo -e`
+  # printf '%b' interprets backslash escapes in $overrides, and unlike `echo -e`
   # it works under POSIX `sh` too (so `sh deploy.sh` doesn't write a literal "-e").
   printf '%b' "$overrides"
+
+  # The per-deployment overrides supplied on the command line (feed owner, feed topic, private key,
+  # stamp id) are printed after that expansion rather than joining it, because they are the only
+  # values here that come from argv and `%b` would read a backslash escape inside one as a line
+  # ending, letting a value set a second key of its own choosing. They carry their own newlines.
+  #
+  # Printing them last also means they win on a duplicate key, which is what a flag typed at the
+  # deploy should do to anything a file said.
+  parameter_overrides_text
 }
 
 # --- Deploy to a target ---
@@ -542,7 +653,10 @@ deploy_target() {
     # Write overrides to per-profile temp file (concurrent group deploys would
     # otherwise race on a single shared .env.deploy and clobber each other's ports).
     local override_file="$DEPLOY_DIR/.env.deploy.$PROFILE"
-    printf '%b' "$overrides" > "$override_file"
+    # `%s`, not `%b`: generate_env_overrides has already expanded every escape the port and engine
+    # lines carry, so a second pass would only ever read a backslash inside an operator's own value
+    # as a line ending of its own.
+    printf '%s' "$overrides" > "$override_file"
 
     # Export overrides into current env for compose
     if [ -n "$overrides" ]; then
@@ -584,9 +698,10 @@ deploy_target() {
       set -e
       cd $REMOTE_BASE/deploy
 
-      # Write env overrides
+      # Write env overrides. Inserted as they are for the reason the local writer above gives: the
+      # escapes are already expanded, and a second pass here would expand one inside a value.
       cat > .env.deploy.$PROFILE <<'ENVEOF'
-$(printf '%b' "$overrides")
+$overrides
 ENVEOF
 
       # Source overrides into env, then run compose with root .env
@@ -630,12 +745,30 @@ if [ "$has_any" = "false" ]; then
   exit 0
 fi
 
-# Build once before deploying (only if uploader is being deployed)
+# Build once before deploying (only if uploader is being deployed).
+#
+# A remote target forces a rebuild, so a hand-run deploy always ships a fresh dist, but only where
+# there is a toolchain to do it with. streaming-infra-manager runs this script inside its api
+# container, which has no pnpm and a checkout with no node_modules: that deploy builds the packages on
+# the operator's machine and rsyncs the result in. So a deploy without pnpm ships the dist it was
+# given rather than dying at `pnpm: command not found` from the middle of a build function, and names
+# when the file the image runs was built, because nothing on this path rebuilt it and a stale dist is
+# otherwise silent.
 if [ "$has_uploader" = "true" ]; then
-  if [ "$has_remote" = "true" ]; then
-    build_force
+  if command -v pnpm >/dev/null 2>&1; then
+    if [ "$has_remote" = "true" ]; then
+      build_force
+    else
+      build_if_needed
+    fi
+  elif [ -f "$UPLOADER_ENTRY" ]; then
+    log_info "pnpm is not on PATH. Deploying the pre-built packages/stream-uploader/dist, built $(modified_at "$UPLOADER_ENTRY")."
+  elif [ -d "$UPLOADER_DIST" ]; then
+    log_warn "pnpm is not on PATH. Deploying packages/stream-uploader/dist, which has no dist/index.js for the image to run."
   else
-    build_if_needed
+    log_error "packages/stream-uploader/dist is missing and pnpm is not on PATH to build it."
+    log_error "Build where pnpm is (pnpm install && pnpm build) and ship dist, or install pnpm here."
+    exit 1
   fi
 fi
 

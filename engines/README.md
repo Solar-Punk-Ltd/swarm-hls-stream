@@ -26,21 +26,43 @@ The plugin registers engine-specific HTTP routes on the uploader's server. No se
 ## ABR ladder (SRS only)
 
 Set `ABR_ENABLED=true` in the root `.env` and SRS produces four renditions instead of one. The
-uploader and SRS both read this knob, and for a Docker deployment only the root `.env` reaches
-both, because compose interpolates each service's copy from it. Setting it in `engines/srs/.env`
-turns the ladder on for SRS while the uploader keeps it off and publishes four unrelated streams.
+uploader and SRS both read this knob, and compose interpolates each service's copy from the root
+`.env`. Setting it in `engines/srs/.env` instead reaches both as well, because `deploy.sh` writes
+every key of the enabled engines' env files into the override file it hands compose as a second
+`--env-file`. The root wins wherever both name a knob, so the root `.env` is the one place to set it
+and a value left behind in the engine file changes nothing. What does leave the pair disagreeing is
+recreating one container and not the other, and on this knob that is SRS producing four renditions
+while the uploader publishes four unrelated streams. The paragraph below carries the rule.
 Each rung is a stream in its own right, so the flow above is unchanged, it just happens four times,
 and the uploader gets four feeds it groups back into one ladder.
 
 `HLS_FRAGMENT` is the same two-container shape, and it bites harder because the two containers can
-disagree rather than one of them simply being off. SRS cuts segments at it, and the uploader derives
-every `#EXT-X-PROGRAM-DATE-TIME` from it rather than measuring one, so an uploader on 0.5 behind an
-engine on 1.0 dates every segment half a second early, cumulatively, and the recording keeps those
-dates for ever. A container re-reads the variable only when it is recreated, so **recreate both
-after changing it**, which `deploy/scripts/deploy.sh` does and recreating the engine alone does not.
-The uploader now measures its first eight segments and reports `fragment_mismatch` on `/health` when
-they are not the length it was told, which is a signal after the fact rather than a substitute for
-redeploying the pair.
+disagree rather than one of them simply being off. SRS cuts segments at it, and the uploader reads
+every segment against it: a segment within 1% of the declared length is dated as exactly that length,
+and one outside it by what it really held. Under a correctly deployed ladder every segment sits inside
+that 1%, so nothing about the dating moved: each date is what stepping by the declared length always
+gave, and the four rungs stamp one piece of media identically. An uploader on 0.5 behind an engine on
+1.0 dates every 1.0 second segment by the second of media it really holds, so the recording's clock no
+longer goes wrong. What that disagreement still costs is everything else the declared length is the
+basis of: every `#EXT-X-GAP` entry is dated and sized at it, so a segment the broadcast loses leaves a
+hole of the wrong size in the timeline, and the rung GOP, SRS's force-close and the announcement
+ceiling described below are all derived from it. The deployment is not what its configuration says. A
+container re-reads the variable only when it is recreated, so **recreate both after changing it**,
+which `deploy/scripts/deploy.sh` does and recreating the engine alone does not. The uploader measures
+its first eight segments and reports `fragment_mismatch` on `/health` when they are not the length it
+was told, which is a signal after the fact rather than a substitute for redeploying the pair.
+
+With the ladder **off** the same measurement reports `fragment_publisher_gop` instead, and it is a
+different cause with the same consequence. Nothing transcodes there, so SRS closes a segment at the
+first keyframe at or after `HLS_FRAGMENT` and the publisher's own keyframe interval decides the length,
+which makes the configured value a floor. A live single-rendition stream was measured on 2026-09-15
+cutting 2.067 to 10.033 seconds against a configured 2. No container is stale and no redeploy fixes it,
+and the dates follow that media rather than the configured 2, so the recording's clock is right here
+too. What the reason names is a stage cutting longer than the deployment declared, and its gap entries
+are charged the declared length exactly as above. The lever is the publisher: set `HLS_FRAGMENT` to its
+keyframe interval, or turn `ABR_ENABLED` on, where the fragment sets the segment directly. `/health`
+names each such stream under `publisherGopStreams` with both lengths. Neither reason changes a date,
+refuses a segment or ends a broadcast.
 
 The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
 naming the four rung feeds, on a topic that _is_ the ladder's group id. The catalog entry points at

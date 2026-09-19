@@ -36,7 +36,7 @@ const RE_SEGMENT_UPLOADED = new RegExp(`^${segmentUploadedPattern().source}$`);
  */
 const RE_MANIFEST_PUBLISHED = new RegExp(`^${manifestUploadedPattern().source}$`);
 
-export interface UploadedSegment {
+interface UploadedSegment {
   /** The rung's own playlist position. A ladder counts four of these independently from zero. */
   index: number;
   /** Which rung uploaded it, so an index and a manifest can both be read against the right one. */
@@ -46,14 +46,14 @@ export interface UploadedSegment {
   atMs: number;
 }
 
-export interface PublishedManifest {
+interface PublishedManifest {
   socIndex: number;
   /** Which rung published it. A ladder is four independent SOC counters interleaved in one log. */
   streamId: string;
   atMs: number;
 }
 
-export interface UploadTimeline {
+interface UploadTimeline {
   segments: UploadedSegment[];
   manifests: PublishedManifest[];
 }

@@ -15,7 +15,7 @@ import { ApiError } from './errorHandler.js';
  * the number of requests admitted inside one window, and the global limiter mounted ahead of the
  * per-stream one bounds that in turn.
  */
-export interface RateLimitOptions {
+interface RateLimitOptions {
   windowMs: number;
   /** Requests one key may spend per window. */
   max: number;

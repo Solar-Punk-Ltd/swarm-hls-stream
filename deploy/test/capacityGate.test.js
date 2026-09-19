@@ -7,6 +7,8 @@ import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { scriptsThatSpend } from './helpers/spendingScripts.js';
+
 const run = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SCRIPTS = join(ROOT, 'deploy/scripts');
@@ -37,20 +39,19 @@ after(() => {
 });
 
 /**
- * Every driver that prices a sitting, discovered rather than listed, so a new one cannot opt out.
+ * Every script that can spend, discovered rather than listed, so a new one cannot opt out.
  *
- * A shebang is what separates a driver from a sourced library: the shared files here carry
- * `# shellcheck shell=bash` instead, precisely because running one on its own does nothing useful.
- * Without that split this picks up `capacity-gate.sh` itself, which names `burn-rates.sh` only to
- * explain the rule it enforces.
+ * ⛔⛔⛔ THIS ASKED ONLY WHICH SCRIPTS SOURCE `burn-rates.sh`, AND ONE PUBLISHER SOURCED NOTHING.
+ *
+ * `publish-clock.sh` is what every driver here shells out to in order to start a broadcast, and it
+ * is also documented as a command an operator runs by hand. It priced nothing, so it named the rates
+ * nowhere, so this discovery could not see it, and it published an hour of 720p into Swarm with no
+ * capacity gate and no money gate at all. The rule is now that a script which starts a publisher is
+ * asked the same questions as one that prices a sitting, and the discovery lives beside the money
+ * gate's in `helpers/spendingScripts.js` so the two cannot drift apart again.
  */
 function scriptsThatPriceASitting() {
-  return readdirSync(SCRIPTS)
-    .filter((name) => name.endsWith('.sh'))
-    .filter((name) => {
-      const body = readFileSync(join(SCRIPTS, name), 'utf8');
-      return body.startsWith('#!') && body.includes('burn-rates.sh');
-    });
+  return scriptsThatSpend();
 }
 
 describe('the postage capacity gate', () => {

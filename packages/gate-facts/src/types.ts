@@ -36,7 +36,7 @@ export interface FactGroup {
  * a stale figure from a fresh one. Marking it makes UNVERIFIABLE the correct verdict rather than a
  * failure to try.
  */
-export interface AuthorMeasured {
+interface AuthorMeasured {
   key: string;
   value: string;
   /** How the author obtained it, so a reviewer who does choose to spend the time knows what to run. */

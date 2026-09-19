@@ -31,7 +31,7 @@ import { DEFAULT_BYTE_SOURCE_SETTLE_SECONDS } from '../browser/byteSourceArm.js'
 import { type RungTimeline } from '../browser/qualitySwitch.js';
 
 import { type BrowserArmResult } from './browser.js';
-import { byteSourceArmRefusal } from './browserVerdict.js';
+import { byteSourceArmRefusal, unprovenInstrumentRefusal } from './browserVerdict.js';
 
 /**
  * The driver's own windows, restated here because a suite cannot import the driver.
@@ -83,6 +83,11 @@ export function rungArmRefusal(result: BrowserArmResult, expectation: RungArmExp
       'the browser was not a usable instrument for this run, so a rung that did or did not move is as ' +
       `likely to be the harness as the outage: ${result.instrumentFailures.join('; ') || 'no reason recorded'}`
     );
+  }
+
+  const unproven = unprovenInstrumentRefusal(result);
+  if (unproven !== null) {
+    return unproven;
   }
 
   if (result.rungs === null || result.silencedRung === null) {

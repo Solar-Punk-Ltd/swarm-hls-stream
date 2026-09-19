@@ -12,7 +12,7 @@
  * sound, and a failure here names the harness rather than looking like the deployment.
  */
 
-import { describeProofs, judgeInstrument } from '../src/browser/instrument.js';
+import { describeProofs, instrumentIsEvidence, judgeInstrument } from '../src/browser/instrument.js';
 import {
   CLOCK_OVERLAY_ID,
   installClockOverlay,
@@ -73,7 +73,9 @@ async function main(): Promise<void> {
 
     console.log(`\nselfcheck: ${verdict.sound ? 'SOUND' : 'VOID'}`);
     verdict.failures.forEach((failure) => console.log(`  ⛔ ${failure}`));
-    if (!verdict.sound) {
+    // ⛔ An unproven sensor is non-zero too, and this printed the warning above and exited 0 until
+    // 2026-09-16. See instrumentIsEvidence.
+    if (!instrumentIsEvidence(verdict, proofs)) {
       process.exitCode = 1;
     }
   } finally {

@@ -33,7 +33,7 @@ export interface AllowedAdvisory {
   reason: string;
 }
 
-export type GateFailureKind =
+type GateFailureKind =
   | 'unreviewed'
   | 'stale-exception'
   | 'package-mismatch'

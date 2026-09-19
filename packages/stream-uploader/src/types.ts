@@ -68,18 +68,23 @@ export interface AdminSession {
 /**
  * What fixes a broadcast's playlists to a wall clock, so all four rungs date the same media alike.
  *
- * ⛔ **A segment's date is derived from its playlist sequence and never read off a clock per
- * segment.** Four rung uploaders stamping each segment with the time it happened to reach them
+ * ⛔ **A segment's date is this anchor plus the media held in front of it, and never a clock read
+ * per segment.** Four rung uploaders stamping each segment with the time it happened to reach them
  * would disagree by their own upload jitter, and hls.js would read that disagreement as the rungs
- * covering different media. So the arithmetic is the point, and `broadcastDating.ts` holds it.
+ * covering different media. So the derivation is the point, and `broadcastDating.ts` holds it.
  *
  * `startedAtMs` is where the dating begins: one instant for the whole ladder, minted when the
  * broadcast is admitted, outliving every session of that broadcast including one rebuilt from a
  * recovery entry.
  *
- * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`, not what any segment
- * measured. It is nominal by design: a stamp that tracked measured drift would move a viewer's clock
- * around by the encoder's rounding.
+ * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`. It is the grid the
+ * media is read against rather than a step taken blind: a segment measuring within
+ * `DATING_SNAP_TOLERANCE` of it is dated as exactly this length, so a ladder whose rungs are cut on
+ * one keyframe grid dates one piece of media identically on all four. A segment outside the tolerance is
+ * dated by what it really held, because a single rendition's segment is decided by the publisher's
+ * own keyframe interval and dating a 10 second one as 2 leaves the recording's clock behind its
+ * media for ever. It is never persisted with the broadcast, so a redeployment under a new
+ * `HLS_FRAGMENT` reads the grid it is now cutting at.
  */
 export interface BroadcastAnchor {
   /** Epoch milliseconds of the broadcast's first fragment, shared by every rung of the ladder. */
@@ -163,6 +168,15 @@ export interface SegmentEntry {
    * the offset between them is recovered from the first segment held.
    */
   sequence?: number;
+  /**
+   * When this segment is presented, in epoch milliseconds, decided once as it was placed.
+   *
+   * Stored rather than derived on every build, so a recovered session republishes the dates a viewer
+   * was already handed and a slice of the held segments carries its own. Absent on entries persisted
+   * before the dating followed the media, where the anchor's own arithmetic is not a guess but the
+   * very date the entry went out with. See `broadcastDating.ts`.
+   */
+  presentedAtMs?: number;
 }
 
 /**
@@ -234,8 +248,16 @@ export type QueuePressure = typeof PRESSURE_LOW | typeof PRESSURE_MEDIUM | typeo
 
 export const HEALTH_OK = 'ok' as const;
 export const HEALTH_DEGRADED = 'degraded' as const;
+/**
+ * The boot has not finished, because the half of it that needs a Bee node is still waiting for one.
+ *
+ * Distinct from `degraded` on purpose, and the distinction is what an operator acts on: degraded is a
+ * reading about a service that is running, while this one says nothing has run yet. See
+ * `libs/NodeWait.ts` for what the service is doing while it answers this.
+ */
+export const HEALTH_WAITING_FOR_NODE = 'waiting_for_node' as const;
 
-export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED;
+export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED | typeof HEALTH_WAITING_FOR_NODE;
 
 export const HEALTH_REASON_STALE_MANIFEST = 'stale_manifest' as const;
 export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as const;
@@ -247,7 +269,10 @@ export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
 export const HEALTH_REASON_INGEST_REFUSED = 'ingest_refused' as const;
 export const HEALTH_REASON_UNRECOVERABLE_STREAM = 'unrecoverable_stream' as const;
 export const HEALTH_REASON_FRAGMENT_MISMATCH = 'fragment_mismatch' as const;
+export const HEALTH_REASON_FRAGMENT_PUBLISHER_GOP = 'fragment_publisher_gop' as const;
 export const HEALTH_REASON_POSTAGE_REFUSED = 'postage_refused' as const;
+export const HEALTH_REASON_NODE_UNAVAILABLE = 'node_unavailable' as const;
+export const HEALTH_REASON_START_GATE_WARNED = 'start_gate_warned' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -260,7 +285,48 @@ export type HealthReason =
   | typeof HEALTH_REASON_INGEST_REFUSED
   | typeof HEALTH_REASON_UNRECOVERABLE_STREAM
   | typeof HEALTH_REASON_FRAGMENT_MISMATCH
-  | typeof HEALTH_REASON_POSTAGE_REFUSED;
+  | typeof HEALTH_REASON_FRAGMENT_PUBLISHER_GOP
+  | typeof HEALTH_REASON_POSTAGE_REFUSED
+  | typeof HEALTH_REASON_NODE_UNAVAILABLE
+  | typeof HEALTH_REASON_START_GATE_WARNED;
+
+/**
+ * A startup gate that warned instead of refusing, as `/health` reports it.
+ *
+ * ⛔ The gate's own message is deliberately not here. `/health` takes no credential and is published
+ * on every interface the deployment binds, and those messages name node URLs and postage batch ids.
+ * The gate's name and the rung are enough to act on, and the log has the rest.
+ */
+export interface StartGateWarning {
+  /** The gate's class name, `ChequebookGate` or `PostageGate`. */
+  readonly gate: string;
+  /** The ABR rung, absent on a single-node deployment and on a gate that threw before reading one. */
+  readonly rung?: string;
+}
+
+/**
+ * What the boot is waiting for, as `/health` reports it while the node has not answered.
+ *
+ * `waitingSince` is the whole wait rather than the current attempt, because the question a person
+ * asks of a page showing this is how long it has been like that. `lastError` is absent until the
+ * first attempt has failed: a boot reports that it is waiting before it has tried anything, so that
+ * a probe reaching the service in its first second is told the truth rather than `ok`.
+ */
+export interface NodeWaitReport {
+  /**
+   * The node this wait is about, with any credential stripped.
+   *
+   * The coordinator until something fails, since that is the node every boot read reaches. After a
+   * failure it is the node that failure was about where it named one, because on a pool of four a
+   * refusal about the 1080p rung reported against a coordinator that is answering sends an operator
+   * to the wrong machine.
+   */
+  readonly url: string;
+  /** ISO 8601, so it survives the JSON that carries it and reads the same to a person and a page. */
+  readonly waitingSince: string;
+  readonly attempts: number;
+  readonly lastError?: string;
+}
 
 export const RECOVERY_ENTRY_MISSING = 'missing' as const;
 export const RECOVERY_ENTRY_LOADED = 'loaded' as const;
@@ -278,6 +344,18 @@ export type RecoveryEntry =
   | { kind: typeof RECOVERY_ENTRY_MISSING }
   | { kind: typeof RECOVERY_ENTRY_LOADED; state: StreamState }
   | { kind: typeof RECOVERY_ENTRY_UNREADABLE };
+
+/**
+ * One stream the publisher rather than `HLS_FRAGMENT` is segmenting, with both lengths in seconds.
+ *
+ * `measuredSeconds` is the median of the first {@link FRAGMENT_SAMPLE_COUNT} segments whose own
+ * timestamps were readable, never a duration an engine declared.
+ */
+export interface PublisherGopStream {
+  streamId: string;
+  configuredSeconds: number;
+  measuredSeconds: number;
+}
 
 export interface HealthSignals {
   activeStreams: number;
@@ -414,6 +492,24 @@ export interface HealthSignals {
    */
   fragmentMismatchStreams: number;
   /**
+   * Live streams whose segments measure longer than `HLS_FRAGMENT` on a stage carrying one rendition,
+   * where the publisher's keyframe interval rather than the configured value decides the segment.
+   *
+   * The two lengths rather than a count, because the count alone names no lever. An operator reading
+   * this has to choose between bringing the publisher's keyframe interval to the configured value and
+   * turning the ladder on, and both of those are decided by how far apart the two numbers are.
+   *
+   * ⛔ **The consequence is the same as {@link fragmentMismatchStreams} and the cause is not.**
+   * Nothing here is mis-deployed: `HLS_FRAGMENT` is a floor without a ladder and the stage is working
+   * as designed. The dates follow the media, so the recording keeps the right clock either way. What
+   * both reasons name is a stage cutting a length the deployment never declared, and the declared
+   * length is still what every `#EXT-X-GAP` entry is dated and sized at, so a lost segment leaves a
+   * hole of the wrong size. A live single-rendition stream was measured on 2026-09-15 cutting 2.067
+   * to 10.033 seconds against a configured 2, and nothing said so. Latched for the life of each
+   * stream, since the next broadcast is a new publisher. See `libs/fragmentAgreement.ts`.
+   */
+  publisherGopStreams: PublisherGopStream[];
+  /**
    * Publishers, meaning a Bee node and the postage batch a rung spends on it, that have answered a
    * paid write with a status the upload policy will not retry. Counted for this process's lifetime.
    *
@@ -427,6 +523,17 @@ export interface HealthSignals {
    * than a recovery.
    */
   postageRefusedPublishers: number;
+  /**
+   * The startup gates that warned instead of refusing, as the last gate pass left them.
+   *
+   * Empty on a boot whose gates all cleared, and on every deployment running
+   * `UPLOADER_START_GATES=refuse`, where a refusal is rethrown rather than collected.
+   * Replaced by each gate pass rather than added to, because the gates are read again on every
+   * attempt while the boot waits for its node, and only the last pass describes the service that is
+   * now running. Nothing re-runs them once the boot has finished, so from there it is fixed for the
+   * life of the process, like `postageRefusedPublishers`.
+   */
+  startGateWarnings: StartGateWarning[];
 }
 
 export interface HealthReport {

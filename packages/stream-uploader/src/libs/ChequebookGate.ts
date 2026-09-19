@@ -1,7 +1,12 @@
+import { safeUrl } from './BeePublisherPool.js';
+import { gateReadingOfError } from './gateReadingOfError.js';
+import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
+import { GateCollector, GateFinding } from './StartGates.js';
 
 /**
- * Refuse to start unless every Bee node this stage publishes through can still pay for bandwidth.
+ * Read every Bee node's chequebook before the uploader touches anything paid, and refuse or warn
+ * about one that cannot pay for bandwidth according to `UPLOADER_START_GATES`.
  *
  * ## The failure this exists for
  *
@@ -16,6 +21,21 @@ import { Logger } from './Logger.js';
  * anything paid or stateful. A number written in a runbook is not a control. Only something that
  * refuses is.
  *
+ * ## What happens to that refusal, 2026-09-17
+ *
+ * It became something a deployment asks for, and this gate is the one the ruling was about. The owner
+ * ruled that day that "the uploader and engine should be able to start no matter what the status of
+ * the chequebook is", after this read timed out
+ * on the live host against a pool address that had no node behind it: the refusal was the loudest
+ * line in the log, it was about a chequebook nothing was wrong with, and docker restarted the
+ * container into it until the deploy gave up. So by default the reading below still happens on every
+ * boot and still says exactly what it found, and the service starts anyway with the whole refusal in
+ * the log as a warning, latched onto `/health`. `UPLOADER_START_GATES=refuse` puts the refusal back,
+ * unchanged, and the shipped `chequebook-warn` is this gate warning while `PostageGate` refuses a
+ * batch its node answered about and warns about one it could not read at all. Why that gate is split
+ * on the reading and this one is not is in `libs/PostageGate.ts`, and what the whole thing trades is
+ * in `libs/StartGates.ts`, which is where the decision lives for both gates.
+ *
  * ## Why availableBalance rather than totalBalance
  *
  * `totalBalance` counts value the node has already promised away in cheques its peers have not
@@ -23,16 +43,16 @@ import { Logger } from './Logger.js';
  * is exactly the state this gate is here to catch. `availableBalance` is what remains uncommitted,
  * and it is the only one of the two that answers "can this node pay for the next segment".
  *
- * Note that the e2e preflight at `e2e/suites/preflight/chequebook-funding.test.ts` reads
- * `totalBalance` against the same 0.5 BZZ number. That is a deliberate difference and not drift: the
- * preflight is asking an operator to top up before a paid sitting, where the total is the figure they
- * will deposit against.
+ * Note that the e2e preflight, through `e2e/src/harness/chequebookFunding.ts`, refuses on the same
+ * `availableBalance` against the same 0.5 BZZ floor and prints `totalBalance` beside it, so the gap
+ * between the two shows what the peers are holding.
  *
  * ## Scope
  *
- * Startup only. No periodic re-check and no change to what `/health` reports, because the owner rule
- * is that the uploader only *runs* with a filled chequebook. A node that drains mid-broadcast is a
- * different question and is not answered here.
+ * Startup only, and no periodic re-check. Under `warn` what this pass found is latched onto `/health`
+ * as `start_gate_warned`, so a chequebook read at boot is still visible hours later without anything
+ * reading it again. A node that drains mid-broadcast is a different question and is not answered
+ * here.
  */
 export class ChequebookGate {
   constructor(
@@ -42,15 +62,20 @@ export class ChequebookGate {
   ) {}
 
   /**
-   * Read every distinct node's chequebook, throw on the first that cannot pay, and otherwise leave
-   * one funding reading per node in the log.
+   * Read every distinct node's chequebook and leave one funding reading per node in the log.
    *
-   * Sequential rather than concurrent, so "the first failure" is the first node in ladder order
-   * rather than whichever request happened to lose the race. The nodes are deduplicated by URL
-   * because two rungs may sit behind one bee, and one bee has one chequebook however many rungs
-   * route through it.
+   * With no `collect` the first node that cannot pay throws. `runStartGates` always passes one, and
+   * that collector either throws at the first refusal the policy will not survive or takes every one
+   * with the message it would have thrown. So under the shipped mode and under `warn` every node is
+   * read, and an operator does not fix a four rung stage one rung and one restart at a time.
+   *
+   * Sequential rather than concurrent either way, so "the first failure" is the first node in ladder
+   * order rather than whichever request happened to lose the race. The nodes are deduplicated by URL
+   * because two rungs may sit behind one bee, and one bee has one chequebook however many rungs route
+   * through it. That is also why a collected refusal names the first rung routed through the node
+   * rather than all of them.
    */
-  public async assertFunded(): Promise<void> {
+  public async assertFunded(collect?: GateCollector): Promise<void> {
     const distinct = distinctByUrl(this.nodes);
     if (distinct.length === 0) {
       throw new Error(
@@ -60,50 +85,70 @@ export class ChequebookGate {
     }
 
     for (const node of distinct) {
-      const availablePlur = await this.readAvailablePlur(node);
-
-      if (availablePlur < this.floorPlur) {
-        throw new Error(this.unfundedRefusal(node.url, availablePlur));
+      const refusal = await this.refusalFor(node);
+      if (refusal === null) {
+        continue;
       }
-
-      this.logger.info(
-        `[ChequebookGate] ${node.url} chequebook available ${plurToBzz(availablePlur)} BZZ, ` +
-          `floor ${plurToBzz(this.floorPlur)} BZZ`,
-      );
+      if (collect === undefined) {
+        throw new GateRefusalError(refusal.message, safeUrl(node.url));
+      }
+      collect({ rung: node.rung, url: safeUrl(node.url), ...refusal });
     }
   }
 
-  private async readAvailablePlur(node: ChequebookNode): Promise<bigint> {
+  /**
+   * The refusal this node earns, or null once its reading is in the log.
+   *
+   * A balance under the floor is the node answering with a number, and a body with no readable
+   * `availableBalance` is no reading at all. A read that threw is either, which is what
+   * {@link gateReadingOfError} decides. This gate warns under the shipped mode whichever it is, and
+   * the fact belongs to the gate that established it rather than to whoever acts on it.
+   */
+  private async refusalFor(node: ChequebookNode): Promise<GateFinding | null> {
     let body: unknown;
     try {
       body = await node.bee.getChequebookBalance();
     } catch (error) {
-      throw new Error(this.unreadableRefusal(node.url, describeFailure(error)));
+      return {
+        message: this.unreadableRefusal(node.url, describeFailure(error)),
+        reading: gateReadingOfError(error),
+      };
     }
 
     const availablePlur = parseAvailablePlur(body);
     if (availablePlur === null) {
-      throw new Error(this.unreadableRefusal(node.url, 'the response carried no readable availableBalance'));
+      return {
+        message: this.unreadableRefusal(node.url, 'the response carried no readable availableBalance'),
+        reading: 'unreadable',
+      };
     }
-    return availablePlur;
+    if (availablePlur < this.floorPlur) {
+      return { message: this.unfundedRefusal(node.url, availablePlur), reading: 'answered' };
+    }
+
+    this.logger.info(
+      `[ChequebookGate] ${safeUrl(node.url)} chequebook available ${plurToBzz(availablePlur)} BZZ, ` +
+        `floor ${plurToBzz(this.floorPlur)} BZZ`,
+    );
+    return null;
   }
 
   private unfundedRefusal(url: string, availablePlur: bigint): string {
     return (
-      `[ChequebookGate] ${url} has ${plurToBzz(availablePlur)} BZZ available in its chequebook and the ` +
-      `floor is ${plurToBzz(this.floorPlur)} BZZ. The uploader refuses to run on an unfunded chequebook, ` +
-      'because a dry node answers /health in a millisecond while every paid push behind it stalls. Fund ' +
-      "it with a chequebook deposit from the node's own wallet, then restart. CHEQUEBOOK_MIN_BZZ moves " +
-      'the floor.'
+      `[ChequebookGate] ${safeUrl(url)} has ${plurToBzz(availablePlur)} BZZ available in its chequebook and the ` +
+      `floor is ${plurToBzz(this.floorPlur)} BZZ. A dry node answers /health in a millisecond while ` +
+      'every paid push behind it stalls, which reads as a slow network rather than as a funding ' +
+      "fault. Fund it with a chequebook deposit from the node's own wallet, then restart. " +
+      'CHEQUEBOOK_MIN_BZZ moves the floor.'
     );
   }
 
   private unreadableRefusal(url: string, reason: string): string {
     return (
-      `[ChequebookGate] ${url} chequebook is absent or unreadable: ${reason}. The uploader refuses to ` +
-      'run without a funding reading, because a chequebook nothing can read is not one anyone can call ' +
-      'filled, and a node running with SWAP disabled has no chequebook to fill at all. The floor is ' +
-      `${plurToBzz(this.floorPlur)} BZZ.`
+      `[ChequebookGate] ${safeUrl(url)} chequebook is absent or unreadable: ${reason}. A chequebook ` +
+      'nothing can read is not one anyone can call filled, and a node running with SWAP disabled has ' +
+      'no chequebook to fill at all. Check that the node is answering on that address and that SWAP ' +
+      `is on. The floor is ${plurToBzz(this.floorPlur)} BZZ.`
     );
   }
 }
@@ -115,6 +160,12 @@ export const PLUR_PER_BZZ = 10n ** 16n;
 export interface ChequebookNode {
   /** The node's API URL, and the only thing that tells an operator which node a refusal is about. */
   readonly url: string;
+  /**
+   * The rung this node carries, where the caller knows one. `BeePublisher` has it, which is how the
+   * pool's nodes arrive with it, and it is the only part of a refusal that is safe to publish on an
+   * unauthenticated `/health`. Optional because a caller with a bare URL is still a legal caller.
+   */
+  readonly rung?: string;
   readonly bee: ChequebookClient;
 }
 

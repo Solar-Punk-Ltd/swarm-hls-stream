@@ -2,19 +2,24 @@ import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_FRAGMENT_MISMATCH,
+  HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
   HEALTH_REASON_INGEST_REFUSED,
+  HEALTH_REASON_NODE_UNAVAILABLE,
   HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_START_GATE_WARNED,
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HEALTH_REASON_UNRECOVERABLE_STREAM,
+  HEALTH_WAITING_FOR_NODE,
   HealthReason,
   HealthReport,
   HealthSignals,
+  NodeWaitReport,
   PRESSURE_HIGH,
 } from '../types.js';
 
@@ -43,8 +48,29 @@ const MS_PER_SECOND = 1_000;
  * The whole degradation policy, kept in one pure function so every threshold is assertable without
  * a running server or a clock.
  */
-export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: number): HealthReport {
+export function deriveHealthStatus(
+  signals: HealthSignals,
+  segmentStallMs: number,
+  /** The boot's own state, and absent for a service whose boot has finished. See `libs/NodeWait.ts`. */
+  nodeWait: NodeWaitReport | null = null,
+): HealthReport {
+  // ⛔ Before every threshold below and alone, because none of them has anything to describe yet. A
+  // service still waiting for its node has read no catalog, recovered no stream and uploaded no
+  // segment, so every signal is the zero it was initialised with and reads as a healthy service.
+  // Answering `ok` there is the one answer nothing downstream would question.
+  if (nodeWait !== null) {
+    return { status: HEALTH_WAITING_FOR_NODE, reasons: [HEALTH_REASON_NODE_UNAVAILABLE] };
+  }
+
   const reasons: HealthReason[] = [];
+
+  // First of the running service's reasons, because it is the only one about the boot rather than
+  // about the media: a gate that warned instead of refusing is a chequebook or a batch this service
+  // was started on anyway, and nothing it does later will clear it. One reason however many rungs
+  // warned, since the names are on the payload and a reason per rung would read as several faults.
+  if (signals.startGateWarnings.length > 0) {
+    reasons.push(HEALTH_REASON_START_GATE_WARNED);
+  }
 
   if (signals.maxConsecutiveManifestFailures >= MANIFEST_FAILURE_THRESHOLD) {
     reasons.push(HEALTH_REASON_STALE_MANIFEST);
@@ -95,8 +121,10 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
     reasons.push(HEALTH_REASON_STATE_NOT_PERSISTED);
   }
 
-  // The one reason that can fire while nothing is registered and nothing has ever run, which is what
-  // every other reason here structurally cannot do: a credential wrong from startup means no
+  // The one reason ABOUT THE MEDIA that can fire while nothing is registered and nothing has ever run,
+  // which is what every other reason below structurally cannot do. `node_unavailable` and
+  // `start_gate_warned` above both fire there too, and both are about the boot rather than about a
+  // stream: a credential wrong from startup means no
   // `on_publish` ever succeeds, so `activeStreams` stays 0, every counter stays 0, and no threshold
   // below can reach. See OBS-15.
   //
@@ -120,10 +148,19 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
 
   // No threshold, because the count already is one: a stream reaches this signal only after eight of
   // its segments have been measured and their median has missed the configured length. Nothing about
-  // the running process is failing while it is set, which is what kept it invisible. The damage is
-  // in the dates, and every segment published from here carries it into a recording that keeps it.
+  // the running process is failing while it is set, which is what kept it invisible. The dates follow
+  // the media, so what is wrong is the deployment rather than the recording's clock: every gap entry
+  // is still sized at a length nothing is cutting, and so is the rung GOP the ladder was pinned on.
   if (signals.fragmentMismatchStreams > 0) {
     reasons.push(HEALTH_REASON_FRAGMENT_MISMATCH);
+  }
+
+  // The same reading with the ladder off, where it is the publisher's keyframe interval rather than a
+  // stale container, and its own reason rather than a second trigger for the one above, because the
+  // two send an operator to different levers. Reported at all because the consequence does not depend
+  // on the cause: a stage cutting a length nobody declared sizes every gap entry wrong either way.
+  if (signals.publisherGopStreams.length > 0) {
+    reasons.push(HEALTH_REASON_FRAGMENT_PUBLISHER_GOP);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

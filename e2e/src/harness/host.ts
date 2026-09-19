@@ -273,18 +273,18 @@ export class Host {
     return this.isLocal ? this.localHostAddress : DEFAULT_LOCAL_HOST_ADDRESS;
   }
 
-  /** curl a service port on the host and parse JSON (uploader /health, bee /stamps, …). */
-  async localJson<T>(port: number, path: string, timeoutS: number = 5): Promise<T> {
-    return this.curlJson<T>('GET', port, path, timeoutS);
-  }
-
   /**
-   * POST to a service port and parse the JSON reply. On-chain bee calls (e.g. chequebook deposit)
-   * can take far longer than a read, hence the generous default timeout. Not idempotent: `run` may
-   * retry the underlying ssh on a transport drop, so callers must tolerate at-least-once delivery.
+   * curl a service port on the host and parse JSON (uploader /health, bee /stamps, …).
+   *
+   * ⛔ **Reads only, and there is deliberately no POST alongside it.** `localPost` stood here until
+   * 2026-09-16 with no caller anywhere in the package, left behind when the owner ruled on
+   * 2026-08-03 that the funding preflight must report a shortfall and print the command rather than
+   * deposit it. A harness that is not allowed to move money should not carry the one method whose
+   * own docstring explained how, so the method and the `-X POST` under it went together. A later
+   * spend-capable call is a decision to take to the owner, not a parameter to put back.
    */
-  async localPost<T>(port: number, path: string, timeoutS: number = 120): Promise<T> {
-    return this.curlJson<T>('POST', port, path, timeoutS);
+  async localJson<T>(port: number, path: string, timeoutS: number = 5): Promise<T> {
+    return this.curlJson<T>(port, path, timeoutS);
   }
 
   /**
@@ -295,26 +295,25 @@ export class Host {
    * {@link localJson} would throw on it.
    */
   async localText(port: number, path: string, timeoutS: number = 5): Promise<string> {
-    const { stdout } = await this.curl('GET', port, path, timeoutS);
+    const { stdout } = await this.curl(port, path, timeoutS);
     return stdout;
   }
 
-  private async curlJson<T>(method: 'GET' | 'POST', port: number, path: string, timeoutS: number): Promise<T> {
-    const { stdout } = await this.curl(method, port, path, timeoutS);
+  private async curlJson<T>(port: number, path: string, timeoutS: number): Promise<T> {
+    const { stdout } = await this.curl(port, path, timeoutS);
     const text = stdout.trim();
     try {
       return JSON.parse(text) as T;
     } catch {
-      throw new Error(`non-JSON from ${method} :${port}${path} → ${text.slice(0, 200)}`);
+      throw new Error(`non-JSON from GET :${port}${path} → ${text.slice(0, 200)}`);
     }
   }
 
-  private async curl(method: 'GET' | 'POST', port: number, path: string, timeoutS: number): Promise<RunResult> {
-    const methodFlag = method === 'POST' ? '-X POST ' : '';
+  private async curl(port: number, path: string, timeoutS: number): Promise<RunResult> {
     // Keep the ssh run bound above curl's own deadline so --max-time is what fires first on a slow reply.
     const runTimeoutMs = Math.max(DEFAULT_RUN_TIMEOUT_MS, (timeoutS + 5) * 1_000);
     const url = `http://${this.serviceAddress}:${port}${path}`;
-    return this.run(`curl -s ${methodFlag}--max-time ${timeoutS} ${url}`, runTimeoutMs);
+    return this.run(`curl -s --max-time ${timeoutS} ${url}`, runTimeoutMs);
   }
 }
 
@@ -548,7 +547,7 @@ function lastAnswer(listed: ConfiguredStampRead | null, unread: string | null): 
 }
 
 /** bee's on-chain SWAP chequebook balances, as PLUR integer strings (1 BZZ = 1e16 PLUR). */
-export interface ChequebookBalance {
+interface ChequebookBalance {
   totalBalance: string;
   availableBalance: string;
 }
@@ -561,6 +560,37 @@ export interface ChequebookBalance {
  */
 export function chequebookBalance(host: Host, port: number): Promise<ChequebookBalance> {
   return host.localJson<ChequebookBalance>(port, '/chequebook/balance');
+}
+
+/**
+ * The handler a scenario's own put-it-back attempt is caught with, so a failed restore is named.
+ *
+ * ⛔⛔⛔ **This used to be `.catch(() => undefined)` in all four crash suites, which is the one shape
+ * that can leave a shared deployment broken and say nothing.** The suites break a service on purpose
+ * and the browser driver puts it back from a `finally` inside its own container, so this backstop
+ * exists for the arm the harness timeout killed before that `finally` ran. When the backstop itself
+ * failed, on a dropped ssh master connection for instance, it swallowed the failure: the suite went
+ * red naming the product, every later suite in the serial run failed against a gateway that was
+ * still stopped, and on the writer-node scenarios a bee node stayed paused holding the postage batch
+ * every measurement on this host is paid for with. Nothing in the whole log said which container was
+ * never restarted.
+ *
+ * ⛔ It must not throw, whatever happens. It is called from an `after` hook, and a hook that throws
+ * replaces the test's own result with its own, so a suite that told the truth about the product
+ * would report the cleanup instead.
+ *
+ * Written to stderr because it is a fault in the harness rather than a reading from the run.
+ */
+export function reportFailedRestore(
+  container: string,
+  log: (line: string) => void = console.error,
+): (error: unknown) => void {
+  return (error: unknown): void => {
+    log(
+      `⛔ could not restore ${container} after the scenario, so this deployment is left with it down ` +
+        `and every later run reads a broken stage: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  };
 }
 
 /**

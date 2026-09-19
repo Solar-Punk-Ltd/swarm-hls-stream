@@ -21,12 +21,11 @@ import {
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 
 /**
- * The wall clock a test broadcast is dated against, and the fragment length it steps by.
+ * The wall clock a test broadcast is dated against, and the fragment length it declares.
  *
  * A round instant and a whole number of seconds, so a `#EXT-X-PROGRAM-DATE-TIME` an assertion writes
- * out by hand is legible. Deliberately unlike any `#EXTINF` the fakes produce: the stamp is derived
- * from the declared fragment length and never from what a segment measured, and a test whose two
- * numbers agreed would not notice if that stopped being true.
+ * out by hand is legible. Deliberately unlike any `#EXTINF` the fakes produce, so a test reading a
+ * date cannot pass on the declared length and the measured one happening to be the same number.
  */
 export const TEST_ANCHOR: BroadcastAnchor = {
   startedAtMs: Date.UTC(2026, 8, 1, 12, 0, 0),
@@ -205,7 +204,7 @@ export function makeFakeOrchestrator(overrides: Record<string, unknown> = {}): S
 }
 
 /** An entirely healthy reading, so a test that cares about one signal sets only that one. */
-export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignals {
+function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignals {
   return {
     activeStreams: 0,
     staleManifestStreams: 0,
@@ -224,7 +223,9 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     fragmentMismatchStreams: 0,
+    publisherGopStreams: [],
     postageRefusedPublishers: 0,
+    startGateWarnings: [],
     ...overrides,
   };
 }
@@ -307,12 +308,6 @@ export function toRecoveryFileId(streamId: string): string {
 }
 
 /**
- * One node for everything, which is what an unsplit deployment gets from `BeePublisherPool.single`.
- *
- * Every rung resolves to the same publisher, so a test that turns the ladder on still writes through
- * one fake bee and can assert on it without knowing which rung asked.
- */
-/**
  * A url the real pool would accept. It used to be the empty string, which no deployment could have
  * and which `BeePublisherPool.single` refuses, so anything reading a publisher's url off this fake
  * was reading a value that cannot occur.
@@ -329,6 +324,12 @@ export function testPublisher(bee: Bee, stamp = 'stamp'): BeePublisher {
   return { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp, bee };
 }
 
+/**
+ * One node for everything, which is what an unsplit deployment gets from `BeePublisherPool.single`.
+ *
+ * Every rung resolves to the same publisher, so a test that turns the ladder on still writes through
+ * one fake bee and can assert on it without knowing which rung asked.
+ */
 function makeFakePublishers(bee: Bee): BeePublisherPool {
   const publisher = testPublisher(bee);
   return {

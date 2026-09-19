@@ -1,10 +1,14 @@
 import { PostageBatch } from '@ethersphere/bee-js';
 
-import { shortBatchId } from './BeePublisherPool.js';
+import { safeUrl, shortBatchId } from './BeePublisherPool.js';
+import { gateReadingOfError } from './gateReadingOfError.js';
+import { GateRefusalError } from './GateRefusalError.js';
 import { Logger } from './Logger.js';
+import { GateCollector, GateFinding } from './StartGates.js';
 
 /**
- * Refuse to start unless every postage batch this stage pays with can still carry a broadcast.
+ * Read every postage batch this stage pays with before the uploader touches anything paid, and refuse
+ * or warn about one that cannot carry a broadcast according to `UPLOADER_START_GATES`.
  *
  * ## The failure this exists for
  *
@@ -23,6 +27,25 @@ import { Logger } from './Logger.js';
  * right, and every paid write fails. So this is a gate that refuses before the first segment, not a
  * number in a runbook. A threshold you wrote down is not a control.
  *
+ * ## What happens to that refusal, 2026-09-17
+ *
+ * ⛔ **This gate still refuses by default, and it is the only one that does, but only about a batch
+ * the node answered for.** The owner ruled the two gates apart on 2026-09-17: a chequebook under its
+ * floor is a node that publishes slowly, while a batch that is full or expired fails every write
+ * while the broadcast looks live to the room, the viewer and the catalog, and the recording it was
+ * meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
+ * same way, in his words: "PostageGate refuses only a batch the node answered about and warns on an
+ * unreadable one." A `usable=false`, a batch under the time floor, a batch over the utilization
+ * ceiling and a 4xx are the node answering, and they still end the boot under the shipped
+ * `chequebook-warn`. A timeout, a 5xx and an answer with no readable fields are no reading at all,
+ * and under that mode they are warned about and the uploader starts, because a rung whose node is
+ * not talking has said nothing about any batch. `warn` has both gates warning about both readings,
+ * `refuse` has both refusing both, and neither changed. A node that never answers is waited for
+ * under all three, which is `libs/NodeWait.ts` rather than this: under `refuse` an unreadable
+ * refusal is still thrown and that wait still reads its timeout text, and under the shipped mode
+ * that text is a warning line that never reaches the wait at all. Which refusal is which is
+ * {@link GateReading}, and the account of both rulings is in `libs/StartGates.ts`.
+ *
  * ## Why per publisher rather than per node
  *
  * `ChequebookGate` deduplicates by URL because one node has one chequebook however many rungs route
@@ -32,8 +55,8 @@ import { Logger } from './Logger.js';
  *
  * ## Scope
  *
- * Startup only, exactly like the chequebook gate, and for the same reason: the owner rule is that the
- * uploader only *runs* with a stamp that can pay. A batch that fills mid-broadcast is a different
+ * Startup only and no periodic re-check, exactly like the chequebook gate, and latched onto `/health`
+ * as `start_gate_warned` the same way under `warn`. A batch that fills mid-broadcast is a different
  * question and is not answered here.
  */
 export class PostageGate {
@@ -45,13 +68,17 @@ export class PostageGate {
   ) {}
 
   /**
-   * Read every distinct batch, throw on the first that cannot carry a broadcast, and otherwise leave
-   * one reading per batch in the log.
+   * Read every distinct batch and leave one reading per batch in the log.
    *
-   * Sequential rather than concurrent, so "the first failure" is the first rung in ladder order
-   * rather than whichever request happened to lose the race. Mirrors {@link ChequebookGate}.
+   * With no `collect` the first batch that cannot carry a broadcast throws. `runStartGates` always
+   * passes one, and that collector either throws at the first refusal the policy will not survive or
+   * takes every one with the message it would have thrown. So under `warn` every rung is read and two
+   * exhausted batches do not take two restarts to learn about. Mirrors {@link ChequebookGate}.
+   *
+   * Sequential rather than concurrent either way, so "the first failure" is the first rung in ladder
+   * order rather than whichever request happened to lose the race.
    */
-  public async assertUsable(): Promise<void> {
+  public async assertUsable(collect?: GateCollector): Promise<void> {
     const distinct = distinctByNodeAndStamp(this.publishers);
     if (distinct.length === 0) {
       throw new Error(
@@ -61,78 +88,94 @@ export class PostageGate {
     }
 
     for (const publisher of distinct) {
-      const batch = await this.readBatch(publisher);
-
-      if (!batch.usable) {
-        throw new Error(this.unusableRefusal(publisher, batch));
+      const refusal = await this.refusalFor(publisher);
+      if (refusal === null) {
+        continue;
       }
-      if (batch.ttlSeconds < this.minTtlSeconds) {
-        throw new Error(this.expiringRefusal(publisher, batch));
+      if (collect === undefined) {
+        throw new GateRefusalError(refusal.message, safeUrl(publisher.url));
       }
-      if (batch.utilization > this.maxUtilization) {
-        throw new Error(this.fullRefusal(publisher, batch));
-      }
-
-      this.logger.info(
-        `[PostageGate] ${publisher.rung} ${publisher.url} batch ${shortBatchId(publisher.stamp)}: ` +
-          `${percent(batch.utilization)} used, ${hours(batch.ttlSeconds)}h left ` +
-          `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)`,
-      );
+      collect({ rung: publisher.rung, url: safeUrl(publisher.url), ...refusal });
     }
   }
 
   /**
+   * The refusal this batch earns, or null once its reading is in the log.
+   *
    * ⛔ The catch is the absent-batch path, not an oversight. bee answers `/stamps/<id>` with
    * **404 "issuer does not exist"** for a batch it does not hold, verified against a live node on
    * 2026-08-31, so bee-js throws instead of returning something with `exists: false` on it. There is
    * no field to read for absence, and looking for one is what this gate used to do.
    */
-  private async readBatch(publisher: StampedPublisher): Promise<BatchReading> {
+  private async refusalFor(publisher: StampedPublisher): Promise<GateFinding | null> {
     let body: PostageBatch;
     try {
       body = await publisher.bee.getPostageBatch(publisher.stamp);
     } catch (error) {
-      throw new Error(this.unreadableRefusal(publisher, describeFailure(error)));
+      return {
+        message: this.unreadableRefusal(publisher, describeFailure(error)),
+        reading: gateReadingOfError(error),
+      };
     }
 
-    const reading = parseBatch(body);
-    if (reading === null) {
-      throw new Error(this.unreadableRefusal(publisher, 'the response carried no readable batch fields'));
+    const batch = parseBatch(body);
+    if (batch === null) {
+      return {
+        message: this.unreadableRefusal(publisher, 'the response carried no readable batch fields'),
+        reading: 'unreadable',
+      };
     }
-    return reading;
+    if (!batch.usable) {
+      return { message: this.unusableRefusal(publisher, batch), reading: 'answered' };
+    }
+    if (batch.ttlSeconds < this.minTtlSeconds) {
+      return { message: this.expiringRefusal(publisher, batch), reading: 'answered' };
+    }
+    if (batch.utilization > this.maxUtilization) {
+      return { message: this.fullRefusal(publisher, batch), reading: 'answered' };
+    }
+
+    this.logger.info(
+      `[PostageGate] ${publisher.rung} ${safeUrl(publisher.url)} batch ${shortBatchId(publisher.stamp)}: ` +
+        `${percent(batch.utilization)} used, ${hours(batch.ttlSeconds)}h left ` +
+        `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)`,
+    );
+    return null;
   }
 
   private unreadableRefusal(publisher: StampedPublisher, reason: string): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} is absent or ` +
-      `unreadable: ${reason}. The uploader refuses to run without a batch reading, because a batch ` +
-      'nothing can read is not one anyone can call usable, and every way of learning nothing here ' +
-      'looks identical to a healthy answer at the first failed upload.'
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(
+        publisher.url,
+      )} is absent or ` +
+      `unreadable: ${reason}. A batch nothing can read is not one anyone can call usable, and every ` +
+      'way of learning nothing here looks identical to a healthy answer until the first failed ' +
+      'upload. Check that the node is answering on that address, and that it still holds this batch.'
     );
   }
 
   private unusableRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} reports ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(publisher.url)} reports ` +
       `usable=${batch.usable}. A batch the node will not spend cannot carry a ` +
-      'broadcast, and the uploader refuses rather than failing on the first segment. Buy a batch on ' +
+      'broadcast, and every upload on this rung fails from the first segment. Buy a batch on ' +
       "that node and put its id in this rung's BEE_PUBLISHERS entry."
     );
   }
 
   private expiringRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} has ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(publisher.url)} has ` +
       `${hours(batch.ttlSeconds)}h left and the floor is ${hours(this.minTtlSeconds)}h. A batch that ` +
-      'expires mid-broadcast stops paying for the data it was keeping, so the uploader refuses to ' +
-      'start one it cannot finish. Top it up with a postage top-up on that node, or lower the floor ' +
-      'with STAMP_MIN_TTL_HOURS if this run really is shorter than the batch has left.'
+      'expires mid-broadcast stops paying for the data it was keeping, so a run longer than that ' +
+      'loses the recording it bought. Top it up with a postage top-up on that node, or lower the ' +
+      'floor with STAMP_MIN_TTL_HOURS if this run really is shorter than the batch has left.'
     );
   }
 
   private fullRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} is ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${safeUrl(publisher.url)} is ` +
       `${percent(batch.utilization)} used and the ceiling is ${percent(this.maxUtilization)}. An ` +
       'immutable batch that reaches capacity stops accepting chunks, and that arrives as a failed ' +
       'upload rather than as a warning. Dilute it on that node to buy depth, or buy a fresh batch. ' +
@@ -163,7 +206,7 @@ export interface StampedPublisher {
  * require the caller to be bee-js: a proxy or a hand-rolled client can answer in a shape the type
  * says is impossible, and absence of a reading has to refuse rather than default.
  */
-export interface PostageClient {
+interface PostageClient {
   getPostageBatch(batchId: string): Promise<PostageBatch>;
 }
 
@@ -239,7 +282,7 @@ function numberOf(value: unknown): number | null {
 function distinctByNodeAndStamp(publishers: readonly StampedPublisher[]): StampedPublisher[] {
   const seen = new Set<string>();
   return publishers.filter((publisher) => {
-    const key = `${publisher.url} ${publisher.stamp}`;
+    const key = `${publisher.url}\0${publisher.stamp}`;
     if (seen.has(key)) {
       return false;
     }

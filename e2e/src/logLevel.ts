@@ -17,7 +17,7 @@
  * mirror-and-prove arrangement `test/ports.test.ts` uses against `_lib.sh`.
  */
 
-export const LOG_LEVELS = ['debug', 'log', 'info', 'warn', 'error'] as const;
+const LOG_LEVELS = ['debug', 'log', 'info', 'warn', 'error'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
 /** Every level, plus the threshold that admits nothing. Mirrors the uploader's `LogThreshold`. */
@@ -34,7 +34,7 @@ export function isLogThreshold(value: string): value is LogThreshold {
 }
 
 /** One uploader log line the harness parses, the level that emits it, and what stops without it. */
-export interface ParsedLine {
+interface ParsedLine {
   /** What the line tells the harness, in the terms an operator reading a failure would use. */
   readonly what: string;
   /** The level the uploader emits it at. */

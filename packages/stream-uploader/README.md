@@ -4,17 +4,20 @@ Node.js service that receives HLS segments and uploads them to the Swarm decentr
 
 ## How It Works
 
-The uploader receives HLS segments from a media server (e.g. SRS) or directly via HTTP, uploads each segment to Swarm, and maintains a live HLS manifest as a Swarm Feed. When a stream ends, the manifest is finalized as VOD and the stream is registered in the stream catalog feed.
+The uploader receives HLS segments from a media server, such as SRS, or directly via HTTP. It uploads
+each segment to Swarm and maintains a live HLS manifest as a Swarm Feed. When a stream ends, the
+manifest is finalized as VOD. A standalone deployment writes that state to the Swarm stream catalog.
+In admin mode, the uploader reports `live` and `vod` to the admin service, which owns the catalog.
 
 ```
 Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swarm
                       │                      │
                       │                      ├─ Upload segment data
                       │                      ├─ Update manifest feed (SOC)
-                      │                      └─ Update stream catalog feed
+                      │                      └─ Update catalog or report state to admin
                       │
                       ├─ Backpressure (bounded queue, 429 on overflow)
-                      ├─ Deduplication (reject duplicate segments)
+                      ├─ Deduplication (a repeat index is accepted and does no work)
                       └─ Crash recovery (persisted state + recovery timeout)
 ```
 
@@ -61,11 +64,13 @@ With `ADMIN_API_URL` set as well, everything above still happens, but the merge 
 catalog feed and into the admin and the master's topic is the declared one — see
 [Admin mode](#admin-mode).
 
-### The manifest contract: timestamps and sequence zero
+### The manifest contract: timestamps and continuous published numbering
 
-Every playlist this service writes, live, closing and recording alike, carries two numbers per
-segment. Both are **derived from one anchor the whole broadcast shares**, and neither is the number
-the engine handed over.
+Every playlist this service writes, live, closing and recording alike, carries a media sequence for
+the playlist and a date-time per segment. The date-time and the session-local sequence come from one
+anchor the whole broadcast shares. Neither comes from the number the engine handed over. If the feed
+topic already holds an earlier session, the published media sequence also carries a feed offset so
+it continues after the previous playlist instead of moving backwards.
 
 ```
 #EXTM3U
@@ -88,33 +93,78 @@ read the same value however far apart they were admitted, and it outlives every 
 broadcast: it rides with the group in `state/ladder/groups.json` and in each rung's recovery entry,
 so a rung rebuilt after a crash keeps it rather than re-dating the recording at the restart.
 
-**`#EXT-X-PROGRAM-DATE-TIME`** is `anchor + sequence × HLS_FRAGMENT`, in UTC to the millisecond. An
-engine restart inside the broadcast adds an epoch to that arithmetic, described below.
+**`#EXT-X-PROGRAM-DATE-TIME`** is the instant of the segment in front of it plus the media that
+segment holds, in UTC to the millisecond, decided once as the segment is placed and then stored on
+it. The broadcast's first segment takes the anchor itself. An engine restart inside the broadcast
+adds an epoch, described below.
 
-⛔ It is derived and never observed. It is not the time the segment arrived, and it does not follow
-the segment's own `#EXTINF`. Four rung uploaders stamping their own arrival times would disagree by
-their upload jitter, and hls.js reads that disagreement as the rungs covering different media. The
-millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5` a whole-second
-stamp would give two consecutive segments the same instant.
+**The media a segment contributes is read against `HLS_FRAGMENT`.** A segment measuring within 1% of
+the declared length counts as exactly that length, and one outside it counts as itself, rounded to
+the millisecond. That 1% is `DATING_SNAP_TOLERANCE` in `src/libs/broadcastDating.ts`. It is the
+rounding band of one keyframe grid seen by several encoders and nothing wider, which is all the
+snapping is for.
 
-⚠️ **It is therefore nominal, and the operating rule that keeps it honest is about the source's
-keyframe interval.** Decided by the owner on 2026-09-03: accepted as it is, with this rule and no
-code change.
+⚠️ **It is not `FRAGMENT_TOLERANCE`, the 5% the fragment agreement check uses, and the two are
+different numbers on purpose.** That one asks whether a stage is misconfigured, so it has to survive
+a segment SRS force-closed at `HLS_FRAGMENT x HLS_AOF_RATIO` without calling a healthy deployment
+broken. Dating on that band would read a 2.067 second segment against a configured 2 as 2.000 and
+lose its 67ms every segment, about two minutes an hour, which is the exact live stream this dating
+exists to fix.
 
-The stamps drift from real time only when the source's keyframe interval does not divide
-`HLS_FRAGMENT`. `HLS_FRAGMENT` is a floor on the segment rather than the segment, because the engine
-cuts at the first keyframe at or after it, so a source whose GOP does not divide it produces segments
-longer than the stamp steps by and the stamps fall behind by that excess on every segment, without
-bound over a long broadcast. Under the ABR ladder there is no drift, because the engine transcodes
-every rung with a GOP that divides the fragment (`ABR_FPS × HLS_FRAGMENT`). **A single-rendition
-deployment must set the broadcaster's keyframe interval to divide `HLS_FRAGMENT`**, and nothing in
-this service can make it do so. See [deploy/README.md](../../deploy/README.md).
+⛔ **Under a ladder every segment is inside that band, so the step is the declared fragment and four
+rungs date one piece of media identically.** `engines/srs/entrypoint.sh` pins a keyframe every
+`ABR_FPS × HLS_FRAGMENT` frames and SRS cuts exactly there, so a rung's segment holds the configured
+length to within 90kHz tick rounding. Two rungs can only be dated apart by measuring one segment more
+than the tolerance apart, which is the mismatch that check already names.
+
+⛔ **On a single rendition the publisher's own keyframe interval decides the segment**, and
+`HLS_FRAGMENT` is a floor rather than the length. A stage measured on 2026-09-15 cut segments from
+2.067 to 10.033 seconds against a configured 2 while every date stepped exactly 2.000, so the
+recording's wall clock fell further behind its own media with every segment and kept those dates for
+ever. That is what the media term fixes.
+
+⛔ It is still never an arrival time. Four rung uploaders stamping the clock they received a segment
+at would disagree by their upload jitter, and hls.js reads that disagreement as the rungs covering
+different media. The millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5`
+a whole-second stamp would give two consecutive segments the same instant.
+
+⚠️ **It was therefore nominal when this rule was written, and the operating rule that keeps it
+honest is about the source's keyframe interval.** Decided by the owner on 2026-09-03: accepted as it
+is, with this rule and no code change. What "nominal" covers narrowed on 2026-09-15, and the
+paragraph below says to what.
+
+The stamp is nominal inside that 1% band now and no wider, so the drift that rule was written against
+is gone. `HLS_FRAGMENT` is a floor on the segment rather than the segment, because the engine cuts at
+the first keyframe at or after it, so a source whose GOP does not divide it produces segments longer
+than the declared length. Until 2026-09-15 the stamps stepped by the declared length anyway and fell
+behind by that excess on every segment, without bound over a long broadcast. They step by the media
+now, so a recording of such a stage keeps the right clock. What is still wrong there is every
+`#EXT-X-GAP` entry, which is dated and sized at the declared length, so a lost segment leaves a hole
+of the wrong size. Under the ABR ladder neither arises, because the engine transcodes every rung with
+a GOP that divides the fragment (`ABR_FPS × HLS_FRAGMENT`). **A single-rendition deployment must set
+the broadcaster's keyframe interval to divide `HLS_FRAGMENT`**, and nothing in this service can make
+it do so. See [deploy/README.md](../../deploy/README.md).
 
 The e2e preflight gate that checks the stage cuts at the configured length would catch a misaligned
-stage on a sitting. Nothing catches it in production, where the keyframe interval belongs to whoever
-is broadcasting.
+stage on a sitting. In production `/health` names one under `fragment_publisher_gop`, with the
+configured length beside the measured one, which is as far as this service can go where the keyframe
+interval belongs to whoever is broadcasting.
 
-**`#EXT-X-MEDIA-SEQUENCE`** counts from 0 at the broadcast's first segment.
+**The session-local media sequence** counts from 0 at the broadcast's first segment. On a fresh
+topic, that is also the value published in `#EXT-X-MEDIA-SEQUENCE`.
+
+A declared stream in admin mode can publish several broadcasts on one topic. A ladder rung also
+keeps one derived topic across uploader sessions. Before either writes its first manifest, it reads
+the feed head and counts the entries in the previous playlist, including gap entries. That count is
+the new session's published offset. A previous playlist that starts at 12 and lists 30 entries makes
+the next session publish its first segment as 42. The offset changes only the numbers written into
+the playlist. Dating, ordering and restart detection still use the session-local sequence from the
+shared anchor, so rungs that resume different feed heads still date the same media alike. A recovered
+session restores its saved offset instead of reading its own latest playlist as a predecessor.
+
+The example above is therefore a fresh topic. A later session on the same declared or rung feed has
+the same shape but may open at a value above 0, with `#EXT-X-DISCONTINUITY` on its first segment to
+mark the seam from the earlier session.
 
 The engine's own index is not this number and is not used for it. SRS runs one counter per rung
 stream and only resets it when the whole `SrsLiveSource` is destroyed, which its idle timeout does a
@@ -161,9 +211,10 @@ a rung that lost one segment stopped agreeing with its siblings about which inst
 which is the whole reason all four rungs derive their numbering from one anchor.
 
 ⚠️ **A hole is not a break.** A lost segment does not restart the encoder's clock, so the media behind
-the hole is a continuation and the dates carry on stepping one fragment per sequence. The three loss
-paths, a failed upload, a loss the OME puller reported and a hole inferred from the numbering, arm no
-`#EXT-X-DISCONTINUITY` and keep their log lines unchanged.
+the hole is a continuation and the dates carry on from the media in front of them, charging one
+declared fragment for each sequence nobody observed. The three loss paths, a failed upload, a loss the
+OME puller reported and a hole inferred from the numbering, arm no `#EXT-X-DISCONTINUITY` and keep
+their log lines unchanged.
 
 ⛔ A gap entry never starts a live window and never ends a playlist: the window is a slice of the
 segments actually held, so `#EXT-X-MEDIA-SEQUENCE` is always a held segment's own sequence and a hole
@@ -207,10 +258,9 @@ and nothing bounded that. A broadcast's dating is a list of epochs now, in `Broa
 - The media published before the restart keeps the dates it went out with. Those segments are in a
   window a viewer is holding, and re-dating them would move media that has already been served.
 - The first segment after the restart is dated at the wall clock it arrived at, and the segments
-  after it step one fragment from there.
-- An epoch dates every sequence at or above its own `fromSequence`, so `#EXT-X-PROGRAM-DATE-TIME` is
-  `epoch + (sequence − epoch.fromSequence) × HLS_FRAGMENT` under the newest epoch that reaches the
-  segment. The broadcast's start is the implicit first epoch.
+  after it carry on from the media each one holds.
+- The first segment placed at or above an epoch's `fromSequence` takes that epoch's instant, under
+  the newest epoch that reaches it. The broadcast's start is the implicit first epoch.
 
 ⛔ **The re-anchoring is minted once for the whole ladder**, by whichever rung crosses the restart
 first, and every other rung lands on that same line rather than taking its own reading of the clock.
@@ -301,32 +351,48 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                                                                                                                                                        |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `BEE_URL`           | Bee node API URL                                                                                                                                                   |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`). Required only when `BEE_PUBLISHERS` is empty — a node-per-rung deployment leaves it blank and each publisher brings its own |
-| `STREAM_KEY`        | Private key (hex) for signing feeds                                                                                                                                |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                                                                                                  |
-| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32`                                                                     |
+| Variable            | Description                                                                                                                                                                   |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BEE_URL`           | Bee node API URL                                                                                                                                                              |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`). Required on a single-node deployment. With `BEE_PUBLISHERS` set it is optional and unread, since each rung's batch is in its own entry |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                                                                                                           |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                                                                                                             |
+| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32`                                                                                |
 
 **Optional:**
 
-| Variable               | Default   | Description                                                                                                          |
-| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
-| `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below |
-| `API_PORT`             | `3000`    | HTTP API port                                                                                                        |
-| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                   |
-| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                       |
-| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                          |
-| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                         |
-| `HLS_FRAGMENT`         | `0.5`     | Nominal seconds per fragment, which every `#EXT-X-PROGRAM-DATE-TIME` steps by. Same variable the engine reads        |
-| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                  |
-| `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                           |
-| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                        |
-| `ADMIN_API_URL`        | _(empty)_ | Admin service base URL. Set, it turns on admin mode. See below                                                       |
-| `ADMIN_API_TOKEN`      | _(empty)_ | Bearer token for the admin's internal routes, minimum 32 characters. Required when `ADMIN_API_URL` is set            |
-| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event             |
-| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                           |
+| Variable                 | Default              | Description                                                                                                                                                                                                                                        |
+| ------------------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BEE_PUBLISHERS`         | _(empty)_            | One Bee node and batch per rung as `rung@url<batch>`. Empty is one node for everything, see `.env.sample`                                                                                                                                          |
+| `PUBLISH_KEY_SECRET`     | _(empty)_            | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below                                                                                                                               |
+| `API_PORT`               | `3000`               | HTTP API port                                                                                                                                                                                                                                      |
+| `STATE_DIR`              | `./state`            | Directory for crash recovery state                                                                                                                                                                                                                 |
+| `MAX_QUEUE_SIZE`         | `100`                | Max queued segments per stream                                                                                                                                                                                                                     |
+| `RECOVERY_TIMEOUT`       | `60000`              | Crash recovery timeout (ms)                                                                                                                                                                                                                        |
+| `SEGMENT_STALL_MS`       | `30000`              | Silence after which `/health` reads degraded                                                                                                                                                                                                       |
+| `ORPHAN_REAP_MS`         | `60000`              | Silence after which a live stream is finalized as an orphan                                                                                                                                                                                        |
+| `UPLOADER_START_GATES`   | `chequebook-warn`    | Which startup gate stops the boot, and on which reading. `chequebook-warn` warns on the chequebook and refuses on a postage batch the node answered about, warning on one it could not read at all. `warn` warns on both, `refuse` refuses on both |
+| `START_GATE_TIMEOUT_MS`  | `20000`              | How long one startup gate's read of one node may take, 600000 at most. Separate from `BEE_REQUEST_TIMEOUT_MS`, which the upload loop derives                                                                                                       |
+| `CHEQUEBOOK_MIN_BZZ`     | `0.5`                | Available chequebook balance every node must hold for the chequebook gate to call it funded, 1000 at most                                                                                                                                          |
+| `STAMP_MIN_TTL_HOURS`    | `12`                 | Hours a postage batch must have left for the postage gate to call it usable                                                                                                                                                                        |
+| `STAMP_MAX_UTILIZATION`  | `0.9`                | How full a batch may be, as a ratio, for the postage gate to call it usable                                                                                                                                                                        |
+| `BEE_REQUEST_TIMEOUT_MS` | `4000`               | Per-request deadline on every upload-loop call to a Bee node, derived from the retry windows                                                                                                                                                       |
+| `HLS_FRAGMENT`           | `0.5`                | Nominal seconds per fragment, the grid a segment's date snaps to within one percent. Same variable the engine reads                                                                                                                                |
+| `SEGMENT_DEDUP_WINDOW`   | `10000`              | Segment indexes remembered per stream, twice this many held at most                                                                                                                                                                                |
+| `SEGMENT_REDUNDANCY`     | `1`                  | Erasure-coding parity on segment uploads, `0` turns it off                                                                                                                                                                                         |
+| `ENGINE`                 | _(empty)_            | Engine plugin to load (`srs`, `ome` or empty)                                                                                                                                                                                                      |
+| `ABR_ENABLED`            | `false`              | Whether the engine publishes a ladder, read here to group the rungs                                                                                                                                                                                |
+| `ABR_LADDER`             | the engine's default | The rungs, `name:width:height:kbps`, see `engines/srs/.env.sample`                                                                                                                                                                                 |
+| `ABR_VHOST`              | `abr`                | The vhost rungs arrive on                                                                                                                                                                                                                          |
+| `ADMIN_API_URL`          | _(empty)_            | Admin service base URL. Setting it turns on admin mode. See below                                                                                                                                                                                  |
+| `ADMIN_API_TOKEN`        | _(empty)_            | Bearer token for the admin's internal routes, minimum 32 characters. Required when `ADMIN_API_URL` is set                                                                                                                                          |
+| `LOG_LEVEL`              | `debug`              | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                                                                                                                                           |
+| `LOG_FORMAT`             | _(empty)_            | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                                                                                                                                         |
+
+Admin mode changes who owns the stream catalog. It does not change the uploader's Bee startup
+requirements. `BEE_URL`, `STREAM_KEY`, `STREAM_LIST_TOPIC` and `API_AUTH_TOKEN` remain required.
+`STAMP` remains conditional on `BEE_PUBLISHERS`. Once `ADMIN_API_URL` is set,
+`ADMIN_API_TOKEN` is required as well.
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -438,7 +504,7 @@ holds the stream, not as a verdict.
 
 Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
 looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
-who asks, so the gate is really protecting the thirteen process-lifetime counters, which say how many
+who asks, so the gate is really protecting the fifteen process-lifetime counters, which say how many
 broadcasts have run, how many were lost, and how many requests this deployment turned away. Point a scraper at it
 with an `authorization` credential:
 
@@ -477,29 +543,82 @@ there it logs `Resuming the finalize of <stream> at the catalog write`, publishe
 completes only the catalog write and the entry delete. A head that did not read is not taken for an
 empty feed, so the finalize is deferred to the next boot rather than risking a second recording.
 
-**Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
-`reasons` array:
+**Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` or
+`status: "waiting_for_node"` and a `reasons` array:
 
-| Reason                   | Meaning                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `segment_upload_failure` | A segment reached the uploader and was never stored, either because its upload retry window was spent or because bee refused it with a status the uploader does not retry, which is a postage batch filling up, so that data is gone                                                                                                                                               |
-| `segment_loss`           | A segment never reached the uploader: the engine could not obtain it from its origin, or it skipped the index and never posted it at all. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it                                                                                                         |
-| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                                                                                                                                                               |
-| `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                                                                                                                                                                     |
-| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                                                                                                                                                                          |
-| `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                                                                                                                                                                   |
-| `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying                                                                                                                                               |
-| `unrecoverable_stream`   | A recovery entry could not be parsed at boot, so a broadcast that was live when this service last died cannot be finalized: its recording stays unsealed and its catalog entry says `live`. The entry is kept as `<id>.json.corrupt` for repair rather than deleted. Latched for the life of the process, since only an operator clears it                                         |
-| `fragment_mismatch`      | A rung's segments are not the length `HLS_FRAGMENT` says they are, so every `#EXT-X-PROGRAM-DATE-TIME` derived from it drifts, cumulatively, and the recording keeps those dates. Raised only under `ABR_ENABLED`, once eight measured segments of a stream miss the configured length by over 5%. One of the two containers is running an older deploy, so redeploy the stale one |
-| `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                       |
+| Reason                   | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `segment_upload_failure` | A segment reached the uploader and was never stored, either because its upload retry window was spent or because bee refused it with a status the uploader does not retry, which is a postage batch filling up, so that data is gone                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `segment_loss`           | A segment never reached the uploader: the engine could not obtain it from its origin, or it skipped the index and never posted it at all. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `ingest_refused`         | A credential gate has turned a request away and no segment has ever reached Swarm in this process's lifetime, which is what a wrong `SRS_WEBHOOK_TOKEN` or `OME_ADMISSION_SECRET` looks like from startup: no stream registers, so every counter stays at zero and no threshold above can be reached. The only reason about the media that can fire while nothing is registered, since `node_unavailable` and `start_gate_warned` are about the boot rather than about a stream. Latched until the first segment lands rather than aged out, because on a service that has never ingested anything a window would let exactly that case fade back to `ok` between a broadcaster's retries |
+| `unrecoverable_stream`   | A recovery entry could not be parsed at boot, so a broadcast that was live when this service last died cannot be finalized: its recording stays unsealed and its catalog entry says `live`. The entry is kept as `<id>.json.corrupt` for repair rather than deleted. Latched for the life of the process, since only an operator clears it                                                                                                                                                                                                                                                                                                                                                |
+| `fragment_mismatch`      | A rung's segments are not the length `HLS_FRAGMENT` says they are. The dating follows the media, so the recording keeps the right clock, but the declared length is what every `#EXT-X-GAP` entry is dated and sized at and what the rung GOP is pinned on, so a lost segment leaves a hole of the wrong size on a stage that is not what its configuration says. Raised only under `ABR_ENABLED`, once eight measured segments of a stream miss the configured length by over 5%. One of the two containers is running an older deploy, so redeploy the stale one                                                                                                                        |
+| `fragment_publisher_gop` | Segments longer than `HLS_FRAGMENT` with no ladder running. Nothing transcodes there, so the publisher's own keyframe interval decides the segment and the configured value is a floor. Raised once eight measured segments run over it by over 5%. Nothing is stale, and the dating follows the media so the recording's clock stays right. What it names is a stage cutting longer than the deployment declared, with the same wrong-sized gap entries as the row above: set `HLS_FRAGMENT` to the publisher's keyframe interval, or turn the ladder on                                                                                                                                 |
+| `postage_refused`        | Bee refused a paid write on a rung's postage batch with a status nothing retries, which is a batch that has filled or expired. Latched for the life of the process and never cleared by a segment that lands, because the batch a rung spends is read once at start: only a redeploy carrying a different batch id clears it                                                                                                                                                                                                                                                                                                                                                              |
+| `node_unavailable`       | The boot has not finished, because the half of it that needs a Bee node is still waiting for one to answer. The only reason that is not a reading about this process at all, and the only one reported alone by construction: the waiting branch returns it before any other signal is looked at. See the waiting state below                                                                                                                                                                                                                                                                                                                                                             |
+| `start_gate_warned`      | A startup gate could not clear a node and the uploader started anyway, which is what `UPLOADER_START_GATES` asks for on that gate. Latched from the pass that finished the boot and fixed from then on, since nothing re-runs the gates afterwards, and `startGateWarnings` on the same body names which gate and which rung. The gate's own message is in the log and deliberately not here: this endpoint takes no credential and those messages carry node URLs and batch ids                                                                                                                                                                                                          |
+
+**The waiting state, `status: "waiting_for_node"`** (decision D16, the owner on 2026-09-17: "we should be
+able to start the uploader but maybe say its node not available, try to reconnect or something"). The API
+server listens before anything reads a Bee node, so `/health` answers from the first second of the
+process. While the node-dependent half of the boot has not finished, that answer is `503` with
+`status: "waiting_for_node"`, the single reason `node_unavailable`, a `waitingSince` timestamp for the
+whole wait rather than the current attempt, and a `node` object carrying `url`, `attempts` and, once
+something has failed, `lastError`. No other reason is reported beside it: nothing has run, so every
+signal on the body is the zero it was initialised with and reading one as health would be wrong in the
+direction nobody checks.
+
+What the service is doing meanwhile is in `libs/NodeWait.ts`: a liveness check of the coordinator, then
+the two start gates, the catalog feed lookup and the recovery pass, retried with one log line per
+attempt, backing off from 1s, doubling, and holding at 30s, for as long as the node takes. The liveness
+check is first so that a node which is not there costs one question rather than both gates' budgets,
+and so that nothing further down has to tell "this feed is empty" apart from "this node cannot say". A failure that says the node is not answering is waited on. A
+failure that says anything else, a feed whose payload will not parse or a key this deployment cannot
+sign with, still ends the boot with exit 1, because waiting on those is a service that never starts and
+never says why. Before this the whole boot ran ahead of the listener, so a node that was not there meant
+nothing answered at all, the container exited, and a deploy refused on a restart count that was climbing
+for a reason nothing about this service could fix.
+
+While it waits, `/stream/*` and every engine prefix answer `503` naming the node, with `Retry-After: 5`,
+rather than reaching an orchestrator whose catalog has never been read. `/metrics` keeps answering,
+since its counters describe this process and not the node.
+
+**What a warned gate leaves behind.** A gate that warns reads every node rather than stopping at the
+first that refuses, so one boot names every rung an operator has to fix rather than one per restart,
+and the outcome of the pass that finished the boot is latched into `startGateWarnings`. Under the
+shipped `chequebook-warn` that is the chequebook gate, and the postage gate on a batch it could not
+read at all: a batch the node answered about and the gate will not accept still ends the boot,
+because every write against it fails while the broadcast looks live to the room, the viewer and the
+catalog, while a rung whose node answered nothing has said nothing about any batch. That second half
+is the owner's decision 7 b of 2026-09-17. The
+service is degraded from then on, which is what the container's healthcheck reads and what
+`deploy/scripts/assert-started.sh` reports. A later pass replaces an earlier one, because the gates
+are read again on every attempt while the uploader waits for its node and only the last of those
+describes the service that is now running.
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
-expected to be sending. The body also carries `activeStreams`, `staleManifestStreams`,
+expected to be sending. The route spreads the whole signal set rather than picking from it, so every
+reading a reason above is derived from is on the same body: `activeStreams`, `staleManifestStreams`,
 `maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`,
 `msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`,
-`postageRefusedPublishers` and `engines`. `queueBacklogSeconds` is the only field that says which of
-`queue_pressure`'s two triggers fired.
+`msSinceAuthRejection`, `hasIngestedMedia`, `segmentsSkipped`, `openingSegmentsWithheld`,
+`segmentsNeverNamed`, `quarantinedRecoveryEntries`, `fragmentMismatchStreams`, `publisherGopStreams`,
+`postageRefusedPublishers`, `startGateWarnings`, `publishers`, `refusedPublishers` and `engines`. `queueBacklogSeconds` is the
+only field that says which of `queue_pressure`'s two triggers fired. `msSinceAuthRejection` beside
+`hasIngestedMedia` is the pair `ingest_refused` is read off, which is what tells a deployment that has
+never worked apart from one whose broadcaster mistyped a key once. `publisherGopStreams` names every
+stream behind `fragment_publisher_gop`, each with `configuredSeconds` beside `measuredSeconds`, because
+how far apart the two are is what decides whether to move `HLS_FRAGMENT` or to turn the ladder on.
+
+**Neither fragment reason is a brake.** Nothing either of them raises changes a date, refuses a segment or
+ends a broadcast. They report a stage cutting a length the deployment never declared, which is a repair an
+operator makes on the stage rather than anything this process can do about the media already published.
 
 **`segment_upload_failure` and `postage_refused` answer different questions and both are needed.** The
 first is a consecutive counter over the streams registered right now, so it clears on the next segment
@@ -525,9 +644,17 @@ batch id truncated, plus `statuses`, every distinct status bee answered with on 
 
 **Error responses:**
 
-- `429` — Queue full (retry after `Retry-After` header)
-- `404` — Unknown stream
-- `400` — Missing required fields
+- `429`: queue full, retry after the `Retry-After` header
+- `404`: unknown stream
+- `400`: missing required fields, or an `x-duration` that is not a usable segment length
+- `409`: another session holds the id on `POST /stream/start`, or the stream is finalizing and accepts
+  no more segments on `POST /stream/segment`. No retry of either can succeed
+- `401`: a missing or wrong bearer token, on any `/stream/*` route and on `GET /metrics`
+
+A segment whose index this stream has already taken is **not** in that list. It is answered
+`200 {ok: true, queued: true}` and nothing is queued, which is what makes a sender's own retry after
+a network timeout safe. A caller counting what reached Swarm from its own `200`s therefore counts
+every retry, and the service's `swarm_hls_segments_uploaded_total` is the number that does not.
 
 ## Engine Plugin Architecture
 

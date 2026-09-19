@@ -5,17 +5,22 @@ import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_FRAGMENT_MISMATCH,
+  HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
   HEALTH_REASON_INGEST_REFUSED,
+  HEALTH_REASON_NODE_UNAVAILABLE,
   HEALTH_REASON_POSTAGE_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_START_GATE_WARNED,
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HEALTH_REASON_UNRECOVERABLE_STREAM,
+  HEALTH_WAITING_FOR_NODE,
   HealthSignals,
+  NodeWaitReport,
   PRESSURE_HIGH,
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
@@ -47,7 +52,9 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     fragmentMismatchStreams: 0,
+    publisherGopStreams: [],
     postageRefusedPublishers: 0,
+    startGateWarnings: [],
     ...overrides,
   };
 }
@@ -182,6 +189,7 @@ describe('health wire contract', () => {
         HEALTH_REASON_INGEST_REFUSED,
         HEALTH_REASON_UNRECOVERABLE_STREAM,
         HEALTH_REASON_FRAGMENT_MISMATCH,
+        HEALTH_REASON_FRAGMENT_PUBLISHER_GOP,
         HEALTH_REASON_POSTAGE_REFUSED,
       ],
       [
@@ -195,6 +203,7 @@ describe('health wire contract', () => {
         'ingest_refused',
         'unrecoverable_stream',
         'fragment_mismatch',
+        'fragment_publisher_gop',
         'postage_refused',
       ],
     );
@@ -538,6 +547,48 @@ describe('deriveHealthStatus fragment mismatch', () => {
   });
 });
 
+describe('deriveHealthStatus publisher gop', () => {
+  /** One stream measured long, with the two lengths an operator needs to pick the lever. */
+  const MEASURED_LONG = [{ streamId: 'live/one', configuredSeconds: 2, measuredSeconds: 10.033 }];
+
+  it('is ok while every publisher is cutting at the configured length', () => {
+    const report = deriveHealthStatus(signals({ publisherGopStreams: [] }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  /**
+   * No threshold, for the reason `fragment_mismatch` has none: a stream reaches this list only after
+   * eight of its measured segments have missed the configured length. The cause is legitimate and the
+   * consequence is not, because a stage cutting a length nobody declared sizes every gap entry wrong
+   * either way.
+   */
+  it('degrades on the first stream the publisher is segmenting', () => {
+    const report = deriveHealthStatus(signals({ publisherGopStreams: MEASURED_LONG }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_PUBLISHER_GOP]);
+  });
+
+  it('is a reason of its own, so a stage with no ladder is never read as a stale container', () => {
+    const report = deriveHealthStatus(
+      signals({ publisherGopStreams: MEASURED_LONG, fragmentMismatchStreams: 0 }),
+      STALL_MS,
+    );
+
+    assert.equal(report.reasons.includes(HEALTH_REASON_FRAGMENT_MISMATCH), false);
+  });
+
+  it('stays degraded on a stream that is otherwise entirely healthy', () => {
+    const report = deriveHealthStatus(
+      signals({ publisherGopStreams: MEASURED_LONG, maxConsecutiveSegmentFailures: 0, queueBacklogSeconds: 0 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_FRAGMENT_PUBLISHER_GOP]);
+  });
+});
+
 /**
  * ⛔ A postage batch bee has refused is dead for the life of this process, and until this signal
  * existed the only reason that named it was `segment_upload_failure`, off a CONSECUTIVE counter read
@@ -578,5 +629,103 @@ describe('deriveHealthStatus refused postage batches', () => {
 
     assert.equal(report.status, HEALTH_DEGRADED);
     assert.deepEqual(report.reasons, [HEALTH_REASON_POSTAGE_REFUSED]);
+  });
+});
+
+/**
+ * The one state that is not a reading about this process at all.
+ *
+ * Every reason above is something the uploader measured while running. This one says the boot has not
+ * finished, because the node-dependent half of it is still waiting for a node to answer, so there is
+ * nothing to measure yet: no catalog, no recovered stream, and every counter at the zero it was
+ * initialised with. Answering `ok` here is what a probe would read if this return were absent, and it
+ * is the one answer that would be wrong in the direction nobody checks. Before the listener moved in
+ * front of the wait on 2026-09-17 a probe got no answer at all, because there was no port open.
+ */
+describe('deriveHealthStatus while the boot is waiting for its node', () => {
+  const waiting: NodeWaitReport = {
+    url: 'http://bee-uploader:1633',
+    waitingSince: '2026-09-17T09:00:00.000Z',
+    attempts: 3,
+    lastError: 'timeout of 20000ms exceeded',
+  };
+
+  it('reports waiting rather than a status about media that has never flowed', () => {
+    const report = deriveHealthStatus(signals(), STALL_MS, waiting);
+
+    assert.equal(report.status, HEALTH_WAITING_FOR_NODE);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_NODE_UNAVAILABLE]);
+  });
+
+  // A signal read before the boot finished describes a process that has not run, so carrying one into
+  // the answer would send an operator after a stalled stream that does not exist.
+  it('says only that, whatever the untouched counters happen to read', () => {
+    const report = deriveHealthStatus(
+      signals({ maxConsecutiveManifestFailures: 9, postageRefusedPublishers: 2, quarantinedRecoveryEntries: 1 }),
+      STALL_MS,
+      waiting,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_NODE_UNAVAILABLE]);
+  });
+
+  it('goes back to its own reading when the wait is over', () => {
+    const report = deriveHealthStatus(signals(), STALL_MS, null);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+});
+
+/**
+ * The startup gates' own outcome, latched the way a refused postage batch is.
+ *
+ * Under the shipped `chequebook-warn`, since 2026-09-17, the chequebook gate warns and the service
+ * starts, and the postage gate warns on a batch it could not read while still refusing one the node
+ * answered about. Without this the whole record of that was one log line at boot, and on a
+ * pool-backed deployment nothing else in the stack refuses either, so an unfunded chequebook was
+ * invisible within minutes of the line scrolling away.
+ */
+describe('deriveHealthStatus start gate warnings', () => {
+  it('is ok when the pass cleared every gate', () => {
+    const report = deriveHealthStatus(signals({ startGateWarnings: [] }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  it('is degraded from boot on when a gate warned instead of refusing', () => {
+    const report = deriveHealthStatus(
+      signals({ startGateWarnings: [{ gate: 'PostageGate', rung: '360p' }] }),
+      STALL_MS,
+    );
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_START_GATE_WARNED]);
+  });
+
+  // One reason however many rungs warned: the names are on the payload, and a reason per rung would
+  // make a four rung outage read as four different things to fix.
+  it('reports one reason however many gates and rungs warned', () => {
+    const report = deriveHealthStatus(
+      signals({
+        startGateWarnings: [
+          { gate: 'ChequebookGate', rung: '360p' },
+          { gate: 'PostageGate', rung: '360p' },
+          { gate: 'PostageGate', rung: '1080p' },
+        ],
+      }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_START_GATE_WARNED]);
+  });
+
+  it('stands beside the reasons that are about the running service', () => {
+    const report = deriveHealthStatus(
+      signals({ startGateWarnings: [{ gate: 'PostageGate' }], postageRefusedPublishers: 1 }),
+      STALL_MS,
+    );
+
+    assert.equal(report.reasons.length, 2);
   });
 });

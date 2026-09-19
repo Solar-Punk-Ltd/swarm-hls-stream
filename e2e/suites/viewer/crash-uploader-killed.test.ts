@@ -14,7 +14,7 @@ import {
   frozenOverlayRefusal,
   resumeRefusal,
 } from '../../src/harness/crashArm.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -115,7 +115,7 @@ describe('V7 — a viewer watching when the uploader is killed', { skip }, () =>
     // ⛔ The driver restarts the uploader itself, from a `finally` that runs inside the browser
     // container. An arm killed by the harness timeout never reaches it, and a dead uploader would
     // then outlive this run on a deployment shared with everything else the project measures.
-    await host.start(broken).catch(() => undefined);
+    await host.start(broken).catch(reportFailedRestore(broken));
   });
 
   it('waits without being told anything untrue, and resumes when the uploader is back', async () => {

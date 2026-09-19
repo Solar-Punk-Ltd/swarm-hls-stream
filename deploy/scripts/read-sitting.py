@@ -193,13 +193,13 @@ def jsonl_for(metrics_dir, arm_number):
 
 def dashed(value, places=3):
     """A missing reading prints as a dash, never 0.000, which would read as an idle thread."""
-    return "—" if value is None else f"{value:.{places}f}"
+    return "-" if value is None else f"{value:.{places}f}"
 
 
 def signed(value, places=3):
     """⭐ For a slope the SIGN is the finding. `0.056` and `-0.056` are creeping and settling, and a
     reader scanning a column should not have to look twice to tell them apart."""
-    return "—" if value is None else f"{value:+.{places}f}"
+    return "-" if value is None else f"{value:+.{places}f}"
 
 
 def windowed(rows, count):
@@ -340,11 +340,11 @@ def cmd_table(root):
             truncated.append((arm, covered))
         print(" ".join((
             f"{arm['arm']:>3}", f"{arm['round']:>3}", f"{arm['cond']:<8}",
-            f"{'counted' if counted else 'warm-up':<7}", f"{arm.get('retrievals', '—'):>11}",
-            f"{arm.get('cpuMean', '—'):>6}", f"{arm.get('cpuPeak', '—'):>6}",
+            f"{'counted' if counted else 'warm-up':<7}", f"{arm.get('retrievals', '-'):>11}",
+            f"{arm.get('cpuMean', '-'):>6}", f"{arm.get('cpuPeak', '-'):>6}",
             f"{dashed(summary.get('mean')):>7}", f"{dashed(summary.get('peak')):>8}",
-            f"{arm.get('stalls', '—'):>7}", f"{arm.get('behindS', '—'):>8}",
-            f"{str(summary.get('complete', '—')):>9}",
+            f"{arm.get('stalls', '-'):>7}", f"{arm.get('behindS', '-'):>8}",
+            f"{str(summary.get('complete', '-')):>9}",
             f"{dashed(coverage):>6}",
             f"{dashed(fps, 1):>6}", f"{verdict:>12}",
         )))
@@ -425,7 +425,7 @@ def cmd_join(root):
         arm = by_arm.get(number, {})
         kept = "counted" if arm.get("round", 1) > WARMUP_ROUNDS else "warm-up"
         if len(rows) < JOIN_MIN_SAMPLES:
-            print(f"{name:<28}{arm.get('cond', '?'):<9}{kept:<9}{'—':>10}{len(rows):>5}{'too few':>11}")
+            print(f"{name:<28}{arm.get('cond', '?'):<9}{kept:<9}{'-':>10}{len(rows):>5}{'too few':>11}")
             continue
         if first_start is None:
             first_start = rows[0]["Timestamp"]

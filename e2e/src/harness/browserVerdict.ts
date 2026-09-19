@@ -17,6 +17,32 @@ import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
 import { type BrowserArmResult } from './browser.js';
 
 /**
+ * Why a sound instrument on this run is not evidence that it was sound, or null.
+ *
+ * ⛔⛔⛔ **The other half of the instrument check, and it gated nothing until 2026-09-16.** Every
+ * viewer refusal opens by asking whether the browser reported itself usable, and the answer is worth
+ * nothing unless the check that gave it could have given the other one. Both sensors pass on the
+ * subject page by construction, because Playwright forces focus and sends
+ * `--disable-background-timer-throttling`, so the drivers degrade a throwaway page on purpose and
+ * require the instrument to notice. That proof was written into the artifact, rendered into the
+ * markdown, and read by nothing that could fail a run.
+ *
+ * ⭐ Its own function rather than four copies, because the sentence is the same wherever it is asked
+ * and `describeProofs` has already composed the reason.
+ */
+export function unprovenInstrumentRefusal(result: BrowserArmResult): string | null {
+  if (result.instrumentUnproven.length === 0) {
+    return null;
+  }
+  return (
+    'the browser called itself a usable instrument and nothing on this run showed it could have said ' +
+    `otherwise, so that verdict is a restatement of the launch flags rather than evidence: ${result.instrumentUnproven.join(
+      '; ',
+    )}`
+  );
+}
+
+/**
  * Why this run is not a viewer who watched the broadcast, or null.
  *
  * ⛔ The instrument comes first and before any figure is read. Chromium pauses muted video and
@@ -40,6 +66,11 @@ export function viewerPlaybackRefusal(result: BrowserArmResult): string | null {
       'the browser was not a usable instrument for this run, so its figures are properties of the ' +
       `harness rather than of the product: ${result.instrumentFailures.join('; ') || 'no reason recorded'}`
     );
+  }
+
+  const unproven = unprovenInstrumentRefusal(result);
+  if (unproven !== null) {
+    return unproven;
   }
 
   if (result.fatalErrors > 0) {

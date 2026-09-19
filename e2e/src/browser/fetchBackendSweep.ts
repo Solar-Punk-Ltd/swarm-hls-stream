@@ -16,7 +16,7 @@ export const GATEWAY_BYTES = 'gateway';
 export const WEEB3_BYTES = 'weeb3';
 export type ByteSource = typeof GATEWAY_BYTES | typeof WEEB3_BYTES;
 
-export interface ByteSourceSetup {
+interface ByteSourceSetup {
   /** What the client reports as its byte source once set, which is **not** assumed to be what was asked. */
   byteSource: string | null;
   failure: string | null;

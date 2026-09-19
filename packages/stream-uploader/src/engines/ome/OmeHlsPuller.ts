@@ -19,7 +19,7 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 export const SEGMENT_RETRY_LIMIT = 3;
 
 /** How long a playlist may keep answering 404 before the puller gives up on the stream. */
-export const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
+const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
 
 /**
  * How long an unusable origin is retried at the ordinary poll interval before the puller slows to one
@@ -34,14 +34,14 @@ export const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
  * one slow poll late. It does not have to stay under `RECOVERY_TIMEOUT`, which has a floor of 1ms:
  * `retryDelayMs` refuses to slow down at all while a recovery finalize is riding on the polls.
  */
-export const DEFAULT_SLOW_POLL_AFTER_MS = 5_000;
+const DEFAULT_SLOW_POLL_AFTER_MS = 5_000;
 
 /**
  * How long every segment in the playlist may sit under the handover floor, with nothing delivered,
  * before the floor is given up as wrong. Comfortably longer than any real handover, which is over
  * within one playlist window, and far shorter than a broadcast.
  */
-export const DEFAULT_ABANDON_FLOOR_AFTER_MS = 30_000;
+const DEFAULT_ABANDON_FLOOR_AFTER_MS = 30_000;
 
 /**
  * `AbortSignal.timeout` aborts with a `TimeoutError` DOMException, and an explicit `controller.abort()`

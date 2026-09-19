@@ -58,7 +58,7 @@ set -euo pipefail
 docker rm -f ${CONTAINER} >/dev/null 2>&1 || true
 # ⛔ Removed through a container, not with a plain rm. Docker creates a missing bind-mount source as
 # root, so after one run the login user owns none of this and \`rm -rf\` fails. Under \`set -e\` that
-# failure aborted the setup, the container never started, and the arm reported "no segments" — which
+# failure aborted the setup, the container never started, and the arm reported "no segments", which
 # is the third unrelated cause of that same symptom this instrument has produced.
 docker run --rm -v /tmp:/hosttmp alpine:latest sh -c 'rm -rf /hosttmp/${CONTAINER}' >/dev/null 2>&1 || true
 mkdir -p ${REMOTE_DIR}/hls

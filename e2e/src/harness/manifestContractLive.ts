@@ -123,6 +123,8 @@ interface RungPlaylistParse {
    * else in the playlist names the segments the engine closed while the uploader was dead.
    */
   gaps: number;
+  /** Whether the first media entry declares the seam of a session continuing an older feed head. */
+  firstSegmentDiscontinuity: boolean;
   /** The first and last `#EXT-X-PROGRAM-DATE-TIME`, as ISO text, or null where a segment carried none. */
   firstDate: string | null;
   lastDate: string | null;
@@ -164,10 +166,11 @@ const PLAYLIST_MARKER = '#EXTM3U';
  * The step a playlist's dates must take, out of what the run declared, or null where it declared
  * none.
  *
- * ⛔ The run's declaration and never a measurement. `#EXT-X-PROGRAM-DATE-TIME` is derived from
- * `HLS_FRAGMENT` and a segment count rather than from any segment's own `#EXTINF`, precisely so the
- * rungs of one ladder agree about the same media, and checking a nominal step against an observation
- * would pass exactly the drift the derivation exists to prevent.
+ * ⛔ The run's declaration and never a measurement taken here. This is the grid the publisher reads
+ * its own segments against, so the contract has to be handed the same number the deployment set in
+ * `HLS_FRAGMENT`: it decides which readings are close enough to be dated as that length and which
+ * are dated as themselves. Taking it off the playlist instead would let a stage that is dating by
+ * the wrong number agree with itself, which is the fault `segmentLength.ts` exists to catch.
  *
  * `E2E_EXPECT_SEGMENT_S=any` is a declaration rather than a gap, the way
  * `suites/preflight/segment-length.test.ts` treats it, so it reads as null here and
@@ -279,6 +282,7 @@ export function rungPlaylistParse(feed: RungFeed, body: string): RungPlaylistPar
     mediaSequence: mediaSequenceOf(text),
     discontinuities: tagCountOf(text, HLS_DISCONTINUITY),
     gaps: tagCountOf(text, HLS_GAP),
+    firstSegmentDiscontinuity: parsed.segments[0]?.discontinuity === true,
     firstDate: isoOf(dates[0]),
     lastDate: isoOf(dates[dates.length - 1]),
     recording: parsed.headers.includes(HLS_PLAYLIST_TYPE_VOD),
@@ -302,6 +306,7 @@ const NOTHING_READ = {
   mediaSequence: null,
   discontinuities: 0,
   gaps: 0,
+  firstSegmentDiscontinuity: false,
   firstDate: null,
   lastDate: null,
   recording: false,
@@ -386,10 +391,10 @@ export function publishedFor(parse: RungPlaylistParse, byStream: ReadonlyMap<str
 /**
  * Apply the contract to every parse.
  *
- * ⛔ A recording is held to sequence 0 whatever the caller promised, because a recording names every
- * segment of the broadcast by construction and that holds however late it was read. Left to the
- * caller's flag, the one playlist whose numbering can always be checked would go unchecked in every
- * scenario that reads a finished broadcast, which is every crash scenario that leaves one.
+ * A recording on a fresh feed is held to sequence 0 whatever the caller promised, because it names
+ * every segment from the start. A session continuing an older feed head deliberately starts above
+ * zero and declares that seam with a discontinuity on its first media entry. The marker is a
+ * declaration rather than provenance for the prior head, which this helper does not read.
  *
  * @param knownFirst per rung, whether the suite can show this playlist still starts at the
  *   broadcast's first segment. Defaults to the contract's own flag for every rung. See
@@ -400,16 +405,21 @@ export function judgeRungPlaylists(
   contract: ManifestContract,
   knownFirst: (parse: RungPlaylistParse) => boolean = () => contract.firstOfBroadcast,
 ): RungPlaylistReading[] {
-  return parses.map((parse) => ({
-    ...parse,
-    failures:
-      parse.playlist === null
-        ? [parse.unreadable ?? 'nothing was read from this feed and no reason was recorded']
-        : manifestContractFailures(parse.playlist, {
-            ...contract,
-            firstOfBroadcast: parse.recording || knownFirst(parse),
-          }),
-  }));
+  return parses.map((parse) => {
+    const declaredContinuation =
+      parse.firstSegmentDiscontinuity && parse.mediaSequence !== null && parse.mediaSequence > 0;
+
+    return {
+      ...parse,
+      failures:
+        parse.playlist === null
+          ? [parse.unreadable ?? 'nothing was read from this feed and no reason was recorded']
+          : manifestContractFailures(parse.playlist, {
+              ...contract,
+              firstOfBroadcast: !declaredContinuation && (parse.recording || knownFirst(parse)),
+            }),
+    };
+  });
 }
 
 /**

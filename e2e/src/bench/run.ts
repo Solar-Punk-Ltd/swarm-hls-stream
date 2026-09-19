@@ -50,7 +50,7 @@ const ANNOUNCE_TIMEOUT_MS = 90_000;
 /** How long to wait for one more unmeasured segment to appear in the feed. */
 const SEGMENT_TIMEOUT_MS = 120_000;
 
-export interface RunOptions {
+interface RunOptions {
   cfg: E2EConfig;
   host: Host;
   /** Where a viewer's gateway is, reachable from **this** machine. See `gateway.ts`. */

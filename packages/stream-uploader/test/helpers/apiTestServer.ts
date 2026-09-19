@@ -7,6 +7,7 @@ import { RequestLimits } from '../../src/api/requestLimits.js';
 import { createApiApp } from '../../src/api/server.js';
 import { EnginePlugin } from '../../src/engines/types.js';
 import { StreamOrchestrator } from '../../src/libs/StreamOrchestrator.js';
+import { NodeWaitReport } from '../../src/types.js';
 
 import { LOOPBACK_HOST } from './loopbackServer.js';
 
@@ -126,7 +127,7 @@ export async function readStatusCode(port: number, request: string): Promise<num
   }
 }
 
-export interface WithheldBodyRequest {
+interface WithheldBodyRequest {
   path: string;
   /** The `Content-Length` the request announces and then never sends. */
   declaredBodyBytes: number;
@@ -171,7 +172,7 @@ export function withheldBodyRequest({
   return `${method} ${path} HTTP/1.1\r\n${lines.join('')}\r\n`;
 }
 
-export interface ApiResponse {
+interface ApiResponse {
   status: number;
   body: unknown;
   /** Lowercased response headers, for the ones that carry meaning of their own such as `Retry-After`. */
@@ -197,8 +198,12 @@ export async function startTestApi(
   streamOrchestrator: StreamOrchestrator,
   engines: EnginePlugin[] = [],
   limits?: RequestLimits,
+  /** Omitted is a service whose boot has finished, which is what every test before D16 assumes. */
+  waitingForNode?: () => NodeWaitReport | null,
 ): Promise<ApiTestServer> {
-  const server = http.createServer(createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines, limits }));
+  const server = http.createServer(
+    createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines, limits, waitingForNode }),
+  );
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

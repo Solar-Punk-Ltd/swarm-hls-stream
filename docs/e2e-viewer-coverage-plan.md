@@ -3,6 +3,8 @@
 Written 2026-08-29, after the owner asked where the ABR viewer tests and the per-rung publisher
 tests were. The answer was that neither exists. This is the plan to get them.
 
+**Status 2026-09-16.** Phases 1 and 2 are done and green live: V2 since 2026-09-04, V3 and V4 since 2026-08-30, in both byte sources. Of Phase 3 the nodes and the preflight are done, and three of the four tests that need four nodes are green (one rung dies on 2026-09-04, the drain on 2026-09-05, the viewer through a drain on 2026-09-06). Open: the proof that each rung's bytes leave through its own node, read from the four nodes' own counters. The live statuses are kept in `docs/e2e-coverage.md`.
+
 ## The gap, stated once
 
 **Every ABR test reads the uploader's log. None of them opens a browser.** Seven assertions across
@@ -58,6 +60,8 @@ Run time and harness work. No new infrastructure. Numbers reserved in `docs/e2e-
 > that has changed under them.
 
 ### V2, quality switch works — ⛔ BUILT 2026-08-30, RED across four sittings, cause measured
+
+✅ **Green since 2026-09-04 in both byte sources** (`docs/e2e-coverage.md`, the row "Viewer: quality switch works"). The red below is the record of the first four sittings and of what was measured to explain them.
 
 `pnpm browser:quality` and `suites/viewer/quality-switch.test.ts`. 42 unit tests.
 
@@ -171,12 +175,12 @@ Where the three blockers stand:
    does not start unless the two agree. It never skips, because an unsplit deployment is the case it
    most needs to report. The postage and chequebook preflights read every node behind that same
    routing rather than the coordinator alone.
-3. ⛔ **Still open. The tests that only mean something with four nodes:**
-   - each rung's bytes actually leave through its own node, proven from the four nodes' **own**
+3. ⚠️ **Three of four done, one open. The tests that only mean something with four nodes:**
+   - ⛔ open: each rung's bytes actually leave through its own node, proven from the four nodes' **own**
      counters and not from the uploader's log
-   - one node's batch runs dry and only that rung degrades, the other three keep publishing
-   - one node is killed and the ladder stays one catalog entry across the survivors
-   - a viewer keeps a working ladder throughout
+   - ✅ one node's batch runs dry and only that rung degrades, the other three keep publishing (scenario L, green live 2026-09-05)
+   - ✅ one node is killed and the ladder stays one catalog entry across the survivors ("One rung dies, others carry on", green 2026-09-04 and 2026-09-06)
+   - ✅ a viewer keeps a working ladder throughout (V11, green on both byte sources 2026-09-06)
 
 **Done when:** losing one node costs one quality instead of the broadcast, and a test says so.
 

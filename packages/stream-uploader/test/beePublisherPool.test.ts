@@ -4,7 +4,13 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
-import { BeePublisher, BeePublisherPool, parsePublisherSpecs, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
+import {
+  BeePublisher,
+  BeePublisherPool,
+  parsePublisherSpecs,
+  safeUrl,
+  SINGLE_PUBLISHER,
+} from '../src/libs/BeePublisherPool.js';
 import { getErrorMessage } from '../src/utils/common.js';
 
 import { LOOPBACK_HOST } from './helpers/loopbackServer.js';
@@ -207,9 +213,9 @@ describe('BeePublisherPool.perRung', () => {
     assert.throws(() => BeePublisherPool.perRung(withStray, RUNG_ORDER, ANY_TIMEOUT_MS), /names rung\(s\) 2160p/);
   });
 
-  // What `ChequebookGate` enumerates at startup. Taken from the pool rather than rebuilt from the
-  // config, so a rung added to BEE_PUBLISHERS is checked for funding without anyone remembering to
-  // widen a second list.
+  // What `index.ts` enumerates at startup and hands to both gates. Taken from the pool rather than
+  // rebuilt from the config, so a rung added to BEE_PUBLISHERS is checked without anyone remembering
+  // to widen a second list.
   it('lists every node in ladder order, so a startup check reaches all of them', () => {
     const pool = BeePublisherPool.perRung(
       [spec('1080p', 1663), spec('720p', 1653), spec('480p', 1643), spec('360p', 1633)],
@@ -411,5 +417,32 @@ describe('BeePublisherPool.routing', () => {
 
     const [lowest] = pool.routing();
     assert.ok(!lowest.url.includes('hunter2'), `query secret survived redaction: ${lowest.url}`);
+  });
+});
+
+/**
+ * ⛔ **A url this cannot parse must not become a crash.**
+ *
+ * Every caller is on a path that is already reporting something: the routing block on `/health`, a
+ * gate's refusal, the catalog refusing to call a feed empty. A `new URL()` that throws there replaces
+ * the report with a TypeError, which is how a catalog refusal read as "Invalid URL" rather than as
+ * the node being unreachable. Found in review of this branch, 2026-09-17.
+ *
+ * What comes back for one is the query-string redaction alone, which is the most that can be done
+ * without a parse, and never the input untouched.
+ */
+describe('safeUrl on something that is not a url', () => {
+  it('hands back what it was given rather than throwing', () => {
+    assert.equal(safeUrl(''), '');
+    assert.equal(safeUrl('bee-uploader'), 'bee-uploader');
+  });
+
+  // `key` and `token` are the two this service treats as credentials, see `utils/urlSecrets.ts`.
+  it('still strips a query secret it can find without parsing', () => {
+    assert.doesNotMatch(safeUrl('not a url?key=hunter2'), /hunter2/);
+  });
+
+  it('leaves a real url exactly as the operator wrote it', () => {
+    assert.equal(safeUrl('http://bee-a:1633'), 'http://bee-a:1633');
   });
 });
