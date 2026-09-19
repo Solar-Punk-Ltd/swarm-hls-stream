@@ -50,18 +50,18 @@ require_number() {
 # quietly: sed expands a bare `&` to the whole match, so a secret of `ab&cd` is written into
 # Server.xml as `abOME_ADMISSION_SECRET_PLACEHOLDERcd`. OME then starts perfectly and signs every
 # admission request with a key the uploader does not hold, with nothing in any log saying the secret
-# was mangled. `|` is this file's delimiter and ends the substitution early, `/` is SRS's, and a
-# backslash escapes whatever follows it. `openssl rand -hex 32`, which the refusal above already
-# names, produces none of the four. `openssl rand -base64 32`, which is the other reflex, usually
-# produces two.
+# was mangled. `|` is this file's delimiter and ends the substitution early, while a backslash
+# escapes whatever follows it. `<` starts markup where the value lands as XML text. `/` has no
+# special meaning with this delimiter and is safe. `openssl rand -hex 32`, which the refusal above
+# already names, produces none of the refused characters.
 #
-# Only those four are refused, so a secret an operator is already running that happens to carry a `+`
-# or a `=` keeps working. The value is never echoed back, unlike the numbers below, because it is a
-# credential and this message goes to the container log.
+# Only those four are refused, so a secret an operator is already running that happens to carry a
+# `/`, `+`, or `=` keeps working. The value is never echoed back, unlike the numbers below, because
+# it is a credential and this message goes to the container log.
 require_secret() {
   case "$2" in
-    *'/'* | *"\\"* | *'&'* | *'|'*)
-      echo "$1 must not contain / \\ & or |, which sed reads as syntax where this value is written into the config. Generate it with openssl rand -hex 32." >&2
+    *"\\"* | *'&'* | *'|'* | *'<'*)
+      echo "$1 must not contain \\ & | or <, which would be read as sed or XML syntax where this value is written into the config. Generate it with openssl rand -hex 32." >&2
       exit 1
       ;;
   esac
