@@ -309,8 +309,7 @@ two agree to within 1%, which under a ladder is every segment. The contract is d
 
 `manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the rulebook, and
 `e2e/test/manifestContract.test.ts` proves it against playlist text. A first session on a fresh topic
-starts at zero. A reused topic continues from its predecessor. Every entry carries a readable wall
-clock with strictly rising stamps, and a step between entries carrying no
+starts at zero. Every entry carries a readable wall clock with strictly rising stamps, and a step between entries carrying no
 `#EXT-X-DISCONTINUITY` matches the media the earlier one declares. Under a ladder that is exactly one
 fragment. That is free and it runs in CI.
 
@@ -336,7 +335,10 @@ one anchor the whole ladder shares and never includes that feed offset. A suite 
 playlist.
 
 `e2e/src/harness/manifestContractLive.ts` is what reads it, and
-`e2e/test/manifestContractLive.test.ts` covers everything in it but the feed read. Eight live suites
+`e2e/test/manifestContractLive.test.ts` covers everything in it but the feed read. This helper accepts
+a nonzero starting sequence when the first media entry declares a discontinuity. That marker allows
+a continued session, but does not prove its offset matches the previous feed head. Fresh recordings
+without that marker still have to start at zero. Eight live suites
 call it:
 
 | Suite                                       | What only this one can see                                                                       | Sequence 0 |
