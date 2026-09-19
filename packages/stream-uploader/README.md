@@ -4,14 +4,17 @@ Node.js service that receives HLS segments and uploads them to the Swarm decentr
 
 ## How It Works
 
-The uploader receives HLS segments from a media server (e.g. SRS) or directly via HTTP, uploads each segment to Swarm, and maintains a live HLS manifest as a Swarm Feed. When a stream ends, the manifest is finalized as VOD and the stream is registered in the stream catalog feed.
+The uploader receives HLS segments from a media server, such as SRS, or directly via HTTP. It uploads
+each segment to Swarm and maintains a live HLS manifest as a Swarm Feed. When a stream ends, the
+manifest is finalized as VOD. A standalone deployment writes that state to the Swarm stream catalog.
+In admin mode, the uploader reports `live` and `vod` to the admin service, which owns the catalog.
 
 ```
 Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swarm
                       │                      │
                       │                      ├─ Upload segment data
                       │                      ├─ Update manifest feed (SOC)
-                      │                      └─ Update stream catalog feed
+                      │                      └─ Update catalog or report state to admin
                       │
                       ├─ Backpressure (bounded queue, 429 on overflow)
                       ├─ Deduplication (a repeat index is accepted and does no work)
@@ -21,10 +24,15 @@ Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swar
 ### ABR ladder
 
 With `ABR_ENABLED=true` (see [engines/srs](../../engines/srs/)) the engine publishes one stream per
-rung, and each gets its own `StreamUploader` and its own manifest feed. Two things then tie them
-back together:
+rung, and each gets its own `StreamUploader` and its own manifest feed, whose topic is **derived from
+the ladder's group id and the rung's name** (`src/utils/rungTopic.ts`, a version-5 UUID). That feed
+therefore outlives any one session: a rung that restarts mid-broadcast — SRS bouncing a transcoder,
+an encoder reconnecting — comes back onto the feed the master already names, reads its head, and
+numbers its playlist on from there with a single `#EXT-X-DISCONTINUITY` at the seam, rather than
+appearing on a feed nothing points at until it re-announces. Recordings sit back to back on one
+rung's feed and the catalog entry lists the latest. Two things then tie the rungs back together:
 
-- The four rungs fold into a **single catalog entry**, keyed by a shared group id rather than by
+- The four rungs merge into a **single catalog entry**, keyed by a shared group id rather than by
   topic. Four uploaders write that entry concurrently, which is safe only because every catalog
   write goes through one serialized queue.
 - That same point is where the ladder's **master playlist** is written, to a fifth feed whose topic
@@ -52,11 +60,17 @@ The segment path asks it on every delivery and rewrites the master only when the
 actually changes. A version of this filter shipped correct, tested and deployed, and never ran once,
 because only `upsertRendition` wrote a master.
 
-### The manifest contract: timestamps and sequence zero
+With `ADMIN_API_URL` set as well, everything above still happens, but the merge moves out of the
+catalog feed and into the admin and the master's topic is the declared one — see
+[Admin mode](#admin-mode).
 
-Every playlist this service writes, live, closing and recording alike, carries two numbers per
-segment. Both are **derived from one anchor the whole broadcast shares**, and neither is the number
-the engine handed over.
+### The manifest contract: timestamps and continuous published numbering
+
+Every playlist this service writes, live, closing and recording alike, carries a media sequence for
+the playlist and a date-time per segment. The date-time and the session-local sequence come from one
+anchor the whole broadcast shares. Neither comes from the number the engine handed over. If the feed
+topic already holds an earlier session, the published media sequence also carries a feed offset so
+it continues after the previous playlist instead of moving backwards.
 
 ```
 #EXTM3U
@@ -136,7 +150,21 @@ stage on a sitting. In production `/health` names one under `fragment_publisher_
 configured length beside the measured one, which is as far as this service can go where the keyframe
 interval belongs to whoever is broadcasting.
 
-**`#EXT-X-MEDIA-SEQUENCE`** counts from 0 at the broadcast's first segment.
+**The session-local media sequence** counts from 0 at the broadcast's first segment. On a fresh
+topic, that is also the value published in `#EXT-X-MEDIA-SEQUENCE`.
+
+A declared stream in admin mode can publish several broadcasts on one topic. A ladder rung also
+keeps one derived topic across uploader sessions. Before either writes its first manifest, it reads
+the feed head and counts the entries in the previous playlist, including gap entries. That count is
+the new session's published offset. A previous playlist that starts at 12 and lists 30 entries makes
+the next session publish its first segment as 42. The offset changes only the numbers written into
+the playlist. Dating, ordering and restart detection still use the session-local sequence from the
+shared anchor, so rungs that resume different feed heads still date the same media alike. A recovered
+session restores its saved offset instead of reading its own latest playlist as a predecessor.
+
+The example above is therefore a fresh topic. A later session on the same declared or rung feed has
+the same shape but may open at a value above 0, with `#EXT-X-DISCONTINUITY` on its first segment to
+mark the seam from the earlier session.
 
 The engine's own index is not this number and is not used for it. SRS runs one counter per rung
 stream and only resets it when the whole `SrsLiveSource` is destroyed, which its idle timeout does a
@@ -356,8 +384,15 @@ The API server starts on port 3000 (default).
 | `ABR_ENABLED`            | `false`              | Whether the engine publishes a ladder, read here to group the rungs                                                                                                                                                                                |
 | `ABR_LADDER`             | the engine's default | The rungs, `name:width:height:kbps`, see `engines/srs/.env.sample`                                                                                                                                                                                 |
 | `ABR_VHOST`              | `abr`                | The vhost rungs arrive on                                                                                                                                                                                                                          |
+| `ADMIN_API_URL`          | _(empty)_            | Admin service base URL. Setting it turns on admin mode. See below                                                                                                                                                                                  |
+| `ADMIN_API_TOKEN`        | _(empty)_            | Bearer token for the admin's internal routes, minimum 32 characters. Required when `ADMIN_API_URL` is set                                                                                                                                          |
 | `LOG_LEVEL`              | `debug`              | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event                                                                                                                                           |
 | `LOG_FORMAT`             | _(empty)_            | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                                                                                                                                                         |
+
+Admin mode changes who owns the stream catalog. It does not change the uploader's Bee startup
+requirements. `BEE_URL`, `STREAM_KEY`, `STREAM_LIST_TOPIC` and `API_AUTH_TOKEN` remain required.
+`STAMP` remains conditional on `BEE_PUBLISHERS`. Once `ADMIN_API_URL` is set,
+`ADMIN_API_TOKEN` is required as well.
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -719,6 +754,177 @@ the encoded form.
 
 Rotating `PUBLISH_KEY_SECRET` invalidates every key at once. There is no per-stream revocation, which
 is the price of deriving keys instead of storing them.
+
+## Admin mode
+
+Setting `ADMIN_API_URL` — and nothing else — turns admin mode on. Leave it empty and nothing about
+this service changes.
+
+With it set, a stream must be **declared in the admin before anything may publish to it**. The admin
+mints the feed topic and the publish key; this service stops deciding either:
+
+| Without `ADMIN_API_URL`                            | With it                                                                       |
+| -------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Any publisher with the right derived key may start | Only an ingest id the admin has declared, presenting that declaration's key   |
+| A lone rendition mints a random feed topic         | A lone rendition publishes on the declared topic, resuming from its feed head |
+| This service writes the Swarm stream catalog       | It writes none, and reports `live` then `vod` to the admin instead            |
+| `PUBLISH_KEY_SECRET` authenticates publishers      | `PUBLISH_KEY_SECRET` is ignored                                               |
+| A ladder merges its rungs in the catalog feed      | The admin merges them, and the declared topic is the ladder's master feed     |
+
+A publish is refused when the ingest `app/stream` is not declared, when the admin cannot be reached,
+when the presented `key=` is not the declaration's, when the declaration is owned by a feed key this
+service does not sign with, or when the ingest `app` and the declared media type disagree. Each
+refusal says which it was in the log.
+
+Both services have to sign as one owner. The admin's catalog entry points a viewer at `owner/topic`,
+and every feed this service writes at that topic is signed with `STREAM_KEY`, so the admin's
+`FEED_PRIVATE_KEY` must derive the same address or the entry resolves a feed nobody wrote — while every
+report answers 200 and nothing says so. Nothing on the wire carries a key, so the address is what is
+compared: once at boot, off the admin's public `/api/config`, where a mismatch refuses to start and an
+admin that cannot be reached yet only warns; and again on every publish, against the declaration's
+`owner`.
+
+| Variable          | Description                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `ADMIN_API_URL`   | Base URL of the admin service. Empty (the default) is the standalone deployment    |
+| `ADMIN_API_TOKEN` | Bearer token for the admin's internal routes. Required when the URL is set, min 32 |
+
+### The ABR ladder in admin mode
+
+`ABR_ENABLED` and `ADMIN_API_URL` run together, and what reconciles them is that **the declared topic
+becomes the ladder's master playlist feed**. It has to be: the master's feed topic is the group id,
+and the declared topic is the one address the admin hands a viewer before anything has published.
+
+Everything else follows. Each rung publishes its own media playlists on a topic **derived from the
+group and its rung name** — four rungs sharing the master's feed would write over each other and over
+the master, and a rung's feed has to be found again by name after a restart rather than re-minted.
+That topic is stable for the life of the declaration, so a rung that restarts continues the same feed
+above its own last session's head, its recordings sit back to back there, and the entry lists the
+latest. **The admin therefore accepts `live` after `vod`**: a broadcaster who stops and comes back is
+a stream going live again under a declaration the admin already holds as a recording. (That admin
+change ships from the `feat/ladder-feed-sessions` branch of the streaming-monorepo repository.)
+
+The ladder's merge state, one record per rung, moves out of the catalog feed and into the admin: each rung posts its own
+`Rendition` to `POST /api/internal/streams/:id/renditions` (bearer `ADMIN_API_TOKEN`, the same
+internal-route auth as the state route, and **the admin must serve it**), the admin merges it by the
+same "a rung that has already finished stays finished" rule `StreamCatalog.keepingWhatFinished`
+states — additionally requiring the report to name the rung's own feed, which is true of every
+report a well-formed ladder sends — writes `renditions` into the catalog entry it already owns, and
+answers with the merged ladder. The uploader writes the master from that answer, filtered by the same `LadderLiveness` rule
+as ever, and rewrites it when a rung stops without asking the admin again. Answers are applied in the
+order the admin merged them, by the catalog write index each one carries, so four rungs whose answers
+land out of order cannot leave an older merge on the master.
+
+`live` and `vod` are then reported for the **ladder** rather than for a rung. `live` goes out once the
+first master has landed, which may be said more than once and is accepted. `vod` goes out from the
+rung whose own report finished the ladder, and its `index` is **the final master's index in the
+declared topic's feed** — never a rung's own VOD index, which names a position in a feed no viewer
+opens. Its `duration` is the ladder's. It is said again by any later announce that finds the ladder
+finished while the admin still holds the stream as anything but `vod`: the admin answers the flip
+once, and if the master write behind that one report failed, the next announce is the only chance
+left to list the recording. `vod -> vod` is accepted, so the repeat is harmless.
+
+Two things a declared stream does that a **standalone single-rendition** stream does not: resume its
+SOC index and its media sequence from its topic's feed head, and hold its publishes for a re-announced
+predecessor's drain. Both exist because two sessions share one feed there. A rung now owes both as
+well, in either deployment, because its derived topic outlives its session in exactly the same way —
+the standalone lone rendition, whose topic is a fresh uuid per session, is the only one that owes
+neither. The master feed writer still establishes its own index.
+
+### Local loop with the admin API
+
+SRS in Docker, the uploader from source on the host. Run the admin API separately on `:9877`.
+
+**1. SRS.** From `engines/srs`, with `.env` beside the compose file:
+
+```bash
+cd engines/srs
+cp .env.sample .env
+```
+
+```ini
+# engines/srs/.env — the values the local overlay needs
+SRS_WEBHOOK_TOKEN=<same value the uploader gets>   # openssl rand -hex 32
+SRT_PASSPHRASE=<10-79 chars, or empty for no SRT encryption>
+SRS_ADAPTER_HOST=host.docker.internal              # the uploader is on the host, not in the network
+SRS_ADAPTER_PORT=3000                              # must equal the uploader's API_PORT
+SRS_RTMP_PORT=1935
+SRS_SRT_PORT=10080
+SRS_HTTP_PORT=8080
+SRS_HTTP_API_PORT=1985
+```
+
+```bash
+# The `local` overlay is the one for a uploader running natively: it points SRS's webhooks at
+# host.docker.internal. `srs:host` puts the container on the host network instead, and the base file
+# alone leaves the webhooks pointing at a `stream-uploader` container that is not running.
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+# or, from the monorepo root:  pnpm srs:local
+docker compose logs -f
+```
+
+Published ports: `1935` RTMP, `10080/udp` SRT, `8080` HLS, `1985` SRS HTTP API. Each is published on
+the same number it binds inside the container, so changing one in `.env` moves both sides together.
+
+**2. The uploader**, from the monorepo root, with the root `.env` carrying:
+
+```ini
+BEE_URL=http://localhost:1633
+STAMP=<batch id, pnpm stamp:setup>
+STREAM_KEY=<32-byte hex private key>
+STREAM_LIST_TOPIC=swarm-stream
+API_AUTH_TOKEN=<min 32 chars>
+STATE_DIR=./state
+ENGINE=srs
+API_PORT=3000
+ADMIN_API_URL=http://localhost:9877
+ADMIN_API_TOKEN=<min 32 chars, the admin's internal token>
+```
+
+`SRS_WEBHOOK_TOKEN` is read from `engines/srs/.env`, which the uploader loads because `ENGINE=srs`.
+It has to be the same value on both sides.
+
+```bash
+pnpm install
+pnpm --filter @swarm-hls-stream/stream-uploader build
+pnpm --filter @swarm-hls-stream/stream-uploader start
+```
+
+The boot log says which mode it came up in: `[Admin] Admin mode against <url>` or `[Admin]
+ADMIN_API_URL is not set, running standalone`.
+
+**3. Declare the stream in the admin**, then push to the ingest id it filed the draft under. web2-admin
+uses the stream's topic (a UUID) as `<stream>` and shows the finished URLs and key on the stream's
+details page; `<app>` is `video` or `audio` and has to match the declaration's media type.
+
+```bash
+ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine \
+  -c:v libx264 -preset veryfast -g 60 -keyint_min 60 -c:a aac \
+  -f flv "rtmp://localhost:1935/video/<stream>?key=<publishKey>"
+```
+
+SRT instead of RTMP, same key, inside the `r=` value:
+
+```bash
+ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine \
+  -c:v libx264 -preset veryfast -g 60 -keyint_min 60 -c:a aac \
+  -f mpegts "srt://localhost:10080?streamid=#!::r=video/<stream>?key=<publishKey>,m=publish"
+```
+
+The same push from OBS (Settings → Stream, Service: **Custom...**):
+
+| Field      | Value                         |
+| ---------- | ----------------------------- |
+| Server     | `rtmp://localhost:1935/video` |
+| Stream Key | `<stream>?key=<publishKey>`   |
+
+In Settings → Output, set Keyframe Interval to 2s (OBS's `0` lets the encoder choose, and the
+segment length is `ceil(HLS_FRAGMENT / GOP) * GOP`, so an unknown GOP is an unknown segment length).
+For SRT, Server is `srt://localhost:10080?streamid=#!::r=video/<stream>?key=<publishKey>,m=publish`
+and Stream Key is left empty.
+
+A refused publish is refused by SRS itself, so the encoder reports the connection as rejected. The
+reason is in the uploader's log, never in the reply.
 
 ## Testing with FFmpeg
 

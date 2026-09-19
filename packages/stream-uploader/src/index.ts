@@ -12,17 +12,17 @@ import './utils/env.js';
 
 import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
+import { AdminApiClient } from './libs/AdminApiClient.js';
+import { AdminLadderRegistry } from './libs/AdminLadderRegistry.js';
 import { BeePublisherPool, safeUrl } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
-import { PostageGate } from './libs/PostageGate.js';
-
-/** The gate's floor is configured in hours, because that is the unit an operator tops a batch up in. */
-const SECONDS_PER_HOUR = 3_600;
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
+import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { assertNodeReachable, waitForNode } from './libs/NodeWait.js';
+import { PostageGate } from './libs/PostageGate.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
@@ -30,7 +30,11 @@ import { runStartGates } from './libs/StartGates.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
+import { sameFeedOwner } from './utils/feedOwner.js';
 import { NodeWaitReport } from './types.js';
+
+/** The gate's floor is configured in hours, because that is the unit an operator tops a batch up in. */
+const SECONDS_PER_HOUR = 3_600;
 
 const logger = Logger.getInstance();
 const lifecycle = new ServiceLifecycle((code) => process.exit(code), logger);
@@ -42,7 +46,7 @@ registerCrashHandlers(logger);
  * Which Bee nodes this stage publishes through.
  *
  * BEE_PUBLISHERS unset is the single-node deployment: one node, one batch, everything through it.
- * Set, it is one node per rung, and every rung of ABR_LADDER must appear — which only means
+ * Set, it is one node per rung, and every rung of ABR_LADDER must appear, which only means
  * anything with a ladder to map onto, hence the refusal below rather than silently ignoring it.
  */
 function buildPublishers(requestTimeoutMs: number): BeePublisherPool {
@@ -51,7 +55,7 @@ function buildPublishers(requestTimeoutMs: number): BeePublisherPool {
   }
 
   if (!config.abr) {
-    throw new Error('BEE_PUBLISHERS is set but ABR_ENABLED is false — per-rung publishers have no ladder to map onto');
+    throw new Error('BEE_PUBLISHERS is set but ABR_ENABLED is false. Per-rung publishers have no ladder to map onto');
   }
 
   return BeePublisherPool.perRung(
@@ -61,9 +65,64 @@ function buildPublishers(requestTimeoutMs: number): BeePublisherPool {
   );
 }
 
+/**
+ * The admin service this uploader answers to, or undefined for the standalone deployment.
+ *
+ * Constructed once and shared, deliberately. The engines' publish gate resolves declarations through
+ * it and each uploader reports state through it, and those two pointed at different admins is a
+ * deployment where a broadcast is admitted by one service and reported to another. See
+ * {@link AdminApiClient}.
+ */
+function buildAdminApi(): AdminApiClient | undefined {
+  if (!config.admin) {
+    logger.info('[Admin] ADMIN_API_URL is not set, running standalone: the stream catalog on Swarm is ours to write');
+    return undefined;
+  }
+
+  logger.info(
+    `[Admin] Admin mode against ${config.admin.apiUrl}: streams are declared there, publishes are resolved ` +
+      'and authenticated against those declarations, and this service writes no stream catalog entries',
+  );
+  return new AdminApiClient({ baseUrl: config.admin.apiUrl, token: config.admin.apiToken });
+}
+
+/**
+ * Refuse to come up as an admin-mode uploader whose feeds the admin's catalog can never point at.
+ *
+ * The admin's entry names `owner/topic` and every feed this service writes at that topic is signed
+ * with `STREAM_KEY`, so the admin's `FEED_PRIVATE_KEY` and `STREAM_KEY` have to derive one address.
+ * Nothing else enforces it: with the two apart every report answers 200 and every viewer resolves a
+ * feed nobody wrote. Asked once here, off the admin's public config, and again per declaration in
+ * the publish gate. An admin that cannot be reached yet is a warning rather than a refusal, because
+ * that is a deploy ordering and the gate covers it.
+ */
+async function assertAdminSignsAsThisService(adminApi: AdminApiClient, signerOwner: string): Promise<void> {
+  const feedOwner = await adminApi.fetchFeedOwner();
+  if (feedOwner === null) {
+    logger.warn(
+      `[Admin] Could not confirm that ${adminApi.describe()} signs its catalog as ${signerOwner}. Every declaration ` +
+        'is checked against it at publish time instead',
+    );
+    return;
+  }
+  if (!sameFeedOwner(feedOwner, signerOwner)) {
+    throw new Error(
+      `${adminApi.describe()} signs its catalog as ${feedOwner} and this service signs its feeds as ${signerOwner}. ` +
+        "STREAM_KEY and the admin's FEED_PRIVATE_KEY have to derive one address, or the admin's catalog entries " +
+        'point viewers at feeds nobody writes. Fix one of the two and restart.',
+    );
+  }
+  logger.info(`[Admin] ${adminApi.describe()} signs its catalog as ${feedOwner}, the same owner as this service`);
+}
+
 async function start() {
   try {
     const publishers = buildPublishers(config.beeRequestTimeoutMs);
+    const adminApi = buildAdminApi();
+    const signerOwner = new PrivateKey(config.streamKey).publicKey().address().toHex();
+    if (adminApi) {
+      await assertAdminSignsAsThisService(adminApi, signerOwner);
+    }
 
     // The gates read the same nodes through their own clients, because a chequebook balance and a
     // postage batch are answered off the chain and neither read has a retry around it. The upload
@@ -97,8 +156,26 @@ async function start() {
       config.streamKey,
       config.streamListTopic,
       catalogIndexStore,
-      masterWriter,
+      // ⛔ Withheld in admin mode, where this catalog writes nothing at all: the master belongs to the
+      // ladder registry below, and a catalog holding a writer it must never reach is a catalog a
+      // later change can make write one. Nothing would call it today. The wiring says so anyway.
+      config.admin ? undefined : masterWriter,
     );
+
+    // Where a ladder rung's rendition record goes. Standalone, the catalog: it merges four rungs into
+    // one entry on the stream list feed and writes the master from it. In admin mode the merge moves
+    // into the admin. The declared topic becomes the master feed's topic, each rung reports its own
+    // record, and the admin writes `renditions` into the catalog entry it already owns. See
+    // `libs/AdminLadderRegistry.ts` and the "Admin mode" section of the package README.
+    const ladderRegistry: LadderRegistry =
+      adminApi && masterWriter ? new AdminLadderRegistry({ client: adminApi, masterWriter }) : streamCatalog;
+    if (adminApi && masterWriter) {
+      logger.info(
+        '[Admin] ABR ladder in admin mode: the declared topic is the ladder master feed, each rung publishes ' +
+          'to a topic derived from the group and its rung name, and the ladder the master is written from is ' +
+          'the one the admin merges',
+      );
+    }
 
     const streamOrchestrator = new StreamOrchestrator(publishers, streamCatalog, recoveryStore, {
       streamKey: config.streamKey,
@@ -111,11 +188,13 @@ async function start() {
       segmentRedundancy: config.segmentRedundancy,
       ladder: config.abr?.ladder,
       ladderGroupStore,
+      adminApi,
+      ladderRegistry,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);
 
-    const engines = loadEngines(config.engine);
+    const engines = loadEngines(config.engine, { adminApi, signerOwner });
 
     // ⛔ Stripped once, here, because a node url may carry basic auth in its userinfo and everything
     // built from this reaches `/health`, which takes no credential of its own. `waitForNode` strips
@@ -131,9 +210,9 @@ async function start() {
       attempts: 0,
     };
 
-    // ⛔ Ahead of every node-dependent step, which is the whole of D16. Everything above is local:
-    // config, disk and object construction, none of it asks a node anything. Everything below needs
-    // one, and it used to run first, so a node that was not answering meant no listener at all, a
+    // ⛔ Ahead of every Bee-dependent step, which is the whole of D16. The admin owner check above
+    // contacts the admin service, but nothing above asks a Bee node anything. The Bee reads below
+    // used to run first, so a node that was not answering meant no listener at all, a
     // container that exited, and a deploy refused on a restart count that was climbing for a reason
     // nothing about this service could fix. See `libs/NodeWait.ts` and `refuseWhileWaiting`.
     const apiServer = startApiServer(streamOrchestrator, config.apiPort, {

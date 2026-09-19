@@ -151,7 +151,7 @@ is re-GOPed at `ABR_FPS x HLS_FRAGMENT`, so every segment is inside the 1% the d
 length and the stamps step by it exactly. On a single-rendition stream the publisher's own GOP
 decides the segment, and a segment past that 1% moves the next stamp by what it really held rather
 than by the declared length. See
-[the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+[the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-continuous-published-numbering).
 
 ## Scripts
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { BroadcastDating, reanchorEpoch, withEpoch } from '../src/libs/broadcastDating.js';
-import { LIVE_WINDOW_MAX_BYTES, ManifestManager } from '../src/libs/ManifestManager.js';
+import { continuesFrom, LIVE_WINDOW_MAX_BYTES, ManifestManager } from '../src/libs/ManifestManager.js';
 import { BroadcastAnchor } from '../src/types.js';
 
 import { TEST_ANCHOR } from './helpers/fakes.js';
@@ -1306,5 +1306,150 @@ describe('ManifestManager restoring a broadcast longer than an argument list', (
     manager.restoreState(restored, ['#EXTM3U', '#EXT-X-VERSION:3']);
 
     assert.equal(targetDurationOf(manager.buildLiveManifest()), Math.ceil(LONGEST_SECONDS));
+  });
+});
+
+/**
+ * A session opening over a feed a previous session already wrote to, which is what a rung's derived
+ * topic and a declared topic both now produce.
+ *
+ * ⛔ The seam is the whole subject. A viewer following the feed head is handed this session's first
+ * live playlist as the next update of the one they are playing, so its `#EXT-X-MEDIA-SEQUENCE` has to
+ * carry on from where the last one stopped — hls.js reads a sequence that moved backwards as a
+ * parsing error, escalates it to fatal on a single-variant stream, and the client answers a fatal
+ * parsing error by remounting the player at the beginning. One `#EXT-X-DISCONTINUITY` says the media
+ * either side of the join is not continuous, which is also what makes the date jump at the seam legal.
+ *
+ * ⛔ What does NOT move is everything the offset is kept out of: the dating, which is derived from
+ * this session's own sequence and its own anchor, and the numbering the engine's indexes are placed
+ * against. A ladder's four rungs each resume a different feed head, so an offset folded into either
+ * would put them on four different clocks for the same media.
+ */
+describe('a session that continues a feed a previous session wrote', () => {
+  /** The recording the previous session left at the head, already deep into its published sequence. */
+  const PREVIOUS_MEDIA_SEQUENCE = 900_000;
+  const PREVIOUS_RECORDING = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:2',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    `#EXT-X-MEDIA-SEQUENCE:${PREVIOUS_MEDIA_SEQUENCE}`,
+    '',
+    ...Array.from({ length: 30 }, (_, i) => [pdtLineAt(i), '#EXTINF:1.5,', ref(1000 + i)]).flat(),
+    '#EXT-X-ENDLIST',
+    '',
+  ].join('\n');
+
+  /** Where {@link PREVIOUS_RECORDING} leaves the numbering. */
+  const CONTINUE_AT = PREVIOUS_MEDIA_SEQUENCE + 30;
+
+  function continuing(): ManifestManager {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    const readOffTheHead = continuesFrom(PREVIOUS_RECORDING);
+    assert.equal(readOffTheHead, CONTINUE_AT, 'the head read must yield the sequence past the last entry');
+    manager.continueFrom(readOffTheHead!);
+    return manager;
+  }
+
+  it('reads the sequence past the last entry off a live playlist too, gap entries counted', () => {
+    const manager = withSegments(3, 1.5);
+    manager.addSegment(5, 1.5, ref(5));
+
+    const live = manager.buildLiveManifest();
+    // Three segments, a hole at sequences 3 and 4, then the fourth: six entries from sequence 0.
+    assert.equal(continuesFrom(live), 6);
+  });
+
+  it('answers null for a payload that is not a playlist, so nothing is offset off a bad read', () => {
+    assert.equal(continuesFrom('not a playlist at all'), null);
+  });
+
+  it('numbers its first live playlist from where the previous session stopped', () => {
+    const manager = continuing();
+    feed(manager, 0, 3);
+
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), CONTINUE_AT);
+  });
+
+  it('writes exactly one discontinuity, before its own first segment', () => {
+    const manager = continuing();
+    feed(manager, 0, 3);
+    const live = manager.buildLiveManifest();
+
+    assert.equal(countOccurrences(live, DISCONTINUITY_TAG), 1);
+    const lines = live.split('\n');
+    assert.equal(
+      lines[lines.indexOf(DISCONTINUITY_TAG) + 3],
+      'ref-0',
+      'the break belongs to this session’s first segment, which follows its own stamp and length',
+    );
+  });
+
+  /**
+   * ⛔ The one thing the offset must not touch. The dates are this session's own wall clock, so the
+   * media after the seam carries the time it really happened rather than a time shifted by however
+   * long the previous session ran. The discontinuity above is what makes the jump at the seam legal.
+   */
+  it('keeps the large published sequence offset while dating from its own measured media', () => {
+    const manager = continuing();
+    const held = [2.4, 10.033, 2];
+    held.forEach((duration, index) => manager.addSegment(index, duration, ref(index)));
+    const live = manager.buildLiveManifest();
+
+    assert.equal(mediaSequenceOf(live), CONTINUE_AT);
+    assert.equal(countOccurrences(live, DISCONTINUITY_TAG), 1);
+    assert.deepEqual(programDateTimesOf(live), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + 2_400,
+      TEST_ANCHOR.startedAtMs + 2_400 + 10_033,
+    ]);
+  });
+
+  /**
+   * ⛔ The recording lists only this session's own media, numbered from the same place its live
+   * playlists were. The previous session's recording stays whole at its own index and none of it is
+   * named here.
+   */
+  it('records only its own segments, numbered from the same place', () => {
+    const manager = continuing();
+    feed(manager, 0, 3);
+    manager.buildLiveManifest();
+
+    const vod = manager.buildVODManifest();
+    assert.equal(mediaSequenceOf(vod), CONTINUE_AT);
+    assert.deepEqual(segmentUris(vod), ['ref-0', 'ref-1', 'ref-2']);
+  });
+
+  /**
+   * The engine's own indexes are what the numbering is placed against, and the offset is applied
+   * after that. A restart still resumes above the highest sequence already published rather than
+   * above the number it was published as.
+   */
+  it('still re-anchors an engine restart forwards, and publishes the result offset', () => {
+    const manager = continuing();
+    feed(manager, 100, 3);
+    manager.buildLiveManifest();
+
+    manager.addSegment(0, 1.5, ref(0));
+    const live = manager.buildLiveManifest();
+
+    assert.equal(mediaSequenceOf(live), CONTINUE_AT, 'the window still opens at the oldest held segment');
+    assert.equal(
+      continuesFrom(live),
+      CONTINUE_AT + 4,
+      'the restarted segment continues above the three already published rather than reusing a number',
+    );
+  });
+
+  it('carries the offset back through a restore, so a crash does not renumber the history', () => {
+    const manager = continuing();
+    feed(manager, 0, 3);
+    manager.buildLiveManifest();
+
+    const recovered = new ManifestManager(TEST_ANCHOR);
+    recovered.restoreState(manager.getState().segments, manager.getState().hlsHeaders);
+    recovered.continueFrom(manager.publishedSequenceOffset());
+
+    assert.equal(mediaSequenceOf(recovered.buildLiveManifest()), CONTINUE_AT);
   });
 });

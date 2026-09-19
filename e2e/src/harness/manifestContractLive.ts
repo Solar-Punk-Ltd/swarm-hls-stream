@@ -189,8 +189,9 @@ export const UNCHECKED_WITHOUT_FRAGMENT =
  * publishes.
  *
  * ⛔ The NEWEST announce per rung, for the reason `lastUploadedSegmentRefByRung` records: a session
- * an engine restart replaced announces again on a fresh topic while the retired one keeps its own,
- * and the retired feed is mid-finalize as the read happens. The newest announce is the session a
+ * an engine restart replaced announces again on the rung's own topic, which is derived and so the
+ * same one the retired session is still holding, and that retired feed is mid-finalize as the read
+ * happens. The topic cannot tell the two apart; arrival order can. The newest announce is the session a
  * suite asking "what is this broadcast publishing" means. A suite that wants a specific session
  * filters `announcedRungs` itself and builds the feeds from that.
  *

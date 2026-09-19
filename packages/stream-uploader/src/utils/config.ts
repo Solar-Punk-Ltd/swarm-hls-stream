@@ -1,3 +1,4 @@
+import { assertUsableAdminApiToken } from '../libs/AdminApiClient.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 import { gatePolicyFor, parseStartGateMode, START_GATE_CHEQUEBOOK_WARN } from '../libs/StartGates.js';
 
@@ -146,6 +147,42 @@ function readPublisherSpecs(): PublisherSpec[] {
   return parsePublisherSpecs(optional('BEE_PUBLISHERS', ''));
 }
 
+/** Where the admin service lives, or null for the standalone deployment this service has always been. */
+interface AdminConfig {
+  apiUrl: string;
+  apiToken: string;
+}
+
+/**
+ * Admin mode, which `ADMIN_API_URL` alone turns on.
+ *
+ * One variable decides it, and everything else admin mode needs is then `required` rather than
+ * optional, so a half-configured admin deployment refuses to start instead of silently running as a
+ * standalone one. The token is not optional-with-a-warning for the same reason `API_AUTH_TOKEN` is
+ * not: it is the only thing between the admin's internal routes and anyone who can reach them.
+ *
+ * ⛔ The ladder used to be refused here, on the grounds that admin mode gives a broadcast one topic
+ * and a ladder needs one feed per rung plus a master feed the admin knows nothing about. The two now
+ * agree about what a stream *is*, and the agreement is this: **the declared topic is the ladder's
+ * master feed**. Each rung publishes on a topic derived from the group and its own rung name, which
+ * is stable for the life of the declaration, so a rung that restarts continues the feed it was
+ * already on. The ladder's merge state — one record per rung, which the catalog feed used to hold —
+ * moves into the admin, which merges each rung's report and writes `renditions` into its own catalog
+ * entry. The
+ * uploader writes the master from the ladder the admin hands back and reports `live` and `vod` at
+ * ladder granularity. See the "Admin mode" section of the package README and `libs/AdminLadderRegistry.ts`.
+ */
+function readAdminConfig(): AdminConfig | null {
+  const apiUrl = optional('ADMIN_API_URL', '');
+  if (!apiUrl) {
+    return null;
+  }
+
+  const apiToken = required('ADMIN_API_TOKEN');
+  assertUsableAdminApiToken(apiToken);
+  return { apiUrl, apiToken };
+}
+
 /**
  * Read before the object below, because whether STAMP is required depends on it.
  *
@@ -245,4 +282,9 @@ export const config = {
   segmentRedundancy: optionalInt('SEGMENT_REDUNDANCY', 1, { min: 0 }),
   engine: optional('ENGINE', ''),
   abr: readAbrConfig(),
+  /**
+   * The admin service, or null for the standalone deployment. Everything admin mode changes hangs
+   * off this one value being non-null. See {@link readAdminConfig}.
+   */
+  admin: readAdminConfig(),
 };
