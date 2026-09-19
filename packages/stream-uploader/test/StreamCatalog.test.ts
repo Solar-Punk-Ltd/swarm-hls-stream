@@ -6,6 +6,8 @@ import { BeePublisherPool, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool
 import { CatalogIndexStore } from '../src/libs/CatalogIndexStore.js';
 import { Logger } from '../src/libs/Logger.js';
 import { MasterFeedWriter } from '../src/libs/MasterFeedWriter.js';
+import { NodeUnreachableError } from '../src/libs/NodeUnreachableError.js';
+import { isNodeUnavailable } from '../src/libs/NodeWait.js';
 import { MASTER_REWRITE_RETRY_MS, StreamCatalog, TREAT_STATE_AS_LOST_AFTER } from '../src/libs/StreamCatalog.js';
 import { MEDIA_TYPE_VIDEO, Rendition, STREAM_STATUS_LIVE } from '../src/types.js';
 
@@ -65,6 +67,10 @@ interface CatalogBeeOptions {
   lookupRefused?: boolean;
   /** Whether the node answers a liveness check. Live unless a test says otherwise. */
   nodeLive?: boolean;
+  /** Whether the node's readiness route answers. Ready unless a test says otherwise. */
+  nodeReady?: boolean;
+  /** The head lookup answers 503, which bee gives both for an empty feed and for a node that cannot serve. */
+  lookupFails503?: boolean;
   /** The update at an explicit index is not in the network: its chunk is simply not found. */
   stateReadFails?: boolean;
   /** Entries a successful read of the current state returns. */
@@ -88,6 +94,9 @@ function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): 
         if (opts.lookupFails404) {
           throw new BeeResponseError('GET', '/feeds', 'Not Found.', undefined, 404, 'Not Found');
         }
+        if (opts.lookupFails503) {
+          throw new BeeResponseError('GET', '/feeds', 'Service Unavailable.', undefined, 503, 'Service Unavailable');
+        }
         if (opts.lookupDropsBody) {
           throw droppedBody();
         }
@@ -98,6 +107,12 @@ function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): 
       },
     }),
     isConnected: async () => opts.nodeLive ?? true,
+    getReadiness: async () => {
+      if (opts.nodeReady === false) {
+        throw new BeeResponseError('GET', '/readiness', 'Service Unavailable.', undefined, 503, 'Service Unavailable');
+      }
+      return { status: 'ready', version: '2.6.0', apiVersion: '7.2.0' };
+    },
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, payload: unknown, writeOpts: Omit<CapturedWrite, 'payload'>) => {
         const err = opts.writeFails?.();
@@ -131,8 +146,6 @@ async function logLinesDuring(run: () => Promise<unknown>): Promise<string[]> {
 }
 
 /**
-/** The catalog reaches its node through the pool's coordinator, so that is all a double needs. */
-/**
  * A catalog feed that reads back whatever was last written to it.
  *
  * `makeCatalogBee` serves a fixed payload, which is right for testing one write but cannot express
@@ -157,6 +170,7 @@ function feedbackBee(writes: CapturedWrite[]): Bee {
   } as unknown as Bee;
 }
 
+/** The catalog reaches its node through the pool's coordinator, so that is all a double needs. */
 function makePublishers(bee: Bee): BeePublisherPool {
   const publisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
   return {
@@ -514,7 +528,7 @@ describe('StreamCatalog unreadable-head hardening', () => {
     );
   });
 
-  it('keeps the boot fatal when the lookup never reached the node', async () => {
+  it("rethrows a lookup that never reached the node, which the boot's wait then retries", async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
     const catalog = new StreamCatalog(
@@ -527,11 +541,11 @@ describe('StreamCatalog unreadable-head hardening', () => {
     await assert.rejects(
       () => catalog.init(),
       /ECONNREFUSED/,
-      'a wrong url or a node that is down must refuse the boot, not start an uploader that cannot publish',
+      'a wrong url or a node that is down must not read as an empty feed, so the catalog rethrows it for the wait',
     );
   });
 
-  it('keeps the boot fatal when the node does not answer a liveness check', async () => {
+  it("rethrows a liveness check the node did not answer, which the boot's wait then retries", async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
     const catalog = new StreamCatalog(
@@ -543,8 +557,18 @@ describe('StreamCatalog unreadable-head hardening', () => {
 
     await assert.rejects(
       () => catalog.init(),
-      /aborted/,
-      'the same error code covers a timeout, so an unresponsive node stays a boot failure',
+      (error: unknown) => {
+        // The same code covers a request that timed out and a body that was dropped, so this is the
+        // one the node's own answer had to settle.
+        assert.match((error as Error).message, /aborted/);
+        // ⛔ The property that matters, and the one this case asserted the opposite of until
+        // 2026-09-17: bee-js leaves the code on `statusText`, so a wait reading `code` alone ended
+        // the boot here. A node that went away mid-lookup is D16's case like any other.
+        assert.equal(isNodeUnavailable(error), true, 'the wait would have ended the boot on this');
+        return true;
+      },
+      'a node that went away mid-lookup must not read as a payload problem, so the catalog rethrows ' +
+        'it for the wait',
     );
   });
 
@@ -1259,5 +1283,71 @@ describe('StreamCatalog master rewrite retry', () => {
       attemptsBeforeTheDeaths + 2,
       'the earlier rewrite finishing cleared the mark of the one still in flight, so a delivery queued a duplicate',
     );
+  });
+});
+
+/**
+ * ⛔⛔⛔ **A 503 is two different facts, and reading the wrong one forks the feed.**
+ *
+ * `isFeedAbsent` takes 404 or 503 as "there is no feed here", which is right for a node that is
+ * serving: bee answers both for a topic nothing has written to. It is wrong for a node that cannot
+ * serve the request at all, and 503 is exactly what such a node says. With nothing persisted, reading
+ * it as empty makes the boot finish, the wait stop, and the first catalog write land at index 0 with
+ * no previous, which forks the feed for every reader still following the original chain.
+ *
+ * On main-v3 this path was shielded by accident: `ChequebookGate` threw on the same node before the
+ * lookup ran. D16 removed that shield by design, which is what made this reachable.
+ *
+ * So absence is only an answer when the node says it is serving. A 404 says so by itself, since
+ * nothing but a serving node answers one. A 503 is trusted only when the readiness route answers,
+ * and otherwise it is the node being unavailable, which is what the wait around the boot is for.
+ */
+describe('a catalog head lookup that answers 503', () => {
+  const catalogOn = (writes: CapturedWrite[], opts: CatalogBeeOptions) =>
+    new StreamCatalog(makePublishers(makeCatalogBee(writes, opts)), TEST_STREAM_KEY, TEST_TOPIC);
+
+  it('starts fresh when the node reports itself ready, which is an empty feed', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = catalogOn(writes, { lookupFails503: true, nodeReady: true });
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].index.toBigInt(), 0n, 'a ready node answering 503 has no feed, so the catalog begins');
+  });
+
+  it('refuses to call it empty when the node does not report itself ready', async () => {
+    const writes: CapturedWrite[] = [];
+
+    await assert.rejects(
+      () => catalogOn(writes, { lookupFails503: true, nodeReady: false }).init(),
+      NodeUnreachableError,
+    );
+    assert.equal(writes.length, 0);
+  });
+
+  // The property that matters: the boot's wait has to read it as a node that is not there, or this
+  // becomes an exit instead of a retry.
+  it('refuses it as an unavailable node, which the wait retries rather than ending the boot', async () => {
+    const writes: CapturedWrite[] = [];
+
+    await assert.rejects(
+      () => catalogOn(writes, { lookupFails503: true, nodeReady: false }).init(),
+      (error: unknown) => {
+        assert.equal(isNodeUnavailable(error), true, 'the wait would have ended the boot on this');
+        return true;
+      },
+    );
+  });
+
+  it('still starts fresh on a 404, which only a serving node answers', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = catalogOn(writes, { lookupFails404: true, nodeReady: false });
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(writes[0].index.toBigInt(), 0n);
   });
 });

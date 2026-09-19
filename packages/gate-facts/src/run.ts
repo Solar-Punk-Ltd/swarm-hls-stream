@@ -9,7 +9,7 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 /** A whole workspace test run is the slowest thing collected here and takes about a minute. */
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
-export interface CommandResult {
+interface CommandResult {
   stdout: string;
   stderr: string;
   /** Null when the process was killed by a signal or never started, which is not the same as a non-zero exit. */

@@ -20,7 +20,7 @@
  */
 
 /** A gateway refusal, which here means the chunk has not propagated yet rather than that it is lost. */
-export const NOT_RETRIEVABLE_YET = 404;
+const NOT_RETRIEVABLE_YET = 404;
 
 export interface RequestRecord {
   url: string;
@@ -46,7 +46,7 @@ export function segmentRef(url: string): string {
   return url.split('/bytes/')[1]?.split(/[?#]/)[0] ?? url;
 }
 
-export interface RefusedSegment {
+interface RefusedSegment {
   ref: string;
   attempts: number;
   /** From the first refusal to the ask that succeeded, or to the last attempt if none did. */

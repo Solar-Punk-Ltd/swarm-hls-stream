@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
@@ -110,7 +110,7 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     await publisher?.stop();
     // The kill below does not trip a restart policy here, so a failure between it and the restart
     // would leave the deployment without its uploader for everything that runs after this file.
-    await host.start(uploader).catch(() => undefined);
+    await host.start(uploader).catch(reportFailedRestore(uploader));
   });
 
   it('does not publish a second recording after a crash mid-finalize', async () => {

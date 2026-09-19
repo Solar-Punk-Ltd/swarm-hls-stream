@@ -105,7 +105,7 @@ resolve_batches() {
 # Capacity, checked the same way funding is: before the spend, as something that refuses.
 #
 # ⛔ The rule this enforces was already written down, in bold, in two places, and read automatically
-# by `e2e/src/browser/resources.ts` — which warns at the END of a run, after the broadcast is paid
+# by `e2e/src/browser/resources.ts`, which warns at the END of a run, after the broadcast is paid
 # for. Three sittings ran past the 75% line on 2026-08-12 because remembering to look was the only
 # thing between the threshold and the spend.
 #

@@ -94,8 +94,8 @@ TARGET="manager-host"
 REMOTE_DIR="~/swarm-hls-bench"
 
 # `--image` and `--dockerfile` exist so the browser validation runs through this script rather than
-# beside it. Everything here other than which image is built — the sync, the frozen install, host
-# networking, running as the invoking user, the ssh keepalives a long run needs — is the same problem
+# beside it. Everything here other than which image is built (the sync, the frozen install, host
+# networking, running as the invoking user, the ssh keepalives a long run needs) is the same problem
 # for a browser as for a bench, and a second copy of it would be a second thing to keep true.
 IMAGE="swarm-hls-bench"
 DOCKERFILE="e2e/Dockerfile.bench"

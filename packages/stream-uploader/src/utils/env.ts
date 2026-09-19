@@ -57,7 +57,7 @@ export function optional(name: string, fallback: string): string {
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Inclusive bounds, shared by `optionalInt` and `optionalNumber` because the pair is the same. */
-export interface NumericRange {
+interface NumericRange {
   min?: number;
   max?: number;
 }

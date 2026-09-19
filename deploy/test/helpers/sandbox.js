@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -92,8 +102,18 @@ export function removeSandboxes() {
  * at fixture config without touching the repo's own. It is also the only safe way to drive
  * `clean.sh` at all: the real script removes containers and volumes, and nothing here may reach a
  * live stack.
+ *
+ * `pnpm: false` is a host that has none, which is what the scripts meet inside
+ * streaming-infra-manager's api container. It takes the stub away AND takes every directory holding
+ * a real pnpm off the PATH the scripts run with, because a stub that is merely absent leaves the
+ * machine's own pnpm answering `command -v`.
  */
-export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles = DEFAULT_ENV_FILES } = {}) {
+export function makeSandbox({
+  project = 'default',
+  config = ALL_LOCAL,
+  envFiles = DEFAULT_ENV_FILES,
+  pnpm = true,
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-clean-'));
   sandboxes.push(root);
 
@@ -132,7 +152,14 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   writeFileSync(envFileJournal(remoteJournal), '');
 
   writeNodeStub(join(binDir, 'git'), gitStub(gitJournal));
-  writeNodeStub(join(binDir, 'pnpm'), pnpmStub(pnpmJournal));
+  if (pnpm) {
+    writeNodeStub(join(binDir, 'pnpm'), pnpmStub(pnpmJournal));
+  } else {
+    // nvm and corepack both keep `node` and `pnpm` in one directory, so dropping pnpm's directories
+    // drops node with them, and every stub here is a node script. This is the suite's own node, put
+    // somewhere the strip below cannot reach.
+    symlinkSync(process.execPath, join(binDir, 'node'));
+  }
   writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
   writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, sshJournal));
   writeNodeStub(join(binDir, 'rsync'), rsyncStub(remoteHome));
@@ -147,6 +174,8 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
     root,
     binDir,
     remoteHome,
+    /** What a script in this sandbox runs with, stubs first and a real pnpm only where one is wanted. */
+    path: `${binDir}${delimiter}${pnpm ? process.env.PATH ?? '' : pathWithoutPnpm()}`,
     /** Path to one of the real deploy scripts, copied into this sandbox. */
     scriptPath: (name) => join(deploy, 'scripts', name),
     /** Every `docker` invocation made on this host, in order, one argv per entry. */
@@ -168,6 +197,40 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   };
 }
 
+/** Every directory carrying a real `pnpm` removed, which is what `command -v pnpm` has to miss. */
+function pathWithoutPnpm() {
+  return (process.env.PATH ?? '')
+    .split(delimiter)
+    .filter((dir) => dir.length > 0 && !existsSync(join(dir, 'pnpm')))
+    .join(delimiter);
+}
+
+/**
+ * The only names a sandboxed script inherits from the machine running the suite.
+ *
+ * ⛔ Not the whole of `process.env`, which is what this was. `load_env_file` in `_lib.sh` treats every
+ * line of an env file as a DEFAULT and skips a key the caller already exported, and a sandbox writes
+ * the whole of its case into that file. So an operator, a login shell or a `.envrc` exporting
+ * `LOCAL_BEE_UPLOADER`, `BEE_URL`, `STAMP`, `HLS_AOF_RATIO` or `RPC_ENDPOINT` silently replaced what
+ * the test wrote, and a case then passed or failed for a reason no assertion could name. On a
+ * deployment host every one of those is exported.
+ *
+ * `HOME` and `TMPDIR` are here because the scripts read both, and the locale and terminal names
+ * because the tools they call do. Anything else a case needs it passes in itself, which is what makes
+ * the case say what it depends on.
+ */
+const INHERITED_ENV = ['HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM'];
+
+function sandboxEnv(sandbox, env = {}) {
+  const inherited = {};
+  for (const name of INHERITED_ENV) {
+    if (process.env[name] !== undefined) {
+      inherited[name] = process.env[name];
+    }
+  }
+  return { ...inherited, ...env, PATH: sandbox.path };
+}
+
 /**
  * Runs one of the real deploy scripts inside a sandbox whose `docker` and `ssh` are stubs, and
  * reports how it exited instead of throwing. Half of what these scripts are asked to prove is that
@@ -176,7 +239,7 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
 export async function runScript(sandbox, name, args = [], env = {}) {
   try {
     const ok = await execFileAsync('bash', [sandbox.scriptPath(name), ...args], {
-      env: { ...process.env, ...env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+      env: sandboxEnv(sandbox, env),
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {
@@ -195,7 +258,7 @@ export async function sourceLib(sandbox, snippet) {
 async function runShell(sandbox, script) {
   try {
     const ok = await execFileAsync('bash', ['-c', script], {
-      env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+      env: sandboxEnv(sandbox),
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {
@@ -331,6 +394,18 @@ for (let i = 0; i < argv.length; i++) {
 
 const inventory = ${JSON.stringify(INVENTORY)};
 
+// What the service says about its own health, which the watch asks a running container for when it
+// has not reported healthy yet. DOCKER_STUB_HEALTH_REPORT is the line the real one-liner prints:
+// \`<status> <reasons, comma separated> <gate/rung list>\`. Unset, the exec fails the way it does on an
+// image with no node in it, which is every service here but the uploader.
+if (argv[0] === 'exec') {
+  if (!process.env.DOCKER_STUB_HEALTH_REPORT) {
+    process.exit(1);
+  }
+  console.log(process.env.DOCKER_STUB_HEALTH_REPORT);
+  process.exit(0);
+}
+
 // A failing service's own output, which is the only place the reason for a refusal exists. Empty
 // unless a test asked for one, so every other test's deploy prints nothing extra.
 if (argv[0] === 'logs') {
@@ -432,18 +507,6 @@ for (const container of inventory) {
 }
 
 /**
- * Runs what it is handed instead of only recording it, with HOME inside the sandbox so the remote
- * path executes for real. Recording the text alone would let the remote sweep drift from the local
- * one while a substring assertion still passed.
- *
- * `bash -c "$*"` is not a shortcut, it is the fidelity that makes SEC-21 visible. Real ssh joins its
- * remaining arguments into one string and hands it to the far side's LOGIN SHELL, which word-splits
- * and evaluates it — which is why an unquoted interpolation into an ssh command line is a command
- * injection rather than a quoting nit. A stub that exec'd an argv would model something ssh does not
- * do and would report the injection as safe. The `bash -s` callers keep working through the same
- * line: stdin is inherited, so their heredoc still reaches the shell they asked for.
- */
-/**
  * Copies, rather than reporting success and doing nothing.
  *
  * A stub that only exits 0 makes every file the remote path depends on someone else's problem, and
@@ -487,6 +550,18 @@ for (const source of positional) {
 `;
 }
 
+/**
+ * Runs what it is handed instead of only recording it, with HOME inside the sandbox so the remote
+ * path executes for real. Recording the text alone would let the remote sweep drift from the local
+ * one while a substring assertion still passed.
+ *
+ * `bash -c "$*"` is not a shortcut, it is the fidelity that makes SEC-21 visible. Real ssh joins its
+ * remaining arguments into one string and hands it to the far side's LOGIN SHELL, which word-splits
+ * and evaluates it, which is why an unquoted interpolation into an ssh command line is a command
+ * injection rather than a quoting nit. A stub that exec'd an argv would model something ssh does not
+ * do and would report the injection as safe. The `bash -s` callers keep working through the same
+ * line: stdin is inherited, so their heredoc still reaches the shell they asked for.
+ */
 function sshStub(remoteHome, remoteJournal, argvJournal) {
   return `#!/bin/bash
 # Drop ssh's own options and then the target, leaving exactly the string the far side would get.

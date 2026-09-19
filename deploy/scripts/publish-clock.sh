@@ -24,7 +24,29 @@
 # clock is drawn from the host's clock for the same reason: the reader compares it against their own,
 # and two machines can disagree by more than the quantity being measured.
 #
-# Usage:
+# ## What it refuses before it spends
+#
+# ⛔⛔⛔ THIS STARTED A REAL PAID BROADCAST WITH NO GATE OF ANY KIND UNTIL 2026-09-16.
+#
+# The usage line below is a command an operator runs on its own, and `--seconds=3600` is an hour of
+# 1280x720 published through the live uploader into Swarm. Nothing asked whether the chequebooks
+# could pay for it, whether the postage batch had room, or whether tonight's authorisation had
+# anything left. An immutable batch already past its stop line refuses the uploads partway, so the
+# broadcast is paid for and produces nothing, and a mutable one silently overwrites while every
+# health signal stays green, which this repo records as the worse case. So a direct run now asks the
+# same three questions every sitting asks: `can_afford`, `has_capacity` and `within_ceiling`.
+#
+# ⛔ Those three read the nodes on **127.0.0.1**, which is what every driver here does, so a direct
+# run belongs on the deployment host, beside the publisher it starts. Started from anywhere else the
+# chequebook does not answer and the run is refused, because unknown funding is not permission to
+# spend.
+#
+# The six drivers that call this script already gate their whole sitting and gate each arm again, so
+# they set `PUBLISH_GATES_ALREADY_RAN=1` on this one invocation rather than paying for the same
+# three reads per broadcast. ⛔ That variable is a caller stating that the gates ran ahead of it.
+# Setting it by hand claims something untrue, and the line this script logs says which path it took.
+#
+# Usage, on the deployment host:
 #   deploy/scripts/publish-clock.sh [--profile=<name>] [--portSlot=<N>] [--stream=video/clock]
 #                                   [--seconds=300] [--size=1280x720] [--bitrate=2500] [--gop=1.0]
 #                                   [--stop-file=<path>]
@@ -57,6 +79,16 @@ for arg in "$@"; do
   esac
 done
 
+# Checked here rather than left to shell arithmetic below, where bash reads a non-numeric value as an
+# unset name worth zero. The money gates price this broadcast off it, and a length they read as zero
+# is no gate at all.
+case "${SECONDS_TO_RUN}" in
+  '' | *[!0-9]*)
+    log_error "--seconds=${SECONDS_TO_RUN} is not a whole number of seconds"
+    exit 2
+    ;;
+esac
+
 parse_profile_args ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
 
 load_env
@@ -65,6 +97,120 @@ apply_port_slot
 
 TARGET="$(get_target srs)"
 PORT="${SRS_SRT_PORT:?SRS_SRT_PORT is unset after apply_port_slot}"
+
+# The two chequebooks a broadcast drains: the uploader pays peers to take chunks and the gateway pays
+# to pull them back. Resolved from the same slot arithmetic the deploy used, so a `--portSlot` run
+# gates the deployment it is publishing into rather than whatever is on the stock ports.
+UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT:-${BEE_UPLOADER_API_PORT:?BEE_UPLOADER_API_PORT is unset after apply_port_slot}}"
+GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-${BEE_GATEWAY_API_PORT:?BEE_GATEWAY_API_PORT is unset after apply_port_slot}}"
+
+# What a minute of publishing costs each node, in one file, because the number was wrong in three
+# places at once and only the place somebody was looking got corrected.
+RATES="$(cd "$(dirname "$0")" && pwd)/burn-rates.sh"
+# shellcheck source=deploy/scripts/burn-rates.sh
+. "${RATES}" || {
+  log_error "cannot read ${RATES}: sync deploy/scripts as a directory, not one script"
+  exit 1
+}
+
+# Where the gates write their detail. They were built for drivers that keep a run log, and a
+# standalone publish has none, so this is a scratch file that is printed on a refusal and removed
+# otherwise. `say` also goes to the terminal, which for this command is the log.
+GATE_LOG="$(mktemp "${TMPDIR:-/tmp}/publish-clock-gates.XXXXXX")"
+LOG="${GATE_LOG}"
+say() {
+  log_info "$*"
+  printf '%s\n' "$*" >> "${LOG}"
+}
+
+# The gate reads the batch off the container that is actually publishing, and its own default names
+# the `latbench` stack because every sitting driver runs against that one. This script takes
+# `--profile`, and PROFILE is the compose project name, so the container follows the deployment being
+# published into rather than whichever one the gate was written beside.
+UPLOADER_CONTAINER="${UPLOADER_CONTAINER:-${PROFILE}-stream-uploader-1}"
+
+# Whether the postage batch can carry what this broadcast intends to publish. Sourced after `say`,
+# which it refuses without, so a refusal cannot land somewhere nobody reads.
+GATES="$(cd "$(dirname "$0")" && pwd)/capacity-gate.sh"
+# shellcheck source=deploy/scripts/capacity-gate.sh
+. "${GATES}" || {
+  log_error "cannot read ${GATES}: sync deploy/scripts as a directory, not one script"
+  exit 1
+}
+
+bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
+
+available_plur() {
+  curl -s --max-time 5 "http://127.0.0.1:$1/chequebook/balance" 2>/dev/null |
+    python3 -c 'import sys,json;print(json.load(sys.stdin)["availableBalance"])' 2>/dev/null
+}
+
+# ⚠️ TWO NODES OF FIVE, and the sixth copy of this loop. The five sitting drivers each carry their
+# own, and the 480p, 720p and 1080p nodes hold chequebooks none of them reads. Both gaps close
+# together, with one affordability loop shared by the drivers rather than six copies of it, which the
+# drivers already record as its own change. `within_ceiling` below does read every node that can
+# spend, so a drained rung is not invisible to this script as a whole.
+can_afford() {
+  local minutes="$1" short=0 who port burn setup have need
+  for pair in "uploader:${UPLOADER_BEE_PORT}:${UPLOADER_BURN_PLUR_PER_MIN}:${UPLOADER_SETUP_PLUR}" \
+    "gateway:${GATEWAY_BEE_PORT}:${GATEWAY_BURN_PLUR_PER_MIN}:${GATEWAY_SETUP_PLUR}"; do
+    who="$(echo "${pair}" | cut -d: -f1)"; port="$(echo "${pair}" | cut -d: -f2)"
+    burn="$(echo "${pair}" | cut -d: -f3)"; setup="$(echo "${pair}" | cut -d: -f4)"
+    have="$(available_plur "${port}")"
+    # Divided before the margin is applied, because the other order passes the 64-bit ceiling on a
+    # long broadcast and wraps to a negative that every balance clears.
+    # shellcheck disable=SC2017
+    need=$((minutes * burn / 100 * FUNDS_MARGIN_PERCENT + setup / 100 * FUNDS_MARGIN_PERCENT))
+    if [ -z "${have}" ]; then
+      say "  ${who} chequebook on ${port} did not answer, so funding is unknown"
+      short=1
+    elif [ "${have}" -lt "${need}" ]; then
+      say "  ${who} has $(bzz "${have}") BZZ, needs $(bzz "${need}") for ${minutes} min SHORT"
+      short=1
+    else
+      say "  ${who} has $(bzz "${have}") BZZ, needs $(bzz "${need}") for ${minutes} min, ok"
+    fi
+  done
+  return ${short}
+}
+
+# Sourced here rather than beside the other gate, because it reads a chequebook through
+# available_plur() and refuses a caller that has not defined one yet.
+CEILING="$(cd "$(dirname "$0")" && pwd)/spend-ceiling.sh"
+# shellcheck source=deploy/scripts/spend-ceiling.sh
+. "${CEILING}" || {
+  log_error "cannot read ${CEILING}: sync deploy/scripts as a directory, not one script"
+  exit 1
+}
+
+# A gate's own detail, which is the batch it read and the dilute command that clears a full one, only
+# exists in the scratch log. Printed here because a refusal is the one moment anybody wants it.
+refuse_to_publish() {
+  log_error "$1"
+  [ -s "${GATE_LOG}" ] && sed 's/^/  /' "${GATE_LOG}" >&2
+  rm -f "${GATE_LOG}"
+  exit 1
+}
+
+# Rounded up, so a broadcast of less than a minute is priced as one rather than as nothing.
+MINUTES_TO_RUN=$(((SECONDS_TO_RUN + 59) / 60))
+
+if [ "${PUBLISH_GATES_ALREADY_RAN:-0}" = "1" ]; then
+  log_info "the caller gated this sitting, so the money gates are not read again per broadcast"
+  rm -f "${GATE_LOG}"
+else
+  log_info "checking ${MINUTES_TO_RUN} min of broadcast can be paid for, carried and authorised"
+  if ! can_afford "${MINUTES_TO_RUN}"; then
+    refuse_to_publish "REFUSING TO PUBLISH: the nodes cannot pay for this broadcast."
+  fi
+  if ! has_capacity "${MINUTES_TO_RUN}"; then
+    refuse_to_publish "REFUSING TO PUBLISH: the postage batch cannot carry this broadcast."
+  fi
+  if ! within_ceiling "${MINUTES_TO_RUN}"; then
+    refuse_to_publish "REFUSING TO PUBLISH: this broadcast would spend past the authorisation in ${SPEND_LEDGER}."
+  fi
+  rm -f "${GATE_LOG}"
+fi
 
 # An unauthenticated publish is refused by the engine when the secret is set, and the refusal reads as
 # an ordinary connection failure from the publisher's end, so the key is derived rather than omitted.

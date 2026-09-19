@@ -6,6 +6,8 @@ errors rather than measurement errors. This plan is about making that class impo
 
 ⚠️ **This is a plan. Nothing here has been executed.**
 
+**Status 2026-09-16: superseded.** The map this plan wanted exists as [`INDEX.md`](INDEX.md) since 2026-09-04, its status column doing by hand the tagging planned below, and the `.gitignore` rules keep every per-run report out of the tracked corpus, which is 131 named documents now rather than the 652 files counted here. Nothing else in this plan was executed and nothing else is planned.
+
 ## 1. What we have
 
 652 files in `docs/bench`: roughly 540 raw run artifacts and 60 named analysis documents.

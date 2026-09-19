@@ -26,14 +26,6 @@ else
 fi
 # --- end config source ---
 
-# Substitute passphrase or remove SRT encryption lines if empty
-if [ -n "$SRT_PASSPHRASE" ]; then
-  sed -i "s/PASSPHRASE_PLACEHOLDER/$SRT_PASSPHRASE/" "$CONF"
-else
-  sed -i '/PASSPHRASE_PLACEHOLDER/d' "$CONF"
-  sed -i '/pbkeylen/d' "$CONF"
-fi
-
 # Refuse rather than splice. These values land inside a `sed` s/// expression, where a `/` aborts the
 # substitution and `&` expands to the whole match, so a typo would either crash-loop the container
 # under `restart: unless-stopped` or silently write a corrupt config.
@@ -65,6 +57,40 @@ require_rung_name() {
     '' | *[!a-zA-Z0-9.-]*) echo "$1 must match [a-zA-Z0-9.-]+ (no underscore), got '$2'" >&2; exit 1 ;;
   esac
 }
+
+# The credentials land in the same expressions, and `&` is the one that does damage quietly: sed
+# expands a bare `&` to the whole match, so a token of `ab&cd` is written into the config as
+# `abSRS_WEBHOOK_TOKEN_PLACEHOLDERcd`. SRS then starts perfectly and the uploader rejects every
+# webhook as unauthorised, with nothing in any log saying the token was mangled and the symptom
+# pointing at the wrong component. `/` is this file's delimiter and ends the substitution early, `|`
+# is OME's, and a backslash escapes whatever follows it. `openssl rand -hex 32`, which this file
+# already tells the operator to use, produces none of the four. `openssl rand -base64 32`, which is
+# the other reflex, usually produces two.
+#
+# Only those four are refused, so a secret an operator is already running that happens to carry a `+`
+# or a `=` keeps working. The value is never echoed back, unlike the numbers above, because it is a
+# credential and this message goes to the container log.
+require_secret() {
+  case "$2" in
+    *'/'* | *"\\"* | *'&'* | *'|'*)
+      echo "$1 must not contain / \\ & or |, which sed reads as syntax where this value is written into the config. Generate it with openssl rand -hex 32." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Empty passes here, because an empty passphrase means no SRT encryption and an empty webhook token
+# has its own refusal further down that says what it costs.
+require_secret SRT_PASSPHRASE "${SRT_PASSPHRASE:-}"
+require_secret SRS_WEBHOOK_TOKEN "${SRS_WEBHOOK_TOKEN:-}"
+
+# Substitute passphrase or remove SRT encryption lines if empty
+if [ -n "$SRT_PASSPHRASE" ]; then
+  sed -i "s/PASSPHRASE_PLACEHOLDER/$SRT_PASSPHRASE/" "$CONF"
+else
+  sed -i '/PASSPHRASE_PLACEHOLDER/d' "$CONF"
+  sed -i '/pbkeylen/d' "$CONF"
+fi
 
 # Segment length, and how much of it the playlist keeps.
 #
@@ -118,13 +144,53 @@ require_rung_name() {
 #
 # ⚠️ `HLS_WINDOW` is SECONDS of playlist, not fragments. This comment used to say "fifteen fragments",
 # which is only the same number when the fragment is 1.0 and is double the intent at 0.5.
+# --- hls tuning ---
 require_number HLS_FRAGMENT "${HLS_FRAGMENT:-0.5}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
-# 2.1 is SRS's own default, so naming it here changes no deployment that does not set it.
-require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-5.0}"
 HLS_FRAGMENT="${HLS_FRAGMENT:-0.5}"
 HLS_WINDOW="${HLS_WINDOW:-15}"
-HLS_AOF_RATIO="${HLS_AOF_RATIO:-5.0}"
+
+# How long a segment may run before SRS closes it without a keyframe, in seconds.
+#
+# ⛔ SRS's own knob is a RATIO, `hls_aof_ratio`, and it force-closes at `HLS_FRAGMENT * ratio`. A
+# ratio is the wrong thing for anyone to hold, because what the ceiling has to clear is a number of
+# seconds: the segment the publisher's GOP actually produces, plus the ~0.135s constant overshoot
+# measured on 2026-08-12. Held as a ratio it scaled with `HLS_FRAGMENT`, which an operator edits from
+# the settings drawer, so the shipped 0.5 x 5.0 = 2.5s became 10s the moment the segment length was
+# set to 2 and nothing in the product said so. Levi hit that on 2026-09-15: a stream asking for 2s
+# segments produced 2.067s to 10.033s. The ratio is now derived from this and the fragment, so this
+# number stays what it says whatever the fragment becomes.
+#
+# `HLS_AOF_RATIO` still wins when it is set, because deploy/scripts probes drive it directly.
+HLS_SEGMENT_MAX="${HLS_SEGMENT_MAX:-2.5}"
+require_number HLS_SEGMENT_MAX "$HLS_SEGMENT_MAX"
+if [ -n "${HLS_AOF_RATIO:-}" ]; then
+  require_number HLS_AOF_RATIO "$HLS_AOF_RATIO"
+fi
+
+aof_ratio_for() {
+  ratio_fragment="$1"
+  ratio_ceiling="$2"
+  ratio_explicit="${3:-}"
+  if [ -n "$ratio_explicit" ]; then
+    printf '%s' "$ratio_explicit"
+    return 0
+  fi
+  awk -v f="$ratio_fragment" -v c="$ratio_ceiling" 'BEGIN {
+    if (f + 0 <= 0) {
+      print "HLS_FRAGMENT must be above zero, got " f > "/dev/stderr"
+      exit 1
+    }
+    if (c + 0 < f + 0) {
+      print "HLS_SEGMENT_MAX (" c "s) is below HLS_FRAGMENT (" f "s), so every segment would be force-closed before a keyframe could end one." > "/dev/stderr"
+      exit 1
+    }
+    printf "%.6g", c / f
+  }'
+}
+
+HLS_AOF_RATIO="$(aof_ratio_for "$HLS_FRAGMENT" "$HLS_SEGMENT_MAX" "${HLS_AOF_RATIO:-}")"
+# --- end hls tuning ---
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.
 #
@@ -340,7 +406,7 @@ else
 fi
 
 sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-0.5}/" "$CONF"
-sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-5.0}/" "$CONF"
+sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO}/" "$CONF"
 sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-15}/" "$CONF"
 
 # Substitute webhook host and port

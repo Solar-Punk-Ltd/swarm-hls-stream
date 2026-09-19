@@ -11,6 +11,12 @@
  * long run that measured differently could not be compared against the grid, and the comparison is
  * most of the point.
  *
+ * ⛔⛔ Same gates too, and it carries them itself rather than relying on the wrapper below to prepend
+ * them: the owner's authorisation, every publisher's chequebook and every publisher's postage TTL.
+ * This is the longest paid broadcast in the package, so it is the run with the most to lose from a
+ * batch that expires partway, and the postage floor it asks for is its own length rather than the ten
+ * minutes a scenario asks for. See `src/bench/authorisation.ts`.
+ *
  * Usage, on the deployment host:
  *   deploy/scripts/bench-on-host.sh --script bench:longrun -- BENCH_RUN_MINUTES=30 BENCH_GOP_SECONDS=0.5
  */
@@ -18,6 +24,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { MIN_STAMP_TTL_S, requireBenchAuthorised } from '../src/bench/authorisation.js';
 import {
   fetchSegment,
   parseFeedReaderMode,
@@ -307,7 +314,7 @@ function unservedLines(samples: readonly SegmentSample[]): string[] {
   ];
 }
 
-export function renderLongRun(run: BenchRun, runMinutes: number, watch?: UnservedSegmentWatch): string {
+function renderLongRun(run: BenchRun, runMinutes: number, watch?: UnservedSegmentWatch): string {
   const samples = [...run.samples].sort((a, b) => a.split.instants.fetchedAtMs - b.split.instants.fetchedAtMs);
   if (samples.length < 3) {
     return [
@@ -509,6 +516,12 @@ async function main(): Promise<void> {
   }
   const health = await uploaderHealth(host, cfg);
   console.log(`longrun: uploader ${health.status}, ${health.activeStreams} active stream(s), LOG_LEVEL=${level}`);
+
+  // A batch with ten minutes left clears the floor every scenario uses and still expires twenty
+  // minutes into a half-hour broadcast, so the floor here is the run's own length where that is
+  // longer. Never shorter, so a one-minute run is held to the same line as everything else.
+  const minStampTtlS = Math.max(MIN_STAMP_TTL_S, Math.ceil(runMinutes * 60));
+  console.log(`longrun: ${await requireBenchAuthorised(host, cfg, { minStampTtlS })}`);
 
   const watch = unservedWatchFromEnv(gatewayUrl);
   if (watch) {

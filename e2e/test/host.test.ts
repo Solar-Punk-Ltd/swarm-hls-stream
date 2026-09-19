@@ -11,6 +11,7 @@ import {
   LOCAL_TARGET,
   pollConfiguredStamp,
   readConfiguredBatch,
+  reportFailedRestore,
   type Stamp,
 } from '../src/harness/host.js';
 
@@ -576,5 +577,45 @@ describe('pollConfiguredStamp', () => {
     assert.equal(read.state, 'absent');
     assert.match(read.lastSeen ?? '', /99999999/);
     assert.match(read.lastSeen ?? '', /curl exited 7/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ The backstop the four crash suites put a service back with, which used to be
+ * `.catch(() => undefined)`. The suites break a service on purpose and the browser driver puts it
+ * back from inside its own container, so this runs for the arm the harness timeout killed first.
+ * When the backstop itself failed it said nothing, the suite went red naming the product, and every
+ * later suite in the serial run read a deployment that was still broken.
+ */
+describe('a restore that failed', () => {
+  function said(error: unknown): string[] {
+    const lines: string[] = [];
+    reportFailedRestore('swarm-hls-bee-gateway', (line) => lines.push(line))(error);
+    return lines;
+  }
+
+  it('names the container that is still down and what went wrong', () => {
+    const lines = said(new Error('ssh exited 255'));
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /could not restore swarm-hls-bee-gateway/);
+    assert.match(lines[0], /ssh exited 255/);
+  });
+
+  it('says what a later run will read, since that is what a reader needs to know', () => {
+    assert.match(said(new Error('boom'))[0], /every later run reads a broken stage/);
+  });
+
+  it('reports a rejection that is not an Error at all rather than printing nothing', () => {
+    assert.match(said('docker: no such container')[0], /docker: no such container/);
+  });
+
+  /**
+   * ⛔ It is called from an `after` hook, and a hook that throws replaces the test's own result with
+   * its own, so a suite that told the truth about the product would report the cleanup instead.
+   */
+  it('does not throw, whatever it was handed', () => {
+    assert.doesNotThrow(() => reportFailedRestore('c', () => undefined)(undefined));
+    assert.doesNotThrow(() => reportFailedRestore('c', () => undefined)(null));
   });
 });

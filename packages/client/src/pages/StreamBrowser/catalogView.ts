@@ -10,7 +10,7 @@
  * a rule left inside the component is a rule nothing covers.
  */
 
-export type CatalogView =
+type CatalogView =
   /** Streams to show. Stale ones count, which is the point of the ordering below. */
   | 'streams'
   /** The fetch failed and there is nothing to fall back on. */
@@ -20,20 +20,34 @@ export type CatalogView =
   /** The gateway answered and there is genuinely nothing on it yet. */
   | 'empty';
 
-export interface CatalogFetchState {
+interface CatalogFetchState {
   isLoading: boolean;
   hasError: boolean;
   streamCount: number;
+  /** Whether the streams counted above came from the gateway now selected. */
+  isFromCurrentGateway: boolean;
 }
 
 /**
  * ⭐ Streams win over an error on purpose. SWR keeps the last successful `data` while a later refresh
  * fails, so a page that shouted about every failed poll would replace a usable catalog with an error
- * every time one refresh in twelve missed. A viewer can still open a stale stream; they can do nothing
+ * every time one refresh in twelve missed. A viewer can still open a stale stream, they can do nothing
  * with an error page. The failure is only worth the whole screen when there is nothing behind it.
+ *
+ * ⛔ **That ordering is about a refresh failing on the same gateway, and it does not cover a list
+ * belonging to a gateway the viewer has just left.** Without the second condition a viewer who
+ * switched to their own node kept seeing the site gateway's streams, believed their node was serving
+ * them, and could never be shown the message written for that moment, because a non-empty list is
+ * read first. A list from a node no longer selected counts as nothing here, and the page says it is
+ * still looking, or that it could not reach this one.
  */
-export function catalogViewFrom({ isLoading, hasError, streamCount }: CatalogFetchState): CatalogView {
-  if (streamCount > 0) {
+export function catalogViewFrom({
+  isLoading,
+  hasError,
+  streamCount,
+  isFromCurrentGateway,
+}: CatalogFetchState): CatalogView {
+  if (streamCount > 0 && isFromCurrentGateway) {
     return 'streams';
   }
   if (hasError) {

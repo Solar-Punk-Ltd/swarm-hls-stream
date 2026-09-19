@@ -6,16 +6,35 @@
 # container whose process throws on its first line has been started. With `restart: unless-stopped`
 # docker then loops it, and the deploy that asked for it has already printed its success line. Every
 # startup refusal this repository has on purpose lands in that gap: the five `required()` reads in
-# `utils/config.ts`, the chequebook floor, and `PostageGate`. The compose healthcheck does not close
-# it either, deliberately: it reports without acting, and nothing declares a dependency on it.
+# `utils/config.ts`, the chequebook floor on a deployment that sets UPLOADER_START_GATES=refuse, and
+# `PostageGate` under every mode but warn when the node answers that the batch is absent, unusable,
+# expired or full, which is decision 7 b of 2026-09-17.
+# A node that does not answer is no longer one of them, since decision D16 of the same day: the
+# uploader listens first and waits for its node, so it stays up and says `waiting_for_node` on
+# /health instead of exiting into a restart loop. The compose healthcheck does not close the gap
+# either, deliberately: it reports without acting, and nothing declares a dependency on it.
 #
 # ⛔⛔ A fixed sleep is blind to that gap in both directions, so this watches instead.
 #
-# In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable` before
-# the API listens, one HTTP read per bee node and one per batch, in turn, each bounded by
-# BEE_REQUEST_TIMEOUT_MS at 4000ms, and only then does `StreamCatalog.init` look a feed up on a node
-# that may be cold. On the four-node ABR pool that refusal arrives half a minute in, by which time a
-# five second look has already called the container started.
+# ⚠️ What the watch still cannot see: a fatal error that lands after a long warn pass. On a four node
+# pool the gates spend up to 160 seconds before anything else runs, and this window is thirty, so a
+# boot that fails after them fails unwatched and the deploy has already printed its success line.
+#
+# In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one
+# HTTP read per bee node and one per batch, in turn, each bounded by START_GATE_TIMEOUT_MS at
+# 20000ms, and only then does `StreamCatalog.init` look a feed up on a node that may be cold. All of
+# that runs BEHIND the listener since decision D16 of 2026-09-17, so the port is open and answering
+# `waiting_for_node` throughout, and the container stays up whatever those reads find. On a
+# four-node pool that answers nothing the default budget spends about 160 seconds an attempt under
+# `warn`, which reads every node of both gates, and the wait then goes round again. Since the owner's
+# decision 7 b of 2026-09-17 the shipped `chequebook-warn` spends the same 160 seconds on such a pool,
+# because a batch the postage gate could not read at all is now warned about rather than refused on,
+# so that pass no longer stops at the first rung. Under
+# UPLOADER_START_GATES=refuse the first read that times out ends the pass instead, about 20 seconds
+# in, and that pass is waited on and retried like any other: a node that does not answer is D16's
+# case whatever the mode. What `refuse` still ends the boot for is a node that ANSWERS with a reading
+# the gate will not accept, a chequebook under its floor or a batch that has filled, and that arrives
+# within a second or two. Either way a five second look has already called the container started.
 #
 # And in one instant: the state alone cannot tell a loop from a healthy start, whichever order it is
 # asked in. Early in a loop docker's restart backoff is a tenth of a second against a container that
@@ -56,6 +75,25 @@ LOG_LINES="${DEPLOY_FAILURE_LOG_LINES:-40}"
 
 PROJECT_LABEL='com.docker.compose.project'
 SERVICE_LABEL='com.docker.compose.service'
+
+# What a service says about its own health, asked of the container rather than of docker.
+#
+# ⛔ Docker cannot answer this inside the window. A healthcheck runs on its own interval, 30s for the
+# uploader, so within a 30 second watch `.State.Health.Status` is still `starting` and its log is
+# empty. The distinction that matters here is invisible at that resolution: a service whose gates
+# warned answers 503 for the life of the process and never goes green, and until this it was reported
+# as never having answered, which says nothing about what is wrong.
+#
+# `docker exec` rather than curl, because the only certainty about the host is that it runs docker,
+# and the uploader image carries node. The fetch carries its own deadline, so a container that is up
+# and not answering cannot hold the watch. Anything that goes wrong here, an image with no node, a
+# service that is not the uploader, a body that will not parse, exits non-zero and the watch carries
+# on exactly as it did before.
+HEALTH_REPORT_PROGRAM='fetch("http://127.0.0.1:"+(process.env.API_PORT||3000)+"/health",{signal:AbortSignal.timeout(2000)}).then(r=>r.json()).then(b=>{console.log([b.status,(b.reasons||[]).join(","),(b.startGateWarnings||[]).map(w=>w.gate+(w.rung?"/"+w.rung:"")).join(" ")].join(" "))}).catch(()=>process.exit(1))'
+
+health_report_of() {
+  docker exec "$1" node -e "$HEALTH_REPORT_PROGRAM" 2>/dev/null
+}
 
 # Restart count, docker's own state, and the healthcheck's verdict, one line per container. The
 # `{{if}}` is what keeps this one command for every service: an image with no healthcheck has no
@@ -220,8 +258,8 @@ while :; do
       broken_reasons+=("$observed_reason")
     elif [ -z "${confirmed[$index]}" ]; then
       if [ "$observed_health" = 'healthy' ]; then
-        # The strongest answer available, and the only one that says the startup gates in front of
-        # the API finished rather than that they had not failed yet.
+        # The strongest answer available, and the only one that says the node-dependent half of the
+        # boot behind the listener finished rather than that it had not failed yet.
         confirmed[index]='healthy'
       elif [ "$look" -ge "$settle_looks" ]; then
         if [ -z "$observed_running" ]; then
@@ -229,6 +267,16 @@ while :; do
           broken_reasons+=('has no running container')
         elif [ "$observed_health" = 'none' ]; then
           confirmed[index]='running'
+        else
+          # It has a healthcheck and has not gone green. Ask it why, because the answer decides
+          # whether this is a service that started or one that is still starting. Only two readings
+          # are acted on: gates that warned, which is a service that is up and says so, and anything
+          # else, which is left to the window exactly as before.
+          report="$(health_report_of "$observed_running")" || report=''
+          read -r reported_status reported_reasons reported_gates <<<"$report"
+          if [ "$reported_status" = 'degraded' ] && [ "$reported_reasons" = 'start_gate_warned' ]; then
+            confirmed[index]="gates warned on: ${reported_gates:-unnamed}"
+          fi
         fi
       fi
       [ -n "${confirmed[$index]}" ] || waiting=1
@@ -247,13 +295,25 @@ done
 
 # A service still unanswered when the window ran out. Accepted rather than refused, and the
 # difference is deliberate: the uploader answers /health with a 503 whenever it is degraded, which
-# one dropped segment on a recovered stream is enough to cause, so `unhealthy` is a report about
-# media that was already lost and not a statement that the service failed to start. What a deploy
+# one dropped segment on a recovered stream is enough to cause, or when it is still waiting for its
+# node, so `unhealthy` is a report about media that was already lost or a boot still going and not a
+# statement that the service failed to start. What a deploy
 # may refuse on is a container that fell over, and this one has not. Said out loud, though, because
 # a service that never answered its own healthcheck is not a service anybody should rely on unread.
 if [ "${#broken_services[@]}" -eq 0 ]; then
   index=0
   while [ "$index" -lt "$service_count" ]; do
+    # A service that started and said its gates warned. Not a refusal and never has been, since a
+    # warning is a deployment's own setting rather than a failure to start, but it is the one reading
+    # here nobody else will go and look for.
+    case "${confirmed[$index]}" in
+      'gates warned on: '*)
+        echo "" >&2
+        echo "${services[$index]} started, ${confirmed[$index]}." >&2
+        echo "  Its startup gates could not clear those, and UPLOADER_START_GATES let it start anyway. It answers /health 503 until it is restarted on a node that clears them." >&2
+        ;;
+    esac
+
     if [ -z "${confirmed[$index]}" ]; then
       if [ "${last_state[$index]}" = 'running' ]; then
         echo "" >&2

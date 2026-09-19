@@ -1,5 +1,5 @@
 /** What one package's test run reported, or null where the runner printed no recognisable total. */
-export interface SuiteCount {
+interface SuiteCount {
   packageName: string;
   tests: number;
   passed: number;

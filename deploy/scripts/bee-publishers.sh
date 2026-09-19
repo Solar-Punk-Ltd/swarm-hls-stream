@@ -374,7 +374,7 @@ print("OK\t{id}\t{short} {pct:.1f}% used, {ttl:.1f}h left, depth {depth}{among}"
   rest="${selection#*$'\t'}"
   batch_id="${rest%%$'\t'*}"
   human="${rest#*$'\t'}"
-  echo "  ${rung} :${port} — ${human}"
+  echo "  ${rung} :${port}  ${human}"
   ENTRIES="${ENTRIES}${ENTRIES:+ }${rung}@${NODE_URL_PREFIX}${port}<${batch_id}>"
 done
 

@@ -306,17 +306,18 @@ export interface StreamUploaderOptions {
   /** The admin service, when the deployment has one. See {@link AdminReporting}. */
   admin?: AdminReporting;
   /**
-   * The finalize of the session this one replaced under the same stream id, when there was one.
+   * The actual write completion of every earlier session on this topic, when any are still pending.
    *
    * ⛔ **It is what keeps two sessions off one feed.** A re-announce retires the live session and
-   * starts this one in the same synchronous turn, then drains the retired one in the background. Both
-   * sessions hold the same topic wherever that topic outlives a session — a declared stream in admin
-   * mode, and a rung of a ladder in either deployment — so the retired session's closing and VOD
-   * manifests are SOC writes onto the feed this one is about to publish into, and `retire()` does not
-   * stop them: it only gives up the recovery entry, the admin report and the catalog entry.
+   * starts this one in the same synchronous turn, then drains the retired one in the background. An
+   * explicit stop can also time out and free the id while its I/O continues. Both cases share the
+   * same topic wherever that topic outlives a session, a declared stream in admin mode or a rung of
+   * a ladder in either deployment. Earlier closing and VOD manifests are SOC writes onto the
+   * feed this session is about to publish into. `retire()` does not stop them. It only gives up the
+   * recovery entry, the admin report and the catalog entry.
    *
-   * Unset means nothing to wait for: a first session on an id, or a standalone single-rendition
-   * stream, whose topic is a fresh uuid nothing else has ever held.
+   * Unset means no earlier writer is still outstanding on this topic. A standalone single-rendition
+   * stream always qualifies because its topic is a fresh uuid nothing else has ever held.
    *
    * See {@link predecessorHasDrained}.
    */
@@ -408,10 +409,11 @@ export class StreamUploader {
   /** Whether the feed head has been read for this session. See {@link resumeFeedIndex}. */
   private feedIndexResumed = false;
   /**
-   * Whether the session this one replaced has finished writing to the topic the two of them share.
+   * Whether every earlier session has finished writing to the topic they share.
    *
-   * True from the start for everything except a replacement on a topic that outlives its sessions,
-   * which is the only case where another live uploader holds the same feed. See
+   * True from the start unless the orchestrator still tracks an earlier writer on a topic that
+   * outlives its sessions. This covers a replacement and a fresh start after an earlier stop timed
+   * out. See
    * {@link StreamUploaderOptions.predecessorDrained} and {@link topicOutlivesThisSession}.
    */
   private predecessorHasDrained = true;
@@ -424,9 +426,10 @@ export class StreamUploader {
     this.admin = options.admin;
     if (options.predecessorDrained) {
       this.predecessorHasDrained = false;
-      // Settled rather than awaited, so no publish path ever blocks on it and a drain that never
-      // finishes cannot hold this session's manifest queue. `finalizeRetiredSession` answers instead
-      // of throwing, so the catch is a backstop for a rejection no current caller produces.
+      // Settled rather than awaited inside a manifest job, so a stuck predecessor does not occupy
+      // this session's manifest queue. Publish attempts are refused while it is pending and existing
+      // stale-manifest and queue signals expose the hold. The orchestrator normalizes expected drain
+      // failures, so the catch is a backstop for a rejection no current caller produces.
       void options.predecessorDrained
         .catch(() => {})
         .finally(() => {
@@ -971,7 +974,7 @@ export class StreamUploader {
   private async settleFeedPosition(): Promise<boolean> {
     if (!this.predecessorHasDrained) {
       this.logger.warn(
-        `[StreamUploader] Holding the manifest publish for ${this.streamId}: the session it replaced is ` +
+        `[StreamUploader] Holding the manifest publish for ${this.streamId}: an earlier session is ` +
           'still finalizing onto the topic they share. Re-attempting at the next segment.',
       );
       return false;

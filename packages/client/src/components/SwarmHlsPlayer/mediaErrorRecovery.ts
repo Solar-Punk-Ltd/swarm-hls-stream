@@ -22,9 +22,9 @@ export const MEDIA_ERROR_RECOVERY_WINDOW_MS = 3000;
  * unrecoverable errors by restarting, and for a live stream that is the better ending: the publisher
  * may fix what it is sending, and a viewer who is handed a dead player never finds out.
  */
-export type MediaErrorAction = 'recover' | 'swap-codec-and-recover' | 'restart';
+type MediaErrorAction = 'recover' | 'swap-codec-and-recover' | 'restart';
 
-export interface MediaErrorRecoveryState {
+interface MediaErrorRecoveryState {
   /** When the last recovery was attempted, or null if none has been. */
   lastRecoverAtMs: number | null;
   hasSwappedCodec: boolean;
@@ -35,7 +35,7 @@ export const NO_MEDIA_ERRORS_YET: MediaErrorRecoveryState = {
   hasSwappedCodec: false,
 };
 
-export interface MediaErrorDecision {
+interface MediaErrorDecision {
   action: MediaErrorAction;
   state: MediaErrorRecoveryState;
 }

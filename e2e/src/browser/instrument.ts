@@ -197,6 +197,23 @@ export function judgeRun(readings: readonly InstrumentReading[]): InstrumentVerd
  * question of whether "sound" was capable of coming out any other way. Keeping them apart is what
  * stops a failed proof from being read as a degraded viewer.
  */
+/**
+ * Whether a soundness verdict may be reported as a result: sound, and shown able to say otherwise.
+ *
+ * ⛔ **The rule `browser:selfcheck` gets wrong the moment it is written inline.** That entry point is
+ * the free run, the one a paid arm is only ever launched after, and until 2026-09-16 it printed the
+ * unproven sentences as a warning and exited zero, so an instrument that could not fail passed the
+ * only check that costs nothing to repeat. Named here rather than spelled out there because the
+ * whole of that file needs a real Chrome, so a rule left inside it can only ever be held to by
+ * reading the source.
+ */
+export function instrumentIsEvidence(
+  verdict: InstrumentVerdict,
+  proofs: readonly InstrumentProof[] | undefined,
+): boolean {
+  return verdict.sound && describeProofs(proofs).length === 0;
+}
+
 export function describeProofs(proofs: readonly InstrumentProof[] | undefined): string[] {
   if (!proofs || proofs.length === 0) {
     return ["no falsifiability proof was taken, so this run's soundness verdict is untested"];

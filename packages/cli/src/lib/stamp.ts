@@ -72,7 +72,7 @@ function assertBuyable({ amount, depth }: StampOptions): void {
  * What a purchase will cost and how long it will last, so the operator sees both before the spend
  * rather than discovering them afterwards.
  */
-export interface StampQuote {
+interface StampQuote {
   cost: BZZ;
   /**
    * Null when the node could not report the current postage price, which is the one input a quote

@@ -114,7 +114,23 @@ exit 0
     writeFileSync(join(out, 'STOP'), 'a previous sitting crossed a floor\n');
   }
 
-  return { out, bin, runs, metricsCalls, metricsStub };
+  // The night's authorisation, generous enough that nothing here is decided by the spend ceiling,
+  // which has its own cases in `sweepGates.test.js`. ⛔ One baseline per node that can spend and no
+  // more, at the balance the stub answers, so this sweep has spent nothing yet: the gate refuses a
+  // node it has no baseline for, and equally a baseline for a port nothing on the stage reads.
+  const ledger = join(out, 'spend-ledger.env');
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-09-16T00:00:00Z',
+      `ceiling_plur=${10n ** 18n}`,
+      `node_10075_start_plur=${plur}`,
+      `node_10077_start_plur=${plur}`,
+      '',
+    ].join('\n'),
+  );
+
+  return { out, bin, runs, metricsCalls, metricsStub, ledger };
 }
 
 async function runSweep({ rounds = 1, configs = 'a:1280x720:2500:0.5 b:1280x720:2500:2.0', ...options }) {
@@ -128,6 +144,7 @@ async function runSweep({ rounds = 1, configs = 'a:1280x720:2500:0.5 b:1280x720:
         PATH: `${stubs.bin}:${process.env.PATH}`,
         OUT_DIR: stubs.out,
         REPO_DIR: stubs.out,
+        SPEND_LEDGER: stubs.ledger,
         ROUNDS: String(rounds),
         MINUTES: '1',
         SWEEP_CONFIGS: configs,

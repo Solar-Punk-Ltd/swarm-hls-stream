@@ -1,0 +1,502 @@
+import { BeeResponseError } from '@ethersphere/bee-js';
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import { NodeUnreachableError } from '../src/libs/NodeUnreachableError.js';
+import {
+  assertNodeReachable,
+  isNodeUnavailable,
+  NODE_WAIT_FIRST_DELAY_MS,
+  NODE_WAIT_MAX_DELAY_MS,
+  waitForNode,
+} from '../src/libs/NodeWait.js';
+import { NodeWaitReport } from '../src/types.js';
+
+const NODE_URL = 'http://bee-uploader:1633';
+const WAITING_SINCE = '2026-09-17T09:00:00.000Z';
+
+/**
+ * A gate's refusal with the cause inside the sentence, at today's gate budget.
+ *
+ * The live host saw this shape on 2026-09-16 with 4000ms in it, which is what the gates were bounded
+ * by before START_GATE_TIMEOUT_MS existed. What matters to the classifier is the wrapping, not the
+ * number.
+ */
+function wrappedTimeout(): Error {
+  return new Error(
+    `[ChequebookGate] ${NODE_URL} chequebook is absent or unreadable: timeout of 20000ms exceeded. ` +
+      'A chequebook nothing can read is not one anyone can call filled.',
+  );
+}
+
+function withCode(code: string): Error {
+  const error = new Error(`connect ${code} 10.0.0.9:1633`) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
+function withStatus(status: number): Error {
+  return Object.assign(new Error(`Request failed with status code ${status}`), { status });
+}
+
+/**
+ * What bee-js throws, built through its own class rather than through a shape of our own.
+ *
+ * ⛔ **The transport code arrives on `statusText` and `code` is never set at all.** bee-js 9.8.1
+ * builds every failure as
+ * `new BeeResponseError(method, url, e.message, e.response?.data, e.response?.status, e.code)`
+ * (`dist/mjs/utils/http.js:57`), so axios's code lands in the `statusText` slot. A fixture of our own
+ * that put it on `code` would agree with a classifier reading `code` and prove nothing about what
+ * reaches the wait, which is how a dropped body went unwaited for without a red case anywhere.
+ *
+ * The status slot is filled only when a response arrived, so these two builders are the two things
+ * that can go wrong: no answer, or an answer.
+ */
+function beeTransportFailure(code: string, message: string): BeeResponseError {
+  return new BeeResponseError('GET', '/feeds', message, undefined, undefined, code);
+}
+
+function beeHttpAnswer(status: number, code: string): BeeResponseError {
+  return new BeeResponseError(
+    'GET',
+    '/stamps/aaaa',
+    `Request failed with status code ${status}`,
+    undefined,
+    status,
+    code,
+  );
+}
+
+function watcher() {
+  const slept: number[] = [];
+  const warnings: string[] = [];
+  const notices: string[] = [];
+  const reports: NodeWaitReport[] = [];
+
+  return {
+    slept,
+    warnings,
+    notices,
+    reports,
+    options: {
+      url: NODE_URL,
+      logger: {
+        info: (message: string) => notices.push(message),
+        warn: (message: string) => warnings.push(message),
+      },
+      onReport: (report: NodeWaitReport) => reports.push(report),
+      sleep: async (ms: number) => {
+        slept.push(ms);
+      },
+      now: () => new Date(WAITING_SINCE),
+    },
+  };
+}
+
+/** An init that fails `failures` times with `error`, then answers. Counts its own calls. */
+function failingInit(failures: number, error: () => Error, answer = 'ready') {
+  let calls = 0;
+  return {
+    calls: () => calls,
+    run: async () => {
+      calls += 1;
+      if (calls <= failures) {
+        throw error();
+      }
+      return answer;
+    },
+  };
+}
+
+/**
+ * ⛔⛔⛔ **A node that is not there yet is not a reason to refuse to start.**
+ *
+ * Every node-dependent step of the boot used to be a one-shot: the two start gates, the catalog feed
+ * lookup, and the recovery pass ran in turn, and the first one that could not reach its node threw
+ * out of `start()`, which logged "Failed to start" and exited 1. Docker restarted the container, the
+ * next boot met the same node and did the same thing, and the deploy guard read the rising restart
+ * count as a service falling over and refused the deploy. Nothing in that chain was wrong about the
+ * node. It simply was not answering yet, which is what a bee node that is still opening its database
+ * looks like, and what a rung whose container starts a second later looks like.
+ *
+ * The owner ruled on 2026-09-17: "we should be able to start the uploader but maybe say its node not
+ * available, try to reconnect or something". So the node-dependent half of the boot runs in here
+ * instead, and a failure that says the node is not answering costs a log line and a wait rather than
+ * the process. A failure that says something else, a malformed feed or a key this deployment cannot
+ * sign with, still ends the boot, because retrying it would loop for ever on something no amount of
+ * waiting repairs.
+ */
+describe('waiting for the node', () => {
+  it('runs the initialisation once and hands back its answer when the node is there', async () => {
+    const seen = watcher();
+    const init = failingInit(0, wrappedTimeout);
+
+    const answer = await waitForNode(init.run, seen.options);
+
+    assert.equal(answer, 'ready');
+    assert.equal(init.calls(), 1);
+    assert.deepEqual(seen.slept, [], 'a node that answered must cost no wait at all');
+    assert.deepEqual(seen.warnings, []);
+  });
+
+  it('says the node answered, and after how many attempts', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(2, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.notices.length, 1);
+    assert.match(seen.notices[0], new RegExp(NODE_URL));
+    assert.match(seen.notices[0], /3 attempt/);
+  });
+
+  it('waits and tries again for as long as the node is not answering', async () => {
+    const seen = watcher();
+    const init = failingInit(2, wrappedTimeout);
+
+    const answer = await waitForNode(init.run, seen.options);
+
+    assert.equal(answer, 'ready');
+    assert.equal(init.calls(), 3);
+    assert.deepEqual(seen.slept, [1_000, 2_000]);
+  });
+
+  it('writes one line per failed attempt, naming the node and the next wait', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(2, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.warnings.length, 2);
+    assert.match(seen.warnings[0], new RegExp(`node not available at ${NODE_URL}`));
+    assert.match(seen.warnings[0], /retrying in 1s/);
+    assert.match(seen.warnings[0], /timeout of 20000ms exceeded/);
+    assert.match(seen.warnings[1], /retrying in 2s/);
+  });
+
+  // Doubling without a ceiling reaches hours, and an operator who has just fixed the node would
+  // then watch a service that could start sit there not starting.
+  it('doubles the wait and then holds it at the ceiling', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(8, wrappedTimeout).run, seen.options);
+
+    assert.deepEqual(seen.slept, [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+  });
+
+  it('ships the delays it documents', () => {
+    assert.equal(NODE_WAIT_FIRST_DELAY_MS, 1_000);
+    assert.equal(NODE_WAIT_MAX_DELAY_MS, 30_000);
+  });
+
+  it('reports that it is waiting before it has tried anything', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(0, wrappedTimeout).run, seen.options);
+
+    assert.equal(
+      seen.reports.length,
+      1,
+      '/health has to say waiting from the first second, not from the first failure',
+    );
+    assert.equal(seen.reports[0].url, NODE_URL);
+    assert.equal(seen.reports[0].waitingSince, WAITING_SINCE);
+    assert.equal(seen.reports[0].attempts, 0);
+    assert.equal(seen.reports[0].lastError, undefined);
+  });
+
+  it('carries the attempt count and the last error into each later report', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(2, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.reports.length, 3);
+    assert.equal(seen.reports[1].attempts, 1);
+    assert.match(String(seen.reports[1].lastError), /timeout of 20000ms exceeded/);
+    assert.equal(seen.reports[2].attempts, 2);
+    // One waiting_since for the whole wait, or a page watching it can never say how long it has been.
+    assert.deepEqual(
+      seen.reports.map((report) => report.waitingSince),
+      [WAITING_SINCE, WAITING_SINCE, WAITING_SINCE],
+    );
+  });
+
+  // The other half of the rule, and the more important one: waiting on a fault that waiting cannot
+  // fix is a service that never starts and never says why it will not.
+  it('rethrows a failure that is not the node being unreachable, without waiting once', async () => {
+    const seen = watcher();
+    const init = failingInit(1, () => new Error('the configured STREAM_KEY is not a valid private key'));
+
+    await assert.rejects(() => waitForNode(init.run, seen.options), /not a valid private key/);
+    assert.deepEqual(seen.slept, []);
+    assert.deepEqual(seen.warnings, []);
+    assert.equal(init.calls(), 1);
+  });
+});
+
+/**
+ * What counts as "the node is not answering", read off the error rather than assumed.
+ *
+ * ⚠️ The message matters as much as the code, because the two gates in front of this do not rethrow
+ * what bee-js threw: they wrap the cause in a sentence of their own. An error whose `code` is gone
+ * and whose text ends in "timeout of 20000ms exceeded" is that shape at today's budget, and the live
+ * failure of 2026-09-16 was the same sentence saying 4000ms.
+ */
+describe('an error that says the node is not there', () => {
+  for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH']) {
+    it(`reads ${code} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(withCode(code)), true);
+    });
+  }
+
+  for (const [name, error] of Object.entries({
+    'a gate quoting a timeout it hit': wrappedTimeout(),
+    'a connection that was refused, said in words': new Error('connect ECONNREFUSED 127.0.0.1:1633'),
+    'a name that does not resolve': new Error('getaddrinfo ENOTFOUND bee-uploader'),
+    'a socket that hung up': new Error('socket hang up'),
+    'a fetch that never landed': new Error('fetch failed'),
+    // ⛔ The status is gone by the time a gate has wrapped it, and a 502 from an intermediary is
+    // exactly the 2026-09-16 shape: under refuse the boot ended and docker looped it.
+    'a gate quoting a 502 it was given': new Error(
+      '[PostageGate] 360p batch aaaaaaaa… on http://a:1633 is absent or unreadable: Request failed with ' +
+        'status code 502. A batch nothing can read is not one anyone can call usable.',
+    ),
+    'a gate quoting a 503': new Error(
+      '[ChequebookGate] http://a:1633 chequebook is absent or unreadable: Request failed with status code 503.',
+    ),
+  })) {
+    it(`reads ${name} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(error), true);
+    });
+  }
+
+  // A node answering 5xx is a node that is up and cannot serve the request yet, which is the same
+  // wait with a different cause: a bee still opening its database answers exactly this.
+  for (const status of [500, 502, 503, 504]) {
+    it(`reads a ${status} from the node as the node not being ready`, () => {
+      assert.equal(isNodeUnavailable(withStatus(status)), true);
+    });
+  }
+
+  /**
+   * The shape that reaches this wait from a node that went away in the middle of a lookup.
+   *
+   * `StreamCatalog.init` rethrows a transfer-lost error once the node has failed the liveness check
+   * behind it, so by the time one arrives here the node is known not to be answering. It is the only
+   * error this service forwards with bee-js's own class intact, which is why it is also the only one
+   * whose code is still sitting on `statusText`.
+   *
+   * ⚠️ Only the dropped body was ever misread. The other two name their code inside the message, so
+   * the text fallback matched them by luck rather than by design, and one shape out of three being
+   * wrong is exactly what kept it invisible.
+   */
+  for (const [name, error] of Object.entries({
+    'a response body that was dropped': beeTransportFailure('ECONNABORTED', 'response stream aborted'),
+    'a connection reset while the answer was arriving': beeTransportFailure('ECONNRESET', 'socket hang up'),
+    'a connection that was refused, as bee-js throws it': beeTransportFailure(
+      'ECONNREFUSED',
+      'connect ECONNREFUSED 127.0.0.1:1633',
+    ),
+  })) {
+    it(`reads ${name} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(error), true);
+    });
+  }
+
+  // The status slot decides before the code does, so an answer stays an answer however its code
+  // reads. bee-js fills both on a response, and only the status says whether waiting can help.
+  for (const [name, error] of Object.entries({
+    'a batch the node does not hold, as bee-js throws it': beeHttpAnswer(404, 'ERR_BAD_REQUEST'),
+    'a request the node refused, as bee-js throws it': beeHttpAnswer(400, 'ERR_BAD_REQUEST'),
+  })) {
+    it(`does not read ${name} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(error), false);
+    });
+  }
+
+  for (const [name, error] of Object.entries({
+    'a key this deployment cannot sign with': new Error('the configured STREAM_KEY is not a valid private key'),
+    'a feed whose payload made no sense': new Error('invalid feed payload: unexpected end of JSON input'),
+    'a batch the node does not hold': withStatus(404),
+    'a request the node refused to read': withStatus(400),
+    // The node answered and said no. Waiting does not produce a batch it does not hold.
+    'a gate quoting a 404 it was given': new Error(
+      '[PostageGate] 360p batch aaaaaaaa… on http://a:1633 is absent or unreadable: Request failed with ' +
+        'status code 404.',
+    ),
+    'a chequebook below the floor': new Error(
+      `[ChequebookGate] ${NODE_URL} has 0.1000 BZZ available in its chequebook and the floor is 0.5000 BZZ.`,
+    ),
+  })) {
+    it(`does not read ${name} as the node not being there`, () => {
+      assert.equal(isNodeUnavailable(error), false);
+    });
+  }
+});
+
+/**
+ * ⛔⛔⛔ **What this reports is published to anyone who can reach `/health`.**
+ *
+ * bee takes basic auth in a URL's userinfo, so `BEE_URL` and every `BEE_PUBLISHERS` entry may carry a
+ * credential, and `BeePublisherPool.parseEntry` keeps it because the node needs it. The report below
+ * reaches an endpoint that takes no credential of its own and a 503 body an engine logs, so the wait
+ * strips the url once, here, rather than asking every reader of the report to remember.
+ */
+describe('what the wait says about the node url', () => {
+  const CREDENTIALLED = 'http://operator:hunter2@bee-a:1633';
+
+  it('strips a credential out of the report it publishes', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, wrappedTimeout).run, { ...seen.options, url: CREDENTIALLED });
+
+    for (const report of seen.reports) {
+      assert.doesNotMatch(report.url, /hunter2/);
+      assert.doesNotMatch(report.url, /operator/);
+      assert.match(report.url, /bee-a:1633/);
+    }
+  });
+
+  it('strips it out of the lines it logs, both the wait and the answer', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, wrappedTimeout).run, { ...seen.options, url: CREDENTIALLED });
+
+    for (const line of [...seen.warnings, ...seen.notices]) {
+      assert.doesNotMatch(line, /hunter2/);
+    }
+  });
+
+  it('leaves a url with nothing to hide as the operator wrote it', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(0, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.reports[0].url, NODE_URL);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **One plain question, asked before anything has to interpret an answer.**
+ *
+ * Everything the boot does next reads a node and reports what it found: a gate spends its whole
+ * budget per node and wraps the cause in a sentence, and `StreamCatalog.init` has to decide whether a
+ * status means this feed is empty or that this node cannot say. Both of those are much harder to get
+ * right than "is anything there", and both are only asked because nobody asked the easy one first.
+ *
+ * The answer arrives as {@link NodeUnreachableError}, which the classifier above reads as the node
+ * not being there, so the wait does its job and the gates never spend a budget on a node that is not
+ * answering.
+ */
+describe('the reachability probe in front of the boot', () => {
+  const live = { url: NODE_URL, bee: { isConnected: async () => true } };
+  const dead = { url: NODE_URL, bee: { isConnected: async () => false } };
+  const refusing = {
+    url: NODE_URL,
+    bee: {
+      isConnected: () => Promise.reject(new Error('connect ECONNREFUSED 10.0.0.9:1633')),
+    },
+  };
+
+  it('passes a node that answers', async () => {
+    await assertNodeReachable(live);
+  });
+
+  it('refuses a node that says it is not connected, naming it', async () => {
+    await assert.rejects(() => assertNodeReachable(dead), NodeUnreachableError);
+    await assert.rejects(() => assertNodeReachable(dead), new RegExp(NODE_URL));
+  });
+
+  it('refuses a node whose liveness check does not come back either', async () => {
+    await assert.rejects(() => assertNodeReachable(refusing), NodeUnreachableError);
+    await assert.rejects(() => assertNodeReachable(refusing), /ECONNREFUSED/);
+  });
+
+  it('keeps a credential out of what it says about the node', async () => {
+    const credentialled = { url: 'http://operator:hunter2@bee-a:1633', bee: { isConnected: async () => false } };
+
+    await assert.rejects(
+      () => assertNodeReachable(credentialled),
+      (error: Error) => {
+        assert.doesNotMatch(error.message, /hunter2/);
+        assert.match(error.message, /bee-a:1633/);
+        return true;
+      },
+    );
+  });
+
+  // The whole point of the class: the wait has to read it as a node that is not there, or the probe
+  // would end the boot instead of starting the wait.
+  it('is read as the node being unavailable, so the wait retries rather than exits', () => {
+    assert.equal(isNodeUnavailable(new NodeUnreachableError('http://bee-a:1633 is not answering')), true);
+  });
+
+  it('is waited on and retried like any other unreachable node', async () => {
+    const seen = watcher();
+    const init = failingInit(2, () => new NodeUnreachableError(`${NODE_URL} is not answering`));
+
+    await waitForNode(init.run, seen.options);
+
+    assert.equal(init.calls(), 3);
+    assert.deepEqual(seen.slept, [1_000, 2_000]);
+  });
+});
+
+/**
+ * ⛔ **Which node the wait is about is decided by what failed, not by which one it started with.**
+ *
+ * The wait is given the coordinator, because that is the node every boot read reaches and the only
+ * one there is on an unsplit deployment. A four rung pool is different: under `refuse` the gate that
+ * ends a pass may be the one reading the 1080p node while the coordinator is up and answering, and a
+ * `/health` payload naming the coordinator then sends an operator to the wrong machine.
+ *
+ * So an error that knows which node it is about says so, and the report follows it.
+ */
+describe('which node the report names', () => {
+  class RefusalAboutANode extends Error {
+    constructor(message: string, readonly nodeUrl: string) {
+      super(message);
+    }
+  }
+
+  /** A gate's refusal about one rung, with a cause the classifier waits on. */
+  const unreachableRung = (url: string) =>
+    new RefusalAboutANode(
+      `[PostageGate] 1080p batch aaaaaaaa… on ${url} is absent or unreadable: timeout of 20000ms exceeded.`,
+      url,
+    );
+
+  it('names the node a refusal was about, rather than the one the wait started with', async () => {
+    const seen = watcher();
+    const init = failingInit(1, () => unreachableRung('http://bee-1080:1663'));
+
+    await waitForNode(init.run, seen.options);
+
+    assert.equal(seen.reports[1].url, 'http://bee-1080:1663');
+    assert.match(seen.warnings[0], /http:\/\/bee-1080:1663/);
+  });
+
+  it('keeps the node it started with in the report it makes before trying anything', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, () => unreachableRung('http://bee-1080:1663')).run, seen.options);
+
+    assert.equal(seen.reports[0].url, NODE_URL, 'nothing has failed yet, so the wait is about the node it was given');
+  });
+
+  it('falls back to the node it started with when the failure names none', async () => {
+    const seen = watcher();
+
+    await waitForNode(failingInit(1, wrappedTimeout).run, seen.options);
+
+    assert.equal(seen.reports[1].url, NODE_URL);
+  });
+
+  it('strips a credential out of a node a refusal names, like any other url it publishes', async () => {
+    const seen = watcher();
+    const init = failingInit(1, () => unreachableRung('http://operator:hunter2@bee-1080:1663'));
+
+    await waitForNode(init.run, seen.options);
+
+    assert.doesNotMatch(seen.reports[1].url, /hunter2/);
+    assert.match(seen.reports[1].url, /bee-1080:1663/);
+  });
+});

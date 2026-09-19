@@ -113,9 +113,9 @@ export class BeePublisherPool {
    * Every node this pool publishes through, in ladder order.
    *
    * Exists so a startup check can enumerate the deployment rather than rebuild the single-node
-   * versus per-rung decision from the config a second time. `ChequebookGate` is the caller: reading
-   * the pool means a rung added to BEE_PUBLISHERS is funding-checked without anyone remembering to
-   * widen a parallel list.
+   * versus per-rung decision from the config a second time. `index.ts` is the caller, and it hands
+   * the list to both `ChequebookGate` and `PostageGate`: reading the pool means a rung added to
+   * BEE_PUBLISHERS is checked without anyone remembering to widen a parallel list.
    */
   public nodes(): readonly BeePublisher[] {
     return this.ordered;
@@ -292,8 +292,17 @@ export function shortBatchId(stamp: string): string {
  * make an identical pair read as a mismatch. One that had a credential removed is rebuilt, and so
  * normalised, because it is no longer what was configured either way.
  */
-function safeUrl(url: string): string {
-  const parsed = new URL(url);
+export function safeUrl(url: string): string {
+  const parsed = parseOrNull(url);
+  if (parsed === null) {
+    // ⛔ Never a throw. Every caller is already reporting something, and a TypeError here replaces
+    // that report with itself: a catalog refusing to call a feed empty read as "Invalid URL" rather
+    // than as the node being unreachable, found in review on 2026-09-17. Without a parse there is no
+    // userinfo to strip, so this is the query-string redaction alone, which is the most that can be
+    // said about a string nothing can read as a url.
+    return redactUrlSecrets(url);
+  }
+
   if (parsed.username === '' && parsed.password === '') {
     return redactUrlSecrets(url);
   }
@@ -301,6 +310,14 @@ function safeUrl(url: string): string {
   parsed.username = '';
   parsed.password = '';
   return redactUrlSecrets(parsed.toString());
+}
+
+function parseOrNull(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
 }
 
 function assertBatchId(subject: string, stamp: string): void {

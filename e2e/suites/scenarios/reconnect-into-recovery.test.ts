@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   maxSegmentIndexByStream,
@@ -12,7 +12,11 @@ import {
   streamsUploadingBelow,
   vodFinalizeCountFor,
 } from '../../src/harness/logwatch.js';
-import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
+import {
+  checkPublishedTimeline,
+  fragmentSecondsFor,
+  publishingRungFeedsOf,
+} from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
@@ -196,7 +200,7 @@ describe('M — the uploader dies while its engine restarts, then the broadcaste
     // gone. Started once more here only if the kill was the last thing that happened to it.
     await publisher?.stop();
     if (!(await host.isRunning(uploader))) {
-      await host.start(uploader).catch(() => undefined);
+      await host.start(uploader).catch(reportFailedRestore(uploader));
     }
   });
 
@@ -319,21 +323,30 @@ describe('M — the uploader dies while its engine restarts, then the broadcaste
       });
 
     let verdict = await timeline();
+    // ⚠️ The same guard scenario F's wait for a hole carries. A run that pinned no segment length
+    // reads no playlist at all, so `discontinuitiesSeen` is structurally zero and waiting for one
+    // would spend the whole window and then red the uploader's recovery path for a check that never
+    // ran. Such a run keeps the unchecked verdict, which the summary below prints in place of one.
+    const timelineIsChecked = fragmentSecondsFor(cfg.segmentExpectation) !== null;
     try {
-      await waitFor(
-        async () => {
-          verdict = await timeline();
-          return verdict.discontinuitiesSeen >= 1;
-        },
-        {
-          timeoutMs: TIMELINE_WAIT_MS,
-          intervalMs: 5_000,
-          label:
-            'no rung declared a break after the reconnect. A restarted engine counter is one of the two ' +
-            'things that still arm one, because `placeInBroadcast` re-anchors the numbering and the dating ' +
-            'forwards rather than reusing a sequence a viewer already holds',
-        },
-      );
+      if (timelineIsChecked) {
+        await waitFor(
+          async () => {
+            verdict = await timeline();
+            return verdict.discontinuitiesSeen >= 1;
+          },
+          {
+            timeoutMs: TIMELINE_WAIT_MS,
+            intervalMs: 5_000,
+            label:
+              'no rung declared a break after the reconnect. A restarted engine counter is one of the two ' +
+              'things that still arm one, because `placeInBroadcast` re-anchors the numbering and the dating ' +
+              'forwards rather than reusing a sequence a viewer already holds. This run pinned a segment ' +
+              'length, so the playlists really were read and this is the absence of a break rather than the ' +
+              'absence of a check',
+          },
+        );
+      }
     } finally {
       // So a timeout still says what the playlists held when it gave up.
       console.log(verdict.summary);

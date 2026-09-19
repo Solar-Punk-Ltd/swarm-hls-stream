@@ -250,7 +250,7 @@ describe('what the nodes say they did, over one window and not over their lives'
   it('reports a dash rather than a zero when nothing happened in the window', async () => {
     const out = await diff(snapshot({ atMs: 0 }), snapshot({ atMs: 600000 }));
 
-    assert.match(out, /mean push-sync time\s+—/);
+    assert.match(out, /mean push-sync time\s+-$/m);
   });
 
   it('prices the window in BZZ per broadcast hour, which is what a sitting is planned in', async () => {

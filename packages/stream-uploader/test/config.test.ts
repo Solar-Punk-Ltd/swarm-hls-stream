@@ -74,6 +74,13 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     fallback: 0.9,
     refused: ['most', '-0.1', '1.1'],
   },
+  {
+    name: 'START_GATE_TIMEOUT_MS',
+    field: 'startGateTimeoutMs',
+    sample: '9000',
+    fallback: 20000,
+    refused: ['0', '-1', '20s', '600001'],
+  },
 ];
 
 const requiredEnv = (): Record<string, string> =>
@@ -233,6 +240,97 @@ describe('the environment contract', () => {
     });
   });
 
+  /**
+   * What the two startup gates do to a deployment that cannot answer them, which is the owner's
+   * ruling of 2026-09-17 in both its halves: the uploader starts whatever the chequebook says, and a
+   * postage batch that cannot carry a broadcast still stops it.
+   */
+  describe('the start gates', () => {
+    const gatesFor = async (mode?: string) =>
+      (await loadConfig(mode === undefined ? requiredEnv() : { ...requiredEnv(), UPLOADER_START_GATES: mode }))
+        .startGates;
+
+    // Postage refuses what the node answered about and warns what it could not read, which is the
+    // owner's decision 7 option b of the same day. See `libs/StartGates.ts`.
+    it('warns on the chequebook and refuses an answered postage reading by default', async () => {
+      assert.deepEqual(await gatesFor(), { chequebookRefuses: 'none', postageRefuses: 'answered' });
+    });
+
+    it('takes warn as both gates warning', async () => {
+      assert.deepEqual(await gatesFor('warn'), { chequebookRefuses: 'none', postageRefuses: 'none' });
+    });
+
+    it('takes refuse as both gates refusing, which is what every boot did before that date', async () => {
+      assert.deepEqual(await gatesFor('refuse'), { chequebookRefuses: 'all', postageRefuses: 'all' });
+    });
+
+    // An operator writing the mode into a `.env` by hand should not be refused over a capital.
+    it('reads a mode written with padding or capitals as the mode it spells', async () => {
+      assert.deepEqual(await gatesFor('  Refuse '), { chequebookRefuses: 'all', postageRefuses: 'all' });
+    });
+
+    it('reads a blank setting as the default rather than refusing during import', async () => {
+      assert.deepEqual(await gatesFor('   '), { chequebookRefuses: 'none', postageRefuses: 'answered' });
+    });
+
+    for (const written of ['on', 'strict', 'warn refuse', 'postage-warn']) {
+      it(`refuses to start on UPLOADER_START_GATES=${written}, naming the variable`, async () => {
+        await assert.rejects(
+          () => loadConfig({ ...requiredEnv(), UPLOADER_START_GATES: written }),
+          /UPLOADER_START_GATES/,
+        );
+      });
+    }
+  });
+
+  /**
+   * ⛔ The gates read a chequebook and a postage batch, and both answers come off the chain rather
+   * than out of the node's memory, so they are slower than every other call the service makes. They
+   * were bounded by BEE_REQUEST_TIMEOUT_MS until 2026-09-17, whose 4000ms is derived from the retry
+   * windows of the upload loop and has nothing to do with how long a chain-backed read takes. On the
+   * live host that timeout is what refused a start, so the two are separated here: this asserts that
+   * moving one leaves the other where its own derivation put it.
+   */
+  describe('the start gate timeout', () => {
+    it('is longer than the per-request deadline the upload loop runs on', async () => {
+      const { startGateTimeoutMs, beeRequestTimeoutMs } = await loadConfig(requiredEnv());
+
+      assert.ok(
+        startGateTimeoutMs > beeRequestTimeoutMs,
+        `a ${startGateTimeoutMs}ms gate timeout is no longer than the ${beeRequestTimeoutMs}ms upload deadline, ` +
+          'so the gates are back on a window derived for something else',
+      );
+    });
+
+    // The two-zero slip is what this range catches: 2000000 is 33 minutes for one read and over four
+    // hours for a warn pass over four nodes, spent again on every attempt of a wait that retries for
+    // ever. The one-zero slip is not caught, because 200000 sits under the ceiling and is a setting an
+    // operator could mean, and it costs about 26 minutes a pass.
+    it('refuses a timeout longer than any node read could need', async () => {
+      await assert.rejects(
+        () => loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '2000000' }),
+        /START_GATE_TIMEOUT_MS/,
+      );
+      assert.equal(
+        (await loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '600000' })).startGateTimeoutMs,
+        600000,
+      );
+    });
+
+    it('leaves the deadline of the upload loop alone when a deployment moves it', async () => {
+      const config = await loadConfig({ ...requiredEnv(), START_GATE_TIMEOUT_MS: '45000' });
+
+      assert.equal(config.startGateTimeoutMs, 45000);
+      assert.equal(config.beeRequestTimeoutMs, 4000);
+    });
+  });
+
+  /**
+   * Names read by `config.ts` whose value is not a scalar, so the table above cannot carry them.
+   * `UPLOADER_START_GATES` reaches config as the pair of gate policies it resolves to.
+   */
+  const DECLARED_ONLY = ['UPLOADER_START_GATES'];
+
   // Without this the pair can drift apart silently and in the direction that looks fine: the service
   // starts, every default applies, and the operator's setting is read from a name nothing sets.
   it('reads only names the deployment actually declares', () => {
@@ -245,7 +343,7 @@ describe('the environment contract', () => {
     const declared = new Set([...service.matchAll(/^ {6}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]));
 
     assert.ok(declared.size > 0, 'no environment names parsed out of docker-compose.yml, so this test checks nothing');
-    for (const { name } of [...REQUIRED_ENV, ...OPTIONAL_ENV]) {
+    for (const name of [...REQUIRED_ENV, ...OPTIONAL_ENV].map((variable) => variable.name).concat(DECLARED_ONLY)) {
       assert.ok(declared.has(name), `config.ts reads ${name}, which deploy/docker-compose.yml never sets`);
     }
   });

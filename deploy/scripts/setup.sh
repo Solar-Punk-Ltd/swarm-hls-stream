@@ -4,7 +4,7 @@ set -e
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
 
-echo "=== Swarm HLS Stream — Setup ==="
+echo "=== Swarm HLS Stream: Setup ==="
 
 # 1. Check jq
 require_jq

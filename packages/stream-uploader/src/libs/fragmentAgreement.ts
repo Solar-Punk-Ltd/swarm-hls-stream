@@ -2,18 +2,24 @@
  * Whether the segments arriving are the length this uploader was told they would be.
  *
  * ⛔⛔⛔ **`HLS_FRAGMENT` is one variable that two containers read, and only one of them is
- * restarted when it changes.** The engine cuts segments with it. The uploader never measures a date:
- * it derives every `#EXT-X-PROGRAM-DATE-TIME` from the broadcast start plus the sequence times this
- * same number, which is what keeps four rungs stamping one piece of media identically. Both
+ * restarted when it changes.** The engine cuts segments with it. The uploader reads every segment
+ * against it: a segment measuring within `DATING_SNAP_TOLERANCE` of this number is dated as exactly
+ * this length, which is what keeps four rungs stamping one piece of media identically. That band is
+ * its own number in `broadcastDating.ts` and deliberately narrower than the one below. Both
  * containers read the variable from one env file and both re-read it only when they are recreated,
  * and the operator's control plane recreates the engine alone on a segment length change. So an
  * uploader believing 0.5 can sit behind an engine cutting 1.0, which is what this deployment was
  * measured doing on 2026-09-04 and again in the week of 2026-09-15.
  *
- * What that costs is not a wrong reading, it is a wrong recording. Every stamp drifts by the
- * difference, cumulatively, so a viewer's timeline runs at a different rate from the media, and the
- * recording keeps those dates for ever. After a reconnect the four rungs can even mint separate
- * dating lines from it. The uploader holds both numbers on every single segment and nothing had ever
+ * What that costs is no longer the recording's clock. A segment outside the band is dated by what it
+ * really held, so the stamps stay right on a stage cutting to another length. What is still wrong is
+ * everything else the declared value is the basis of. Every `#EXT-X-GAP` entry is dated and sized at
+ * it, so a segment the broadcast loses leaves a hole of the wrong size. The rung GOP the ladder is
+ * pinned on is derived from it, `ABR_FPS x HLS_FRAGMENT`, and so is this check, and so are the
+ * budgets: SRS force-closes at `HLS_FRAGMENT x HLS_AOF_RATIO` and a ladder asks for
+ * `rungs / HLS_FRAGMENT` announcements a second. After a reconnect the four rungs can even mint
+ * separate dating lines from it, because whether a rung is joining a sibling's line is decided on the
+ * declared length too. The uploader holds both numbers on every single segment and nothing had ever
  * compared them, and nothing on the deploy path compares them either.
  *
  * ⚠️ **Only a ladder makes a difference a fault.** With `ABR_ENABLED` on, `engines/srs/entrypoint.sh`
@@ -67,7 +73,7 @@ type FragmentVerdict =
 
 /** What the deployment asked for, and whether its stage is one where the engine must deliver it. */
 export interface FragmentStage {
-  /** Seconds of media per fragment, from `HLS_FRAGMENT`, which is what every date steps by. */
+  /** Seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every date is read against. */
   configuredSeconds: number;
   /** `ABR_ENABLED`, which is what makes a difference a fault rather than the publisher's choice. */
   underLadder: boolean;
@@ -140,11 +146,12 @@ function asLength(seconds: number): string {
   return seconds.toFixed(3);
 }
 
-/** The two clocks, in the one sentence both messages share. */
-const TWO_CLOCKS =
-  'Every #EXT-X-PROGRAM-DATE-TIME steps by the configured value from the broadcast start rather ' +
-  'than by anything measured, so the playlist says a segment covers one length of media while the ' +
-  'media covers another, and the recording keeps those dates for ever.';
+/** What a stage cutting another length costs, in the one sentence both messages share. */
+const UNDECLARED_LENGTH_COST =
+  'The dates follow the media, so the recording keeps the right clock, but the declared length is ' +
+  'still what every #EXT-X-GAP entry is dated and sized at and what the rung GOP and the segment ' +
+  'budgets are derived from, so a lost segment leaves a hole of the wrong size on a stage that is ' +
+  'not what its configuration says.';
 
 /**
  * What an operator is told when a ladder's segments are not the configured length.
@@ -155,7 +162,7 @@ const TWO_CLOCKS =
 export function fragmentMismatchReport(streamId: string, measuredSeconds: number, stage: FragmentStage): string {
   return (
     `${streamId} is being dated by HLS_FRAGMENT ${stage.configuredSeconds} and its segments measure ` +
-    `${asLength(measuredSeconds)}s of media. ${TWO_CLOCKS} With the ladder on the two cannot ` +
+    `${asLength(measuredSeconds)}s of media. ${UNDECLARED_LENGTH_COST} With the ladder on the two cannot ` +
     'legitimately differ, because every rung is re-encoded with a keyframe every ABR_FPS x ' +
     'HLS_FRAGMENT frames and SRS cuts exactly there. One of the two containers is running an older ' +
     'deploy: HLS_FRAGMENT is one value in the deployment env and it reaches both, so a difference is ' +
@@ -167,7 +174,7 @@ export function fragmentMismatchReport(streamId: string, measuredSeconds: number
 export function fragmentLengthNotice(streamId: string, measuredSeconds: number, stage: FragmentStage): string {
   return (
     `${streamId} is being dated by HLS_FRAGMENT ${stage.configuredSeconds} and its segments measure ` +
-    `${asLength(measuredSeconds)}s of media. ${TWO_CLOCKS} Nothing on this stage transcodes, so the ` +
+    `${asLength(measuredSeconds)}s of media. ${UNDECLARED_LENGTH_COST} Nothing on this stage transcodes, so the ` +
     'segment is the first keyframe at or after HLS_FRAGMENT and the publisher decides it, which ' +
     'makes the configured value a floor rather than the length. Bring the publisher GOP to ' +
     'HLS_FRAGMENT, or turn ABR_ENABLED on, where the fragment sets the segment directly.'

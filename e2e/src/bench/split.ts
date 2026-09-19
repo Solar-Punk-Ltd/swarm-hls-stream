@@ -68,7 +68,7 @@ export type HopName =
 /** The two hops bounded by instants from different clocks, so the two the skew moves between. */
 export const HOPS_CROSSING_CLOCKS: readonly HopName[] = [HOP_UPLOAD, HOP_FEED_PROPAGATION];
 
-export interface Hop {
+interface Hop {
   name: HopName;
   ms: number;
   /** What this hop covers, in an operator's terms, for the report. */

@@ -18,6 +18,11 @@ services:
       # P2P stays on every interface: that is how the node reaches Swarm.
       - '${BEE_UPLOADER_API_BIND:-0.0.0.0}:${BEE_UPLOADER_API_PORT:-1633}:${BEE_UPLOADER_API_PORT:-1633}'
       - '${BEE_UPLOADER_P2P_PORT:-1634}:${BEE_UPLOADER_P2P_PORT:-1634}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_UPLOADER_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader}:/home/bee/.bee
     command:
@@ -30,7 +35,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_UPLOADER_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -59,6 +63,11 @@ services:
     ports:
       - '${BEE_RUNG_480P_API_BIND:-0.0.0.0}:${BEE_RUNG_480P_API_PORT:-11001}:${BEE_RUNG_480P_API_PORT:-11001}'
       - '${BEE_RUNG_480P_P2P_PORT:-11002}:${BEE_RUNG_480P_P2P_PORT:-11002}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_RUNG_480P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-480p}:/home/bee/.bee
     command:
@@ -68,7 +77,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_RUNG_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -80,6 +88,11 @@ services:
     ports:
       - '${BEE_RUNG_720P_API_BIND:-0.0.0.0}:${BEE_RUNG_720P_API_PORT:-11003}:${BEE_RUNG_720P_API_PORT:-11003}'
       - '${BEE_RUNG_720P_P2P_PORT:-11004}:${BEE_RUNG_720P_P2P_PORT:-11004}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_RUNG_720P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-720p}:/home/bee/.bee
     command:
@@ -89,7 +102,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_RUNG_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -101,6 +113,11 @@ services:
     ports:
       - '${BEE_RUNG_1080P_API_BIND:-0.0.0.0}:${BEE_RUNG_1080P_API_PORT:-11005}:${BEE_RUNG_1080P_API_PORT:-11005}'
       - '${BEE_RUNG_1080P_P2P_PORT:-11006}:${BEE_RUNG_1080P_P2P_PORT:-11006}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_RUNG_1080P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-1080p}:/home/bee/.bee
     command:
@@ -110,7 +127,6 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_RUNG_FULL_NODE:-false}
       - --swap-enable=true
-      - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
@@ -124,25 +140,43 @@ services:
       # interface the client proxies from rather than to every address the host answers on.
       - '${BEE_GATEWAY_API_BIND:-0.0.0.0}:${BEE_GATEWAY_API_PORT:-1733}:${BEE_GATEWAY_API_PORT:-1733}'
       - '${BEE_GATEWAY_P2P_PORT:-1734}:${BEE_GATEWAY_P2P_PORT:-1734}'
+    # The default endpoint below is a public RPC that rate-limits a node hard. An operator
+    # pointing RPC_ENDPOINT at one of their own runs it on this host, and a container reaches
+    # a host process only through the gateway this name resolves to.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     volumes:
       - ${BEE_GATEWAY_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-gateway}:/home/bee/.bee
     command:
       - start
       - --api-addr=${BEE_GATEWAY_API_LISTEN:-}:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
-      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      # ⛔ These two lines ARE the mode, and the endpoint is the half that decides it. Bee reads
+      # `pkg/node/node.go:1605` isChainEnabled: `chainDisabled := swapEndpoint == ""`, `lightMode :=
+      # !o.FullNodeMode`, and only those two together give ultra-light. `--swap-enable` takes no
+      # part in the decision, it is only refused at node.go:429 when swap is asked for without a
+      # chain. So an endpoint left set here keeps the chain ON however the other flags read: the
+      # node comes up as plain `light`, replays the postage contract for about three minutes on
+      # every empty data dir and answers 503 throughout, and gains nothing for it. An earlier
+      # version of this comment stated the rule wrongly and four other places in the tree carried
+      # the same error.
+      #
+      # Levi ruled on 2026-09-17 (T27) that a node's mode is chosen when the node is created, so the
+      # two flags below are settings and their defaults are what this file has always started. A
+      # deployment that sets neither key gets the ultra-light gateway exactly as before: the endpoint
+      # is empty, swap is off, and there is nothing to fund. The manager writes both keys into a
+      # deployment's env file for a gateway an operator created on the chain, and neither key for one
+      # created ultra-light. This supersedes the ruling of 2026-09-15, which stated both here as
+      # literals and made a gateway on the chain a deliberate edit to this file.
+      #
+      # --full-node stays a literal because a full node is never what a viewer's gateway is. What
+      # ultra-light costs is LAT-10: such a node has no chequebook, lives on the free bandwidth
+      # allowance alone, and a viewer polling it sees the feed freeze 30 to 48s at a time. What the
+      # other mode costs is gas and a funded chequebook at the address `/addresses` reports as
+      # `chain_address`, both topped up by hand.
+      - --blockchain-rpc-endpoint=${BEE_GATEWAY_RPC_ENDPOINT:-}
       - --full-node=false
-      # false here plus --full-node=false is bee's `ultra-light` mode, which has no chequebook and
-      # so no way to pay a peer for bandwidth. LAT-10: such a node lives on the free allowance
-      # alone, and a viewer polling it sees the feed freeze 30 to 48s at a time. Turning this on
-      # needs a reachable RPC endpoint and a funded wallet at the address `/addresses` reports as
-      # `chain_address`, so it stays off by default and is opt-in per profile.
       - --swap-enable=${BEE_GATEWAY_SWAP_ENABLE:-false}
-      # In PLUR, so a whole BZZ is 1e16. Bee's own default is 0, which deploys a chequebook that
-      # can back no cheque at all, so swap-enable alone leaves the node just as unable to pay.
-      # Only read when the chequebook is first deployed: changing it later moves nothing, and a
-      # deployed chequebook is topped up through the node's /chequebook/deposit instead.
-      - --swap-initial-deposit=${BEE_GATEWAY_SWAP_INITIAL_DEPOSIT:-0}
       # ⛔⛔ ZERO IS THE ONE VALUE THAT GUARANTEES A THRASH LOOP, so read this before changing it and
       # before quoting any cache figure gathered at it. Bee's cache Putter never tests capacity, so
       # chunks enter regardless; eviction triggers whenever size exceeds capacity, which at 0 is every
@@ -163,6 +197,11 @@ services:
       # project ever labelled cache-off was measured with the cache on. Left at bee's default so
       # deployments are unchanged; an experiment that needs a cold node every pass sets it false.
       - --cache-retrieval=${BEE_GATEWAY_CACHE_RETRIEVAL:-true}
+      # ⭐ The only Bee node in this file a browser talks to, which is the whole of why it carries
+      # this and the four funded nodes above no longer do. The flag lets a page on any origin read
+      # this node's answers, and on a node holding a postage batch that is a page anywhere reading
+      # the full batch ids off /stamps and spending them. The viewer never reaches those: `deploy.sh`
+      # forces the deployed bundle onto the same-origin /bee proxy, and vite proxies it in dev.
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
@@ -208,9 +247,25 @@ services:
       # bee-js reads an unset timeout as no timeout. See BEE_REQUEST_TIMEOUT_MS in config.ts for
       # where the 4000 comes from.
       BEE_REQUEST_TIMEOUT_MS: ${BEE_REQUEST_TIMEOUT_MS:-4000}
+      # What the two startup gates below do about a node they cannot read, and how long each of their
+      # reads gets. The owner ruled the two apart on 2026-09-17, so `chequebook-warn`, the default,
+      # has the chequebook gate warning and starting while the postage gate still refuses a batch
+      # that the node answered about as full or expired. `warn` has both gates warning. `refuse` has
+      # both gates refusing. The coordinator is always waited for when it does not answer. Under
+      # `refuse`, an unavailable rung node is waited for too. Under either warning mode, an unavailable
+      # non-coordinator rung becomes a warning and the service starts degraded. This is D16 of the
+      # same day.
+      #
+      # The timeout is deliberately not the one above: a chequebook balance and a batch are answered
+      # off the chain, and 4000ms borrowed from the upload loop's retry windows is what held a live
+      # uploader in a restart loop on 2026-09-16 against a pool address that had no node behind it. A gate that warns leaves `start_gate_warned` on
+      # /health for the life of the process, so the container reports unhealthy rather than the
+      # finding living in one log line. See `libs/StartGates.ts`.
+      UPLOADER_START_GATES: ${UPLOADER_START_GATES:-chequebook-warn}
+      START_GATE_TIMEOUT_MS: ${START_GATE_TIMEOUT_MS:-20000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
-      # The other two thresholds `PostageGate` refuses a start on, and they belong here for the same
-      # reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
+      # The other two thresholds `PostageGate` reads a batch against, and they belong here for the
+      # same reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
       # compiled 24 and 0.9 whatever an operator wrote in .env, which is the ORPHAN_REAP_MS shape
       # again: an argued-for setting that no deployment could actually move. The defaults repeat
       # config.ts on purpose, and `bee-publishers.sh` carries the same pair, which
@@ -280,6 +335,10 @@ services:
     # anyway: most reasons are about media already lost or state already unwritten, and a restart
     # drops every live broadcast to re-run a recovery that changes none of it.
     #
+    # Since decision D16 of 2026-09-17 the same 503 also carries `waiting_for_node`, which is a boot
+    # whose Bee node has not answered yet. Reporting without acting is what that state needs: the
+    # process is up and retrying, and restarting it would only start the same wait again.
+    #
     # node rather than curl or wget, because the image is node:22-alpine and has neither. `r.ok` is
     # false for the 503 a degraded service answers, which is the point.
     #
@@ -300,7 +359,11 @@ services:
       # Three consecutive failures, so one dropped segment upload does not flap `docker ps` on its
       # own: SEGMENT_FAILURE_THRESHOLD is 1 and it clears on the next segment that lands.
       retries: 3
-      # Long enough for StreamCatalog.init to finish its feed lookup against a cold bee node.
+      # Long enough for StreamCatalog.init to finish its feed lookup against a cold bee node. That
+      # lookup now happens behind the listener rather than in front of it, so what this buys is a
+      # container that is not marked unhealthy while it reads a node that is merely slow. A node that
+      # is not there at all outlasts this and the container says `(unhealthy)` while it waits, which
+      # is the honest reading: /health says `waiting_for_node` and names the node.
       start_period: 30s
 
   # --- React Client (viewer) ---
@@ -350,11 +413,20 @@ services:
     # Same port on both sides, because the entrypoint now binds SRS to these values rather than to
     # the fixed ones its config used to carry. Mapping a shifted host port onto a fixed container
     # port would leave the mapping pointing at nothing.
+    #
+    # The two ingest ports below stay on every interface: a broadcaster dials them from wherever they
+    # are. The two HTTP ones take a bind address for the same reason the Bee APIs do. SRS's control
+    # API has no authentication of any kind, and `/api/v1/streams` names every live stream as
+    # `app/stream`, which is the id an ingest URL and a publish key are built from, while
+    # `/api/v1/clients` names every publisher's and every viewer's address. The file server serves the
+    # segment directory itself, so a broadcast is watchable straight off this host. Both default to
+    # every interface, which is what they have always done, and every documented use of the API is a
+    # curl run on the host. See the paragraph in `.env.sample` beside the Bee binds.
     ports:
       - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
       - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
-      - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
-      - '${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
+      - '${SRS_HTTP_BIND:-0.0.0.0}:${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
+      - '${SRS_HTTP_API_BIND:-0.0.0.0}:${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
@@ -402,7 +474,10 @@ services:
       # mode 2.117 and spread 1.861-2.219 against a clean 2.000 with room. 5.0 gives **2.5s**, which
       # is the ceiling latbench has run all along. See
       # `docs/bench/shipped-fragment-validation-2026-08-12.md`.
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
+      # In seconds, and derived into SRS's own ratio by the entrypoint. Set HLS_AOF_RATIO to drive
+      # that ratio directly instead, which the deploy/scripts probes do.
+      HLS_SEGMENT_MAX: ${HLS_SEGMENT_MAX:-2.5}
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
       # The ABR ladder, read by the SRS entrypoint. Off by default.
@@ -431,9 +506,12 @@ services:
     # the configured port rather than to a fixed one. A mapping from a fixed container port hid the
     # fact that these two variables never reached the container at all, which `network_mode: host`
     # then exposed by discarding the mapping. See OPS-30.
+    #
+    # The HLS port serves the segments themselves, so it takes a bind address the way SRS's two HTTP
+    # ports do. The SRT port is ingest and stays on every interface.
     ports:
       - '${OME_SRT_PORT:-10080}:${OME_SRT_PORT:-10080}/udp'
-      - '${OME_HLS_PORT:-8081}:${OME_HLS_PORT:-8081}'
+      - '${OME_HTTP_BIND:-0.0.0.0}:${OME_HLS_PORT:-8081}:${OME_HLS_PORT:-8081}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:

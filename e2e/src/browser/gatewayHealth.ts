@@ -83,7 +83,7 @@ const MS_PER_MINUTE = 60_000;
  * until each peer stops serving it, so the signature of a starved node is not one deep debt but many
  * peers at a **common** depth: the ceiling, seen from below.
  */
-export interface PeerAccounting {
+interface PeerAccounting {
   /** Peers bee holds a balance for. Larger than the connected count, since a balance outlives a link. */
   peers: number;
   /** Peers this node owes, having taken more than it has given. */
@@ -138,7 +138,7 @@ export interface GatewaySample {
   accounting: PeerAccounting | null;
 }
 
-export interface GatewayMinute {
+interface GatewayMinute {
   minute: number;
   samples: number;
   /** Median rather than mean, so one slow sample does not carry a minute. */
@@ -328,7 +328,7 @@ function availableBzz(line: string): number | null {
 }
 
 /** How a sample reaches the host. Injected so the loop above it is testable without one. */
-export type GatewayReader = () => Promise<string>;
+type GatewayReader = () => Promise<string>;
 
 /**
  * ⛔ `cfg.localHostAddress` rather than a loopback literal, because these five reads are one shell
@@ -350,12 +350,12 @@ export async function sampleGatewayWith(read: GatewayReader, atMs: number): Prom
   }
 }
 
-export interface GatewaySampling {
+interface GatewaySampling {
   /** Stop sampling and hand back everything collected. Safe to call more than once. */
   stop: () => Promise<GatewaySample[]>;
 }
 
-export interface GatewaySamplingOptions {
+interface GatewaySamplingOptions {
   read: GatewayReader;
   intervalMs?: number;
   now?: () => number;

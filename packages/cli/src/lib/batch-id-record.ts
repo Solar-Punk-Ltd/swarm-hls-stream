@@ -6,7 +6,7 @@ import { writeEnvKey } from './env-writer.js';
 
 export const STAMP_ENV_KEY = 'STAMP';
 
-export interface BatchIdRecord {
+interface BatchIdRecord {
   /** Every location the id was successfully written to, best first. Empty means it is only on screen. */
   writtenTo: string[];
   /** Why the `.env` write failed, when it did. Callers surface this rather than swallowing it. */

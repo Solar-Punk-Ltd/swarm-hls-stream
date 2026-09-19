@@ -219,6 +219,18 @@ themselves are the check on it.
 
 ## Phase 0.6 ✅ MEASURED AT BOTH PROFILES — light against ultra-light
 
+⛔⛔ **Levi ruled the other way on 2026-09-15 and nothing in this section was rewritten.**
+`deploy/docker-compose.yml` ships the viewer gateway ultra-light and unfunded, with the cost stated
+beside it as LAT-10: such a node has no chequebook, lives on the free bandwidth allowance alone, and a
+viewer polling it sees the feed freeze 30 to 48s at a time. Since 2026-09-17 (T27) the two flags are
+settings, `BEE_GATEWAY_RPC_ENDPOINT` and `BEE_GATEWAY_SWAP_ENABLE`, empty and false by default, so a
+gateway created on the chain is two keys in the env file rather than an edit to the compose file. So
+everything below is the answer as it stood before that ruling, and a reader of this section alone
+would conclude the shipped gateway is funded. The label correction that goes with it is about 170
+lines down, under "Label correction, 2026-09-15": arm U was a light node with swap off rather than
+an ultra-light one, because bee decides ultra-light on an empty `--blockchain-rpc-endpoint` and
+every gateway measured here carried one.
+
 ⛔ **The standing answer: do not ship an unfunded viewer gateway.** Not because it breaks every time,
 it does not, but because the margin is thin and the variation an operator cannot control is wider
 than the margin.
@@ -405,13 +417,20 @@ direction and not a size.
 
 ### The comparison
 
-Flip is one env value and a redeploy: `BEE_GATEWAY_SWAP_ENABLE` in `.env.<profile>`, then
-`deploy.sh --profile=latbench --portSlot=7 bee-gateway`.
+Flip is two env values and a redeploy: `BEE_GATEWAY_RPC_ENDPOINT` and `BEE_GATEWAY_SWAP_ENABLE`
+together in `.env.<profile>`, both set for the light arm and both empty or absent for the ultra-light
+one, then `deploy.sh --profile=latbench --portSlot=7 bee-gateway`. Swap on with no endpoint is a node
+bee refuses to start. `deploy/scripts/retrieval-debt-probe.sh` and
+`deploy/scripts/phase06-light-vs-ultralight.sh` write both halves for you.
 
-| arm   | gateway                                                    |
-| ----- | ---------------------------------------------------------- |
-| **L** | `--swap-enable=true`, funded chequebook. What ships today. |
-| **U** | `--swap-enable=false`, no chequebook. bee's ultra-light.   |
+| arm   | gateway                                                                                               |
+| ----- | ----------------------------------------------------------------------------------------------------- |
+| **L** | endpoint set and `--swap-enable=true`, funded chequebook. The mode of a gateway created on the chain. |
+| **U** | no endpoint and `--swap-enable=false`, no chequebook. bee's ultra-light, and what ships today.        |
+
+⛔ **Label correction, 2026-09-15.** Arm U above was a light node with swap off, not ultra-light: bee decides
+ultra-light on an empty `--blockchain-rpc-endpoint`, and every gateway here carried one. The comparison stands as
+funded against unfunded light node. See the correction note in `docs/bench/light-vs-ultra-light-2026-08-06.md`.
 
 **Interleave L, U, L, U in one sitting.** Two sittings of one configuration have differed by 1.05s,
 which is larger than most effects this project chases, so arms compared across sittings are not

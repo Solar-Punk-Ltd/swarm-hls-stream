@@ -15,7 +15,7 @@ import {
   frozenOverlayRefusal,
   resumeRefusal,
 } from '../../src/harness/crashArm.js';
-import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, waitForIdle } from '../../src/harness/host.js';
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -132,7 +132,7 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     // success without unfreezing anything. The driver does this itself from a `finally` inside the
     // browser container, which an arm killed by the harness timeout never reaches, and a bee node
     // left frozen holds the postage batch every measurement on this host is paid for with.
-    await host.unpause(broken).catch(() => undefined);
+    await host.unpause(broken).catch(reportFailedRestore(broken));
   });
 
   it('is watching an unbroken timeline again once the node is unpaused', async () => {

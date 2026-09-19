@@ -47,15 +47,22 @@ P2P_PORT="${UNFUNDED_P2P_PORT:-10088}"
 # Matches the stack's bee, so the two arms differ in funding and in nothing else.
 IMAGE="${UNFUNDED_IMAGE:-ethersphere/bee:2.8.2}"
 
-# ⛔⛔ THE STACK'S GATEWAY USES A LOCAL RPC, NOT A PUBLIC ONE. Read off the running container:
-# `--blockchain-rpc-endpoint=http://127.0.0.1:9000`. A first version of this script defaulted to
-# `https://rpc.gnosischain.com`, which is a different node, a different latency and a public rate
-# limit, and it would have been a second difference between the arms on top of the funding.
-RPC_ENDPOINT="${RPC_ENDPOINT:-http://127.0.0.1:9000}"
+# ⛔⛔ EMPTY IS WHAT MAKES THIS NODE ULTRA-LIGHT, and it is the treatment rather than a second
+# difference between the arms. Bee decides the mode on this flag and on nothing else: `--full-node=false`
+# with an empty endpoint is ultra-light, the same flag with any endpoint at all is a plain light node,
+# and `--swap-enable` does not enter the decision (bee's `isChainEnabled`, pkg/node/node.go). This
+# defaulted to the stack gateway's local rpc at http://127.0.0.1:9000, so every arm this script ever
+# stood up was a light node with swap off rather than the ultra-light viewer it is named for.
+#
+# ⚠️ Its own name rather than the shared RPC_ENDPOINT, because the deployment host exports that for the
+# stack and this script would then pick up a chain without anybody choosing one. Set it only for a node
+# deliberately meant to run on a chain.
+UNFUNDED_RPC_ENDPOINT="${UNFUNDED_RPC_ENDPOINT-}"
 
-# ⛔⛔⛔ EVERY FLAG THE FUNDED GATEWAY CARRIES, so the two arms differ in `--swap-enable` and NOTHING
-# ELSE. Read off `docker inspect latbench-bee-gateway-1` rather than copied from the compose file,
-# because the compose file is a template and the running container is what the funded arm actually is.
+# ⛔⛔⛔ EVERY FLAG THE FUNDED GATEWAY CARRIES, so the two arms differ in the chain backend, and in the
+# chequebook that rides on it, and in NOTHING ELSE. Read off `docker inspect latbench-bee-gateway-1`
+# rather than copied from the compose file, because the compose file is a template and the running
+# container is what the funded arm actually is.
 #
 # ⭐ `--cors-allowed-origins` is not optional decoration here: the viewer fetches from a browser, so
 # without it every retrieval in the unfunded arm fails at the preflight and the arm reads as a node
@@ -112,6 +119,13 @@ peer_count() {
     python3 -c 'import sys,json;print(len(json.load(sys.stdin).get("peers",[])))' 2>/dev/null
 }
 
+# What the node says it is. bee fills this from the mode decision itself, so it reads `ultra-light`,
+# `light` or `full` and is the only thing on the api that tells the first two apart.
+bee_mode() {
+  curl -s --max-time 10 "http://127.0.0.1:${API_PORT}/status" 2>/dev/null |
+    python3 -c 'import sys,json;print(json.load(sys.stdin).get("beeMode",""))' 2>/dev/null
+}
+
 start_node() {
   if exists; then
     say "REFUSING: ${CONTAINER} already exists. Stop it first rather than racing a node that may"
@@ -152,9 +166,11 @@ start_node() {
     say "  wrote a fresh password file, which this node needs to boot and which protects nothing"
   fi
 
-  # ⭐ `--swap-enable=false` with `--full-node=false` is bee's ultra-light mode: no chequebook at all,
-  # so no way to pay a peer for bandwidth, so it lives on the free allowance alone. That is precisely
-  # the viewer this project ships to and has never once measured.
+  # ⭐ `--full-node=false` with an EMPTY `--blockchain-rpc-endpoint` is bee's ultra-light mode: no chain
+  # backend, so no chequebook at all, so no way to pay a peer for bandwidth and it lives on the free
+  # allowance alone. That is precisely the viewer this project ships to. `--swap-enable=false` is here
+  # because the funded arm carries the same flag turned on, and it decides the chequebook rather than
+  # the mode.
   docker run -d \
     --name "${CONTAINER}" \
     --restart no \
@@ -165,7 +181,7 @@ start_node() {
     start \
     "--api-addr=:${API_PORT}" \
     "--p2p-addr=:${P2P_PORT}" \
-    "--blockchain-rpc-endpoint=${RPC_ENDPOINT}" \
+    "--blockchain-rpc-endpoint=${UNFUNDED_RPC_ENDPOINT}" \
     "--password-file=${PASSWORD_FILE_IN_CONTAINER}" \
     --full-node=false \
     --swap-enable=false \
@@ -196,9 +212,11 @@ wait_warm() {
   return 1
 }
 
-# ⛔ Reads the chequebook deliberately, because ITS ABSENCE IS THE ARM. An ultra-light node has no
-# chequebook and answers non-200, and every funding gate in this repo has to be told that here that is
-# the treatment rather than a shortfall.
+# ⛔ Reads the mode the node reports for itself, because THAT IS THE ARM. A chequebook error used to
+# stand in for it and cannot tell the two nodes apart: a plain light node with `--swap-enable=false` has
+# no chequebook either and answers `405 chain disabled` exactly as an ultra-light one does, so this check
+# passed a light node for as long as the script pointed at an rpc. `/status` carries `beeMode`, which bee
+# fills from the mode decision itself.
 report_status() {
   # ⛔⛔⛔ Non-zero, because this exit code is what a sitting gates its arms on. A missing node is
   # emphatically not "an unfunded gateway", and answering zero here would be a gate stuck OPEN: the
@@ -209,26 +227,23 @@ report_status() {
     say "${CONTAINER} is not running, so there is no unfunded arm to measure"
     return 1
   fi
-  local peers code
+  local peers code mode
   peers="$(peer_count)"
   say "${CONTAINER} up on ${API_PORT}, ${peers:-unknown} peers"
 
   # ⛔ Read as a STATUS CODE, not as a curl exit code. `curl -s` exits 0 for any HTTP response it
-  # received, including a 405, so the first version of this check called a correctly ultra-light node
-  # "not the arm". Found against the real node, which no stub would have shown.
+  # received, so a check on curl's own exit status learns nothing. Found against the real node, which no
+  # stub would have shown.
   #
-  # ⛔⛔ And there are THREE answers here, not two. A booting node returns 503 "Node is syncing",
-  # which says nothing about whether it has a chequebook. Collapsing that into either verdict would
-  # either clear a node nobody has checked or reject one that is merely young.
+  # ⛔⛔ And there are THREE answers before a mode is read at all. A booting node returns 503 "Node is
+  # syncing" and says nothing about its mode, for three minutes on a fresh volume. Collapsing that into
+  # either verdict would either clear a node nobody has checked or reject one that is merely young.
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-    "http://127.0.0.1:${API_PORT}/chequebook/balance" 2>/dev/null)"
+    "http://127.0.0.1:${API_PORT}/status" 2>/dev/null)"
   case "${code}" in
-    200)
-      say "  ⚠️ it ANSWERED /chequebook/balance, so it has one and this is NOT the unfunded arm"
-      return 1
-      ;;
+    200) ;;
     503)
-      say "  still syncing (503), so whether it is ultra-light cannot be read yet. Not ready."
+      say "  still syncing (503), so what mode it is in cannot be read yet. Not ready."
       return 1
       ;;
     '' | 000)
@@ -236,10 +251,18 @@ report_status() {
       return 1
       ;;
     *)
-      say "  no chequebook (HTTP ${code}), which is the arm: it lives on the free allowance alone"
-      return 0
+      say "  /status answered HTTP ${code}, which is neither a mode nor a node that is merely young"
+      return 1
       ;;
   esac
+
+  mode="$(bee_mode)"
+  if [ "${mode}" != "ultra-light" ]; then
+    say "  ⚠️ it reports beeMode '${mode:-unreadable}', NOT ultra-light, so this is NOT the unfunded arm"
+    return 1
+  fi
+  say "  beeMode ultra-light, which is the arm: no chequebook at all, so it lives on the free allowance alone"
+  return 0
 }
 
 stop_node() {

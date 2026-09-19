@@ -19,7 +19,7 @@
  * directory exists to avoid.
  */
 
-export interface UnservedResolution {
+interface UnservedResolution {
   ref: string;
   /** Milliseconds from the refusal to the ask that worked, or null if none did inside the budget. */
   resolvedAfterMs: number | null;
@@ -36,7 +36,7 @@ export interface UnservedWatchOptions {
 }
 
 /** Asks the gateway for a segment once. Resolves if it served it, rejects if it did not. */
-export type AskOnce = (ref: string) => Promise<void>;
+type AskOnce = (ref: string) => Promise<void>;
 
 export class UnservedSegmentWatch {
   private readonly running = new Set<Promise<void>>();

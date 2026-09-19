@@ -37,11 +37,12 @@ In production builds or when pointing to a remote gateway, requests go directly 
 
 ## Environment Variables (in root `.env`)
 
-| Variable              | Required | Description                                                       |
-| --------------------- | -------- | ----------------------------------------------------------------- |
-| `VITE_READER_BEE_URL` | Yes      | Bee node URL for fetching streams                                 |
-| `VITE_APP_OWNER`      | Yes      | Feed owner address (hex, no 0x prefix)                            |
-| `VITE_APP_RAW_TOPIC`  | Yes      | Feed topic for the stream catalog, must match `STREAM_LIST_TOPIC` |
+| Variable              | Required | Description                                                                                                                                                                  |
+| --------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_READER_BEE_URL` | Yes      | Bee node URL for fetching streams                                                                                                                                            |
+| `VITE_APP_OWNER`      | Yes      | Feed owner address (hex, no 0x prefix)                                                                                                                                       |
+| `VITE_APP_RAW_TOPIC`  | Yes      | Feed topic for the stream catalog, must match `STREAM_LIST_TOPIC`                                                                                                            |
+| `VITE_EXPOSE_PLAYER`  | No       | Test builds only. Puts the player, gateway and fetch-backend handles on `window` for the e2e browser suites. No shipping build sets it, and `bundle.test.ts` holds that line |
 
 ## The build stamp
 
@@ -62,7 +63,7 @@ hashes, which that gate reads as a client predating the stamp and answers with a
 ## Features
 
 - **Stream Browser**: Fetches the stream catalog from Swarm feeds, displays up to 10 streams sorted by state (live first) and timestamp
-- **Stream Preview**: The catalog entry's uploaded `thumbnail` when it has one, otherwise a frame decoded from the stream's first segment; live/upcoming badges, duration display
+- **Stream Preview**: The catalog entry's uploaded `thumbnail` when it has one, otherwise a frame decoded from the stream's first segment. Includes live and upcoming badges plus duration display
 - **Scheduled streams**: An entry whose `state` is `scheduled` has been announced but never broadcast, so nothing is written under its topic yet. Its card renders the uploaded image or the placeholder and never probes for a manifest, and its watch page says the stream has not started instead of starting a player against a feed that does not exist
 - **HLS Playback**: Video and audio stream playback via custom hls.js loaders
 - **Gateway Selector**: Runtime Bee node URL switching via UI modal, persisted to localStorage
@@ -83,9 +84,20 @@ Append `?level=<rung>` to a stream watcher URL to pin playback to one rung (`?le
 
 ### Rungs share a timeline, and the viewer passes it through untouched
 
-Two lines per segment say when its media happened: `#EXT-X-MEDIA-SEQUENCE`, which counts from 0 at the broadcast's first segment, and a per-segment `#EXT-X-PROGRAM-DATE-TIME`. The publisher derives both from **one anchor the whole ladder shares**, so segment N of 360p and segment N of 1080p carry the same pair of numbers and hls.js can land a level switch on the same instant. Every rung is transcoded from one source with keyframes forced to the same timestamps, which is what makes segment N the same interval on all of them. The full contract is in [the uploader's README](../stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+A playlist's `#EXT-X-MEDIA-SEQUENCE` says how its entries are numbered, and each entry has its own
+`#EXT-X-PROGRAM-DATE-TIME`. Inside a broadcast, every rung derives its session-local sequence and
+date-time from one shared anchor. A rung topic can outlive an uploader session, so the published media
+sequence may also include an offset read from that rung's previous feed head. That offset keeps the
+feed moving forwards and does not enter the dating. Every rung is transcoded from one source with
+keyframes forced to the same timestamps, so the date-time still identifies the same media across
+levels even when their feed histories gave them different published offsets. The full contract is in
+[the uploader's README](../stream-uploader/README.md#the-manifest-contract-timestamps-and-continuous-published-numbering).
 
-`ManifestStateManager` **passes both through exactly as the publisher wrote them**. It keeps the headers of the first playlist a viewer ever reads, so its `EXT-X-MEDIA-SEQUENCE` stays the sequence of the oldest segment that viewer holds for the whole session, and it re-emits each segment's own date-time with that segment. Recomputing either per viewer is what puts four rungs back into disagreement: a viewer who joined mid-broadcast holds a window that starts later than one who joined at the top, and rewriting both to 0 is exactly the claim that they cover the same instant.
+`ManifestStateManager` **passes both through exactly as the publisher wrote them**. It keeps the
+headers of the first playlist a viewer ever reads, so its `EXT-X-MEDIA-SEQUENCE` stays the sequence of
+the oldest segment that viewer holds for the whole session. It also re-emits each segment's own
+date-time with that segment. Recomputing either per viewer would detach the playlist from its feed
+history or from the media clock shared by the rungs.
 
 A recording published before the uploader stamped its segments carries no date-time, and the viewer emits none for it rather than inventing one.
 

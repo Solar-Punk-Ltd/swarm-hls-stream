@@ -44,7 +44,7 @@ export function screenshotDirFor(runId: string): string {
  * carries the timing distribution. The aggregate the report prints is computed over **every**
  * request before any of this, so no figure changes.
  */
-export const MAX_LOGGED_SUCCESSES = 5_000;
+const MAX_LOGGED_SUCCESSES = 5_000;
 
 const succeeded = (status: number | null): boolean => status !== null && status < 400;
 
@@ -66,7 +66,7 @@ export function thinRequestLog<T extends { status: number | null }>(records: rea
   return records.filter((record) => (succeeded(record.status) ? kept++ % everyNth === 0 : true));
 }
 
-export interface RunArtifacts {
+interface RunArtifacts {
   /** The rendered report, which is the thing a person reads. */
   markdown: string;
   /** Everything the run collected, so a question nobody thought to ask can still be answered later. */

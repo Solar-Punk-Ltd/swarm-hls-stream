@@ -2,6 +2,8 @@
 
 Branch `feature/uploader-hardening` @ `f146588`. Audit date 2026-07-29.
 
+**Historical, marked 2026-09-16.** This is the findings register of the July 2026 hardening sprint, which closed in August. Its file paths, script names and line numbers are those of `f146588`, and many have moved or gone since (`engines/ome.ts` and `engines/srs.ts` live under `packages/stream-uploader/src/engines/`, the CLI under `packages/cli/`, and `pnpm audit`, `srs:up` and `start:uploader` are no longer scripts). Read it as the record of what was found and decided, never as a map of the tree.
+
 Ten parallel read-only audits covering: core write-path concurrency, the two engine plugins, API and
 security surface, the React client, CLI and deploy shell, test quality, docs correctness,
 Swarm and hls.js library capability, architecture and patterns, and silent failures.
@@ -156,7 +158,7 @@ not on this path.
 
 ### Three rules that keep it from growing back
 
-1. **`review-gate.md` is frozen.** No edits unless a pull request is actually blocked by it. A protocol
+1. **`review-gate.md` is frozen** (and removed on 2026-09-16 on the owner's word, once its branch was merged and gone). No edits unless a pull request is actually blocked by it. A protocol
    defect gets one archived row and the session moves on. It is a control, and a control that needs
    continuous maintenance is not controlling anything.
 2. **A protocol finding is capped at MEDIUM**, unless it lets a production defect through undetected.
@@ -512,7 +514,7 @@ residual harm is a two second overlay flash.
 ## Deferred lenses
 
 A lens the surface selected, that did not run before the merge, under
-[what blocks a merge](./review-gate.md#what-blocks-a-merge-and-what-only-files-a-row). **Exactly two
+what blocks a merge in `review-gate.md`, the gate document removed on 2026-09-16 on the owner's word and kept in git history. **Exactly two
 lenses may appear here, mutation triage and test integrity.** Anything else in this table is a rule
 violation rather than a deferral.
 
@@ -524,7 +526,7 @@ reason R5 built a register instead of trusting the timeline.
 **A row closes when a later round runs that lens on the same surface**, which is the next pull request
 touching it. **The S3 gate on 2026-08-01 is the first sprint exit this project has reached**, and it
 cleared the only open row. **An open row here fails the sprint exit gate**, which is enumerated in
-[the handoff](./2026-07-29-hardening-handoff.md) as its single home.
+the handoff, `2026-07-29-hardening-handoff.md`, as its single home. That file was removed on 2026-09-16 with the sprint long over, and git history keeps it.
 
 | PR  | Lens            | Surface                        | Deferred on | Cleared by                                    |
 | --- | --------------- | ------------------------------ | ----------- | --------------------------------------------- |
@@ -971,7 +973,7 @@ fails YAGNI here.
 
 Reworks feed back into a re-audit with real acceptance criteria. **The procedure lives in exactly one
 place:** the working protocol and the sprint exit gate in
-[`2026-07-29-hardening-handoff.md`](./2026-07-29-hardening-handoff.md). Follow it there.
+`2026-07-29-hardening-handoff.md`, removed on 2026-09-16 with the sprint over and kept in git history.
 
 This section used to carry its own copy of both, which is how they drifted. The sprint exit gate gained
 the full-catalogue deep run as a fifth condition and this copy stayed at four, while still naming Copilot
@@ -997,3 +999,16 @@ current HEAD, produces numbers that cannot distinguish a healthy system from a s
 - Coverage baseline unknown until S0.3.
 - Latency baseline unknown until S5.1.
 - bee-js resolved version and per-call-site break list unverified, see S6.3.
+
+## Correction, 2026-09-15: the gateway's "ultra-light" arms were light nodes with swap off
+
+The LAT-10 row says the funded gateway "moved from bee's `ultra-light` mode to `light`". Under bee's
+actual rule (`pkg/node/node.go`, `isChainEnabled`: `--full-node=false` plus an EMPTY
+`--blockchain-rpc-endpoint` is ultra-light, and `--swap-enable` plays no part) it was `light` both
+times, because the compose gateway always carried an endpoint. Flipping swap changed whether the node
+had a chequebook, never its mode. Every "ultra-light" verification in this repository read
+`/chequebook/balance` answering `405 chain disabled`, which a light node with swap off answers
+identically, so the label could not be caught. The measurements stand as funded against unfunded
+LIGHT node. A true ultra-light gateway has not been measured. Fixed on 2026-09-15: the gateway's chain
+endpoint is hard-coded empty, under Levi's ruling that a viewer node is always ultra-light, and
+`unfunded-gateway.sh` reads `/status` `beeMode`.

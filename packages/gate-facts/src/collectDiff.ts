@@ -41,7 +41,7 @@ async function git(args: string[]): Promise<string> {
  * machine and not on the runner. Failing over to `origin/` makes the same invocation work in both,
  * and failing loudly when neither resolves beats measuring against nothing.
  */
-export async function resolveBase(base: string): Promise<string> {
+async function resolveBase(base: string): Promise<string> {
   for (const candidate of [base, `origin/${base}`]) {
     const check = await run('git', ['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]);
     if (check.exitCode === 0) {

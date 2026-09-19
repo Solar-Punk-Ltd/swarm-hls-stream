@@ -3,6 +3,34 @@ import { BroadcastAnchor, BroadcastEpoch } from '../types.js';
 const MS_PER_SECOND = 1000;
 
 /**
+ * How far a segment's measured length may sit from the configured one and still be dated as that
+ * configured length.
+ *
+ * **What it is: the rounding band of one keyframe grid seen by several encoders.** Under
+ * `ABR_ENABLED` every rung is re-encoded from one source with a keyframe forced every
+ * `ABR_FPS x HLS_FRAGMENT` frames, and SRS cuts on that keyframe, so all four rungs are cutting the
+ * same instants of media. What separates their readings is 90kHz tick rounding at a frame rate that
+ * does not divide it, which is a fraction of a percent. One percent covers that with room and
+ * nothing else, which is the whole job: every rung reads the same segment as the configured length,
+ * so all four date it identically while each publishes its own `#EXTINF`.
+ *
+ * ⛔ **What it is NOT: `FRAGMENT_TOLERANCE` from `fragmentAgreement.ts`, and the two are different
+ * numbers on purpose.** That one answers a different question, whether this stage is misconfigured,
+ * and it is five percent because it has to survive a segment SRS force-closed at
+ * `HLS_FRAGMENT x HLS_AOF_RATIO` without calling a correct deployment broken. Borrowing it here
+ * would leave real media unmeasured: a segment of 2.067 seconds against a configured 2 is inside
+ * five percent, so it would be dated as 2.000 and its 67 milliseconds lost, every segment, which is
+ * about two minutes an hour. That is the exact live stream this dating exists to fix, measured
+ * 2026-09-15.
+ *
+ * The consequence, both ways. A measured duration within one percent of the configured length is
+ * read as the configured length, so the rungs of a ladder stay identical to the millisecond.
+ * Anything wider is read as itself, rounded to the millisecond, so a recording says what its media
+ * really did.
+ */
+export const DATING_SNAP_TOLERANCE = 0.01;
+
+/**
  * How far the dating a restart already minted may sit from the wall clock and still be read as that
  * same restart.
  *
@@ -49,14 +77,72 @@ function dateOnLine(epoch: BroadcastEpoch, sequence: number, fragmentSeconds: nu
 }
 
 /**
- * When the segment at this playlist sequence is presented, in epoch milliseconds.
+ * When the segment at this playlist sequence is presented, counting every sequence below it as one
+ * configured fragment of media.
  *
- * Derived and never observed. Not the time the segment arrived, and not its own `#EXTINF`: four rung
- * uploaders stamping their own readings would disagree about the same media by their upload jitter.
- * See {@link BroadcastAnchor}.
+ * What the dating was before it followed the media, and still the answer in the two places where no
+ * media is there to follow: the first segment placed at or after an epoch, and a sequence nothing
+ * has been placed below. {@link presentationMsOf} dates a segment that has media in front of it.
  */
 export function programDateTimeMsOf(anchor: BroadcastAnchor, sequence: number): number {
   return dateOnLine(epochFor(anchor, sequence), sequence, anchor.fragmentSeconds);
+}
+
+/**
+ * The media one segment contributes to the date of the one after it, in milliseconds.
+ *
+ * ⛔ **A measurement inside {@link DATING_SNAP_TOLERANCE} of the configured length is read AS the
+ * configured length, and that is what keeps a ladder's rungs agreeing to the millisecond.** Every
+ * rung of one ladder is cut on one keyframe grid, so what separates their readings of a segment is
+ * tick rounding rather than media, and reading all of those as the configured length makes four
+ * rungs date one piece of media identically while each keeps its own `#EXTINF`.
+ *
+ * Outside that band the segment is read as itself. That is the single-rendition stage, where the
+ * publisher's own keyframe interval decides the segment and `HLS_FRAGMENT` is a floor: segments
+ * measured 2.067 to 10.033 seconds against a configured 2 on 2026-09-15, and dating each of them at
+ * 2.000 put the recording's wall clock further behind its own media with every segment, permanently.
+ */
+export function datedDurationMs(measuredSeconds: number, fragmentSeconds: number): number {
+  const onTheGrid = Math.abs(measuredSeconds - fragmentSeconds) <= fragmentSeconds * DATING_SNAP_TOLERANCE;
+  return Math.round((onTheGrid ? fragmentSeconds : measuredSeconds) * MS_PER_SECOND);
+}
+
+/** A segment already placed in the broadcast, as the dating reads one. */
+export interface PlacedMedia {
+  sequence: number;
+  /** When it is presented, as {@link presentationMsOf} decided when it was placed. */
+  presentedAtMs: number;
+  /** Its own measured `#EXTINF`, in seconds. */
+  durationSeconds: number;
+}
+
+/**
+ * When the segment at `sequence` is presented, given the newest segment placed below it.
+ *
+ * ⛔ **Decided from the shared anchor plus the media in front of it, never from an arrival time.**
+ * Four rung uploaders stamping the clock they received a segment at would disagree about the same
+ * media by their upload jitter, and hls.js reads that as the rungs covering different media.
+ *
+ * A sequence between the two carries no media anybody observed, so it is charged the configured
+ * length. That is also the `#EXTINF` its own `#EXT-X-GAP` entry declares, so a hole says the same
+ * length it occupies.
+ *
+ * `previous` is null where nothing has been placed below `sequence`, and a `previous` that sits
+ * below the epoch dating `sequence` is media from before a restart. Both take the epoch's own
+ * arithmetic, which is what re-anchoring on the wall clock means.
+ */
+export function presentationMsOf(anchor: BroadcastAnchor, sequence: number, previous: PlacedMedia | null): number {
+  const epoch = epochFor(anchor, sequence);
+  if (previous === null || previous.sequence < epoch.fromSequence) {
+    return dateOnLine(epoch, sequence, anchor.fragmentSeconds);
+  }
+
+  const lost = sequence - previous.sequence - 1;
+  return (
+    previous.presentedAtMs +
+    datedDurationMs(previous.durationSeconds, anchor.fragmentSeconds) +
+    Math.round(lost * anchor.fragmentSeconds * MS_PER_SECOND)
+  );
 }
 
 /**
@@ -136,11 +222,19 @@ interface ReanchorDecision {
  * re-anchoring, so the first restart of a broadcast always re-anchors, which is the lag this whole
  * shape exists to remove.
  *
- * The floor applies to a minted epoch and not to a reused one. Minting takes the wall clock, and a
- * dating that had run ahead of it would be pulled backwards, which hls.js reads as a parsing error
- * rather than as a restart. A reused line needs no floor: every rung was on one line before the
- * restart too, and the minter's floor already puts the line at or after the date its own resuming
- * sequence would have carried, so a rung any number of sequences behind lands at or after its own.
+ * ⛔ **The floor applies to both branches, because a line is grid arithmetic and the media is not.**
+ * A minted epoch takes the wall clock, and a reused one is {@link dateOnLine}, which steps by the
+ * configured fragment length from where the line was written down. Neither knows what the asking
+ * rung's media actually did. Since the dating started following the media, a rung whose segments run
+ * longer than `HLS_FRAGMENT` has stamped its playlist past that arithmetic, by the overrun times the
+ * segments since, so the line can name an instant behind the segment already in front of the one
+ * resuming. `notBeforeMs` is the caller's own account of the date that sequence would have carried,
+ * read off its media rather than off the grid, which is why it is the floor for either answer.
+ *
+ * What a floorless join cost, on the stage measured 2026-09-15 (`HLS_FRAGMENT=2`, segments really
+ * 2.067 seconds): about 67 milliseconds of backwards movement per segment since the restart the line
+ * belongs to, up to the tolerance below. A date that goes backwards is not a late date. hls.js reads
+ * it as a parsing error rather than as a restart, and a recording is sealed with it for ever.
  */
 export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorRequest): ReanchorDecision {
   const { resumeAt, nowMs, notBeforeMs } = request;
@@ -149,7 +243,7 @@ export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorReque
   if (minted !== undefined) {
     const onTheSameLine = dateOnLine(minted, resumeAt, anchor.fragmentSeconds);
     if (Math.abs(onTheSameLine - nowMs) <= SAME_RESTART_TOLERANCE_MS) {
-      return { epoch: { fromSequence: resumeAt, atMs: onTheSameLine }, joined: true };
+      return { epoch: { fromSequence: resumeAt, atMs: Math.max(onTheSameLine, notBeforeMs) }, joined: true };
     }
   }
 

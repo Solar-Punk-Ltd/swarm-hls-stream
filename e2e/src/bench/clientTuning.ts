@@ -37,7 +37,7 @@ export const LIVE_MAX_LATENCY_DURATION_S = 2 * LIVE_SYNC_DURATION_S;
 /** Where the mirrored values live, for the test that compares them and for a report to cite. */
 export const PLAYER_CONFIG_PATH = 'packages/client/src/components/SwarmHlsPlayer/playerConfig.ts';
 
-export interface MirroredPlayerConstant {
+interface MirroredPlayerConstant {
   /** The name the client exports it under, which is what the drift guard looks for. */
   clientExport: string;
   value: number;

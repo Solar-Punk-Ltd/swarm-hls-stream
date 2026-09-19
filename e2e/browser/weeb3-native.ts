@@ -310,7 +310,7 @@ async function readSqueezeSample(page: Page): Promise<Sample> {
  *
  * @param text `document.body.innerText` of weeb-3's page, log panel open.
  */
-export function tallySegments(text: string): SegmentTally {
+function tallySegments(text: string): SegmentTally {
   const states = [...text.matchAll(/hls-segment\s+\w+\s+\[(\w+)\]/g)].map((m) => m[1]);
   const sized = [...text.matchAll(/size ([\d.]+) MB, duration ([\d.]+) s(?:, resolution (\S+))?/g)].map((m) => ({
     mb: Number(m[1]),
@@ -341,7 +341,7 @@ async function readSegmentTally(page: Page): Promise<SegmentTally> {
  * next person who hits it. ⭐ Contact is still reported, because a host that appears here at all is
  * something nobody predicted.
  */
-export function offShellTraffic(records: readonly RequestRecord[]): {
+function offShellTraffic(records: readonly RequestRecord[]): {
   contacted: Record<string, number>;
   servedBytes: Record<string, number>;
 } {

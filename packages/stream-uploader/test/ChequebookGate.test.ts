@@ -12,6 +12,8 @@ import {
   FundingLogger,
   PLUR_PER_BZZ,
 } from '../src/libs/ChequebookGate.js';
+import { GateRefusalError } from '../src/libs/GateRefusalError.js';
+import { GateRefusal } from '../src/libs/StartGates.js';
 
 const FLOOR_PLUR = bzzToPlur(0.5);
 
@@ -87,7 +89,7 @@ describe('the chequebook gate', () => {
     });
     await assert.rejects(() => gate.assertFunded(), { message: /0\.1000 BZZ/ });
     await assert.rejects(() => gate.assertFunded(), { message: /0\.5000 BZZ/ });
-    await assert.rejects(() => gate.assertFunded(), { message: /refuses to run/ });
+    await assert.rejects(() => gate.assertFunded(), { message: /every paid push behind it stalls/ });
     await assert.rejects(() => gate.assertFunded(), { message: /chequebook deposit/ });
   });
 
@@ -250,12 +252,180 @@ describe('the chequebook gate', () => {
 });
 
 /**
+ * ⛔ **A refusal is read by more people than the request that caused it.**
+ *
+ * bee accepts basic auth in the URL's userinfo, so a `BEE_PUBLISHERS` entry can carry a credential,
+ * and these messages travel further than a log file: they are quoted into deploy output and pasted
+ * into reports, and under `warn` the gate's name and rung reach `/health` through a latch while the
+ * message itself stays in the log. `BeePublisherPool.routing` already answers with the same URLs
+ * stripped, for exactly this reason, and this uses the same helper so the two cannot drift.
+ */
+describe('what a refusal says about the node url', () => {
+  it('strips a credential out of a refusal', async () => {
+    const reads = reader();
+    const gate = new ChequebookGate(
+      [refusingNode('http://operator:hunter2@bee-a:1633', 'chequebook disabled', reads)],
+      FLOOR_PLUR,
+      recordingLogger(),
+    );
+
+    await assert.rejects(() => gate.assertFunded(), /bee-a:1633/);
+    await assert.rejects(
+      () => gate.assertFunded(),
+      (error: Error) => {
+        assert.doesNotMatch(error.message, /hunter2/, 'a credential in BEE_PUBLISHERS must not reach a message');
+        assert.doesNotMatch(error.message, /operator/);
+        return true;
+      },
+    );
+  });
+
+  it('strips one out of the reading it logs when the node clears', async () => {
+    const reads = reader();
+    const logger = recordingLogger();
+
+    await new ChequebookGate(
+      [{ ...node('http://operator:hunter2@bee-a:1633', bzzToPlur(2), reads) }],
+      FLOOR_PLUR,
+      logger,
+    ).assertFunded();
+
+    assert.doesNotMatch(logger.lines[0], /hunter2/);
+    assert.match(logger.lines[0], /bee-a:1633/);
+  });
+
+  // What `waitForNode` reads to say which node the boot is waiting for. A pool of four has three
+  // others, and a refusal reported against the wrong one sends an operator to a node that is working.
+  it('names the node it refused on the error itself, not only in the sentence', async () => {
+    const reads = reader();
+    const gate = new ChequebookGate(
+      [node('http://operator:hunter2@bee-1080:1663', bzzToPlur(0.1), reads)],
+      FLOOR_PLUR,
+      recordingLogger(),
+    );
+
+    await assert.rejects(
+      () => gate.assertFunded(),
+      (error: unknown) => {
+        assert.ok(error instanceof GateRefusalError);
+        // Normalised, since safeUrl rebuilds a url it had to take a credential out of. See its doc.
+        assert.equal(error.nodeUrl, 'http://bee-1080:1663/');
+        return true;
+      },
+    );
+  });
+
+  it('leaves a url with nothing to hide exactly as the operator wrote it', async () => {
+    const reads = reader();
+    const gate = new ChequebookGate([node('http://bee-a:1633', bzzToPlur(0.1), reads)], FLOOR_PLUR, recordingLogger());
+
+    await assert.rejects(() => gate.assertFunded(), /http:\/\/bee-a:1633 has/);
+  });
+});
+
+/**
+ * ⛔ **Under `warn` the first bad node used to be the only one an operator heard about.**
+ *
+ * The loop above throws at the first refusal, which is right when the refusal stops the boot: there
+ * is nothing to learn from the second node when the service is not going to start. Since the owner's
+ * ruling of 2026-09-17 the service does start, so that same throw meant a four rung stage reported
+ * one rung per boot and an operator fixed them one restart at a time.
+ *
+ * Handing the gate somewhere to put a refusal changes that and nothing else. Every node is read, each
+ * one that cannot be cleared is handed over with the message it would have thrown, and the caller
+ * decides what that costs. The runner always hands one over, and under `refuse` that collector throws
+ * at the first refusal, so the no-collector path below is a direct caller's rather than a mode's.
+ */
+describe('the chequebook gate with somewhere to put a refusal', () => {
+  it('reads every node rather than stopping at the first that fails', async () => {
+    const reads = reader();
+    const collected: GateRefusal[] = [];
+    const gate = new ChequebookGate(
+      [
+        node('http://bee-360:1633', bzzToPlur(0.1), reads),
+        node('http://bee-480:1643', bzzToPlur(2), reads),
+        refusingNode('http://bee-720:1653', 'chequebook disabled', reads),
+      ],
+      FLOOR_PLUR,
+      recordingLogger(),
+    );
+
+    await gate.assertFunded((refusal) => collected.push(refusal));
+
+    assert.deepEqual(reads.urls, ['http://bee-360:1633', 'http://bee-480:1643', 'http://bee-720:1653']);
+    assert.deepEqual(
+      collected.map((refusal) => refusal.url),
+      ['http://bee-360:1633', 'http://bee-720:1653'],
+    );
+    assert.match(collected[0].message, /0\.1000 BZZ/);
+    assert.match(collected[1].message, /chequebook disabled/);
+  });
+
+  it('logs a reading for the nodes that did clear, in the same pass', async () => {
+    const reads = reader();
+    const logger = recordingLogger();
+
+    await new ChequebookGate(
+      [node('http://bee-360:1633', bzzToPlur(0.1), reads), node('http://bee-480:1643', bzzToPlur(2), reads)],
+      FLOOR_PLUR,
+      logger,
+    ).assertFunded(() => {});
+
+    assert.equal(logger.lines.length, 1);
+    assert.match(logger.lines[0], /http:\/\/bee-480:1643/);
+  });
+
+  // The rung is what /health may publish about a warned gate. The url is not, so the gate hands both
+  // over and the caller picks: the log gets the url, the health payload gets the rung.
+  it('names the rung when the caller gave its nodes one', async () => {
+    const reads = reader();
+    const collected: GateRefusal[] = [];
+    const rungNode = { ...node('http://bee-360:1633', bzzToPlur(0.1), reads), rung: '360p' };
+
+    await new ChequebookGate([rungNode], FLOOR_PLUR, recordingLogger()).assertFunded((refusal) =>
+      collected.push(refusal),
+    );
+
+    assert.equal(collected[0].rung, '360p');
+  });
+
+  it('leaves the rung out when the caller had none, rather than inventing one', async () => {
+    const reads = reader();
+    const collected: GateRefusal[] = [];
+
+    await new ChequebookGate(
+      [node('http://bee-a:1633', bzzToPlur(0.1), reads)],
+      FLOOR_PLUR,
+      recordingLogger(),
+    ).assertFunded((refusal) => collected.push(refusal));
+
+    assert.equal(collected[0].rung, undefined);
+  });
+
+  // An empty set is a caller bug rather than a node that could not be read, so it stays a throw the
+  // collector never sees. Nothing may report a gate as cleared when it read nothing at all.
+  it('still refuses an empty node set while collecting', async () => {
+    await assert.rejects(() => new ChequebookGate([], FLOOR_PLUR, recordingLogger()).assertFunded(() => {}), {
+      message: /no Bee node/,
+    });
+  });
+});
+
+/**
  * A gate that runs late is not a gate. Asserted against the source rather than by starting the
  * service, because `index.ts` calls `start()` at module scope, so importing it launches the uploader
  * and there is nothing left to assert on. `envLoadOrder.test.ts` guards the import order of the same
  * file the same way and for the same reason.
+ *
+ * ⚠️ Two of the four steps this used to sort against moved ahead of the gate on 2026-09-17, and that
+ * is decision D16 rather than a regression. `new RecoveryStore(` reads the state directory and
+ * `loadEngines(` imports a module, so neither asks a node anything, and both are now built before the
+ * API server listens, which is what lets `/health` answer while the node-dependent half of the boot
+ * waits for a node that is not there yet. What still has to come after the gate is every step that
+ * reads or writes through one. What keeps a stream away from an orchestrator whose catalog has not
+ * been read is `refuseWhileWaiting`, asserted in `waitingForNode.test.ts`, rather than this ordering.
  */
-describe('the entry point clears the gate before anything paid or stateful', () => {
+describe('the entry point clears the gate before anything that reads or writes through a node', () => {
   const ENTRY_POINT = resolve(dirname(fileURLToPath(import.meta.url)), '../src/index.ts');
   const source = readFileSync(ENTRY_POINT, 'utf8');
 
@@ -263,7 +433,7 @@ describe('the entry point clears the gate before anything paid or stateful', () 
     assert.match(source, /assertFunded\(/, 'index.ts never clears the chequebook gate');
   });
 
-  for (const later of ['new RecoveryStore(', 'streamCatalog.init(', 'recoverStreams(', 'loadEngines(']) {
+  for (const later of ['streamCatalog.init(', 'recoverStreams(']) {
     it(`clears it before ${later}`, () => {
       const gateAt = source.indexOf('assertFunded(');
       const laterAt = source.indexOf(later);
@@ -275,4 +445,69 @@ describe('the entry point clears the gate before anything paid or stateful', () 
       );
     });
   }
+});
+
+/**
+ * ⛔ **The same split the postage gate makes, because this gate's refusals have the same two kinds.**
+ *
+ * A balance under the floor is the node answering with a number. A read that threw may be either: a
+ * 4xx is the node refusing the request, and anything else, a timeout, a 5xx or no status at all, is
+ * no reading arriving. A body with no readable `availableBalance` in it is no reading either. This
+ * gate warns under the shipped mode whichever it is, so what the reading changes today is only what
+ * `refuse` and a future policy see. It is recorded because the fact belongs to the gate that
+ * established it, and `runStartGates` is the one place that decides what a boot does about it.
+ */
+describe('which reading a chequebook refusal carries', () => {
+  async function readingOf(nodes: readonly ChequebookNode[]): Promise<string | undefined> {
+    const collected: GateRefusal[] = [];
+    await new ChequebookGate(nodes, FLOOR_PLUR, recordingLogger()).assertFunded((refusal) => collected.push(refusal));
+    assert.equal(collected.length, 1, 'exactly one refusal was expected');
+    return collected[0].reading;
+  }
+
+  /** A node whose chequebook read rejects with `failure` rather than with a bare message. */
+  function throwingNode(url: string, failure: unknown): ChequebookNode {
+    return {
+      url,
+      bee: {
+        getChequebookBalance: async () => {
+          throw failure;
+        },
+      },
+    };
+  }
+
+  it('reads a balance under the floor as the node answering with a number', async () => {
+    const reads = reader();
+
+    assert.equal(await readingOf([node('http://bee-a:1633', bzzToPlur(0.1), reads)]), 'answered');
+  });
+
+  it('reads a 4xx as the node answering the request', async () => {
+    const notFound = Object.assign(new Error('chequebook disabled'), { name: 'BeeResponseError', status: 404 });
+
+    assert.equal(await readingOf([throwingNode('http://bee-a:1633', notFound)]), 'answered');
+  });
+
+  it('reads a 5xx as no reading at all', async () => {
+    const unready = Object.assign(new Error('bad gateway'), { name: 'BeeResponseError', status: 502 });
+
+    assert.equal(await readingOf([throwingNode('http://bee-a:1633', unready)]), 'unreadable');
+  });
+
+  it('reads the timeout that ended the boot on 2026-09-16 as no reading at all', async () => {
+    assert.equal(
+      await readingOf([throwingNode('http://bee-a:1633', new Error('timeout of 4000ms exceeded'))]),
+      'unreadable',
+    );
+  });
+
+  it('reads a body with no available balance in it as no reading at all', async () => {
+    const reads = reader();
+
+    assert.equal(
+      await readingOf([shapelessNode('http://bee-a:1633', { totalBalance: balance(9n) }, reads)]),
+      'unreadable',
+    );
+  });
 });

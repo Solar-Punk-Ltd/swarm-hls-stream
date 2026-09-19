@@ -21,9 +21,9 @@ const GATEWAY_STORAGE_KEY = 'swarm-gateway-url';
 /** The two conditions, named once so no caller spells either of them itself. */
 export const FUNDED_ARM = 'funded';
 export const UNFUNDED_ARM = 'unfunded';
-export type GatewayArm = typeof FUNDED_ARM | typeof UNFUNDED_ARM;
+type GatewayArm = typeof FUNDED_ARM | typeof UNFUNDED_ARM;
 
-export interface GatewaySetup {
+interface GatewaySetup {
   /** What the client reports as its gateway once set, which is **not** assumed to be what was asked. */
   gatewayUrl: string | null;
   failure: string | null;
@@ -185,7 +185,7 @@ export function counterbalancedOrder<T>(conditions: readonly [T, T], rounds: num
 }
 
 /** Only the url is read, so any request record a run collected can be handed straight in. */
-export interface FetchedUrl {
+interface FetchedUrl {
   url: string;
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, reportFailedRestore, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -66,7 +66,7 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
 
   after(async () => {
     await publisher?.stop();
-    await host.start(uploader).catch(() => undefined);
+    await host.start(uploader).catch(reportFailedRestore(uploader));
     // The planted file is deliberately one recovery will not clean up, so this suite has to. Left
     // behind it would make every later boot on this deployment log a skipped state file.
     await removeRecoveryEntry(host, cfg, FOREIGN_STATE_FILE).catch(() => undefined);

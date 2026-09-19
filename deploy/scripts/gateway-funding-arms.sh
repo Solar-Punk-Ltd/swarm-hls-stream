@@ -30,8 +30,11 @@
 #
 # ⛔ This script never restarts, recreates or funds a node. Both gateways are expected warm and
 # already peered before it runs, since a cold node costs 2-3x for about two minutes and a fresh one
-# needs some thirteen minutes of chain sync. `unfunded-gateway.sh start` and `wait` do that, well
-# before a sitting, and the arms then differ in funding and nothing else.
+# has no peers at all to begin with. What `unfunded-gateway.sh wait` waits on is the node's peer
+# count reaching a floor, 40 by default, polled every five seconds and given up on after ten minutes.
+# ⚠️ NOT chain sync, which an ultra-light node does not do: it has no chain backend to sync against.
+# `start` and `wait` are run well before a sitting, and the arms then differ in funding and nothing
+# else.
 #
 # Usage, from the repo root on the deployment host:
 #   ROUNDS=4 ARM_MINUTES=6 bash deploy/scripts/gateway-funding-arms.sh
@@ -157,8 +160,9 @@ available_plur() {
 # columns agree, nothing looks wrong, and the report says funding makes no difference to a viewer.
 #
 # The unfunded side is delegated rather than re-implemented: `unfunded-gateway.sh status` is the
-# definition of that condition, it reads a status code rather than a curl exit code, and it refuses a
-# node that is merely syncing as well as one that is missing.
+# definition of that condition, it reads the `beeMode` the node reports on /status rather than guessing
+# from a chequebook error that a light node gives too, and it refuses a node that is merely syncing as
+# well as one that is missing.
 conditions_are_distinct() {
   local have
   have="$(available_plur "${GATEWAY_BEE_PORT}")"
@@ -172,7 +176,7 @@ conditions_are_distinct() {
     say "  REFUSING: the node on ${UNFUNDED_BEE_PORT} is not the unfunded arm, see the lines above"
     return 1
   fi
-  say "  unfunded arm confirmed on the node: no chequebook"
+  say "  unfunded arm confirmed on the node: beeMode ultra-light"
   return 0
 }
 
@@ -249,7 +253,7 @@ start_publisher() {
     cd "${BENCH_REPO}" || exit 1
     # The marker above is cleared by the publisher itself at startup, which is what stops one sitting's
     # teardown from vouching for the next one's failure.
-    deploy/scripts/publish-clock.sh \
+    PUBLISH_GATES_ALREADY_RAN=1 deploy/scripts/publish-clock.sh \
       "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" --host=localhost \
       "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}" \
       "--stop-file=${PUBLISHER_STOP_FILE}"

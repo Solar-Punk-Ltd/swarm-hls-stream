@@ -301,18 +301,35 @@ describe('holding a playlist to the contract', () => {
   });
 
   /**
-   * ⛔ A recording names every segment of the broadcast, so its sequence is 0 by construction and
-   * that holds however late the suite read it. Left to the caller's flag, the one playlist whose
-   * numbering can always be checked would go unchecked in every suite that reads a finished
-   * broadcast, which is every crash scenario that leaves one.
+   * A recording on a fresh feed names every segment from the start, so its sequence is 0 however
+   * late the suite reads it. No leading break says this is not a session continuing an older head.
    */
-  it('requires zero of a recording even where the suite could not promise a first playlist', () => {
+  it('requires zero of a fresh-feed recording even where the suite could not promise a first playlist', () => {
     const renumbered = rungPlaylist([0, 1, 2], { mediaSequence: 580, recording: true });
 
     const failures = readingOf(feed, renumbered, SLID_WINDOW).failures;
 
     assert.equal(failures.length, 1, failures.join('\n'));
     assert.match(failures[0], /#EXT-X-MEDIA-SEQUENCE:580 rather than 0/);
+  });
+
+  /**
+   * A reused rung feed continues numbering above its previous session and marks the first entry as a
+   * discontinuity. The recording names all of this session's media, not all media ever written to
+   * the feed, so requiring zero here rejects the exact seam that keeps a following player forwards.
+   * The marker declares that continuation. It is not provenance for the prior feed head, which this
+   * helper does not read.
+   */
+  it('accepts a declared continued-session recording that starts with its seam', () => {
+    const continued = rungPlaylist([0, 1, 2], { mediaSequence: 580, recording: true, breaks: [0] });
+
+    assert.deepEqual(readingOf(feed, continued, SLID_WINDOW).failures, []);
+  });
+
+  it('accepts a declared continued-session first live playlist under the same rule', () => {
+    const continued = rungPlaylist([0, 1, 2], { mediaSequence: 580, breaks: [0] });
+
+    assert.deepEqual(readingOf(feed, continued, FIRST_PLAYLIST).failures, []);
   });
 
   it('accepts a live window that has slid, where the suite did not promise a first playlist', () => {
@@ -325,7 +342,7 @@ describe('holding a playlist to the contract', () => {
     const failures = readingOf(feed, rungPlaylist([0, 1, 3, 4]), FIRST_PLAYLIST).failures;
 
     assert.equal(failures.length, 1, failures.join('\n'));
-    assert.match(failures[0], /entry 2 is dated 2 fragments after/);
+    assert.match(failures[0], /entry 2 is dated 1 fragment past/);
   });
 
   it('asks per rung whether the window still starts at the broadcast’s first segment', () => {

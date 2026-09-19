@@ -38,6 +38,26 @@ after(() => {
   }
 });
 
+const REQUIRE_SECRET = /^require_secret\(\) \{\n[\s\S]*?\n\}$/m;
+
+/**
+ * The credential guard and every call the script makes to it.
+ *
+ * The calls are lifted as well as the definition, because a guard that is defined and never reached
+ * is the shape this repository has just paid for: `require_compose_reads` sat in `_lib.sh` while two
+ * probes called it from scripts that never sourced it, and nothing was red. If the call disappears
+ * from the entrypoint the count below drops and this fails, rather than the refusal case quietly
+ * proving a function nothing runs.
+ */
+function shippedSecretChecks(expected) {
+  const script = readFileSync(ENTRYPOINT, 'utf8');
+  const calls = script.split('\n').filter((line) => line.startsWith('require_secret '));
+  assert.equal(calls.length, expected, `the entrypoint checks ${calls.length} credentials, not ${expected}`);
+  const declared = REQUIRE_SECRET.exec(script);
+  assert.ok(declared, `${ENTRYPOINT} no longer declares require_secret`);
+  return [declared[0], ...calls].join('\n');
+}
+
 /** Runs the real entrypoint's substitution step and returns the Server.xml it produced. */
 function renderServerXml(env) {
   const dir = mkdtempSync(join(tmpdir(), 'ome-conf-'));
@@ -59,9 +79,12 @@ function renderServerXml(env) {
   // the thing under test, run verbatim.
   const localSeds = process.platform === 'darwin' ? seds.map((line) => line.replace(/^sed -i /, "sed -i '' ")) : seds;
 
-  execFileSync('bash', ['-c', `set -e\nCONF=${JSON.stringify(conf)}\n${localSeds.join('\n')}`], {
-    env: { ...process.env, ...env },
-  });
+  const program = ['set -e', `CONF=${JSON.stringify(conf)}`, shippedSecretChecks(1), ...localSeds].join('\n');
+
+  // PATH and the case's own values, and nothing else of this machine's. Every value replayed here is
+  // read from the environment with a `:-` default, so an ambient OME_ADMISSION_SECRET or OME_HLS_PORT
+  // would decide what these cases assert.
+  execFileSync('bash', ['-c', program], { env: { PATH: process.env.PATH, ...env }, stdio: 'pipe' });
 
   const rendered = readFileSync(conf, 'utf8');
   assert.notEqual(rendered, readFileSync(TEMPLATE, 'utf8'), 'the harness substituted nothing, so it proves nothing');
@@ -123,4 +146,66 @@ describe('the ports OME binds (OPS-30)', () => {
       assert.match(ome, /\$\{OME_HLS_PORT:-8081\}:\$\{OME_HLS_PORT:-8081\}/);
     });
   }
+});
+
+/**
+ * The secret OME signs its admission requests with.
+ *
+ * ⛔ `&` is the dangerous one and it is silent. sed expands a bare `&` in a replacement to the whole
+ * match, so a secret of `ab&cd` reaches Server.xml as `abOME_ADMISSION_SECRET_PLACEHOLDERcd`. OME
+ * starts, signs with a key the uploader does not hold, every ingest is refused, and nothing in any
+ * log says the secret was mangled. `|` is this file's delimiter and crash-loops the container
+ * instead, which is at least loud. An operator reaching for `openssl rand -base64 32` rather than the
+ * `-hex 32` the entrypoint recommends gets one or both in most outputs.
+ */
+describe('the admission secret the entrypoint splices into Server.xml', () => {
+  /**
+   * What the render printed on standard error when it refused.
+   *
+   * ⛔ Not `assert.throws(..., /must not contain/)`. The error a failed `execFileSync` raises carries
+   * the whole command in its message, and the command here is the shipped script, so that regex
+   * matches the guard's own source text and passes however the run actually died. Measured with the
+   * guard deliberately neutered: the delimiter case stayed green on a sed crash.
+   */
+  function renderRefusal(env) {
+    try {
+      renderServerXml(env);
+    } catch (error) {
+      return String(error.stderr ?? '');
+    }
+    return assert.fail('the entrypoint wrote a config instead of refusing');
+  }
+
+  for (const [bad, why] of [
+    [`ab&cd${'0'.repeat(58)}`, 'an ampersand, which sed expands to the whole match'],
+    [`ab|cd${'0'.repeat(58)}`, 'a pipe, which ends the substitution'],
+    [`ab<cd${'0'.repeat(58)}`, 'a less-than sign, which starts XML markup'],
+  ]) {
+    it(`refuses an OME_ADMISSION_SECRET carrying ${why}`, () => {
+      const refusal = renderRefusal({ OME_ADMISSION_SECRET: bad });
+
+      assert.match(refusal, /^OME_ADMISSION_SECRET must not contain/m);
+      assert.doesNotMatch(refusal, new RegExp(bad.slice(0, 5).replace('|', '\\|')), 'the refusal printed the secret');
+    });
+  }
+
+  /**
+   * The other half, without which a guard that refused everything would pass both cases above and no
+   * deployment could start. A hex secret is what the entrypoint tells the operator to generate.
+   */
+  it('writes a hex secret into the key element, unchanged', () => {
+    const secret = 'a3f9'.repeat(16);
+
+    const xml = renderServerXml({ OME_ADMISSION_SECRET: secret });
+
+    assert.match(xml, new RegExp(`<SecretKey>${secret}</SecretKey>`));
+  });
+
+  it('writes a secret containing a slash into the key element, unchanged', () => {
+    const secret = `ab/cd${'0'.repeat(59)}`;
+
+    const xml = renderServerXml({ OME_ADMISSION_SECRET: secret });
+
+    assert.match(xml, new RegExp(`<SecretKey>${secret}</SecretKey>`));
+  });
 });

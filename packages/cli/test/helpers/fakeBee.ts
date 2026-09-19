@@ -19,7 +19,7 @@ import { Bee, BZZ, DAI, type PostageBatch } from '@ethersphere/bee-js';
  * Timings are expressed in polls rather than milliseconds so a test can drive the same loop at any
  * speed. `notFoundPolls` and `unusablePolls` place the transitions between stages 2, 3 and 4.
  */
-export interface FakeBeeOptions {
+interface FakeBeeOptions {
   /** Polls that throw before the node has indexed the batch. Real nodes 404 here. */
   notFoundPolls?: number;
   /** Polls that resolve with `usable: false` after the batch appears. */
@@ -68,7 +68,7 @@ export const TEST_BATCH_COST_BZZ = '1.048576';
 export const TEST_CHAIN_PRICE = 24000;
 export const TEST_BATCH_DURATION = '3 weeks';
 
-export interface FakeBee {
+interface FakeBee {
   bee: Bee;
   /** Options `createPostageBatch` was called with. `waitForUsable` is the one that matters. */
   purchaseOptions(): { waitForUsable?: boolean; immutableFlag?: boolean } | undefined;

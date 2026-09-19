@@ -2,7 +2,7 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export interface WaitOptions {
+interface WaitOptions {
   timeoutMs: number;
   intervalMs: number;
   label: string;

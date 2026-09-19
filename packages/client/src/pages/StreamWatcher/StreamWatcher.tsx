@@ -38,8 +38,9 @@ export function StreamWatcher() {
   // carries no ladder of its own, so the rung names come from the catalog entry below.
   const level = searchParams.get('level') ?? undefined;
 
-  // The ladder lives in the catalog, keyed by the stream's primary (lowest) rung — which is the
-  // topic the browser links to. Waiting for the first catalog read rather than rendering without
+  // The ladder lives in the catalog, keyed by the primary feed the browser links to. Current
+  // entries name the master, older ones the lowest rung. Waiting for the first catalog read
+  // rather than rendering without
   // it keeps a deep link from starting single-rendition and rebuilding a second later.
   const stream = streamList.find((entry) => entry.owner === owner && entry.topic === topic);
 

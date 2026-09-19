@@ -44,7 +44,7 @@ import { type FaultScenario } from '../browser/faults.js';
 import { FEED_STATE_LIVE, readFeedState, type ViewerFeedState } from '../browser/feedState.js';
 
 import { type BrowserArmResult, type CrashRecoveryResult, type FaultWindow } from './browser.js';
-import { byteSourceArmRefusal } from './browserVerdict.js';
+import { byteSourceArmRefusal, unprovenInstrumentRefusal } from './browserVerdict.js';
 
 /**
  * The baseline `browser/crash.ts` holds before it breaks anything.
@@ -173,6 +173,11 @@ export function crashArmRefusal(result: BrowserArmResult, expectation: CrashArmE
       'the browser was not a usable instrument for this run, so a picture that stopped advancing is as ' +
       `likely to be the harness as the fault: ${result.instrumentFailures.join('; ') || 'no reason recorded'}`
     );
+  }
+
+  const unproven = unprovenInstrumentRefusal(result);
+  if (unproven !== null) {
+    return unproven;
   }
 
   const { recovery } = result;

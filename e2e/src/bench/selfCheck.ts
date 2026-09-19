@@ -61,7 +61,7 @@ const SPAN_TOLERANCE_FRAMES = 0.5;
  */
 const MIN_SEGMENTS_PRODUCED = 3;
 
-export interface SelfCheckResult {
+interface SelfCheckResult {
   segmentsProbed: number;
   /** Gap between the process starting and its first frame being stamped. Around 1.5s on ffmpeg 7.1.1. */
   startupDelayMs: number;

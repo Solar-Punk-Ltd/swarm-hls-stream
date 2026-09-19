@@ -17,8 +17,8 @@ Config-driven deployment for the Swarm HLS Stream stack.
 
 Creates `config.json`, `.env`, and builds packages. Then edit both files:
 
-- **config.json** — set where each service runs
-- **.env** — set `STREAM_KEY`, `BEE_UPLOADER_NAT_ADDR`, ports, etc.
+- **config.json**: set where each service runs
+- **.env**: set `STREAM_KEY`, `BEE_UPLOADER_NAT_ADDR`, ports, etc.
 
 ## Configuration
 
@@ -26,12 +26,12 @@ Creates `config.json`, `.env`, and builds packages. Then edit both files:
 
 Each service maps to a target:
 
-| Value         | Meaning                                                         |
-| ------------- | --------------------------------------------------------------- |
-| `"localhost"` | Run in Docker on this machine                                   |
-| `"user@host"` | Deploy via SSH + rsync to a remote server                       |
-| `"native"`    | Service runs as a host process outside Docker — deploy skips it |
-| `false`       | Disabled, not deployed                                          |
+| Value         | Meaning                                                        |
+| ------------- | -------------------------------------------------------------- |
+| `"localhost"` | Run in Docker on this machine                                  |
+| `"user@host"` | Deploy via SSH + rsync to a remote server                      |
+| `"native"`    | Service runs as a host process outside Docker, deploy skips it |
+| `false`       | Disabled, not deployed                                         |
 
 ```json
 {
@@ -67,7 +67,7 @@ The deploy script will skip stream-uploader and configure SRS to reach it via `h
 
 ### .env
 
-Single `.env` in monorepo root for core options, shared by dev and deploy — see [.env.sample](../.env.sample). **Engine-specific options live in `engines/<name>/.env`** (samples: [engines/srs/.env.sample](../engines/srs/.env.sample), [engines/ome/.env.sample](../engines/ome/.env.sample)), loaded at runtime for the engine selected via `ENGINE`. `setup.sh` creates them from the samples for engines enabled in `config.json`. `deploy.sh` loads the enabled engines' env files too (below the root env — root values win on duplicate keys, matching the native uploader's dotenv order) and feeds them into compose interpolation.
+Single `.env` in monorepo root for core options, shared by dev and deploy. See [.env.sample](../.env.sample). **Engine-specific options live in `engines/<name>/.env`** (samples: [engines/srs/.env.sample](../engines/srs/.env.sample), [engines/ome/.env.sample](../engines/ome/.env.sample)), loaded at runtime for the engine selected via `ENGINE`. `setup.sh` creates them from the samples for engines enabled in `config.json`. `deploy.sh` loads the enabled engines' env files too (below the root env, so root values win on duplicate keys, matching the native uploader's dotenv order) and feeds them into compose interpolation.
 
 ### What the broadcaster's encoder must send
 
@@ -141,14 +141,17 @@ rounded up, so lowering the encoder's keyframe interval without lowering `HLS_FR
 changes nothing. The pair is a range: a GOP outside `[HLS_FRAGMENT, HLS_FRAGMENT * HLS_AOF_RATIO]`,
 shipped as `[0.5, 2.5]`, is either rounded up or force-cut without a keyframe.
 
-⛔ **`HLS_FRAGMENT` now reaches the stream-uploader as well as the engine, and it is what every
-segment's `#EXT-X-PROGRAM-DATE-TIME` steps by.** Set it once in the profile's `.env` and both
-services read the same value. Set it for the engine alone and the uploader falls back to `0.5`,
-which dates a recording against a fragment length nothing produced. Under a ladder the declared
-length is also the real one, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT`. On a
-single-rendition stream the publisher's own GOP decides the segment, so a broadcaster sending a
-longer GOP produces segments longer than the stamps step by. See
-[the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+⛔ **`HLS_FRAGMENT` now reaches the stream-uploader as well as the engine, and it is the grid every
+segment's `#EXT-X-PROGRAM-DATE-TIME` reads its media against.** Set it once in the profile's `.env`
+and both services read the same value. A pair that disagrees still dates every recording by the media
+it holds, so the clock is right, and what goes wrong is everything built on the declared length:
+every `#EXT-X-GAP` entry is dated and sized at a length nothing is cutting, so a lost segment leaves
+a hole of the wrong size. Under a ladder the declared length is also the real one, because each rung
+is re-GOPed at `ABR_FPS x HLS_FRAGMENT`, so every segment is inside the 1% the dating treats as that
+length and the stamps step by it exactly. On a single-rendition stream the publisher's own GOP
+decides the segment, and a segment past that 1% moves the next stamp by what it really held rather
+than by the declared length. See
+[the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-continuous-published-numbering).
 
 ## Scripts
 
@@ -173,18 +176,18 @@ deploy.sh --host=user@server                        # ignore config.json targets
 
 #### Profiles
 
-A profile is a deployment instance — same topology (from `config.json`), separate identity. Each profile gets its own:
+A profile is a deployment instance: same topology (from `config.json`), separate identity. Each profile gets its own:
 
-- **Docker compose project name** (`-p <profile>`) — namespaces containers and named volumes (`streamer1-bee-uploader-1`, `streamer1_srs-media`, ...).
-- **Env file** at `<repo-root>/.env.<profile>` — required when `--profile` is given (no silent fallback to `.env`).
-- **Engine env files** at `engines/<engine>/.env.<profile>` for each enabled engine — created automatically on first deploy (copied from the engine's `.env`, or its `.env.sample`). Engine ports (`OME_SRT_PORT`, `OME_HLS_PORT`, ...) are **not** shifted by `--portSlot`, so review the generated file when running multiple instances on one host.
+- **Docker compose project name** (`-p <profile>`): namespaces containers and named volumes (`streamer1-bee-uploader-1`, `streamer1_srs-media`, ...).
+- **Env file** at `<repo-root>/.env.<profile>`: required when `--profile` is given (no silent fallback to `.env`).
+- **Engine env files** at `engines/<engine>/.env.<profile>` for each enabled engine: created automatically on first deploy (copied from the engine's `.env`, or its `.env.sample`). Engine ports (`OME_SRT_PORT`, `OME_HLS_PORT`, ...) are **not** shifted by `--portSlot`, so review the generated file when running multiple instances on one host.
 - **Bee data dir** (set `BEE_UPLOADER_DATA_DIR=./data/bee-uploader-<profile>` etc. in the profile env).
-- **Host ports** — see `--portSlot` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
+- **Host ports**: see `--portSlot` below for the easy way, or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
 - **Remote dir** when targets are SSH hosts: `~/swarm-hls-stream-<profile>`.
 
 #### --portSlot
 
-`--portSlot=<N>` (integer 1-99) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-8), so two profiles can never collide on a port. When the flag is given it is **authoritative** — any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
+`--portSlot=<N>` (integer 1-99) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-9), so two profiles can never collide on a port. When the flag is given it is **authoritative**: any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
 
 99 is the ceiling because the slot arithmetic owns a second block: the per-rung bee nodes take 11001 to 11006 at slot 0, shifted the same way, and slot 100 would put `API_PORT` at 11000 and the rest of the first block straight on top of them. Anything above 99 is refused with that named as the reason.
 
@@ -199,19 +202,20 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 | BEE_UPLOADER_P2P_PORT | 10006 |          10016 |          10026 |           10996 |
 | BEE_GATEWAY_API_PORT  | 10007 |          10017 |          10027 |           10997 |
 | BEE_GATEWAY_P2P_PORT  | 10008 |          10018 |          10028 |           10998 |
+| SRS_HTTP_API_PORT     | 10009 |          10019 |          10029 |           10999 |
 
 The **Base** column is the slot arithmetic's starting point, not what you get with no flag. Without `--portSlot`, values already set in the env files win and only the unset ones fall back to this column, so the SRS ports in a stock local setup are `SRS_SRT_PORT=10080` from `engines/srs/.env.sample` and `SRS_RTMP_PORT=1935` / `SRS_HTTP_PORT=8080` from the compose file's own defaults, not 10001 through 10003.
 
 `SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
 
-`--portSlot=0` (the default) is a no-op — defaults flow through compose as before.
+`--portSlot=0` (the default) is a no-op: defaults flow through compose as before.
 
 #### --host
 
 `--host=<target>` ignores the per-service targets in `config.json` and sends every **enabled** service to `<target>`. `<target>` can be:
 
-- `localhost` — run everything in Docker on this machine.
-- `user@host` or an SSH alias from `~/.ssh/config` — deploy via SSH + rsync to that host.
+- `localhost`: run everything in Docker on this machine.
+- `user@host` or an SSH alias from `~/.ssh/config`: deploy via SSH + rsync to that host.
 
 Services set to `false` in `config.json` stay disabled. The flag is handy for one-shot deploys to a host that isn't your committed topology (e.g. validating a remote server, or moving a profile to localhost without editing `config.json`):
 
@@ -230,7 +234,7 @@ $EDITOR .env.streamer1   # set STAMP + STREAM_KEY + *_DATA_DIR
 deploy.sh --profile=streamer1 --portSlot=1
 ```
 
-Without `--profile` everything works exactly as before — implicit `default` profile, `.env`, unprefixed `~/swarm-hls-stream`, no port shift.
+Without `--profile` everything works exactly as before: implicit `default` profile, `.env`, unprefixed `~/swarm-hls-stream`, no port shift.
 
 ### clean.sh
 
@@ -250,12 +254,12 @@ clean.sh --yes                           # skip the confirmation prompt (for scr
 ### stop.sh / health.sh
 
 ```bash
-stop.sh   [--profile=<name>] [service...]   # stop containers; all of them if none is named
-health.sh [--profile=<name>]                # check service health across all targets
+stop.sh   [--profile=<name>] [service...]   # stop containers, all of them if none is named
+health.sh [--profile=<name>] [service...]   # check service health, all of them if none is named
 ```
 
-Both commands take the same service names as `clean.sh`, and both spend money is
-not involved: `stop.sh` stops, it does not remove volumes.
+Both take the same service names as `clean.sh`. Neither removes data: `stop.sh` stops containers and
+leaves every volume in place, and `health.sh` only reads.
 
 ### drain-stage.sh
 
@@ -338,7 +342,7 @@ pnpm stamp:setup                             # 5. buy stamp, writes STAMP to .en
 ./deploy/scripts/deploy.sh
 ```
 
-Safe to run — skips bee node init if already initialized, `docker compose up` is idempotent.
+Safe to run: skips bee node init if already initialized, `docker compose up` is idempotent.
 
 ### Clean restart
 
@@ -356,7 +360,7 @@ Safe to run — skips bee node init if already initialized, `docker compose up` 
 ## How It Works
 
 - `config.json` determines topology, scripts route services to targets
-- Each service has a Docker Compose [profile](https://docs.docker.com/compose/how-tos/profiles/) — only activated profiles start
+- Each service has a Docker Compose [profile](https://docs.docker.com/compose/how-tos/profiles/): only activated profiles start
 - Cross-target URLs are resolved automatically (e.g. `BEE_URL=http://<remote-ip>:1633` when bee is on a different host)
 - Remote deploy: rsync files + start Docker Compose via SSH
 - `COMPOSE_NETWORK=host` activates `docker-compose.host.yml` override for host network mode
@@ -377,19 +381,55 @@ OBS/FFmpeg ──SRT──> SRS (port 10080)
 
 ## Services
 
-| Service           | Image                            | Description                                          |
-| ----------------- | -------------------------------- | ---------------------------------------------------- |
-| `bee-uploader`    | `ethersphere/bee:2.8.1`          | Bee node for uploading to Swarm                      |
-| `bee-gateway`     | `ethersphere/bee:2.8.1`          | Bee node for reading (paired with `client`)          |
-| `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm                  |
-| `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS segmenting (no transcode)            |
-| `client`          | Built from `Dockerfile.client`   | React viewer (nginx) — proxies `/bee/` → bee-gateway |
+| Service              | Image                              | Description                                            |
+| -------------------- | ---------------------------------- | ------------------------------------------------------ |
+| `bee-uploader`       | `ethersphere/bee:2.8.2`            | Bee node for uploading to Swarm, and the 360p rung     |
+| `bee-uploader-480p`  | `ethersphere/bee:2.8.2`            | The 480p rung's own Bee node. Disabled by default      |
+| `bee-uploader-720p`  | `ethersphere/bee:2.8.2`            | The 720p rung's own Bee node. Disabled by default      |
+| `bee-uploader-1080p` | `ethersphere/bee:2.8.2`            | The 1080p rung's own Bee node. Disabled by default     |
+| `bee-gateway`        | `ethersphere/bee:2.8.2`            | Bee node for reading (paired with `client`)            |
+| `stream-uploader`    | Built from `Dockerfile.uploader`   | Receives segments, uploads to Swarm                    |
+| `srs`                | `ossrs/srs:6`                      | SRT/RTMP to HLS segmenting (no transcode)              |
+| `ome`                | `airensoft/ovenmediaengine:latest` | SRT ingest, uploader pulls HLS over HTTP               |
+| `client`             | Built from `Dockerfile.client`     | React viewer (nginx), proxies `/bee/` to `bee-gateway` |
+
+Those nine names are every key `config.json` accepts. A service the file does not mention runs, with
+four exceptions that stay off until it names them: `ome` and the three per-rung Bee nodes.
+`config.sample.json` names `ome` as `localhost` and the three rung nodes as `false`, so a fresh copy
+of it runs OME and no rung node.
+
+Running the four-rung ladder one Bee node per rung takes both halves: the three rung services enabled
+here, and `BEE_PUBLISHERS` in the root `.env` pointing at them. A rung node enabled and left out of
+`BEE_PUBLISHERS` is a node nothing publishes through, and the reverse is a rung pointing at nothing,
+because both startup gates read every publisher before the first broadcast and a URL with no node
+behind it cannot answer. Since the owner's rulings of 2026-09-17 that no longer takes the uploader off
+the air. The boot asks the coordinator, the node the catalog goes through, whether it is there
+before anything else, and a coordinator that is not there is waited for rather than refused on, so the
+service listens, answers `/health` with `waiting_for_node` naming that url, and keeps retrying until it
+is there. The other rung nodes are reached by the gates instead: under the shipped mode one that does
+not answer is warned about and the service starts degraded with that rung under `start_gate_warned`,
+and under `refuse` it is waited for like the coordinator. A node that does answer and reads badly
+is the mode's question rather than the wait's: the chequebook gate warns by default, and since the
+owner's decision 7 b of 2026-09-17 the postage gate refuses a batch the node answered about while
+warning about one it could not read at all.
+`UPLOADER_START_GATES=refuse` in the root `.env` has both gates refusing again, `warn` has both
+warning, and `chequebook-warn` is the shipped middle. `START_GATE_TIMEOUT_MS` is how long each of
+those reads may take, twenty seconds by default and ten minutes at most. What a deployment cannot ask
+for is an exit on a node that never answered, which is the state the ruling removed. `bee-uploader` is the 360p rung as well as the shared default, so the
+catalog and every ladder master go through it. Their ports, data directories and what each one has to
+hold are in [.env.sample](../.env.sample) under "Per-rung Bee nodes".
 
 ### Viewer stack (`client` + `bee-gateway`)
 
 The React client is bundled into a multi-stage docker image: Node builds `packages/client/dist`, nginx serves it on port `80` and reverse-proxies `/bee/` to the `bee-gateway` service over the compose network. The bundle is built with **per-profile** `VITE_APP_OWNER` / `VITE_APP_RAW_TOPIC` baked in (build args wired through `docker-compose.yml`), so streamer1's image and streamer2's image are different and live under their own compose project namespaces.
 
 `client` and `bee-gateway` must be on the same target (nginx proxies via the docker service name).
+
+`bee-gateway` ships ultra-light, a node with no chain behind it that downloads and can never spend, and
+`BEE_GATEWAY_RPC_ENDPOINT` with `BEE_GATEWAY_SWAP_ENABLE` in the root `.env` put it on the chain instead,
+set together or not at all, which is what the manager writes for a deployment whose gateway was created
+on the chain. That costs gas and a funded chequebook at the address its `/addresses` reports as
+`chain_address`, both topped up by hand.
 
 ```bash
 # Spin up two viewer instances side-by-side. Each profile env file sets its own

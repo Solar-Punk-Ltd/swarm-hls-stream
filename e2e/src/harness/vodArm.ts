@@ -23,7 +23,7 @@
  */
 
 import { type BrowserArmResult, type VodResult, type VodRung } from './browser.js';
-import { byteSourceArmRefusal } from './browserVerdict.js';
+import { byteSourceArmRefusal, unprovenInstrumentRefusal } from './browserVerdict.js';
 
 /**
  * Why this run is not a real player opening a finished recording, or null.
@@ -37,6 +37,10 @@ export function vodArmRefusal(result: BrowserArmResult): string | null {
       'the browser was not a usable instrument for this run, so a recording that did or did not play is ' +
       `as likely to be the harness: ${result.instrumentFailures.join('; ') || 'no reason recorded'}`
     );
+  }
+  const unproven = unprovenInstrumentRefusal(result);
+  if (unproven !== null) {
+    return unproven;
   }
   if (result.vod === null) {
     return (

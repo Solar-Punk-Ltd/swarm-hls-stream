@@ -36,7 +36,7 @@ export function formatLine(format: LogFormat, level: LogLevel, message: string, 
 }
 
 /** Where a formatted line goes. Replaceable so a test can read what was written without a spy on console. */
-export type LogSink = (level: LogLevel, line: string) => void;
+type LogSink = (level: LogLevel, line: string) => void;
 
 export interface LoggerOptions {
   level: LogThreshold;

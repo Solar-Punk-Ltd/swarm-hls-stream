@@ -25,7 +25,7 @@ const MAX_WALK_PER_READ = 32;
 const SLOT_NOT_WRITTEN_YET = 404;
 
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
-export class CatalogFetchError extends Error {
+class CatalogFetchError extends Error {
   constructor(url: string, readonly status: number) {
     super(`Catalog feed request to ${url} was refused with ${status}`);
     this.name = 'CatalogFetchError';
@@ -55,6 +55,23 @@ export class CatalogFetchError extends Error {
 export class CatalogFeedReader {
   private index: FeedIndex | null = null;
 
+  /**
+   * Bumped by {@link reset}, pinned by every read, and compared before the position is written.
+   *
+   * ⛔ **Without it a reset that lands mid-read is undone by the read it was meant to cancel.** The
+   * position is written after an await, and `setGatewayUrl` resets this reader synchronously while a
+   * poll may be in flight against the node the viewer just left. That read then finished and wrote
+   * the old node's slot number back. Every later poll asked the new node for the slot after it, a
+   * node that has just been pointed at this catalog does not hold it, the walk broke with nothing
+   * read, and the browse page kept the previous gateway's streams for the life of the tab. The
+   * position never became null again either, so the head was never resolved on the new node.
+   *
+   * The same guard the modules around this one already carry: `ManifestFetcher` pins a topic
+   * generation before a head read, `LadderFeedPoller` re-checks its entry after every await, and the
+   * picker bumps a probe generation before it saves an address.
+   */
+  private generation = 0;
+
   constructor(
     private readonly owner: string,
     private readonly topic: Topic,
@@ -73,9 +90,13 @@ export class CatalogFeedReader {
    * feed, and walking from an index established against the old one would ask for slots that node may
    * not have, which reads as a catalog that has stopped rather than one being followed from the wrong
    * place.
+   *
+   * A read already in flight is left to finish and return what it fetched, and is refused the
+   * position it would have written. See {@link generation}.
    */
   public reset(): void {
     this.index = null;
+    this.generation++;
   }
 
   /**
@@ -85,8 +106,12 @@ export class CatalogFeedReader {
    * list. Both existing callers already ignore a non-array, so null is inert for them.
    */
   public async read(gatewayUrl: string, signal?: AbortSignal): Promise<string | null> {
+    // Pinned before the first await and carried through, so every write this read makes is checked
+    // against the reader it started on rather than against whatever the reader is by then.
+    const generation = this.generation;
+
     if (this.index === null) {
-      return this.readHead(gatewayUrl, signal);
+      return this.readHead(gatewayUrl, generation, signal);
     }
 
     // A local cursor rather than reading `this.index` each turn. Assigning the field from a request
@@ -139,6 +164,13 @@ export class CatalogFeedReader {
         }
         throw new CatalogFetchError(`${gatewayUrl}/${request.path}`, response.status);
       }
+      // The reader was reset while this slot was in flight, so it now belongs to a gateway the
+      // viewer has left. What was already fetched is still handed back, since each slot carries the
+      // whole catalog and the caller knows which gateway it asked, but neither the position nor
+      // another request may go to the node that answered. See {@link generation}.
+      if (generation !== this.generation) {
+        return newest;
+      }
       cursor = request.index;
       this.index = cursor;
       newest = response.text;
@@ -153,7 +185,7 @@ export class CatalogFeedReader {
    * only thing that knows which slot it resolved to. Without it this reader would have to keep
    * resolving the head, which is the cost being removed.
    */
-  private async readHead(gatewayUrl: string, signal?: AbortSignal): Promise<string | null> {
+  private async readHead(gatewayUrl: string, generation: number, signal?: AbortSignal): Promise<string | null> {
     const request = nextFeedRequest(this.owner, this.topic, null);
     const response = await this.fetcher(`${gatewayUrl}/${request.path}`, { signal });
     // A catalog nobody has broadcast to has no head, which is nothing to show rather than a fault.
@@ -166,8 +198,10 @@ export class CatalogFeedReader {
 
     const resolved = resolvedFeedIndex(response.headers);
     // A body without a usable index is still the catalog, so it is returned. The position stays null
-    // and the next read resolves the head again, which is slow rather than wrong.
-    if (resolved !== null) {
+    // and the next read resolves the head again, which is slow rather than wrong. A head resolved on
+    // a gateway the viewer has since left is treated the same way, for the stronger reason that the
+    // node now being asked has its own numbering. See {@link generation}.
+    if (resolved !== null && generation === this.generation) {
       this.index = FeedIndex.fromBigInt(BigInt(resolved));
     }
     return response.text;
