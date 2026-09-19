@@ -19,6 +19,41 @@ function streamAt(timestamp: number, title = `stream ${timestamp}`): Stream {
 
 const HELD = [streamAt(100), streamAt(200)];
 
+const malformedCatalogs: Array<[name: string, fetched: unknown[]]> = [
+  ['a null entry', [null]],
+  ['a non-string owner', [{ ...streamAt(300), owner: 12 }]],
+  ['a non-string topic', [{ ...streamAt(300), topic: null }]],
+  ['a non-string title', [{ ...streamAt(300), title: false }]],
+  ['a non-finite timestamp', [{ ...streamAt(300), timestamp: Number.POSITIVE_INFINITY }]],
+  ['an unknown media type', [{ ...streamAt(300), mediatype: 'image' }]],
+  ['a non-string state', [{ ...streamAt(300), state: 1 }]],
+  ['an unusable duration', [{ ...streamAt(300), duration: null }]],
+  ['a non-numeric final index', [{ ...streamAt(300), index: '2' }]],
+  ['a non-string thumbnail', [{ ...streamAt(300), thumbnail: 12 }]],
+  ['an unusable scheduled start time', [{ ...streamAt(300), scheduledStartTime: false }]],
+  ['a valid entry mixed with an invalid entry', [streamAt(300), { ...streamAt(400), title: null }]],
+];
+
+const validRendition = {
+  name: '360p',
+  width: 640,
+  height: 360,
+  topic: 'rung-topic',
+  bandwidth: 800_000,
+  avgBandwidth: 700_000,
+};
+
+const malformedRenditions: Array<[name: string, renditions: unknown]> = [
+  ['a non-array ladder', {}],
+  ['a null rung', [null]],
+  ['a rung without a string name', [{ ...validRendition, name: null }]],
+  ['a rung without a string topic', [{ ...validRendition, topic: 12 }]],
+  ['a rung without finite dimensions', [{ ...validRendition, width: Number.NaN }]],
+  ['a rung without finite bandwidth', [{ ...validRendition, avgBandwidth: Number.POSITIVE_INFINITY }]],
+  ['a rung with a non-numeric final index', [{ ...validRendition, index: '2' }]],
+  ['a rung with a non-numeric duration', [{ ...validRendition, duration: '12' }]],
+];
+
 describe('the catalog a poll leaves on screen', () => {
   it('takes a newer catalog from the same gateway', () => {
     const fetched = [streamAt(100), streamAt(300)];
@@ -38,13 +73,14 @@ describe('the catalog a poll leaves on screen', () => {
     assert.equal(nextStreamList({ held: HELD, fetched: 'not a catalog', isSameGateway: true }), null);
   });
 
-  it('rejects the whole catalog when an entry lacks the fields every catalog consumer needs', () => {
-    assert.equal(nextStreamList({ held: HELD, fetched: [null], isSameGateway: true }), null);
-    assert.deepEqual(nextStreamList({ held: HELD, fetched: [null], isSameGateway: false }), []);
+  it.each(malformedCatalogs)('rejects the whole catalog when it contains %s', (_name, fetched) => {
+    assert.equal(nextStreamList({ held: HELD, fetched, isSameGateway: true }), null);
+    assert.equal(nextStreamList({ held: [], fetched, isSameGateway: true }), null);
+    assert.deepEqual(nextStreamList({ held: HELD, fetched, isSameGateway: false }), []);
   });
 
-  it('rejects the whole catalog when a rendition would break the player', () => {
-    const malformed = [{ ...streamAt(300), renditions: [null] }];
+  it.each(malformedRenditions)('rejects the whole catalog when it contains %s', (_name, renditions) => {
+    const malformed = [{ ...streamAt(300), renditions }];
 
     assert.equal(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: true }), null);
     assert.deepEqual(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: false }), []);
@@ -55,16 +91,14 @@ describe('the catalog a poll leaves on screen', () => {
       ...streamAt(300, 'scheduled stream'),
       state: 'scheduled',
       duration: 42,
+      index: 3,
       thumbnail: 'thumbnail-reference',
       scheduledStartTime: null,
       renditions: [
         {
-          name: '360p',
-          width: 640,
-          height: 360,
-          topic: 'rung-topic',
-          bandwidth: 800_000,
-          avgBandwidth: 700_000,
+          ...validRendition,
+          index: 2,
+          duration: 42,
         },
       ],
       legacyField: { kept: true },
@@ -72,6 +106,7 @@ describe('the catalog a poll leaves on screen', () => {
     const futureState = {
       ...streamAt(400, 'future stream'),
       state: 'announced-by-a-future-writer',
+      duration: '42.5',
       scheduledStartTime: 1_800_000_000_000,
     };
 
