@@ -292,7 +292,7 @@ export class ManifestManager {
    * Number this session's playlists from `mediaSequence` on, over a session that has already written
    * to this feed, and mark the join.
    *
-   * Called once, before the first segment, with what {@link continuesFrom} read off the feed head —
+   * Called once, before the first playlist is published, with what {@link continuesFrom} read off the feed head,
    * and again beside {@link restoreState} for a session rebuilt off disk, from the offset its
    * recovery entry carries. That is how the offset survives a crash rather than being re-derived from
    * a head which by then is this session's own last playlist.
