@@ -3,15 +3,10 @@ import { describe, it } from 'node:test';
 
 import { AdminApiClient, STATE_REPORT_ACCEPTED } from '../src/libs/AdminApiClient.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import {
-  AdminSession,
-  MEDIA_TYPE_AUDIO,
-  STOP_FAILURE_DRAIN_TIMEOUT,
-  STREAM_LIFECYCLE_FAILED,
-} from '../src/types.js';
+import { AdminSession, MEDIA_TYPE_AUDIO, STOP_FAILURE_DRAIN_TIMEOUT, STREAM_LIFECYCLE_FAILED } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
-import { FakeFeedHead, makeTestOrchestrator } from './helpers/fakes.js';
+import { FakeFeedHead, makeFakeRecoveryStore, makeRecoveredState, makeTestOrchestrator } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 const STREAM_ID = 'audio/declared-stream';
@@ -41,7 +36,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
  * a successor that reads while the predecessor VOD is still in flight sees the closing playlist and
  * chooses the same next index as that VOD.
  */
-function sharedFeedHarness(): {
+function sharedFeedHarness(options: { recovered?: boolean } = {}): {
   orchestrator: StreamOrchestrator;
   clock: FakeClock;
   writes: ManifestWrite[];
@@ -56,7 +51,12 @@ function sharedFeedHarness(): {
   const firstVod = deferred();
   const writes: ManifestWrite[] = [];
   const uploadedSegments: string[] = [];
-  let head: FakeFeedHead | null = null;
+  let head: FakeFeedHead | null = options.recovered
+    ? {
+        index: 3,
+        manifest: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2,\nref0\n',
+      }
+    : null;
   let reads = 0;
   let blockFirstVod = true;
   let vodStarted = false;
@@ -65,6 +65,19 @@ function sharedFeedHarness(): {
     describe: () => 'http://admin.test',
     reportState: async () => STATE_REPORT_ACCEPTED,
   } as unknown as AdminApiClient;
+
+  const recoveredState = {
+    ...makeRecoveredState(STREAM_ID),
+    streamRawTopic: DECLARATION.topic,
+    mediatype: MEDIA_TYPE_AUDIO,
+    adminStreamId: DECLARATION.id,
+  };
+  const recoveryStore = options.recovered
+    ? makeFakeRecoveryStore({
+        listActive: () => [STREAM_ID],
+        load: () => recoveredState,
+      })
+    : makeFakeRecoveryStore();
 
   const orchestrator = makeTestOrchestrator(
     {
@@ -95,6 +108,7 @@ function sharedFeedHarness(): {
         return { reference: { toHex: () => `soc-${index}` } };
       },
     },
+    recoveryStore,
   );
 
   return {
@@ -215,6 +229,35 @@ describe('shared manifest feeds wait for every outstanding predecessor write', (
     }
   });
 
+  it('keeps a fresh declared session gated after a recovered admin session times out', async () => {
+    const harness = sharedFeedHarness({ recovered: true });
+    try {
+      assert.deepEqual(await harness.orchestrator.recoverStreams(), [STREAM_ID]);
+
+      const stopped = harness.orchestrator.stopStream(STREAM_ID);
+      await waitFor(harness.firstVodStarted, SETTLE_CEILING_MS);
+      await harness.clock.advance(DRAIN_TIMEOUT_MS + 1);
+      await stopped;
+
+      const timedOutStatus = harness.orchestrator.getStreamStatus(STREAM_ID);
+      assert.equal(timedOutStatus.state, STREAM_LIFECYCLE_FAILED);
+      assert.equal(timedOutStatus.reason, STOP_FAILURE_DRAIN_TIMEOUT);
+
+      harness.start();
+      const readsBeforeSuccessor = harness.feedHeadReads();
+      await harness.segment('b0', 0);
+
+      await waitAndConfirmNothingHappened(
+        () => harness.feedHeadReads() === readsBeforeSuccessor && writesNaming(harness.writes, 'b0').length === 0,
+        QUIET_WINDOW_MS,
+      );
+
+      await releaseVodAndPublishSuccessor(harness, 'b1', 1);
+    } finally {
+      await releaseOutstandingVod(harness);
+    }
+  });
+
   it('inherits A through a failed B finalize when A, B and C share one topic', async () => {
     const harness = sharedFeedHarness();
     try {
@@ -222,10 +265,7 @@ describe('shared manifest feeds wait for every outstanding predecessor write', (
       await harness.segment('b0', 0);
 
       harness.start();
-      await waitFor(
-        () => harness.orchestrator.getMetricsSnapshot().streamsFailedTotal === 1,
-        SETTLE_CEILING_MS,
-      );
+      await waitFor(() => harness.orchestrator.getMetricsSnapshot().streamsFailedTotal === 1, SETTLE_CEILING_MS);
 
       const readsBeforeC = harness.feedHeadReads();
       await harness.segment('c0', 0);

@@ -327,6 +327,12 @@ export class StreamOrchestrator {
   private segmentLossAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
   private stopOutcomes = new Map<string, RetainedStopOutcome>();
+  /** Actual pending writes for topics shared across sessions, independently of bounded stop reports. */
+  private sharedFeedWrites = new Map<string, Promise<void>>();
+  /** Which stable topic an uploader writes, absent for a per-session standalone topic. */
+  private sharedFeedTopics = new WeakMap<StreamUploader, string>();
+  /** Uploaders whose inherited and own write completion is already registered. */
+  private trackedSharedFeedDrains = new WeakSet<StreamUploader>();
   /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
   private readonly metrics = new ServiceMetrics();
   /** Ladder id per base stream, so the four rungs of one source share a catalog entry. */
@@ -456,13 +462,14 @@ export class StreamOrchestrator {
       stale.retire();
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
-      // Started before the replacement rather than after it, so the replacement can be handed the
-      // promise. The drain itself is unchanged and still nobody awaits it here; what is new is that
-      // the replacement holds its manifest publishes until this settles. `retire()` gives up the
+      // Started before the replacement is built. `drainUploader` synchronously registers the
+      // retired uploader's actual write completion under its topic before it begins the bounded
+      // wait. The replacement reads that topic entry below and holds its manifest publishes until
+      // the writes finish, even when the stop report has already timed out. `retire()` gives up the
       // recovery entry, the admin report and the catalog entry, but not the SOC writes, so wherever
       // both sessions hold one topic the retired session's closing and VOD manifests race the
       // replacement's live ones for the same feed indexes.
-      const drained = this.finalizeRetiredSession(streamId, stale);
+      void this.finalizeRetiredSession(streamId, stale);
       // ⛔ The gate is owed wherever the two sessions publish their own manifests onto one topic, and
       // that is now every session whose topic outlives it: a declared stream in admin mode, and a RUNG
       // in either deployment, whose topic is derived from its ladder group and its rung name and is
@@ -472,8 +479,7 @@ export class StreamOrchestrator {
       //
       // A standalone single-rendition stream is the one that owes nothing: it mints a fresh uuid per
       // session, so the retired session is writing to a feed this one will never touch.
-      const sharesOneFeed = admin !== undefined || (this.config.ladder?.match(streamId) ?? null) !== null;
-      this.spawnUploader(streamId, mediatype, claimant, admin, sharesOneFeed ? drained : undefined);
+      this.spawnUploader(streamId, mediatype, claimant, admin);
       return true;
     }
 
@@ -684,13 +690,7 @@ export class StreamOrchestrator {
    * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
    * and a uuid.
    */
-  private spawnUploader(
-    streamId: string,
-    mediatype: MediaType,
-    claimant: StreamClaimant,
-    admin?: AdminSession,
-    predecessorDrained?: Promise<void>,
-  ): void {
+  private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant, admin?: AdminSession): void {
     // Resolved before the uploader is built: the rungs of one ladder publish within milliseconds of
     // each other, and a group id assigned later would let two of them create two groups for one source.
     const match = this.config.ladder?.match(streamId) ?? null;
@@ -750,6 +750,9 @@ export class StreamOrchestrator {
     const datingKey = this.datingKeyOf(streamId, match?.baseStreamId ?? null);
     this.broadcastAnchors.set(datingKey, anchor);
 
+    const sharedFeedTopic = admin !== undefined || ladder !== undefined ? streamTopic : undefined;
+    const predecessorDrained = sharedFeedTopic ? this.sharedFeedWrites.get(sharedFeedTopic) : undefined;
+
     // Which node's postage batch pays for this rung. A stream with no rung, single-rendition or
     // anything arriving through the generic API, rides the coordinator: the longest-lived batch.
     const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
@@ -771,6 +774,10 @@ export class StreamOrchestrator {
       admin: this.adminReportingFor(admin?.id),
       predecessorDrained,
     });
+
+    if (sharedFeedTopic) {
+      this.sharedFeedTopics.set(uploader, sharedFeedTopic);
+    }
 
     this.activeStreams.set(streamId, uploader);
     this.processedSegments.set(streamId, this.newDuplicateFilter());
@@ -1441,6 +1448,10 @@ export class StreamOrchestrator {
       // written before admin mode, and on every entry written outside it.
       admin: this.adminReportingFor(state.adminStreamId),
     });
+
+    if (state.ladder || (state.adminStreamId && this.config.adminApi)) {
+      this.sharedFeedTopics.set(uploader, state.streamRawTopic);
+    }
 
     this.activeStreams.set(streamId, uploader);
     this.streamActivityAt.set(streamId, this.clock.now());
@@ -2171,8 +2182,9 @@ export class StreamOrchestrator {
    * Answers rather than throws, deliberately. A stop that fails still has to leave the live maps, and
    * rethrowing would skip `retireSession`, leaving the id in `activeStreams` with nothing feeding it
    * and the stall signal reporting a stream that had already ended for the life of the process. The
-   * drain really does complete here. It just completes unsuccessfully, and that is a result rather
-   * than an exception.
+   * bounded wait really does complete here. It can complete unsuccessfully while `notifyStop`
+   * continues its I/O in the background, and that is a result rather than an exception. Sessions on
+   * the same topic still wait for that actual completion through `trackSharedFeedWrites`.
    */
   private async drainUploader(streamId: string, uploader: StreamUploader): Promise<StreamStatusReport> {
     let drainTimer: Timer | undefined;
@@ -2185,8 +2197,11 @@ export class StreamOrchestrator {
       );
     });
 
+    const actualDrain = uploader.notifyStop();
+    this.trackSharedFeedWrites(uploader, actualDrain);
+
     try {
-      await Promise.race([uploader.notifyStop(), drainTimeout]);
+      await Promise.race([actualDrain, drainTimeout]);
       return { streamId, state: STREAM_LIFECYCLE_FINALIZED, settledAt: Date.now() };
     } catch (error) {
       const msg = getErrorMessage(error);
@@ -2210,6 +2225,42 @@ export class StreamOrchestrator {
       // timer holding the event loop open, one per stopped stream.
       drainTimer?.cancel();
     }
+  }
+
+  /**
+   * Keep the real end of an uploader's writes under the stable topic they can still change.
+   *
+   * A stop deadline answers the caller and retires the session, but it cannot cancel Bee I/O already
+   * in progress. A new session may ingest while that I/O is pending, but it cannot safely read the
+   * head or publish a manifest until every writer before it has settled. The inherited completion is
+   * included because an intermediate session can fail its own finalize while the session before it
+   * is still writing. If old I/O never settles, publishing on this topic stays held until process
+   * recovery rather than risking two writers at one feed index.
+   */
+  private trackSharedFeedWrites(uploader: StreamUploader, actualDrain: Promise<void>): void {
+    if (this.trackedSharedFeedDrains.has(uploader)) {
+      return;
+    }
+
+    const topic = this.sharedFeedTopics.get(uploader);
+    if (!topic) {
+      return;
+    }
+
+    const ownCompletion = actualDrain.then(
+      () => undefined,
+      () => undefined,
+    );
+    const inherited = this.sharedFeedWrites.get(topic);
+    const completion = inherited ? Promise.all([inherited, ownCompletion]).then(() => undefined) : ownCompletion;
+
+    this.trackedSharedFeedDrains.add(uploader);
+    this.sharedFeedWrites.set(topic, completion);
+    void completion.finally(() => {
+      if (this.sharedFeedWrites.get(topic) === completion) {
+        this.sharedFeedWrites.delete(topic);
+      }
+    });
   }
 }
 
