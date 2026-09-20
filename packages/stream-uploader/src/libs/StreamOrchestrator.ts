@@ -230,6 +230,7 @@ interface ManagedSourceState {
   heartbeat?: Timer;
   reportRetry?: Timer;
   closureRetry?: Timer;
+  finalizationRetry?: Timer;
   reportInFlight?: boolean;
   closed?: boolean;
   closingSource?: SourceConnectionIdentity;
@@ -992,6 +993,9 @@ export class StreamOrchestrator {
     if (record.state === 'claiming') {
       return entry.kind;
     }
+    if (record.state === 'closed' && this.restoreCompletedManagedCheckpoint(streamId, state)) {
+      return entry.kind;
+    }
     if (!state.closed && remaining === 0) {
       this.closeManagedSourceAtDeadline(streamId, state);
     } else if (!state.closed) {
@@ -1002,6 +1006,45 @@ export class StreamOrchestrator {
     }
     void this.flushManagedReports(streamId, state);
     return entry.kind;
+  }
+
+  private restoreCompletedManagedCheckpoint(streamId: string, state: ManagedSourceState): boolean {
+    const checkpoint = this.config.managedCheckpointStore?.read(state.record.checkpointReference);
+    if (checkpoint?.status !== 'complete' || !checkpoint.completedRecording) {
+      return false;
+    }
+    const record = this.appendManagedReport(
+      { ...state.record, state: 'vod' },
+      { state: 'vod', completedRecording: checkpoint.completedRecording },
+    );
+    state.record = record;
+    this.persistRestoredManagedVod(streamId, state);
+    return true;
+  }
+
+  private persistRestoredManagedVod(streamId: string, state: ManagedSourceState): void {
+    try {
+      this.config.managedRunStore?.save(state.record);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to restore completed managed run ${streamId}:`, error);
+      this.armManagedFinalizationRetry(streamId, state);
+      return;
+    }
+    state.finalizationRetry?.cancel();
+    state.finalizationRetry = undefined;
+    void this.flushManagedReports(streamId, state);
+  }
+
+  private armManagedFinalizationRetry(streamId: string, state: ManagedSourceState): void {
+    if (state.finalizationRetry) {
+      return;
+    }
+    state.finalizationRetry = this.clock.setTimer(() => {
+      state.finalizationRetry = undefined;
+      if (this.managedSources.get(streamId) === state && state.record.state === 'vod') {
+        this.persistRestoredManagedVod(streamId, state);
+      }
+    }, MANAGED_HEARTBEAT_MS, { unref: true });
   }
 
   /** Restore every durable managed admission before legacy media recovery or callback routing starts. */
@@ -3668,6 +3711,7 @@ export class StreamOrchestrator {
       source.heartbeat?.cancel();
       source.reportRetry?.cancel();
       source.closureRetry?.cancel();
+      source.finalizationRetry?.cancel();
     }
 
     // Clear all recovery timers

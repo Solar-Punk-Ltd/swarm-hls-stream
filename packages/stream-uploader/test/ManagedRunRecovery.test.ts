@@ -79,11 +79,16 @@ class MemoryManagedRuns implements ManagedRunPersistence {
   public records = new Map<string, ManagedRunRecord>();
   public failState?: ManagedRunRecord['state'];
   public failClosedSaves = 0;
+  public failVodSaves = 0;
 
   public save(record: ManagedRunRecord): void {
     if (record.state === 'closed' && this.failClosedSaves > 0) {
       this.failClosedSaves -= 1;
       throw new Error('injected closed save failure');
+    }
+    if (record.state === 'vod' && this.failVodSaves > 0) {
+      this.failVodSaves -= 1;
+      throw new Error('injected vod save failure');
     }
     if (record.state === this.failState) {
       throw new Error(`injected ${record.state} save failure`);
@@ -810,6 +815,138 @@ describe('managed run recovery', () => {
       assert.equal(completed?.renditions[0]?.topic, expectedRenditions[0].topic);
     } finally {
       await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('restores an ABR VOD from its completed checkpoint after the run record save was lost', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-abr-complete-recovery-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const checkpoints = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'media'));
+    const ladder = AbrLadder.parse('360p:640:360:700');
+    const expectedRenditions = [
+      {
+        name: '360p',
+        topic: rungTopicFor(CLAIM.topic, '360p'),
+        width: 640,
+        height: 360,
+        bandwidth: 700_000,
+        avgBandwidth: 700_000,
+      },
+    ];
+    const finalAnnouncements: unknown[] = [];
+    const ladderRegistry = {
+      recordRungDelivered: () => {},
+      upsertRendition: async (_identity: unknown, rendition: { index?: number }) => {
+        if (rendition.index !== undefined) {
+          finalAnnouncements.push(structuredClone(rendition));
+          return {
+            masterIndex: 9,
+            masterReference: 'b'.repeat(64),
+            flippedToFinished: true,
+            duration: 0.1,
+          };
+        }
+        return {
+          masterIndex: 8,
+          masterReference: 'c'.repeat(64),
+          flippedToFinished: false,
+          duration: null,
+        };
+      },
+    } as LadderRegistry;
+    const uploads = {
+      uploadData: async () => ({ reference: { toHex: () => 'a'.repeat(64) } }),
+      uploadPayload: async (index: number) => ({
+        reference: { toHex: () => String(index + 1).padStart(64, '0') },
+      }),
+    };
+    const first = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+        managedMediaStore: mediaStore,
+        ladder,
+        ladderRegistry,
+      },
+      uploads,
+    );
+
+    try {
+      assert.equal(first.prepareManagedRun({ ...CLAIM, expectedRenditions }), true);
+      assert.equal(provision(first, SOURCE_A), true);
+      assert.deepEqual(
+        first.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),
+        { accepted: true },
+      );
+      assert.equal(
+        first.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_A, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
+        true,
+      );
+      assert.deepEqual(
+        first.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
+        { accepted: true },
+      );
+      await activeUploader(first, RUNG_ID)!.segmentQueue.onIdle();
+
+      runs.failVodSaves = 2;
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status === 'complete');
+      await waitFor(() => activeUploader(first, RUNG_ID) === undefined);
+
+      const completedBeforeRestart = checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.completedRecording;
+      assert.equal(runs.records.get(STREAM_ID)?.state, 'closed');
+      assert.equal(finalAnnouncements.length, 1);
+      assert.deepEqual(completedBeforeRestart?.master, {
+        topic: CLAIM.topic,
+        index: 9,
+        reference: 'b'.repeat(64),
+        duration: 0.1,
+      });
+      await first.cleanup();
+
+      const sent: ManagedRunReport[] = [];
+      const restartedClock = new FakeClock();
+      const restarted = makeTestOrchestrator(
+        {
+          clock: restartedClock,
+          wallClock: () => WALL_START + RECONNECT_MS + 1_000,
+          managedSourceReconnectMs: RECONNECT_MS,
+          managedRunStore: runs,
+          managedCheckpointStore: checkpoints,
+          managedMediaStore: mediaStore,
+          adminApi: reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+          ladder,
+          ladderRegistry,
+        },
+        uploads,
+      );
+      restarted.restoreManagedRuns();
+
+      assert.deepEqual(restarted.recoverManagedMedia(), []);
+      assert.equal(runs.records.get(STREAM_ID)?.state, 'closed');
+      assert.equal(finalAnnouncements.length, 1);
+      await restartedClock.advance(10_000);
+      await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
+      await waitFor(() => sent.some((report) => report.state === 'vod'));
+      assert.deepEqual(
+        sent.find((report) => report.state === 'vod')?.completedRecording,
+        completedBeforeRestart,
+      );
+      assert.deepEqual(
+        checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.completedRecording,
+        completedBeforeRestart,
+      );
+      assert.equal(finalAnnouncements.length, 1);
+      assert.equal(activeUploader(restarted, RUNG_ID), undefined);
+      await restarted.cleanup();
+    } finally {
+      await first.cleanup();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
