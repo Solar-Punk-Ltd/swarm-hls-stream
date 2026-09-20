@@ -649,6 +649,90 @@ describe('managed run recovery', () => {
     }
   });
 
+  it('resumes durable finalization for a closed run at startup and leaves a completed VOD dormant', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-closed-recovery-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const checkpoints = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'media'));
+    let uploadCount = 0;
+    const uploads = {
+      uploadData: async () => ({
+        reference: { toHex: () => String(uploadCount++).padStart(64, 'a') },
+      }),
+      uploadPayload: async (index: number) => ({
+        reference: { toHex: () => String(index + 1).padStart(64, '0') },
+      }),
+    };
+    const first = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+        managedMediaStore: mediaStore,
+      },
+      uploads,
+    );
+
+    try {
+      assert.equal(first.prepareManagedRun(CLAIM), true);
+      assert.equal(provision(first, SOURCE_A), true);
+      assert.deepEqual(media(first, SOURCE_A), { accepted: true });
+      await activeUploader(first)!.segmentQueue.onIdle();
+
+      const beforeCrash = runs.records.get(STREAM_ID);
+      assert.ok(beforeCrash);
+      runs.save({
+        ...beforeCrash,
+        state: 'closed',
+        deadlineWallMs: WALL_START + clock.now(),
+        deadlineRecordedAtWallMs: WALL_START + clock.now(),
+        deadlineRemainingMs: 0,
+        source: SOURCE_A,
+      });
+
+      const restarted = makeTestOrchestrator(
+        {
+          clock: new FakeClock(),
+          wallClock: () => WALL_START + 1_000,
+          managedSourceReconnectMs: RECONNECT_MS,
+          managedRunStore: runs,
+          managedCheckpointStore: checkpoints,
+          managedMediaStore: mediaStore,
+        },
+        uploads,
+      );
+      restarted.restoreManagedRuns();
+      assert.deepEqual(restarted.recoverManagedMedia(), [STREAM_ID]);
+      await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
+      assert.equal(checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status, 'complete');
+      await restarted.cleanup();
+
+      const uploadsAfterCompletion = uploadCount;
+      const completed = makeTestOrchestrator(
+        {
+          clock: new FakeClock(),
+          wallClock: () => WALL_START + 2_000,
+          managedSourceReconnectMs: RECONNECT_MS,
+          managedRunStore: runs,
+          managedCheckpointStore: checkpoints,
+          managedMediaStore: mediaStore,
+        },
+        uploads,
+      );
+      completed.restoreManagedRuns();
+      assert.deepEqual(completed.recoverManagedMedia(), []);
+      assert.equal(activeUploader(completed), undefined);
+      await settleReports();
+      assert.equal(uploadCount, uploadsAfterCompletion);
+      await completed.cleanup();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('completes an ABR checkpoint only after its frozen rung and master are immutable', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-abr-finalization-'));
     const clock = new FakeClock();

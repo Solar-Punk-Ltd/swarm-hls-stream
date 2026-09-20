@@ -1007,6 +1007,9 @@ export class StreamOrchestrator {
 
     const recovered: string[] = [];
     for (const [baseStreamId, state] of this.managedSources) {
+      if (state.record.state === 'vod') {
+        continue;
+      }
       let streamIds: string[];
       try {
         streamIds = [
@@ -1024,6 +1027,7 @@ export class StreamOrchestrator {
         continue;
       }
 
+      let restoredRun = false;
       for (const streamId of streamIds) {
         if (this.activeStreams.has(streamId)) {
           continue;
@@ -1056,6 +1060,12 @@ export class StreamOrchestrator {
           continue;
         }
         recovered.push(streamId);
+        restoredRun = true;
+      }
+      if (restoredRun && state.record.state === 'closed') {
+        void this.stopStream(baseStreamId).catch((error) =>
+          this.errorHandler.handleError(error, `StreamOrchestrator.recoverManagedMedia - ${baseStreamId}`),
+        );
       }
     }
     return recovered;
