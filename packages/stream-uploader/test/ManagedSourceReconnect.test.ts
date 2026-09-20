@@ -12,6 +12,7 @@ import {
 
 import { FakeClock } from './helpers/fakeClock.js';
 import { makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 import { waitFor } from './helpers/waiting.js';
 
 const STREAM_ID = 'video/managed-stream';
@@ -44,9 +45,10 @@ function makeManagedOrchestrator(
   clock: FakeClock,
   published: unknown[] = [],
   saved: StreamState[] = [],
+  maxQueueSize = 100,
 ): StreamOrchestrator {
   return makeTestOrchestrator(
-    { clock, managedSourceReconnectMs: RECONNECT_MS },
+    { clock, managedSourceReconnectMs: RECONNECT_MS, maxQueueSize },
     {},
     makeFakeRecoveryStore({
       save: (_streamId: string, state: StreamState) => saved.push(state),
@@ -59,8 +61,8 @@ function provision(orchestrator: StreamOrchestrator, source: SourceConnectionIde
   return orchestrator.provisionManagedSource(STREAM_ID, MEDIA_TYPE_VIDEO, source, CLAIMANT, ADMIN_SESSION);
 }
 
-function media(orchestrator: StreamOrchestrator, source: SourceConnectionIdentity, index: number, value: string) {
-  return orchestrator.handleManagedSegment(STREAM_ID, source, index, 2, Buffer.from(value));
+function media(orchestrator: StreamOrchestrator, source: SourceConnectionIdentity, index: number) {
+  return orchestrator.handleManagedSegment(STREAM_ID, source, index, 0.1, videoSegment(4, index * 4 * FRAME_TICKS));
 }
 
 describe('managed SRS source reconnect foundation', () => {
@@ -75,7 +77,7 @@ describe('managed SRS source reconnect foundation', () => {
 
     assert.equal(orchestrator.getActiveStreamCount(), 0);
     assert.deepEqual(
-      media(orchestrator, SOURCE_A, 0, 'late media'),
+      media(orchestrator, SOURCE_A, 0),
       { accepted: false, reason: 'stale_source' },
       'media from a provisional source was accepted after its bounded acquisition window',
     );
@@ -89,7 +91,7 @@ describe('managed SRS source reconnect foundation', () => {
     const orchestrator = makeManagedOrchestrator(clock, published, saved);
 
     assert.equal(provision(orchestrator, SOURCE_A), true);
-    assert.deepEqual(media(orchestrator, SOURCE_A, 0, 'A'), { accepted: true });
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
     const uploaderA = activeUploader(orchestrator);
     assert.ok(uploaderA, 'verified media must create the first uploader');
     const notifyStop = mock.method(uploaderA, 'notifyStop');
@@ -99,7 +101,7 @@ describe('managed SRS source reconnect foundation', () => {
 
     assert.equal(provision(orchestrator, SOURCE_B), true);
     assert.equal(activeUploader(orchestrator), uploaderA, 'a provisional reconnect replaced the incumbent uploader');
-    assert.deepEqual(media(orchestrator, SOURCE_B, 0, 'B'), { accepted: true });
+    assert.deepEqual(media(orchestrator, SOURCE_B, 0), { accepted: true });
 
     assert.equal(activeUploader(orchestrator), uploaderA, 'verified reconnect media did not reuse the uploader');
     assert.equal(notifyStop.mock.callCount(), 0, 'the in-grace interruption called notifyStop early');
@@ -108,6 +110,7 @@ describe('managed SRS source reconnect foundation', () => {
       0,
       'the in-grace interruption finalized an early VOD',
     );
+    await waitFor(() => saved.length >= 2, SETTLE_CEILING_MS);
     assert.ok(saved.length >= 2, 'both sides of the interruption must persist through the same uploader history');
     assert.equal(new Set(saved.map((state) => state.streamRawTopic)).size, 1, 'the reconnect changed feed history');
     await orchestrator.cleanup();
@@ -118,7 +121,7 @@ describe('managed SRS source reconnect foundation', () => {
     const orchestrator = makeManagedOrchestrator(clock);
 
     assert.equal(provision(orchestrator, SOURCE_A), true);
-    assert.deepEqual(media(orchestrator, SOURCE_A, 0, 'A'), { accepted: true });
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
     const uploaderA = activeUploader(orchestrator);
     assert.ok(uploaderA);
     const notifyStop = mock.method(uploaderA, 'notifyStop');
@@ -147,7 +150,7 @@ describe('managed SRS source reconnect foundation', () => {
     const orchestrator = makeManagedOrchestrator(clock, published);
 
     assert.equal(provision(orchestrator, SOURCE_A), true);
-    assert.deepEqual(media(orchestrator, SOURCE_A, 0, 'A'), { accepted: true });
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
     const uploaderA = activeUploader(orchestrator);
     assert.ok(uploaderA);
     const notifyStop = mock.method(uploaderA, 'notifyStop');
@@ -161,6 +164,96 @@ describe('managed SRS source reconnect foundation', () => {
 
     assert.equal(notifyStop.mock.callCount(), 1, 'the deadline finalized the source more than once');
     assert.equal(published.filter((entry) => entry.state === STREAM_STATUS_VOD).length, 1);
+    assert.equal(provision(orchestrator, SOURCE_B), false, 'a closed managed run admitted a new source');
+    await orchestrator.cleanup();
+  });
+
+  it('does not confirm a reconnect or renew its deadline from unusable source media', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeManagedOrchestrator(clock);
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+    const uploaderA = activeUploader(orchestrator);
+    assert.ok(uploaderA);
+    const notifyStop = mock.method(uploaderA, 'notifyStop');
+
+    assert.equal(orchestrator.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    assert.equal(provision(orchestrator, SOURCE_B), true);
+    assert.deepEqual(
+      orchestrator.handleManagedSegment(STREAM_ID, SOURCE_B, 0, 0, videoSegment(4)),
+      { accepted: false, reason: 'unverified_source_media' },
+      'a zero-duration callback confirmed the provisional source',
+    );
+    assert.deepEqual(
+      orchestrator.handleManagedSegment(STREAM_ID, SOURCE_B, 0, 0.1, Buffer.alloc(188)),
+      { accepted: false, reason: 'unverified_source_media' },
+      'malformed bytes confirmed the provisional source',
+    );
+
+    await clock.advance(RECONNECT_MS);
+    await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+    assert.equal(notifyStop.mock.callCount(), 1, 'invalid media renewed the original source deadline');
+    assert.equal(provision(orchestrator, SOURCE_B), false, 'the expired run reopened after invalid media');
+    await orchestrator.cleanup();
+  });
+
+  it('does not confirm a reconnect while the incumbent uploader queue refuses its media', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 1);
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+    const uploaderA = activeUploader(orchestrator);
+    assert.ok(uploaderA);
+    await uploaderA.segmentQueue.onIdle();
+    const notifyStop = mock.method(uploaderA, 'notifyStop');
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const running = uploaderA.segmentQueue.add(() => held);
+    const queued = uploaderA.segmentQueue.add(() => held);
+    await waitFor(() => uploaderA.segmentQueue.size === 1, SETTLE_CEILING_MS);
+
+    assert.equal(orchestrator.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    assert.equal(provision(orchestrator, SOURCE_B), true);
+    assert.deepEqual(
+      media(orchestrator, SOURCE_B, 0),
+      { accepted: false, reason: 'queue_full' },
+      'a queue-refused segment confirmed the provisional source',
+    );
+
+    release();
+    await Promise.all([running, queued]);
+    await clock.advance(RECONNECT_MS);
+    await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+    assert.equal(notifyStop.mock.callCount(), 1, 'a queue refusal renewed the original source deadline');
+    await orchestrator.cleanup();
+  });
+
+  it('anchors the cutoff to the last verified media instead of a delayed unpublish callback', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeManagedOrchestrator(clock);
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+    const uploaderA = activeUploader(orchestrator);
+    assert.ok(uploaderA);
+    const notifyStop = mock.method(uploaderA, 'notifyStop');
+
+    await clock.advance(20_000);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 1), { accepted: true });
+    await clock.advance(24_000);
+    assert.equal(orchestrator.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+
+    await clock.advance(35_999);
+    assert.equal(notifyStop.mock.callCount(), 0, 'the source closed before 60 seconds without verified media');
+
+    await clock.advance(1);
+    await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+    assert.equal(notifyStop.mock.callCount(), 1, 'delayed unpublish extended the no-media cutoff');
     await orchestrator.cleanup();
   });
 });

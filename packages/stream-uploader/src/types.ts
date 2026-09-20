@@ -217,6 +217,21 @@ export interface StreamClaimant {
 }
 
 /**
+ * One SRS publisher callback lineage.
+ *
+ * All four fields are required. `clientId` separates concurrent publishers inside one SRS process,
+ * while `serverId` and `serviceId` keep an id reused after an SRS restart from matching the process
+ * that owned it before. `generation` is local to this uploader process and separates repeated hook
+ * sequences even when SRS reports the same strings again.
+ */
+export interface SourceConnectionIdentity {
+  readonly serverId: string;
+  readonly serviceId: string;
+  readonly clientId: string;
+  readonly generation: number;
+}
+
+/**
  * An announce that named nobody, which every guard here has to treat as no evidence rather than as
  * proof. `isAuthenticated` is spelled out rather than left off, because this constant is the one
  * place where naming nobody is a positive statement rather than an omission.
@@ -228,6 +243,10 @@ export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;
 export const REJECT_DUPLICATE = 'duplicate' as const;
 /** The stream is finalizing. Distinct from `unknown_stream`: it existed, and its manifest is closed. */
 export const REJECT_DRAINING = 'draining' as const;
+/** Media arrived from a source generation that never acquired, or no longer owns, this stream. */
+export const REJECT_STALE_SOURCE = 'stale_source' as const;
+/** The source callback carried no readable, advancing media and cannot prove source ownership. */
+export const REJECT_UNVERIFIED_SOURCE_MEDIA = 'unverified_source_media' as const;
 /** The declared duration is not a number a manifest or a running total can hold. */
 export const REJECT_UNUSABLE_DURATION = 'unusable_duration' as const;
 
@@ -236,6 +255,8 @@ export type RejectReason =
   | typeof REJECT_UNKNOWN_STREAM
   | typeof REJECT_DUPLICATE
   | typeof REJECT_DRAINING
+  | typeof REJECT_STALE_SOURCE
+  | typeof REJECT_UNVERIFIED_SOURCE_MEDIA
   | typeof REJECT_UNUSABLE_DURATION;
 
 export type SegmentResult = { accepted: true } | { accepted: false; reason: RejectReason };

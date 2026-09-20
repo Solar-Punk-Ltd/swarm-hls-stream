@@ -20,14 +20,18 @@ import {
   PRESSURE_MEDIUM,
   PublisherGopStream,
   QueuePressure,
+  RejectReason,
   RECOVERY_ENTRY_MISSING,
   RECOVERY_ENTRY_UNREADABLE,
   REJECT_DRAINING,
   REJECT_QUEUE_FULL,
+  REJECT_STALE_SOURCE,
   REJECT_UNKNOWN_STREAM,
+  REJECT_UNVERIFIED_SOURCE_MEDIA,
   REJECT_UNUSABLE_DURATION,
   SegmentEntry,
   SegmentResult,
+  SourceConnectionIdentity,
   StartGateWarning,
   STOP_FAILURE_DRAIN_TIMEOUT,
   STOP_FAILURE_FINALIZE_FAILED,
@@ -101,6 +105,11 @@ export interface StreamOrchestratorConfig {
   orphanReapMs: number;
   segmentStallMs: number;
   /**
+   * Managed SRS source grace in milliseconds. Absent leaves the managed source entry points closed
+   * and keeps every existing engine on the legacy start and stop lifecycle.
+   */
+  managedSourceReconnectMs?: number;
+  /**
    * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
    * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
    */
@@ -160,6 +169,21 @@ interface RetainedStopOutcome {
   recordedAt: number;
 }
 
+interface ManagedSourceCandidate {
+  readonly identity: SourceConnectionIdentity;
+  readonly mediatype: MediaType;
+  readonly claimant: StreamClaimant;
+  readonly admin: AdminSession;
+}
+
+interface ManagedSourceState {
+  candidate?: ManagedSourceCandidate;
+  current?: SourceConnectionIdentity;
+  deadline?: number;
+  timer?: Timer;
+  closed?: boolean;
+}
+
 /** One rung's routing plus what bee answered on its batch. See {@link StreamOrchestrator.refusedPublishers}. */
 interface RefusedPublisher extends PublisherRoute {
   /** Every distinct status bee answered with on this publisher, in the order they were first seen. */
@@ -179,6 +203,15 @@ function describeIncumbent(incumbent: StreamClaimant | undefined): string {
     return 'a session this process recovered, whose publisher it cannot name,';
   }
   return incumbent.address ?? 'a session that named no publisher';
+}
+
+function sameSource(left: SourceConnectionIdentity, right: SourceConnectionIdentity): boolean {
+  return (
+    left.serverId === right.serverId &&
+    left.serviceId === right.serviceId &&
+    left.clientId === right.clientId &&
+    left.generation === right.generation
+  );
 }
 
 /**
@@ -243,6 +276,8 @@ const TAKEOVER_REFUSALS: Record<TakeoverRefusal, (incumbent: string) => string> 
 
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
+  /** Managed SRS source ownership. Existing engine paths never create an entry here. */
+  private managedSources = new Map<string, ManagedSourceState>();
   /**
    * The drain running for a stream id, with the session it is draining. The uploader is what makes the
    * entry answerable: a reconnect registers a replacement under the same id while the outgoing drain is
@@ -485,6 +520,200 @@ export class StreamOrchestrator {
 
     this.spawnUploader(streamId, mediatype, claimant, admin);
     return true;
+  }
+
+  /**
+   * Record an authenticated SRS publish as a candidate. The callback is provisional, so this method
+   * never creates, retires or resumes an uploader. Only matching media passed to
+   * {@link handleManagedSegment} can confirm the candidate.
+   */
+  public provisionManagedSource(
+    streamId: string,
+    mediatype: MediaType,
+    identity: SourceConnectionIdentity,
+    claimant: StreamClaimant,
+    admin: AdminSession,
+  ): boolean {
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    if (reconnectMs === undefined) {
+      return false;
+    }
+
+    const state = this.managedSources.get(streamId);
+    if (state?.closed) {
+      return false;
+    }
+    if (state?.deadline !== undefined && this.clock.now() >= state.deadline) {
+      this.closeManagedSourceAtDeadline(streamId, state);
+      return false;
+    }
+    if (state?.current) {
+      if (sameSource(state.current, identity)) {
+        return true;
+      }
+      const refusal = this.reasonToRefuseTakeover(streamId, claimant);
+      if (refusal) {
+        this.metrics.recordTakeoverRefused();
+      }
+      this.logger.warn(
+        `[StreamOrchestrator] Refused provisional source ${identity.clientId} for ${streamId}: ` +
+          'the confirmed source is still attached',
+      );
+      return false;
+    }
+
+    if (state?.candidate) {
+      return sameSource(state.candidate.identity, identity);
+    }
+
+    if (this.activeStreams.has(streamId) && state === undefined) {
+      return false;
+    }
+
+    const candidate: ManagedSourceCandidate = { identity, mediatype, claimant, admin };
+    const next = state ?? {};
+    next.candidate = candidate;
+    this.managedSources.set(streamId, next);
+
+    if (!this.activeStreams.has(streamId)) {
+      this.renewManagedSourceDeadline(streamId, next, reconnectMs);
+    }
+    return true;
+  }
+
+  /**
+   * Accept usable media only from the current source or the one provisional candidate. The first
+   * candidate media is the acquisition proof. A reconnect reuses the uploader and resets only the
+   * connection-scoped index state.
+   */
+  public handleManagedSegment(
+    streamId: string,
+    identity: SourceConnectionIdentity,
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    discontinuity = false,
+  ): SegmentResult {
+    const state = this.managedSources.get(streamId);
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    if (!state || state.closed || reconnectMs === undefined) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    if (state.deadline !== undefined && this.clock.now() >= state.deadline) {
+      this.closeManagedSourceAtDeadline(streamId, state);
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+
+    if (state.current && sameSource(state.current, identity)) {
+      const refusal = this.managedMediaRefusal(streamId, duration, data);
+      if (refusal) {
+        return { accepted: false, reason: refusal };
+      }
+      const result = this.handleSegment(streamId, segmentIndex, duration, data, discontinuity);
+      if (result.accepted) {
+        this.renewManagedSourceDeadline(streamId, state, reconnectMs);
+        this.cancelManagedStallReaper(streamId);
+      }
+      return result;
+    }
+
+    const candidate = state.candidate;
+    if (!candidate || !sameSource(candidate.identity, identity)) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    const refusal = this.managedMediaRefusal(streamId, duration, data);
+    if (refusal) {
+      return { accepted: false, reason: refusal };
+    }
+
+    const resumed = this.activeStreams.has(streamId);
+    state.candidate = undefined;
+    state.current = identity;
+
+    if (resumed) {
+      this.processedSegments.set(streamId, this.newDuplicateFilter());
+      this.lastAccountedIndex.delete(streamId);
+      this.streamActivityAt.set(streamId, this.clock.now());
+      this.streamIngestAt.set(streamId, this.clock.now());
+      this.streamClaimants.set(streamId, candidate.claimant);
+    } else {
+      this.spawnUploader(streamId, candidate.mediatype, candidate.claimant, candidate.admin);
+    }
+
+    const result = this.handleSegment(streamId, segmentIndex, duration, data, resumed || discontinuity);
+    if (result.accepted) {
+      this.renewManagedSourceDeadline(streamId, state, reconnectMs);
+      this.cancelManagedStallReaper(streamId);
+    }
+    return result;
+  }
+
+  /** Enter the bounded wait only when the callback names the source that actually acquired. */
+  public markManagedSourceUnpublished(streamId: string, identity: SourceConnectionIdentity): boolean {
+    const state = this.managedSources.get(streamId);
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    if (!state?.current || state.closed || reconnectMs === undefined || !sameSource(state.current, identity)) {
+      return false;
+    }
+
+    state.current = undefined;
+    state.candidate = undefined;
+    this.cancelManagedStallReaper(streamId);
+    this.armManagedSourceDeadline(streamId, state);
+    return true;
+  }
+
+  private managedMediaRefusal(streamId: string, duration: number, data: Buffer): RejectReason | null {
+    if (!isUsableDuration(duration) || duration === 0) {
+      return REJECT_UNVERIFIED_SOURCE_MEDIA;
+    }
+    const reading = measureSegmentDuration(data, duration);
+    if (reading.fellBackBecause !== null || reading.videoPackets === 0) {
+      return REJECT_UNVERIFIED_SOURCE_MEDIA;
+    }
+
+    const uploader = this.activeStreams.get(streamId);
+    if (uploader && this.isDraining(streamId, uploader)) {
+      return REJECT_DRAINING;
+    }
+    if (uploader && uploader.segmentQueue.size >= this.config.maxQueueSize) {
+      return REJECT_QUEUE_FULL;
+    }
+    return null;
+  }
+
+  private renewManagedSourceDeadline(streamId: string, state: ManagedSourceState, reconnectMs: number): void {
+    state.deadline = this.clock.now() + reconnectMs;
+    this.armManagedSourceDeadline(streamId, state);
+  }
+
+  private armManagedSourceDeadline(streamId: string, state: ManagedSourceState): void {
+    if (state.deadline === undefined) {
+      return;
+    }
+    state.timer?.cancel();
+    const delay = Math.max(0, state.deadline - this.clock.now());
+    state.timer = this.clock.setTimer(() => this.closeManagedSourceAtDeadline(streamId, state), delay, {
+      unref: true,
+    });
+  }
+
+  private closeManagedSourceAtDeadline(streamId: string, expected: ManagedSourceState): void {
+    const state = this.managedSources.get(streamId);
+    if (state !== expected || state.deadline === undefined || this.clock.now() < state.deadline) {
+      return;
+    }
+    state.closed = true;
+    state.candidate = undefined;
+    state.timer = undefined;
+    if (this.activeStreams.has(streamId)) {
+      void this.stopStream(streamId, true);
+    }
+  }
+
+  private cancelManagedStallReaper(streamId: string): void {
+    this.stallReapers.get(streamId)?.cancel();
+    this.stallReapers.delete(streamId);
   }
 
   /**
@@ -1241,7 +1470,13 @@ export class StreamOrchestrator {
     return true;
   }
 
-  public async stopStream(streamId: string): Promise<void> {
+  public async stopStream(streamId: string, preserveManagedSource = false): Promise<void> {
+    if (!preserveManagedSource) {
+      const managed = this.managedSources.get(streamId);
+      managed?.timer?.cancel();
+      this.managedSources.delete(streamId);
+    }
+
     // Cancel recovery timer if stopping a recovering stream
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
@@ -1904,6 +2139,11 @@ export class StreamOrchestrator {
   }
 
   public async cleanup(): Promise<void> {
+    for (const source of this.managedSources.values()) {
+      source.timer?.cancel();
+    }
+    this.managedSources.clear();
+
     // Clear all recovery timers
     for (const timer of this.recoveryTimers.values()) {
       timer.cancel();
