@@ -117,11 +117,26 @@ interface SrsHlsPayload {
   client_id?: string;
 }
 
+interface ManagedRungConnection {
+  readonly streamId: string;
+  readonly baseStreamId: string;
+  readonly source: SourceConnectionIdentity;
+}
+
 function connectionKey(payload: SrsStreamPayload | SrsHlsPayload): string | null {
   if (!payload.server_id || !payload.service_id || !payload.client_id) {
     return null;
   }
   return `${payload.server_id}\u0000${payload.service_id}\u0000${payload.client_id}`;
+}
+
+function sameSourceConnection(left: SourceConnectionIdentity, right: SourceConnectionIdentity): boolean {
+  return (
+    left.serverId === right.serverId &&
+    left.serviceId === right.serviceId &&
+    left.clientId === right.clientId &&
+    left.generation === right.generation
+  );
 }
 
 function srsResponse(res: Response, code: number): void {
@@ -272,6 +287,8 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
       const authenticatedBases = new Map<string, AdminSession | null>();
       const managedConnections = new Map<string, SourceConnectionIdentity>();
       const managedBases = new Map<string, SourceConnectionIdentity>();
+      const managedRungConnections = new Map<string, ManagedRungConnection>();
+      const legacyRungConnections = new Map<string, string>();
       const legacyConnections = new Set<string>();
       let sourceGeneration = 0;
 
@@ -292,6 +309,8 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
           managedLifecycle,
           managedConnections,
           managedBases,
+          managedRungConnections,
+          legacyRungConnections,
           legacyConnections,
           () => ++sourceGeneration,
         );
@@ -307,7 +326,8 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
           managedLifecycle,
           managedConnections,
           managedBases,
-          authenticatedBases,
+          managedRungConnections,
+          legacyRungConnections,
         );
       });
 
@@ -482,6 +502,8 @@ async function handleStreams(
   managedLifecycle?: { uploaderId: string },
   managedConnections: Map<string, SourceConnectionIdentity> = new Map(),
   managedBases: Map<string, SourceConnectionIdentity> = new Map(),
+  managedRungConnections: Map<string, ManagedRungConnection> = new Map(),
+  legacyRungConnections: Map<string, string> = new Map(),
   legacyConnections: Set<string> = new Set(),
   nextSourceGeneration: () => number = () => 0,
 ): Promise<void> {
@@ -519,7 +541,24 @@ async function handleStreams(
       }
 
       if (role.kind === 'rung') {
-        if (managedLifecycle && managedBases.has(role.baseStreamId)) {
+        const key = connectionKey(payload);
+        const managedRung = managedLifecycle && key ? managedRungConnections.get(key) : undefined;
+        const legacyRung = managedLifecycle && key ? legacyRungConnections.get(key) : undefined;
+        if (managedLifecycle && (managedRung || legacyRung || managedBases.has(role.baseStreamId))) {
+          if (
+            managedRung &&
+            managedRung.streamId === streamId &&
+            managedRung.baseStreamId === role.baseStreamId
+          ) {
+            managedRungConnections.delete(key as string);
+          }
+          if (legacyRung === streamId) {
+            legacyRungConnections.delete(key as string);
+            if (isLoopbackPublisher(payload)) {
+              logger.info(`[SRS] Rung unpublished: ${streamId}`);
+              stopStreamQuietly(streamOrchestrator, streamId);
+            }
+          }
           srsResponse(res, SRS_ACCEPT);
           return;
         }
@@ -624,25 +663,43 @@ async function handleStreams(
       const claimant = { address: publisherAddress(payload), isAuthenticated: true };
       const admin = authenticatedBases.get(role.baseStreamId) ?? undefined;
       const managedBase = managedLifecycle ? managedBases.get(role.baseStreamId) : undefined;
-      const accepted =
-        managedBase && admin
-          ? streamOrchestrator.provisionManagedRendition(
-              streamId,
-              role.baseStreamId,
-              managedBase,
-              mediatype,
-              claimant,
-              admin,
-            )
-          : streamOrchestrator.startStream(
-              streamId,
-              mediatype,
-              claimant,
-              // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
-              // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the
-              // ladder is one declared stream and the rungs are what the transcoder makes of it.
-              admin,
-            );
+      const key = connectionKey(payload);
+      if (managedLifecycle && !key) {
+        logger.error(`[SRS] Refused lifecycle-v1 rung publish ${streamId}: callback omitted connection identity`);
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+      let accepted: boolean;
+      if (managedBase && admin) {
+        accepted = streamOrchestrator.provisionManagedRendition(
+          streamId,
+          role.baseStreamId,
+          managedBase,
+          mediatype,
+          claimant,
+          admin,
+        );
+        if (accepted) {
+          managedRungConnections.set(key as string, {
+            streamId,
+            baseStreamId: role.baseStreamId,
+            source: managedBase,
+          });
+        }
+      } else {
+        accepted = streamOrchestrator.startStream(
+          streamId,
+          mediatype,
+          claimant,
+          // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
+          // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the
+          // ladder is one declared stream and the rungs are what the transcoder makes of it.
+          admin,
+        );
+        if (managedLifecycle && accepted) {
+          legacyRungConnections.set(key as string, streamId);
+        }
+      }
       srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
       return;
     }
@@ -859,7 +916,8 @@ function handleHls(
   managedLifecycle?: { uploaderId: string },
   managedConnections: Map<string, SourceConnectionIdentity> = new Map(),
   managedBases: Map<string, SourceConnectionIdentity> = new Map(),
-  authenticatedBases: Map<string, AdminSession | null> = new Map(),
+  managedRungConnections: Map<string, ManagedRungConnection> = new Map(),
+  legacyRungConnections: Map<string, string> = new Map(),
 ): void {
   try {
     const payload = req.body as SrsHlsPayload;
@@ -875,6 +933,23 @@ function handleHls(
     }
 
     const role = classifyLadderStream(payload, streamId, abr);
+
+    const key = connectionKey(payload);
+    const managedRung = managedLifecycle && key ? managedRungConnections.get(key) : undefined;
+    const legacyRung = managedLifecycle && key ? legacyRungConnections.get(key) : undefined;
+    if (managedLifecycle && role.kind === 'rung') {
+      const currentSource = managedBases.get(role.baseStreamId);
+      const managedBindingIsCurrent =
+        managedRung &&
+        managedRung.streamId === streamId &&
+        managedRung.baseStreamId === role.baseStreamId &&
+        currentSource &&
+        sameSourceConnection(managedRung.source, currentSource);
+      if (!managedBindingIsCurrent && legacyRung !== streamId) {
+        srsResponse(res, SRS_ACCEPT);
+        return;
+      }
+    }
 
     const segmentPath = resolveSegmentPath(mediaRootPath, payload.file);
 
@@ -893,23 +968,11 @@ function handleHls(
     }
 
     const segmentData = fs.readFileSync(segmentPath);
-    const key = connectionKey(payload);
     const managedIdentity = managedLifecycle && key ? managedConnections.get(key) : undefined;
-    const managedRungSource = managedLifecycle && role.kind === 'rung' ? managedBases.get(role.baseStreamId) : undefined;
-    const managedRungAdmin = role.kind === 'rung' ? (authenticatedBases.get(role.baseStreamId) ?? undefined) : undefined;
+    const managedRungSource = managedRung?.source;
     if (!managedIdentity && !isPublishable(payload, streamId, abr)) {
       srsResponse(res, SRS_ACCEPT);
       return;
-    }
-    if (managedRungSource && managedRungAdmin && role.kind === 'rung') {
-      streamOrchestrator.provisionManagedRendition(
-        streamId,
-        role.baseStreamId,
-        managedRungSource,
-        resolveMediaType(payload.app),
-        { address: '127.0.0.1', isAuthenticated: true },
-        managedRungAdmin,
-      );
     }
     const result = managedIdentity
       ? role.kind === 'source'

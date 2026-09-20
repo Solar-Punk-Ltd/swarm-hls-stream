@@ -1,5 +1,8 @@
 import express from 'express';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createSrsEngine } from '../src/engines/srs.js';
@@ -24,6 +27,8 @@ interface Calls {
   provisioned: SourceConnectionIdentity[];
   unpublished: SourceConnectionIdentity[];
   managedRenditions: string[];
+  managedRenditionSegments: Array<{ streamId: string; sourceClientId: string; segmentIndex: number }>;
+  legacySegments: Array<{ streamId: string; segmentIndex: number }>;
   legacyStarts: string[];
   stops: string[];
   disconnect?: (identity: SourceConnectionIdentity) => void;
@@ -32,8 +37,11 @@ interface Calls {
 
 async function withManagedSrs(
   provision: (identity: SourceConnectionIdentity) => boolean,
-  drive: (post: (body: Record<string, unknown>) => Promise<number>, calls: Calls) => Promise<void>,
-  options: { abr?: boolean } = {},
+  drive: (
+    post: (body: Record<string, unknown>, route?: 'streams' | 'hls') => Promise<number>,
+    calls: Calls,
+  ) => Promise<void>,
+  options: { abr?: boolean; mediaRoot?: string; mode?: 'legacy' | 'managed' } = {},
 ): Promise<void> {
   const calls: Calls = {
     attempts: [],
@@ -42,30 +50,39 @@ async function withManagedSrs(
     provisioned: [],
     unpublished: [],
     managedRenditions: [],
+    managedRenditionSegments: [],
+    legacySegments: [],
     legacyStarts: [],
     stops: [],
     deletes: [],
   };
   const admin = {
     describe: () => 'http://admin.test',
-    lookupByIngestId: async () => ({
-      id: ADMIN_ID,
-      topic: 'a'.repeat(64),
-      owner: '0xowner',
-      mediaType: 'video',
-      title: 'managed',
-      status: 'published',
-      publishKey: 'secret',
-      lifecycleVersion: 1,
-      mode: 'managed',
-      lifecycle: {
-        revision: 7,
-        runNumber: 2,
-        state: 'ready',
-        permission: 'open',
-        uploaderId: UPLOADER_ID,
-      },
-    }),
+    lookupByIngestId: async () => {
+      const draft = {
+        id: ADMIN_ID,
+        topic: 'a'.repeat(64),
+        owner: '0xowner',
+        mediaType: 'video',
+        title: 'managed',
+        status: 'published',
+        publishKey: 'secret',
+        lifecycleVersion: 1 as const,
+      };
+      return options.mode === 'legacy'
+        ? { ...draft, mode: 'legacy' as const }
+        : {
+            ...draft,
+            mode: 'managed' as const,
+            lifecycle: {
+              revision: 7,
+              runNumber: 2,
+              state: 'ready' as const,
+              permission: 'open' as const,
+              uploaderId: UPLOADER_ID,
+            },
+          };
+    },
     claimManagedRun: async (_id: string, _run: number, request: ManagedClaimRequest) => {
       calls.requests.push(request);
       return {
@@ -113,6 +130,19 @@ async function withManagedSrs(
       calls.managedRenditions.push(streamId);
       return true;
     },
+    handleManagedRenditionSegment: (
+      streamId: string,
+      _baseStreamId: string,
+      source: SourceConnectionIdentity,
+      segmentIndex: number,
+    ) => {
+      calls.managedRenditionSegments.push({ streamId, sourceClientId: source.clientId, segmentIndex });
+      return { accepted: true };
+    },
+    handleSegment: (streamId: string, segmentIndex: number) => {
+      calls.legacySegments.push({ streamId, segmentIndex });
+      return { accepted: true };
+    },
     stopStream: async (streamId: string) => {
       calls.stops.push(streamId);
     },
@@ -121,7 +151,7 @@ async function withManagedSrs(
       calls.disconnect = disconnect;
     },
   } as unknown as StreamOrchestrator;
-  const engine = createSrsEngine('/srv/media', {
+  const engine = createSrsEngine(options.mediaRoot ?? '/srv/media', {
     webhookToken: TOKEN,
     adminApi: admin,
     managedLifecycle: { uploaderId: UPLOADER_ID },
@@ -137,8 +167,8 @@ async function withManagedSrs(
   app.use(engine.prefix, engine.createRouter(orchestrator));
   const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    const post = async (body: Record<string, unknown>): Promise<number> => {
-      const response = await fetch(`${baseUrl}${engine.prefix}/streams?token=${TOKEN}`, {
+    const post = async (body: Record<string, unknown>, route: 'streams' | 'hls' = 'streams'): Promise<number> => {
+      const response = await fetch(`${baseUrl}${engine.prefix}/${route}?token=${TOKEN}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -165,9 +195,9 @@ function callback(clientId: string, action = 'on_publish'): Record<string, unkno
   };
 }
 
-function rungCallback(action = 'on_publish'): Record<string, unknown> {
+function rungCallback(action = 'on_publish', clientId = 'rung-client'): Record<string, unknown> {
   return {
-    ...callback('rung-client', action),
+    ...callback(clientId, action),
     stream: '11111111-1111-4111-8111-111111111111_360p',
     vhost: 'abr',
     ip: '127.0.0.1',
@@ -235,5 +265,94 @@ describe('SRS managed lifecycle callbacks', () => {
       },
       { abr: true },
     );
+  });
+
+  it('does not relabel a delayed old-rung segment as the reconnected source', async () => {
+    const mediaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-managed-rung-'));
+    fs.mkdirSync(path.join(mediaRoot, 'video'), { recursive: true });
+    const oldPath = path.join(mediaRoot, 'video', 'old.ts');
+    const currentPath = path.join(mediaRoot, 'video', 'current.ts');
+    fs.writeFileSync(oldPath, 'old-rung');
+    fs.writeFileSync(currentPath, 'current-rung');
+
+    try {
+      await withManagedSrs(
+        () => true,
+        async (post, calls) => {
+          assert.equal(await post(callback('source-a')), 0);
+          assert.equal(await post(rungCallback('on_publish', 'rung-a')), 0);
+          assert.equal(await post(callback('source-a', 'on_unpublish')), 0);
+          assert.equal(await post(callback('source-b')), 0);
+          assert.equal(await post(rungCallback('on_publish', 'rung-b')), 0);
+
+          assert.equal(
+            await post(
+              {
+                ...rungCallback('on_hls', 'rung-a'),
+                file: './objs/nginx/html/video/old.ts',
+                seq_no: 7,
+                duration: 4,
+              },
+              'hls',
+            ),
+            0,
+          );
+          assert.deepEqual(calls.managedRenditionSegments, []);
+          assert.equal(await post(rungCallback('on_unpublish', 'rung-a')), 0);
+
+          assert.equal(
+            await post(
+              {
+                ...rungCallback('on_hls', 'rung-b'),
+                file: './objs/nginx/html/video/current.ts',
+                seq_no: 8,
+                duration: 4,
+              },
+              'hls',
+            ),
+            0,
+          );
+          assert.deepEqual(calls.managedRenditionSegments, [
+            { streamId: `${STREAM_ID}_360p`, sourceClientId: 'source-b', segmentIndex: 8 },
+          ]);
+        },
+        { abr: true, mediaRoot },
+      );
+    } finally {
+      fs.rmSync(mediaRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an explicitly negotiated legacy rung on its connection-bound path', async () => {
+    const mediaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-legacy-rung-'));
+    fs.mkdirSync(path.join(mediaRoot, 'video'), { recursive: true });
+    fs.writeFileSync(path.join(mediaRoot, 'video', 'legacy.ts'), 'legacy-rung');
+
+    try {
+      await withManagedSrs(
+        () => true,
+        async (post, calls) => {
+          assert.equal(await post(callback('source-legacy')), 0);
+          assert.equal(await post(rungCallback('on_publish', 'rung-legacy')), 0);
+          assert.equal(
+            await post(
+              {
+                ...rungCallback('on_hls', 'rung-legacy'),
+                file: './objs/nginx/html/video/legacy.ts',
+                seq_no: 9,
+                duration: 4,
+              },
+              'hls',
+            ),
+            0,
+          );
+          assert.deepEqual(calls.legacySegments, [{ streamId: `${STREAM_ID}_360p`, segmentIndex: 9 }]);
+          assert.deepEqual(calls.managedRenditionSegments, []);
+        },
+        { abr: true, mediaRoot, mode: 'legacy' },
+      );
+    } finally {
+      fs.rmSync(mediaRoot, { recursive: true, force: true });
+    }
   });
 });
