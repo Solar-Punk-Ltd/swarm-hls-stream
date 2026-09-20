@@ -24,6 +24,7 @@ export interface ProcessInvocation {
   stdin?: string;
   environment?: Readonly<Record<string, string | null>>;
   timeoutMs?: number;
+  maxInputBytes?: number;
   maxOutputBytes?: number;
 }
 
@@ -39,6 +40,12 @@ export interface BoundedProcess {
 export class SpawnBoundedProcess implements BoundedProcess {
   async run(invocation: ProcessInvocation): Promise<ProcessResult> {
     const timeoutMs = boundedProcessInteger(invocation.timeoutMs ?? 30_000, 1, 10 * 60_000, 'process timeout');
+    const maxInputBytes = boundedProcessInteger(
+      invocation.maxInputBytes ?? 64 * 1024,
+      1,
+      16 * 1024 * 1024,
+      'process input bound',
+    );
     const maxOutputBytes = boundedProcessInteger(
       invocation.maxOutputBytes ?? 256 * 1024,
       1,
@@ -50,7 +57,7 @@ export class SpawnBoundedProcess implements BoundedProcess {
       invocation.file.length > 4_096 ||
       invocation.args.length > 200 ||
       invocation.args.some((argument) => argument.length > 16 * 1024) ||
-      (invocation.stdin !== undefined && Buffer.byteLength(invocation.stdin) > 64 * 1024)
+      (invocation.stdin !== undefined && Buffer.byteLength(invocation.stdin) > maxInputBytes)
     ) {
       throw new FixtureRefusal('bounded process invocation is malformed');
     }
