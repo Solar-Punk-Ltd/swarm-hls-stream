@@ -123,8 +123,8 @@ export class ManagedRenditionStore {
   ) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
-      this.flushDirectory(path.dirname(stateDir));
     }
+    this.flushDirectory(path.dirname(stateDir));
   }
 
   public prepare(
@@ -134,6 +134,7 @@ export class ManagedRenditionStore {
   ): PreparedManagedRendition {
     const existing = this.read(binding, rendition.name);
     if (existing) {
+      this.flushDirectory(this.stateDir);
       if (sameRendition(existing.report.rendition, rendition)) {
         return { report: existing.report, target: true };
       }

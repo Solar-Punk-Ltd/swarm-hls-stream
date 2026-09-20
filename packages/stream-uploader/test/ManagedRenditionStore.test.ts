@@ -8,6 +8,7 @@ import {
   ManagedRenditionBinding,
   ManagedRenditionStore,
 } from '../src/libs/ManagedRenditionStore.js';
+import { DurableFileOps } from '../src/libs/ManagedRunStore.js';
 import { Rendition } from '../src/types.js';
 
 const BINDING: ManagedRenditionBinding = {
@@ -24,6 +25,35 @@ const LIVE: Rendition = {
   bandwidth: 800_000,
   avgBandwidth: 700_000,
 };
+
+function failDirectoryFlushOnce(target: string): DurableFileOps {
+  const paths = new Map<number, string>();
+  let failed = false;
+  return {
+    mkdirSync: (entry, options) => fs.mkdirSync(entry, options),
+    existsSync: (entry) => fs.existsSync(entry),
+    readdirSync: (entry) => fs.readdirSync(entry),
+    readFileSync: (entry, encoding) => fs.readFileSync(entry, encoding),
+    openSync: (entry, flags, mode) => {
+      const fd = fs.openSync(entry, flags, mode);
+      paths.set(fd, entry);
+      return fd;
+    },
+    writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+    fsyncSync: (fd) => {
+      if (!failed && paths.get(fd) === target) {
+        failed = true;
+        throw new Error('injected directory fsync failure');
+      }
+      fs.fsyncSync(fd);
+    },
+    closeSync: (fd) => {
+      paths.delete(fd);
+      fs.closeSync(fd);
+    },
+    renameSync: (from, to) => fs.renameSync(from, to),
+  };
+}
 
 describe('ManagedRenditionStore', () => {
   const roots: string[] = [];
@@ -86,6 +116,32 @@ describe('ManagedRenditionStore', () => {
     assert.throws(
       () => new ManagedRenditionStore(root).prepare(BINDING, LIVE, '2026-09-20T10:01:00.000Z'),
       /unreadable/,
+    );
+  });
+
+  it('flushes a renamed event successfully before a retry may return it', () => {
+    const root = makeRoot();
+    const store = new ManagedRenditionStore(root, failDirectoryFlushOnce(root));
+
+    assert.throws(
+      () => store.prepare(BINDING, LIVE, '2026-09-20T10:00:00.000Z'),
+      /injected directory fsync failure/,
+    );
+    const retried = store.prepare(BINDING, LIVE, '2026-09-20T10:01:00.000Z');
+    assert.equal(retried.report.observedAt, '2026-09-20T10:00:00.000Z');
+    assert.equal(retried.report.renditionSequence, 1);
+  });
+
+  it('retries the parent directory flush when store creation was not acknowledged', () => {
+    const parent = makeRoot();
+    const root = path.join(parent, 'events');
+    const fileOps = failDirectoryFlushOnce(parent);
+
+    assert.throws(() => new ManagedRenditionStore(root, fileOps), /injected directory fsync failure/);
+    const reopened = new ManagedRenditionStore(root, fileOps);
+    assert.equal(
+      reopened.prepare(BINDING, LIVE, '2026-09-20T10:00:00.000Z').report.renditionSequence,
+      1,
     );
   });
 });
