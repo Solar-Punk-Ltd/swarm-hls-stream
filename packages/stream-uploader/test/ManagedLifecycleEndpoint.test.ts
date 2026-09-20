@@ -90,10 +90,8 @@ describe('managed lifecycle status', () => {
         lastObservedAt: '2026-09-20T08:01:00.000Z',
       }),
       record({
-        streamId: 'video/ready',
-        state: 'claiming',
-        claimId: null,
-        eventSequence: 0,
+        streamId: 'video/claimed',
+        state: 'claimed',
         source: null,
       }),
       record({
@@ -116,6 +114,14 @@ describe('managed lifecycle status', () => {
       observedAt: '2026-09-20T10:10:00.000Z',
       streams: [
         {
+          streamId: 'video/claimed',
+          adminStreamId: ADMIN_ID,
+          runNumber: 2,
+          state: 'claimed',
+          permission: 'claimed',
+          lastObservedAt: '2026-09-20T10:09:50.000Z',
+        },
+        {
           streamId: 'video/closed',
           adminStreamId: ADMIN_ID,
           runNumber: 2,
@@ -123,14 +129,6 @@ describe('managed lifecycle status', () => {
           permission: 'closed',
           closeReason: 'reconnect_timeout',
           lastObservedAt: '2026-09-20T08:00:00.000Z',
-        },
-        {
-          streamId: 'video/ready',
-          adminStreamId: ADMIN_ID,
-          runNumber: 2,
-          state: 'ready',
-          permission: 'open',
-          lastObservedAt: '2026-09-20T10:09:50.000Z',
         },
         {
           streamId: 'video/restored-stale',
@@ -160,6 +158,24 @@ describe('managed lifecycle status', () => {
       ],
     });
     assert.doesNotMatch(JSON.stringify(result), /claimId|checkpoint|topic|uploaderId|clientId/i);
+  });
+
+  it('keeps an unresolved durable claim unavailable instead of inventing open permission', () => {
+    const store = new MemoryRuns([
+      record({
+        state: 'claiming',
+        claimId: null,
+        eventSequence: 0,
+        source: null,
+      }),
+    ]);
+    const orchestrator = makeTestOrchestrator({
+      managedRunStore: store,
+      managedSourceReconnectMs: 60_000,
+      wallClock: () => NOW,
+    });
+
+    assert.throws(() => orchestrator.getManagedLifecycleSummary(), /claim is unresolved/);
   });
 
   it('keeps the endpoint disabled by default and protects enabled reads with the existing bearer', async () => {

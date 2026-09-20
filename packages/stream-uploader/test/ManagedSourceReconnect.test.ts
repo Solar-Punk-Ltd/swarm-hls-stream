@@ -219,6 +219,40 @@ describe('managed SRS source reconnect foundation', () => {
     await orchestrator.cleanup();
   });
 
+  it('keeps an in-process wait fresh without extending its deadline or blessing a restored journal', async () => {
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_VIDEO, undefined, {}, runs);
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+    assert.equal(orchestrator.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+
+    await clock.advance(45_000);
+
+    const current = orchestrator.getManagedLifecycleSummary().streams[0];
+    assert.equal(current.state, 'waiting');
+    assert.equal(current.reconnectDeadline, new Date(1_060_000).toISOString());
+    assert.equal(current.lastObservedAt, new Date(1_040_000).toISOString());
+
+    const restartedClock = new FakeClock();
+    await restartedClock.advance(45_000);
+    const restored = makeTestOrchestrator({
+      clock: restartedClock,
+      wallClock: () => 1_000_000 + restartedClock.now(),
+      managedSourceReconnectMs: RECONNECT_MS,
+      managedRunStore: runs,
+      managedCheckpointStore: checkpointsByRunStore.get(runs),
+    });
+    assert.equal(restored.restoreManagedRun(STREAM_ID), 'loaded');
+    const unreconciled = restored.getManagedLifecycleSummary().streams[0];
+    assert.equal(unreconciled.reconnectDeadline, current.reconnectDeadline);
+    assert.equal(unreconciled.lastObservedAt, new Date(1_000_000).toISOString());
+
+    await restored.cleanup();
+    await orchestrator.cleanup();
+  });
+
   it('ignores a busy-refused B and its provisional unpublish, then lets A enter waiting', async () => {
     const clock = new FakeClock();
     const orchestrator = makeManagedOrchestrator(clock);

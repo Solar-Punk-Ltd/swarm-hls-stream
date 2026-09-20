@@ -253,6 +253,8 @@ interface ManagedSourceCandidate {
 
 interface ManagedSourceState {
   record: ManagedRunRecord;
+  /** In-memory proof this process has validated the durable state. Never populated by restore alone. */
+  runtimeLastObservedAt?: string;
   candidate?: ManagedSourceCandidate;
   current?: SourceConnectionIdentity;
   mediatype?: MediaType;
@@ -776,6 +778,7 @@ export class StreamOrchestrator {
         mediatype: record.mediaType,
         lastProgressPts: record.lastProgressPts ?? undefined,
         deadline: this.clock.now() + remainingManagedDeadline(record, this.wallClock()),
+        runtimeLastObservedAt: new Date(this.wallClock()).toISOString(),
       });
       this.managedStreamIds.add(attempt.streamId);
       return {
@@ -815,7 +818,11 @@ export class StreamOrchestrator {
       this.logger.error(`[StreamOrchestrator] Failed to persist managed claim attempt ${attempt.streamId}:`, error);
       return null;
     }
-    this.managedSources.set(attempt.streamId, { record, mediatype: attempt.mediaType });
+    this.managedSources.set(attempt.streamId, {
+      record,
+      mediatype: attempt.mediaType,
+      runtimeLastObservedAt: record.lastObservedAt,
+    });
     this.managedStreamIds.add(attempt.streamId);
     return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
   }
@@ -913,7 +920,11 @@ export class StreamOrchestrator {
     predecessorState?.reportRetry?.cancel();
     predecessorState?.closureRetry?.cancel();
     predecessorState?.finalizationRetry?.cancel();
-    this.managedSources.set(attempt.streamId, { record, mediatype: attempt.mediaType });
+    this.managedSources.set(attempt.streamId, {
+      record,
+      mediatype: attempt.mediaType,
+      runtimeLastObservedAt: record.lastObservedAt,
+    });
     this.managedStreamIds.add(attempt.streamId);
     return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
   }
@@ -998,6 +1009,7 @@ export class StreamOrchestrator {
       return false;
     }
     state.record = record;
+    state.runtimeLastObservedAt = record.lastObservedAt;
     state.deadline = this.clock.now() + remaining;
     if (remaining === 0) {
       this.closeManagedSourceAtDeadline(streamId, state);
@@ -1041,7 +1053,12 @@ export class StreamOrchestrator {
       return false;
     }
 
-    const state: ManagedSourceState = { record, mediatype: claim.mediaType, deadline: this.clock.now() + reconnectMs };
+    const state: ManagedSourceState = {
+      record,
+      mediatype: claim.mediaType,
+      deadline: this.clock.now() + reconnectMs,
+      runtimeLastObservedAt: record.lastObservedAt,
+    };
     this.managedSources.set(claim.streamId, state);
     this.managedStreamIds.add(claim.streamId);
     this.armManagedSourceDeadline(claim.streamId, state);
@@ -1255,11 +1272,21 @@ export class StreamOrchestrator {
         throw new Error(`Managed lifecycle record is unreadable: ${streamId}`);
       }
       const record = entry.record;
-      const state: ManagedLifecycleSummaryState = record.state === 'claiming' ? 'ready' : record.state;
+      if (record.state === 'claiming') {
+        throw new Error(`Managed claim is unresolved: ${streamId}`);
+      }
+      const state: ManagedLifecycleSummaryState = record.state;
       const permission: 'open' | 'claimed' | 'closed' =
         state === 'ready' ? 'open' : state === 'closed' || state === 'vod' ? 'closed' : 'claimed';
+      const runtime = this.managedSources.get(streamId);
+      const runtimeLastObservedAt =
+        runtime?.record.adminStreamId === record.adminStreamId &&
+        runtime.record.runNumber === record.runNumber &&
+        runtime.record.claimRequestId === record.claimRequestId
+          ? runtime.runtimeLastObservedAt
+          : undefined;
       const lastObservedAt =
-        record.lastObservedAt ?? new Date(record.deadlineRecordedAtWallMs).toISOString();
+        runtimeLastObservedAt ?? record.lastObservedAt ?? new Date(record.deadlineRecordedAtWallMs).toISOString();
       const closeReason =
         record.closeReason ??
         [...record.pendingReports]
@@ -1609,6 +1636,7 @@ export class StreamOrchestrator {
       return false;
     }
     state.record = record;
+    state.runtimeLastObservedAt = record.lastObservedAt;
     return true;
   }
 
@@ -2323,6 +2351,7 @@ export class StreamOrchestrator {
     }
 
     state.record = record;
+    state.runtimeLastObservedAt = record.lastObservedAt;
     state.current = undefined;
     state.candidate = undefined;
     this.cancelManagedStallReaper(streamId);
@@ -2406,6 +2435,7 @@ export class StreamOrchestrator {
     }
 
     state.record = record;
+    state.runtimeLastObservedAt = record.lastObservedAt;
     state.deadline = this.clock.now() + reconnectMs;
     this.armManagedSourceDeadline(streamId, state);
     return true;
@@ -2438,6 +2468,7 @@ export class StreamOrchestrator {
       return;
     }
     state.record = record;
+    state.runtimeLastObservedAt = record.lastObservedAt;
     this.armManagedHeartbeat(streamId, state);
     void this.flushManagedReports(streamId, state);
   }
@@ -2580,6 +2611,9 @@ export class StreamOrchestrator {
         } catch (error) {
           this.logger.error(`[StreamOrchestrator] Failed to persist managed heartbeat ${streamId}:`, error);
         }
+      }
+      if (state.runtimeLastObservedAt !== undefined) {
+        state.runtimeLastObservedAt = new Date(this.wallClock()).toISOString();
       }
       void this.flushManagedReports(streamId, state);
       this.armManagedHeartbeat(streamId, state);
