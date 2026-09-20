@@ -182,8 +182,14 @@ export interface ReconnectAcceptanceEvidence {
     markerId: SourceMarkerId;
     protocol: SourceProtocol;
     runNumber: number;
-    outcome: 'admitted' | 'resumed' | 'refused_closed' | 'admitted_after_continue';
+    outcome: 'admitted' | 'resumed' | 'terminated_while_closed' | 'admitted_after_continue';
   }>;
+  closedAttempt: {
+    termination: { kind: 'nonzero_exit'; exitCode: number } | { kind: 'signal'; signal: string };
+    authoritativeRunUnchanged: true;
+    policyRefusalProven: false;
+    requiredRuntimeWitness: 'srs_on_publish_response_code_1';
+  };
   incumbentRun: {
     runNumber: number;
     firstPublisherStartedAtMs: number;
@@ -506,6 +512,18 @@ function audioDecodeInvocation(
   };
 }
 
+const processStops = new WeakMap<MediaScenarioProcess, Promise<void>>();
+
+function stopProcessOnce(process: MediaScenarioProcess): Promise<void> {
+  const existing = processStops.get(process);
+  if (existing) {
+    return existing;
+  }
+  const pending = Promise.resolve().then(() => process.stop());
+  processStops.set(process, pending);
+  return pending;
+}
+
 async function waitForProcess(
   deps: MediaScenarioDependencies,
   invocation: MediaScenarioProcessInvocation,
@@ -525,7 +543,7 @@ async function waitForProcess(
   } catch {
     if (process) {
       try {
-        await process.stop();
+        await stopProcessOnce(process);
       } catch {
         // The fixed diagnostic below withholds both child output and cleanup diagnostics.
       }
@@ -976,7 +994,7 @@ async function spawnControlledPublisher(
 
 async function stopControlledPublisher(process: MediaScenarioProcess, markerId: SourceMarkerId): Promise<void> {
   try {
-    await process.stop();
+    await stopProcessOnce(process);
   } catch {
     throw new FixtureRefusal(`FFmpeg publisher ${markerId} could not be stopped and reaped`);
   }
@@ -1029,7 +1047,7 @@ async function publishUntilLive(
     return { live, startedAtMs };
   } catch (error) {
     try {
-      await publisher.stop();
+      await stopProcessOnce(publisher);
     } catch {
       throw new FixtureRefusal(`FFmpeg publisher ${source.markerId} could not be stopped and reaped`);
     }
@@ -1062,27 +1080,34 @@ function requireWaitingObservation(stream: StreamView): {
   };
 }
 
-async function requireClosedPublisherRefusal(
+async function observeClosedPublisherTermination(
   input: ContinuationMediaScenarioInput,
   deps: MediaScenarioDependencies,
   source: SourcePlan,
-): Promise<void> {
+): Promise<ReconnectAcceptanceEvidence['closedAttempt']['termination']> {
   const publisher = await spawnControlledPublisher(input, deps, source);
   let result: MediaScenarioProcessResult;
   try {
     result = await publisher.wait();
   } catch {
     try {
-      await publisher.stop();
+      await stopProcessOnce(publisher);
     } catch {
       throw new FixtureRefusal(`FFmpeg publisher ${source.markerId} could not be stopped and reaped`);
     }
-    throw new FixtureRefusal('could not prove that SRS refused the publisher before Continue');
+    throw new FixtureRefusal('could not observe a bounded publisher termination before Continue');
   }
   if (result.code === 0 && !result.signal) {
     await stopControlledPublisher(publisher, source.markerId);
-    throw new FixtureRefusal('SRS accepted a publisher before Continue');
+    throw new FixtureRefusal('publisher completed successfully before Continue');
   }
+  if (typeof result.code === 'number' && result.code !== 0) {
+    return { kind: 'nonzero_exit', exitCode: result.code };
+  }
+  if (typeof result.signal === 'string' && result.signal.length > 0) {
+    return { kind: 'signal', signal: result.signal };
+  }
+  throw new FixtureRefusal('publisher termination had no bounded exit or signal evidence');
 }
 
 /**
@@ -1168,7 +1193,7 @@ export async function runReconnectAcceptanceScenario(
     throw new FixtureRefusal('reconnect cutoff did not advance the managed run revision');
   }
 
-  await requireClosedPublisherRefusal(input, deps, SOURCES[2]);
+  const closedTermination = await observeClosedPublisherTermination(input, deps, SOURCES[2]);
   const afterRefusal = await readStream(input, deps);
   if (
     afterRefusal.lifecycle.runNumber !== terminal.lifecycle.runNumber ||
@@ -1199,9 +1224,15 @@ export async function runReconnectAcceptanceScenario(
     sourceAttempts: [
       { markerId: 'A', protocol: 'rtmp', runNumber: incumbentRunNumber, outcome: 'admitted' },
       { markerId: 'B', protocol: 'srt', runNumber: incumbentRunNumber, outcome: 'resumed' },
-      { markerId: 'C', protocol: 'rtmp', runNumber: incumbentRunNumber, outcome: 'refused_closed' },
+      { markerId: 'C', protocol: 'rtmp', runNumber: incumbentRunNumber, outcome: 'terminated_while_closed' },
       { markerId: 'C', protocol: 'rtmp', runNumber: nextRunNumber, outcome: 'admitted_after_continue' },
     ],
+    closedAttempt: {
+      termination: closedTermination,
+      authoritativeRunUnchanged: true,
+      policyRefusalProven: false,
+      requiredRuntimeWitness: 'srs_on_publish_response_code_1',
+    },
     incumbentRun: {
       runNumber: incumbentRunNumber,
       firstPublisherStartedAtMs: first.startedAtMs,

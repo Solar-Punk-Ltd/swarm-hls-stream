@@ -103,6 +103,13 @@ class ControlledProcess implements MediaScenarioProcess {
   }
 }
 
+class StopFailingProcess extends ControlledProcess {
+  override async stop(): Promise<void> {
+    this.stopCalls += 1;
+    throw new Error('withheld stop failure');
+  }
+}
+
 class QueuedSpawn implements MediaScenarioSpawn {
   readonly invocations: MediaScenarioProcessInvocation[] = [];
   readonly processes: ControlledProcess[] = [];
@@ -120,7 +127,7 @@ class QueuedSpawn implements MediaScenarioSpawn {
 }
 
 function processResult(code: number): MediaScenarioProcessResult {
-  return { code, stdout: new Uint8Array(), stderr: code === 0 ? '' : 'credential-bearing child refusal' };
+  return { code, stdout: new Uint8Array(), stderr: code === 0 ? '' : 'network failed at credential-bearing URL' };
 }
 
 function successfulFetch(
@@ -198,7 +205,7 @@ describe('runReconnectAcceptanceScenario', () => {
       [
         { markerId: 'A', protocol: 'rtmp', runNumber: 1, outcome: 'admitted' },
         { markerId: 'B', protocol: 'srt', runNumber: 1, outcome: 'resumed' },
-        { markerId: 'C', protocol: 'rtmp', runNumber: 1, outcome: 'refused_closed' },
+        { markerId: 'C', protocol: 'rtmp', runNumber: 1, outcome: 'terminated_while_closed' },
         { markerId: 'C', protocol: 'rtmp', runNumber: 2, outcome: 'admitted_after_continue' },
       ],
     );
@@ -223,6 +230,12 @@ describe('runReconnectAcceptanceScenario', () => {
       closeReason: 'reconnect_timeout',
     });
     assert.deepEqual(evidence.continuedRun, { runNumber: 2, liveRevision: 21 });
+    assert.deepEqual(evidence.closedAttempt, {
+      termination: { kind: 'nonzero_exit', exitCode: 1 },
+      authoritativeRunUnchanged: true,
+      policyRefusalProven: false,
+      requiredRuntimeWitness: 'srs_on_publish_response_code_1',
+    });
     assert.ok(sleeps.includes(42_000), 'cutoff wait uses the server-derived remaining budget plus one poll');
     assert.deepEqual(
       spawn.processes.map((process) => ({ stopCalls: process.stopCalls, waitCalls: process.waitCalls })),
@@ -233,7 +246,7 @@ describe('runReconnectAcceptanceScenario', () => {
         { stopCalls: 1, waitCalls: 0 },
       ],
     );
-    assert.equal(JSON.stringify(evidence).includes('credential-bearing'), false);
+    assert.equal(JSON.stringify(evidence).includes('network failed'), false);
     assert.equal(JSON.stringify(evidence).includes('fixture-auth:'), false);
   });
 
@@ -265,7 +278,7 @@ describe('runReconnectAcceptanceScenario', () => {
     assert.equal(spawn.processes[1].stopCalls, 1);
   });
 
-  it('requires a real publisher refusal while the incumbent closed run stays exact', async () => {
+  it('refuses an apparently successful publisher while the incumbent run is closed', async () => {
     const fetch = successfulFetch();
     const spawn = new QueuedSpawn([processResult(0), processResult(0), processResult(0)]);
     let now = 10_000;
@@ -281,13 +294,13 @@ describe('runReconnectAcceptanceScenario', () => {
           },
         },
       }),
-      /accepted a publisher before Continue/i,
+      /completed successfully before Continue/i,
     );
     assert.equal(spawn.processes[2].waitCalls, 1);
     assert.equal(spawn.processes[2].stopCalls, 1);
   });
 
-  it('refuses an owner-state mutation after the closed publisher is rejected', async () => {
+  it('refuses an owner-state mutation after the closed publisher terminates', async () => {
     const fetch = successfulFetch(stream(1, 7, 'vod', { closeReason: 'reconnect_timeout' }));
     const spawn = new QueuedSpawn([processResult(0), processResult(0), processResult(1)]);
     let now = 10_000;
@@ -306,5 +319,24 @@ describe('runReconnectAcceptanceScenario', () => {
       /changed the incumbent managed run/i,
     );
     assert.equal(spawn.processes[2].waitCalls, 1);
+  });
+
+  it('attempts controlled publisher cleanup only once when stop fails', async () => {
+    const fetch = new QueuedFetch([
+      { status: 200, body: stream(1, 1, 'ready') },
+      { status: 200, body: stream(1, 2, 'live') },
+    ]);
+    const process = new StopFailingProcess(processResult(0));
+    const spawn: MediaScenarioSpawn = { spawn: async () => process };
+
+    await assert.rejects(
+      runReconnectAcceptanceScenario(input(), {
+        fetch,
+        spawn,
+        clock: { now: () => 10_000, sleep: async () => {} },
+      }),
+      /could not be stopped and reaped/i,
+    );
+    assert.equal(process.stopCalls, 1);
   });
 });
