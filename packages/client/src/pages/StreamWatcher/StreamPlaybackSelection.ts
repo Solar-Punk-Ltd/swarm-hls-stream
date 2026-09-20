@@ -45,7 +45,7 @@ function hasCompletedRecording(
   );
 }
 
-function isCurrentRun(stream: Stream | undefined): boolean {
+function isCurrentRun(stream: Stream | undefined): stream is Stream & { lifecycle: NonNullable<Stream['lifecycle']> } {
   return stream?.lifecycle?.version === 1 && ['live', 'waiting'].includes(stream.lifecycle.state);
 }
 
