@@ -111,6 +111,7 @@ class FakeDocker implements FixtureDocker {
   readonly started: string[] = [];
   readonly removed: string[] = [];
   readonly loseCreateReplyFor = new Set<string>();
+  containerImageId = IMAGE_ID;
   private nextId = 1;
 
   async findExact(_kind: InspectedResource['kind'], name: string): Promise<InspectedResource | null> {
@@ -130,7 +131,7 @@ class FakeDocker implements FixtureDocker {
       name,
       labels: { ...labels },
       ...(plan?.kind === 'network' ? { internal: plan.internal } : {}),
-      ...(plan?.kind === 'container' ? { imageId: IMAGE_ID, limits: { ...plan.limits } } : {}),
+      ...(plan?.kind === 'container' ? { imageId: this.containerImageId, limits: { ...plan.limits } } : {}),
     };
     this.resources.set(id, resource);
     this.created.push(name);
@@ -261,6 +262,20 @@ describe('the isolated continuation fixture plan', () => {
 
     await assert.rejects(subject.up(), /port 18545.*occupied/i);
     assert.deepEqual(docker.created, []);
+  });
+
+  it('refuses a different runtime image before starting any container', async () => {
+    const fixturePlan = structuredClone(plan());
+    for (const resource of fixturePlan.resources) {
+      if (resource.kind === 'container') resource.image = IMAGE_ID;
+    }
+    const docker = new FakeDocker();
+    docker.containerImageId = `sha256:${'c'.repeat(64)}`;
+    const fixture = runner(fixturePlan, docker);
+
+    await assert.rejects(fixture.runner.up(), /planned image/i);
+
+    assert.deepEqual(docker.started, []);
   });
 
   it('refuses an internal endpoint outside the fixture network', () => {

@@ -173,14 +173,22 @@ export class DockerCliFixture implements FixtureDocker {
     } else if (resource.kind === 'volume') {
       result = await this.invoke('volume create', ['volume', 'create', ...labelsArgs(labels), name]);
     } else {
+      const expectedImageId = await this.resolveImageId(resource.image);
       result = await this.invoke('container create', this.containerCreateArgs(resource));
+      const created = await this.inspect(kind, outputId(result.stdout));
+      if (!created) throw new FixtureRefusal(`Docker did not retain the created ${name}`);
+      if (created.name !== name) throw new FixtureRefusal(`Docker created ${created.name} instead of ${name}`);
+      if (created.imageId !== expectedImageId) {
+        throw new FixtureRefusal(`Docker did not create ${name} from its planned image`);
+      }
+      if (!sameLimits(created.limits, resource.limits)) {
+        throw new FixtureRefusal(`Docker did not apply the resource limits for ${name}`);
+      }
+      return created;
     }
     const created = await this.inspect(kind, outputId(result.stdout));
     if (!created) throw new FixtureRefusal(`Docker did not retain the created ${name}`);
     if (created.name !== name) throw new FixtureRefusal(`Docker created ${created.name} instead of ${name}`);
-    if (resource.kind === 'container' && !sameLimits(created.limits, resource.limits)) {
-      throw new FixtureRefusal(`Docker did not apply the resource limits for ${name}`);
-    }
     return created;
   }
 
@@ -225,6 +233,15 @@ export class DockerCliFixture implements FixtureDocker {
       ...(binding ? ['--publish', `${binding.host}:${binding.hostPort}:${binding.containerPort}`] : []),
       resource.image,
     ];
+  }
+
+  private async resolveImageId(reference: string): Promise<string> {
+    const result = await this.invoke('image inspect', ['image', 'inspect', '--format', '{{.Id}}', reference]);
+    const imageId = result.stdout.trim();
+    if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) {
+      throw new FixtureRefusal('Docker returned an invalid planned image identity');
+    }
+    return imageId;
   }
 
   private async invoke(phase: string, args: readonly string[]): Promise<CommandResult> {

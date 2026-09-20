@@ -656,11 +656,12 @@ export class MediaFixtureRunner {
           resource.kind === 'container' &&
           (!created.imageId ||
             !IMAGE_ID_RE.test(created.imageId) ||
+            (IMAGE_ID_RE.test(resource.image) && created.imageId !== resource.image) ||
             created.limits?.cpus !== resource.limits.cpus ||
             created.limits.memoryBytes !== resource.limits.memoryBytes ||
             created.limits.pidsLimit !== resource.limits.pidsLimit)
         ) {
-          throw new FixtureRefusal(`Docker did not apply the resource limits for ${resource.name}`);
+          throw new FixtureRefusal(`Docker did not apply the planned image and resource limits for ${resource.name}`);
         }
         try {
           journal.recordResource(created);

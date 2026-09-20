@@ -41,11 +41,13 @@ function plan(): FixturePlan {
 class RecordingCommands implements BoundedCommand {
   readonly calls: Array<{ file: string; args: readonly string[] }> = [];
   wrongContainerLimits = false;
+  wrongContainerImage = false;
   private readonly inspections = new Map<string, object>();
   private nextId = 1;
 
   async run(file: string, args: readonly string[]): Promise<CommandResult> {
     this.calls.push({ file, args: [...args] });
+    if (args[0] === 'image' && args[1] === 'inspect') return { stdout: `${IMAGE_ID}\n`, stderr: '' };
     if (args[0] === 'network' && args[1] === 'create') {
       const id = `network-${this.nextId++}`;
       this.inspections.set(id, {
@@ -68,7 +70,7 @@ class RecordingCommands implements BoundedCommand {
         id,
         name: `/${valueAfter('--name')}`,
         labels: this.labels(args),
-        imageId: IMAGE_ID,
+        imageId: this.wrongContainerImage ? `sha256:${'c'.repeat(64)}` : IMAGE_ID,
         nanoCpus: Number(valueAfter('--cpus')) * 1_000_000_000,
         memoryBytes: Number(String(valueAfter('--memory')).slice(0, -1)),
         pidsLimit: Number(valueAfter('--pids-limit')),
@@ -178,6 +180,17 @@ describe('continuation fixture Docker adapter', () => {
       docker.create(container.kind, container.name, container.labels, container),
       /malformed container resource limits|did not apply the resource limits/,
     );
+  });
+
+  it('refuses when the created container uses another resolved image', async () => {
+    const fixturePlan = plan();
+    const commands = new RecordingCommands();
+    commands.wrongContainerImage = true;
+    const docker = new DockerCliFixture(fixturePlan, commands);
+    const container = fixturePlan.resources.find((resource) => resource.kind === 'container');
+    assert.ok(container);
+
+    await assert.rejects(docker.create(container.kind, container.name, container.labels, container), /planned image/);
   });
 
   it('bounds a real argv-only command and reports counts without its output bytes', async () => {
