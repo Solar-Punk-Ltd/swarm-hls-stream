@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
 
+import {
+  MANAGED_RUN_LOADED,
+  MANAGED_RUN_MISSING,
+  ManagedRunEntry,
+  ManagedRunPersistence,
+  ManagedRunRecord,
+} from '../src/libs/ManagedRunStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import {
@@ -19,7 +26,7 @@ import { waitFor } from './helpers/waiting.js';
 const STREAM_ID = 'video/managed-stream';
 const RECONNECT_MS = 60_000;
 const SETTLE_CEILING_MS = 4_000;
-const ADMIN_SESSION = { id: 'admin-stream', topic: 'managed-topic' };
+const ADMIN_SESSION = { id: '22222222-2222-4222-8222-222222222222', topic: 'a'.repeat(64) };
 const CLAIMANT = { address: '198.51.100.7', isAuthenticated: true };
 const SOURCE_A: SourceConnectionIdentity = {
   serverId: 'srs-1',
@@ -38,6 +45,23 @@ interface OrchestratorInternals {
   activeStreams: Map<string, StreamUploader>;
 }
 
+class MemoryManagedRuns implements ManagedRunPersistence {
+  private records = new Map<string, ManagedRunRecord>();
+
+  public save(record: ManagedRunRecord): void {
+    this.records.set(record.streamId, structuredClone(record));
+  }
+
+  public read(streamId: string): ManagedRunEntry {
+    const record = this.records.get(streamId);
+    return record ? { kind: MANAGED_RUN_LOADED, record } : { kind: MANAGED_RUN_MISSING };
+  }
+
+  public list(): string[] {
+    return [...this.records.keys()];
+  }
+}
+
 function activeUploader(orchestrator: StreamOrchestrator): StreamUploader | undefined {
   return (orchestrator as unknown as OrchestratorInternals).activeStreams.get(STREAM_ID);
 }
@@ -47,15 +71,38 @@ function makeManagedOrchestrator(
   published: unknown[] = [],
   saved: StreamState[] = [],
   maxQueueSize = 100,
+  mediaType = MEDIA_TYPE_VIDEO,
 ): StreamOrchestrator {
-  return makeTestOrchestrator(
-    { clock, managedSourceReconnectMs: RECONNECT_MS, maxQueueSize },
+  const orchestrator = makeTestOrchestrator(
+    {
+      clock,
+      wallClock: () => 1_000_000 + clock.now(),
+      managedSourceReconnectMs: RECONNECT_MS,
+      managedRunStore: new MemoryManagedRuns(),
+      maxQueueSize,
+    },
     {},
     makeFakeRecoveryStore({
       save: (_streamId: string, state: StreamState) => saved.push(state),
     }),
     makeRecordingCatalog(published),
   );
+  assert.equal(
+    orchestrator.prepareManagedRun({
+      lifecycleVersion: 1,
+      streamId: STREAM_ID,
+      adminStreamId: ADMIN_SESSION.id,
+      topic: ADMIN_SESSION.topic,
+      mediaType,
+      revision: 8,
+      runNumber: 2,
+      uploaderId: 'srs-157-90-34-105',
+      claimId: '44444444-4444-4444-8444-444444444444',
+      eventSequence: 1,
+    }),
+    true,
+  );
+  return orchestrator;
 }
 
 function provision(
@@ -299,7 +346,7 @@ describe('managed SRS source reconnect foundation', () => {
 
   it('uses audio timestamps to verify an audio-only managed source', async () => {
     const clock = new FakeClock();
-    const orchestrator = makeManagedOrchestrator(clock);
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_AUDIO);
 
     assert.equal(provision(orchestrator, SOURCE_A, MEDIA_TYPE_AUDIO), true);
     assert.deepEqual(

@@ -29,10 +29,28 @@ export interface ManagedRunRecord {
   readonly source: SourceConnectionIdentity | null;
 }
 
+/** The immutable claim fields. Deadline and source progress are owned by this process. */
+export type ManagedRunClaim = Omit<
+  ManagedRunRecord,
+  | 'state'
+  | 'deadlineWallMs'
+  | 'deadlineRecordedAtWallMs'
+  | 'deadlineRemainingMs'
+  | 'lastProgressPts'
+  | 'source'
+>;
+
 export type ManagedRunEntry =
   | { kind: typeof MANAGED_RUN_MISSING }
   | { kind: typeof MANAGED_RUN_LOADED; record: ManagedRunRecord }
   | { kind: typeof MANAGED_RUN_UNREADABLE };
+
+/** Admission persistence used by the orchestrator and replaceable with a faulting store in tests. */
+export interface ManagedRunPersistence {
+  save(record: ManagedRunRecord): void;
+  read(streamId: string): ManagedRunEntry;
+  list(): string[];
+}
 
 /** The synchronous operations whose completion makes one save durable enough to acknowledge. */
 export interface DurableFileOps {
@@ -133,7 +151,7 @@ export function remainingManagedDeadline(record: ManagedRunRecord, nowWallMs: nu
   return Math.min(fromCheckpoint, fromAbsoluteDeadline);
 }
 
-export class ManagedRunStore {
+export class ManagedRunStore implements ManagedRunPersistence {
   constructor(
     private readonly stateDir: string,
     private readonly fileOps: DurableFileOps = nodeFileOps,
