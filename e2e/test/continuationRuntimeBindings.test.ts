@@ -48,6 +48,7 @@ interface ContainerFixture {
 
 class DockerObservations implements BoundedCommand {
   readonly calls: string[][] = [];
+  networkId = NETWORK_ID;
 
   constructor(private readonly containers: ContainerFixture[]) {}
 
@@ -55,10 +56,28 @@ class DockerObservations implements BoundedCommand {
     assert.equal(file, 'docker');
     this.calls.push([...args]);
     if (args[0] === 'ps') {
+      assert.ok(args.includes('--no-trunc'));
       const project = args.find((value) => value.startsWith('label=com.docker.compose.project='))?.split('=').at(-1);
       const service = args.find((value) => value.startsWith('label=com.docker.compose.service='))?.split('=').at(-1);
       const matched = this.containers.filter((container) => container.project === project && container.service === service);
       return { stdout: matched.map(({ id }) => id).join('\n'), stderr: '' };
+    }
+    if (args[0] === 'exec' && args[2] === 'printenv') {
+      const container = this.containers.find((candidate) => candidate.id === args[1]);
+      assert.ok(container);
+      const values: Record<string, Record<string, string>> = {
+        srs: {
+          SRS_RTMP_PORT: '10012',
+          SRS_HTTP_PORT: '10013',
+          SRS_SRT_PORT: '10011',
+          SRS_HTTP_API_PORT: '10019',
+        },
+        'stream-uploader': { API_PORT: '10010' },
+      };
+      return {
+        stdout: args.slice(3).map((name) => values[container.service]?.[name]).join('\n') + '\n',
+        stderr: '',
+      };
     }
     if (args[0] === 'container' && args[1] === 'inspect') {
       const id = args.at(-1);
@@ -77,7 +96,7 @@ class DockerObservations implements BoundedCommand {
             'org.solarpunk.srs-continuation.managed': 'true',
           },
           networks: {
-            [`${FIXTURE_ID}-network`]: { networkId: NETWORK_ID, aliases: container.aliases },
+            [`${FIXTURE_ID}-network`]: { networkId: this.networkId, aliases: container.aliases },
           },
           exposedPorts: Object.fromEntries(container.ports.map(({ port, protocol }) => [`${port}/${protocol}`, {}])),
         }),
@@ -156,6 +175,7 @@ describe('resolveFixtureRuntime', () => {
       plan,
       topology,
       projects: { admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+      fixtureNetworkId: NETWORK_ID,
       rawContainers: new Map([
         ['blockchain', { id: 'blockchain-id', name: `${FIXTURE_ID}-blockchain`, configuredImage: IMAGE_ID }],
         ['bee-queen', { id: 'bee-queen-id', name: `${FIXTURE_ID}-bee-queen`, configuredImage: IMAGE_ID }],
@@ -184,6 +204,10 @@ describe('resolveFixtureRuntime', () => {
       viewerMediaBaseUrl: 'http://client',
       adminInternalBaseUrl: `http://${FIXTURE_ID}-admin-api:9877`,
     });
+    assert.equal(
+      command.calls.some((args) => args[0] === 'container' && args[1] === 'inspect' && args.includes('srs-id')),
+      true,
+    );
   });
 
   it('refuses a configured base port and a container outside the exact fixture network', async () => {
@@ -200,10 +224,30 @@ describe('resolveFixtureRuntime', () => {
         plan,
         topology,
         projects: { admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+        fixtureNetworkId: NETWORK_ID,
         rawContainers: new Map(),
         guardSlots: new Map(),
       }),
       /SRS.*slot-1|alias/i,
+    );
+  });
+
+  it('refuses a same-named network whose inspected identity differs from the journal', async () => {
+    const plan = fixturePlan();
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
+    const command = new DockerObservations(guardedContainers());
+    command.networkId = 'c'.repeat(64);
+
+    await assert.rejects(
+      resolveFixtureRuntime(command, {
+        plan,
+        topology,
+        projects: { admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+        fixtureNetworkId: NETWORK_ID,
+        rawContainers: new Map(),
+        guardSlots: new Map(),
+      }),
+      /exact fixture network/i,
     );
   });
 });
