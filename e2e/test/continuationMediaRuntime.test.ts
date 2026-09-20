@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { BoundedCommand, CommandResult } from '../src/continuation/dockerCli.js';
-import type { MediaScenarioProcessInvocation } from '../src/continuation/mediaScenario.js';
 import {
   DockerMediaScenarioSpawn,
   type InteractiveProcessInput,
   type InteractiveProcessLauncher,
   LoopbackMediaScenarioFetch,
 } from '../src/continuation/mediaRuntime.js';
+import type { MediaScenarioProcessInvocation } from '../src/continuation/mediaScenario.js';
 
 const SECRET = 'synthetic-owner-cookie';
 
