@@ -1,12 +1,12 @@
 import { type CompletedRecording, type MediaType, type Rendition, type Stream } from '@/types/stream';
 
-export interface PlaybackRoute {
+interface PlaybackRoute {
   owner: string;
   topicString: string;
   mediaType: MediaType;
 }
 
-export interface PlaybackInputs extends PlaybackRoute {
+interface PlaybackInputs extends PlaybackRoute {
   kind: 'live';
   session: number;
   runNumber: number | undefined;
@@ -15,7 +15,7 @@ export interface PlaybackInputs extends PlaybackRoute {
   pinnedRecording: CompletedRecording | undefined;
 }
 
-export interface ReplayPlaybackInputs extends PlaybackRoute {
+interface ReplayPlaybackInputs extends PlaybackRoute {
   kind: 'replay';
   session: number;
   runNumber: number;
@@ -23,7 +23,7 @@ export interface ReplayPlaybackInputs extends PlaybackRoute {
   renditions: undefined;
 }
 
-export type SelectedPlayback = PlaybackInputs | ReplayPlaybackInputs;
+type SelectedPlayback = PlaybackInputs | ReplayPlaybackInputs;
 
 function copyCompletedRecording(recording: CompletedRecording): CompletedRecording {
   return {

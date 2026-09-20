@@ -16,7 +16,7 @@ import type { MediaType, Rendition } from '@swarm-hls-stream/shared';
 /** Known values are `StreamStatus`. Future publisher values remain valid and are treated as not-live. */
 export type StreamState = string;
 
-export type LifecycleState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+type LifecycleState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
 
 /** Public managed-run state. Its absence preserves legacy and OME catalogue entries. */
 export interface StreamLifecycle {
@@ -35,7 +35,7 @@ export interface CompletedManifest {
 }
 
 /** The immutable rendition record a replay uses instead of resolving a live feed head. */
-export interface CompletedRendition extends CompletedManifest {
+interface CompletedRendition extends CompletedManifest {
   name: string;
   width?: number;
   height?: number;
