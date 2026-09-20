@@ -192,8 +192,27 @@ function normalizedRecording(recording: ManagedCompletedRecording): unknown {
   };
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, canonicalValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalValue(left)) === JSON.stringify(canonicalValue(right));
+}
+
 function sameRecording(left: ManagedCompletedRecording, right: ManagedCompletedRecording): boolean {
-  return JSON.stringify(normalizedRecording(left)) === JSON.stringify(normalizedRecording(right));
+  return sameValue(normalizedRecording(left), normalizedRecording(right));
 }
 
 function sameExpectedRendition(
@@ -391,7 +410,7 @@ export class ManagedCheckpointStore {
     const key = track.rendition ?? '';
     const previous = record.tracks.find((candidate) => (candidate.rendition ?? '') === key);
     if (record.status === 'complete') {
-      if (previous && JSON.stringify(previous) === JSON.stringify(track)) {return record;}
+      if (previous && sameValue(previous, track)) {return record;}
       throw new Error('Managed checkpoint is complete and cannot accept another track finalization');
     }
     if (record.status === 'empty') {
@@ -412,7 +431,7 @@ export class ManagedCheckpointStore {
   ): ManagedCompletedRecording {
     const record = this.require(checkpointReference);
     if (record.status === 'complete') {
-      if (record.completedRecording && JSON.stringify(record.completedRecording.master) === JSON.stringify(master)) {
+      if (record.completedRecording && sameValue(record.completedRecording.master, master)) {
         return record.completedRecording;
       }
       throw new Error('Managed checkpoint is complete and cannot be finalized differently');
@@ -435,7 +454,7 @@ export class ManagedCheckpointStore {
     if (record.expectedRenditions.length === 0) {
       const single = record.tracks.find((track) => track.rendition === null);
       if (!single?.manifest) {throw new Error('Managed recording is missing its single track');}
-      if (JSON.stringify(single.manifest) !== JSON.stringify(master)) {
+      if (!sameValue(single.manifest, master)) {
         throw new Error('Managed recording master does not match its finalized single track');
       }
     }
@@ -540,7 +559,7 @@ export class ManagedCheckpointStore {
     if (
       predecessor.status !== 'empty' ||
       !predecessor.emptyOutcome ||
-      JSON.stringify(predecessor.emptyOutcome) !== JSON.stringify(outcome) ||
+      !sameValue(predecessor.emptyOutcome, outcome) ||
       predecessor.adminStreamId !== operation.streamId ||
       predecessor.runNumber !== operation.previousRunNumber ||
       predecessor.topic !== operation.topic ||
@@ -688,5 +707,5 @@ export class ManagedCheckpointStore {
 }
 
 function isPrefix(previous: readonly unknown[], next: readonly unknown[]): boolean {
-  return previous.length <= next.length && previous.every((value, index) => JSON.stringify(value) === JSON.stringify(next[index]));
+  return previous.length <= next.length && previous.every((value, index) => sameValue(value, next[index]));
 }

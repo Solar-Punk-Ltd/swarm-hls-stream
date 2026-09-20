@@ -327,6 +327,66 @@ describe('ManagedCheckpointStore', () => {
     assert.deepEqual(fs.readFileSync(path.join(root, `${checkpoint.checkpointReference}.json`)), sealedBytes);
   });
 
+  it('compares retained snapshots and exact retries independently of object key order', () => {
+    const root = tempRoot();
+    const ids = [...CHECKPOINT_IDS];
+    const first = new ManagedCheckpointStore(root, undefined, () => ids.shift()!);
+    const runA = first.createRun({
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [
+        { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 800_000, avgBandwidth: 700_000 },
+      ],
+    });
+    const stateA = trackState(1, undefined, REFERENCES[0]);
+    first.saveTrack(runA.checkpointReference, finalized(1, stateA, REFERENCES[1]));
+    const recordingA = first.complete(runA.checkpointReference, {
+      topic: TOPIC,
+      index: 11,
+      reference: REFERENCES[2],
+      duration: 2,
+    });
+    const reorderedRecording: ManagedCompletedRecording = {
+      renditions: recordingA.renditions.map((rendition) => ({
+        avgBandwidth: rendition.avgBandwidth,
+        bandwidth: rendition.bandwidth,
+        height: rendition.height,
+        width: rendition.width,
+        duration: rendition.duration,
+        reference: rendition.reference,
+        index: rendition.index,
+        topic: rendition.topic,
+        name: rendition.name,
+      })),
+      expectedRenditions: [...recordingA.expectedRenditions],
+      master: {
+        duration: recordingA.master.duration,
+        reference: recordingA.master.reference,
+        index: recordingA.master.index,
+        topic: recordingA.master.topic,
+      },
+      checkpointReference: recordingA.checkpointReference,
+      runNumber: recordingA.runNumber,
+    };
+
+    const second = new ManagedCheckpointStore(root, undefined, () => ids.shift()!);
+    const runB = second.prepare(operation(1, reorderedRecording));
+    second.saveTrack(runB.checkpointReference, finalized(1, stateA, REFERENCES[1]));
+    const recordingB = second.complete(runB.checkpointReference, recordingA.master);
+
+    assert.deepEqual(
+      second.complete(runB.checkpointReference, {
+        duration: recordingB.master.duration,
+        reference: recordingB.master.reference,
+        index: recordingB.master.index,
+        topic: recordingB.master.topic,
+      }),
+      recordingB,
+    );
+  });
+
   it('refuses to allocate fresh state when a known run checkpoint is corrupt', () => {
     const root = tempRoot();
     const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
