@@ -12,7 +12,6 @@ import { managerUploaderProfileName } from './managerProfile.js';
 import type { GuardedReleaseObservation } from './readinessTransport.js';
 import { type ContinuationTopology,createContinuationTopology } from './topology.js';
 
-const SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const SAFE_PROFILE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SAFE_USERNAME = /^[A-Za-z0-9_.-]{1,100}$/;
 const SAFE_CONTAINER_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
@@ -452,21 +451,8 @@ function boundedProcessInteger(value: number, minimum: number, maximum: number, 
 
 function validateInputs(options: GuardedApplicationProvisionerOptions): void {
   const { targets } = options;
+  validateReleaseFixtureTargets(options.plan, targets);
   if (
-    !SAFE_NAME.test(targets.manager.projectName) ||
-    !SAFE_NAME.test(targets.manager.postgresVolumeName) ||
-    !validPort(targets.manager.postgresPort) ||
-    !validPort(targets.manager.webPort) ||
-    !SAFE_NAME.test(targets.admin.projectName) ||
-    !SAFE_NAME.test(targets.admin.postgresVolumeName) ||
-    !validPort(targets.admin.webPort) ||
-    !SAFE_PROFILE.test(targets.uploader.profile) ||
-    targets.uploader.profile !== managerUploaderProfileName(options.plan.fixtureId) ||
-    targets.uploader.portSlot !== 1 ||
-    targets.uploader.services.join(',') !== 'srs,stream-uploader' ||
-    !SAFE_PROFILE.test(targets.viewer.profile) ||
-    targets.viewer.portSlot !== 1 ||
-    targets.viewer.services.join(',') !== 'client' ||
     !SAFE_USERNAME.test(options.managerUsername) ||
     options.managerPassword.length < 1 ||
     options.managerPassword.length > 16 * 1024 ||
@@ -476,8 +462,39 @@ function validateInputs(options: GuardedApplicationProvisionerOptions): void {
   ) {
     throw new FixtureRefusal('guarded application provision input is malformed');
   }
-  const adminPort = options.plan.publishedPorts.find((binding) => binding.role === 'admin')?.hostPort;
+}
+
+export function validateReleaseFixtureTargets(plan: FixturePlan, targets: ReleaseFixtureTargets): void {
+  const uploaderProfile = managerUploaderProfileName(plan.fixtureId);
+  const fixtureStem = uploaderProfile.slice(0, -'-uploader'.length);
+  if (
+    targets.manager.projectName !== `${fixtureStem}-manager` ||
+    targets.manager.postgresVolumeName !== `${fixtureStem}-manager-pg` ||
+    !validPort(targets.manager.postgresPort) ||
+    !validPort(targets.manager.webPort) ||
+    targets.admin.projectName !== `${fixtureStem}-admin` ||
+    targets.admin.postgresVolumeName !== `${fixtureStem}-admin-pg` ||
+    !validPort(targets.admin.webPort) ||
+    !SAFE_PROFILE.test(targets.uploader.profile) ||
+    targets.uploader.profile !== uploaderProfile ||
+    targets.uploader.portSlot !== 1 ||
+    targets.uploader.services.join(',') !== 'srs,stream-uploader' ||
+    targets.viewer.profile !== `${fixtureStem}-viewer` ||
+    targets.viewer.portSlot !== 1 ||
+    targets.viewer.services.join(',') !== 'client'
+  ) {
+    throw new FixtureRefusal('guarded application target is malformed');
+  }
+  const adminPort = plan.publishedPorts.find((binding) => binding.role === 'admin')?.hostPort;
   if (adminPort !== targets.admin.webPort) {
     throw new FixtureRefusal('guarded admin target does not match the fixture loopback port');
+  }
+  const reservedPorts = [
+    ...plan.publishedPorts.map(({ hostPort }) => hostPort),
+    targets.manager.postgresPort,
+    targets.manager.webPort,
+  ];
+  if (new Set(reservedPorts).size !== reservedPorts.length) {
+    throw new FixtureRefusal('guarded application loopback ports overlap');
   }
 }

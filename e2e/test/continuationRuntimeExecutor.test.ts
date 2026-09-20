@@ -18,10 +18,7 @@ const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 class PreflightCommand implements BoundedCommand {
   readonly calls: Array<{ file: string; args: readonly string[] }> = [];
 
-  constructor(
-    private readonly dirty = false,
-    private readonly occupiedProject?: string,
-  ) {}
+  constructor(private readonly dirty = false, private readonly occupiedProject?: string) {}
 
   async run(file: string, args: readonly string[]): Promise<CommandResult> {
     this.calls.push({ file, args });
@@ -97,30 +94,45 @@ const secrets: ContinuationFixtureRuntimeSecrets = {
 describe('concrete continuation fixture runtime', () => {
   it('checks every frozen candidate before any Docker collision read', async () => {
     const command = new PreflightCommand(true);
-    const runtime = new ContinuationFixtureRuntime({
-      plan: plan(),
-      targets: targets(),
-      managerUsername: 'fixture-manager',
-      adminUsername: 'fixture-admin',
-    }, secrets, {
-      command,
-      createControls: () => ({ run: async () => new Uint8Array() }),
-    });
+    const runtime = new ContinuationFixtureRuntime(
+      {
+        plan: plan(),
+        targets: targets(),
+        managerUsername: 'fixture-manager',
+        adminUsername: 'fixture-admin',
+      },
+      secrets,
+      {
+        command,
+        createControls: () => ({ run: async () => new Uint8Array() }),
+      },
+    );
 
     await assert.rejects(runtime.preflight(), /candidate stack is not the frozen clean commit/);
-    assert.equal(command.calls.some(({ file }) => file === 'docker'), false);
+    assert.equal(
+      command.calls.some(({ file }) => file === 'docker'),
+      false,
+    );
   });
 
   it('refuses missing process inputs before any preflight command can run', () => {
-    assert.throws(() => new ContinuationFixtureRuntime({
-      plan: plan(),
-      targets: targets(),
-      managerUsername: 'fixture-manager',
-      adminUsername: 'fixture-admin',
-    }, { ...secrets, adminPassword: '' }, {
-      command: new PreflightCommand(),
-      createControls: () => ({ run: async () => new Uint8Array() }),
-    }), /fixture process input is missing or malformed/);
+    assert.throws(
+      () =>
+        new ContinuationFixtureRuntime(
+          {
+            plan: plan(),
+            targets: targets(),
+            managerUsername: 'fixture-manager',
+            adminUsername: 'fixture-admin',
+          },
+          { ...secrets, adminPassword: '' },
+          {
+            command: new PreflightCommand(),
+            createControls: () => ({ run: async () => new Uint8Array() }),
+          },
+        ),
+      /fixture process input is missing or malformed/,
+    );
   });
 
   it('refuses a foreign Compose project before any fixture provisioner can run', async () => {
@@ -141,7 +153,10 @@ describe('concrete continuation fixture runtime', () => {
     );
 
     await assert.rejects(runtime.preflight(), /guarded Compose project already exists/);
-    assert.equal(command.calls.some(({ args }) => args.includes('install-release-guard.sh')), false);
+    assert.equal(
+      command.calls.some(({ args }) => args.includes('install-release-guard.sh')),
+      false,
+    );
   });
 
   it('rejects target names that are not derived from the fixture identity', () => {

@@ -626,6 +626,14 @@ function readinessRefusal(plan: FixturePlan, evidence: ReadinessEvidence): strin
   return null;
 }
 
+/** Refuses before media starts unless every planned readiness control passed its real observation. */
+export function assertFixtureReadiness(plan: FixturePlan, evidence: ReadinessEvidence): void {
+  const refusal = readinessRefusal(plan, evidence);
+  if (refusal !== null) {
+    throw new FixtureRefusal(refusal);
+  }
+}
+
 export interface MediaFixtureRunnerOptions {
   plan: FixturePlan;
   docker: FixtureDocker;
