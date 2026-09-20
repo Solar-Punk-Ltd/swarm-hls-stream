@@ -236,6 +236,11 @@ verify_fixture_container() {
   ' <<< "$labels" >/dev/null 2>&1; then
     refuse "$role release service fixture labels are invalid"
   fi
+  if [ "$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$container")" != 1000000000 ] ||
+      [ "$(docker inspect --format '{{.HostConfig.Memory}}' "$container")" != 1073741824 ] ||
+      [ "$(docker inspect --format '{{.HostConfig.PidsLimit}}' "$container")" != 256 ]; then
+    refuse "$role release service fixture resource limits are invalid"
+  fi
   ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' "$container")"
   [ "${#ports}" -le 65536 ] || refuse "$role release service published ports are invalid"
   if [ "$role" = "viewer" ]; then
@@ -636,6 +641,7 @@ case "$phase" in
       fi
       if [ -n "$fixture_id" ]; then
         printf '    networks:\n      - default\n' >> "$temporary"
+        printf '    cpus: 1\n    mem_limit: 1073741824\n    pids_limit: 256\n' >> "$temporary"
         if [ "$role" = "viewer" ] && [ "$service" = "client" ]; then
           printf '    ports:\n      - "127.0.0.1:%s:80"\n' "$CLIENT_PORT" >> "$temporary"
         fi

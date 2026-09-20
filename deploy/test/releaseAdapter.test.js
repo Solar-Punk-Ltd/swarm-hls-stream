@@ -516,6 +516,23 @@ describe('guarded uploader release adapter', () => {
     assert.doesNotMatch(override, /127\.0\.0\.1:/);
     assert.match(override, /srs-media:\n {4}labels:/);
     assert.match(override, /uploader-state:\n {4}labels:/);
+    assert.equal(override.match(/cpus: 1/g)?.length, 2);
+    assert.equal(override.match(/mem_limit: 1073741824/g)?.length, 2);
+    assert.equal(override.match(/pids_limit: 256/g)?.length, 2);
+  });
+
+  it('refuses fixture receipt when a selected service exceeds a fixed resource cap', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    assert.equal((await run(f, 'release-adapter.sh', 'transition')).exitCode, 0);
+
+    for (const cap of ['cpu', 'memory', 'pids']) {
+      f.env.DOCKER_STUB_BAD_CAP = cap;
+      const result = await run(f, 'release-adapter.sh', 'verify');
+      assert.notEqual(result.exitCode, 0);
+      assert.match(result.stderr, /resource limits/);
+    }
   });
 
   it('refuses receipt when a selected container is not on the bound fixture network id', async () => {
@@ -663,6 +680,7 @@ describe('guarded uploader release adapter', () => {
     const override = readFileSync(overridePath, 'utf8');
     assert.match(override, new RegExp(IMAGE_IDS.srs));
     assert.match(override, new RegExp(IMAGE_IDS['stream-uploader']));
+    assert.doesNotMatch(override, /(?:cpus|mem_limit|pids_limit):/);
     assert.match(calls, /docker-compose\.srs-conf\.yml/);
   });
 
@@ -890,6 +908,9 @@ if (argv[0] === 'inspect') {
   if (format.includes('.State.Status')) console.log('running');
   else if (format.includes('.State.Health')) console.log(process.env.DOCKER_STUB_NO_HEALTH === service ? '' : process.env.DOCKER_STUB_UNHEALTHY === service ? 'unhealthy' : 'healthy');
   else if (format.includes('.Image')) console.log(process.env.DOCKER_STUB_WRONG_IMAGE === service ? 'sha256:' + 'f'.repeat(64) : ids[service]);
+  else if (format.includes('.HostConfig.NanoCpus')) console.log(process.env.DOCKER_STUB_BAD_CAP === 'cpu' ? '2000000000' : '1000000000');
+  else if (format.includes('.HostConfig.Memory')) console.log(process.env.DOCKER_STUB_BAD_CAP === 'memory' ? '2147483648' : '1073741824');
+  else if (format.includes('.HostConfig.PidsLimit')) console.log(process.env.DOCKER_STUB_BAD_CAP === 'pids' ? '512' : '256');
   else if (format.includes('.Config.Env')) console.log(JSON.stringify([
     'BASE_IMAGE_ENV=1',
     'HLS_FRAGMENT=' + (process.env.HLS_FRAGMENT || '0.5'),
