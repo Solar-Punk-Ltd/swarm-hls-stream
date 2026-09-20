@@ -11,6 +11,7 @@ const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
 const PROFILE_NAME = 'srs-a1b2c3d4-uploader';
 const PRIVATE_KEY = 'synthetic-private-key';
+const POSTAGE_BATCH_ID = 'ab'.repeat(32);
 
 interface FetchCall {
   url: string;
@@ -92,6 +93,76 @@ describe('FetchManagerProfileClient', () => {
     assert.equal(
       (calls[1]?.init?.headers as Record<string, string>)['x-requested-with'],
       'streaming-infra-manager',
+    );
+  });
+
+  it('sets the existing postage batch, starts uploader through manager, and verifies readback', async () => {
+    const calls: FetchCall[] = [];
+    const responses = [
+      new Response(null, {
+        status: 204,
+        headers: { 'set-cookie': 'sim_session=synthetic-session; Path=/; HttpOnly; SameSite=Lax' },
+      }),
+      jsonResponse(profile({ pendingStamp: false })),
+      new Response([
+        'event: start',
+        'data: {"script":"deploy.sh"}',
+        '',
+        'event: done',
+        'data: {"code":0,"signal":null}',
+        '',
+      ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      jsonResponse(profile({
+        pendingStamp: false,
+        containers: [{ service: 'srs' }, { service: 'stream-uploader' }],
+      })),
+    ];
+    const client = new FetchManagerProfileClient({
+      baseUrl: 'http://127.0.0.1:9876/api',
+      username: 'fixture-operator',
+      password: 'synthetic-password',
+      fetch: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return responses.shift() ?? jsonResponse({ unexpected: true }, 500);
+      },
+    });
+
+    await client.setStampAndStartUploader({
+      profile: { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 },
+      postageBatchId: POSTAGE_BATCH_ID,
+    });
+
+    assert.deepEqual(calls.map((call) => [new URL(call.url).pathname, call.init?.method ?? 'GET']), [
+      ['/api/auth/login', 'POST'],
+      [`/api/profiles/${PROFILE_NAME}/stamp/set`, 'POST'],
+      [`/api/profiles/${PROFILE_NAME}/deploy-uploader`, 'POST'],
+      [`/api/profiles/${PROFILE_NAME}`, 'GET'],
+    ]);
+    assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), { stamp_id: POSTAGE_BATCH_ID });
+  });
+
+  it('refuses uploader activation without the exact successful SSE completion', async () => {
+    const responses = [
+      new Response(null, { status: 204, headers: { 'set-cookie': 'sim_session=fake; Path=/' } }),
+      jsonResponse(profile({ pendingStamp: false })),
+      new Response('event: done\ndata: {"code":7,"signal":null}\n\n', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    ];
+    const client = new FetchManagerProfileClient({
+      baseUrl: 'http://127.0.0.1:9876/api',
+      username: 'fixture-operator',
+      password: 'synthetic-password',
+      fetch: async () => responses.shift() ?? jsonResponse({}, 500),
+    });
+
+    await assert.rejects(
+      client.setStampAndStartUploader({
+        profile: { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 },
+        postageBatchId: POSTAGE_BATCH_ID,
+      }),
+      /guarded uploader start did not complete successfully/i,
     );
   });
 

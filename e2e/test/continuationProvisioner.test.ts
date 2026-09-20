@@ -4,20 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFixturePlan, ResourceJournal, type FixturePlan } from '../src/continuation/fixture.js';
+import { createFixturePlan, type FixturePlan,ResourceJournal } from '../src/continuation/fixture.js';
 import type { HeldUploaderProfile } from '../src/continuation/managerProfile.js';
 import {
   GuardedApplicationProvisioner,
-  SpawnBoundedProcess,
   type ProcessInvocation,
   type ProcessResult,
   type ReleaseFixtureTargets,
+  SpawnBoundedProcess,
 } from '../src/continuation/provisioner.js';
 
 const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 const IMAGE_ID = `sha256:${'a'.repeat(64)}`;
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
 const PROFILE_NAME = 'srs-a1b2c3d4-uploader';
+const POSTAGE_BATCH_ID = 'ab'.repeat(32);
 
 function plan(): FixturePlan {
   const parent = mkdtempSync(join(tmpdir(), 'continuation-provision-'));
@@ -78,12 +79,17 @@ class RecordingProcess {
 
 class ProfileClient {
   calls = 0;
+  startCalls: Array<{ profile: HeldUploaderProfile; postageBatchId: string }> = [];
   fail = false;
 
   async createHeldUploaderProfile(): Promise<HeldUploaderProfile> {
     this.calls += 1;
-    if (this.fail) throw new Error('synthetic lost reply');
+    if (this.fail) {throw new Error('synthetic lost reply');}
     return { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 };
+  }
+
+  async setStampAndStartUploader(input: { profile: HeldUploaderProfile; postageBatchId: string }): Promise<void> {
+    this.startCalls.push(structuredClone(input));
   }
 }
 
@@ -103,6 +109,7 @@ function provisioner(
     managerUsername: 'srs-a1b2c3d4-operator',
     managerPassword: 'synthetic-manager-password',
     feedPrivateKey: 'synthetic-feed-private-key',
+    postageBatchId: POSTAGE_BATCH_ID,
   });
 }
 
@@ -117,6 +124,10 @@ describe('GuardedApplicationProvisioner', () => {
 
     assert.equal(topology.guardedActivations.at(-1)?.slot.id, INSTANCE_ID);
     assert.equal(profiles.calls, 1);
+    assert.deepEqual(profiles.startCalls, [{
+      profile: { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 },
+      postageBatchId: POSTAGE_BATCH_ID,
+    }]);
     const installer = process.calls[0];
     assert.equal(installer.file, '/candidates/manager/deploy/install-release-guard.sh');
     assert.deepEqual(installer.args.slice(-4), [
@@ -131,7 +142,6 @@ describe('GuardedApplicationProvisioner', () => {
       'manager',
       'admin',
       'viewer',
-      'uploader',
       'retry',
       'retry',
       'retry',
@@ -143,11 +153,7 @@ describe('GuardedApplicationProvisioner', () => {
       ['--managed-lifecycle-version', '1', '--managed-uploader-id', INSTANCE_ID],
     );
     assert.deepEqual(
-      guardCalls[4]?.args.slice(-2),
-      ['--slot-id', INSTANCE_ID],
-    );
-    assert.deepEqual(
-      guardCalls.slice(5).map((call) => call.args.slice(-4)),
+      guardCalls.slice(4).map((call) => call.args.slice(-4)),
       [
         ['--role', 'manager', '--admin-url', 'http://127.0.0.1:18080'],
         ['--role', 'admin', '--admin-url', 'http://127.0.0.1:18080'],
@@ -193,9 +199,38 @@ describe('GuardedApplicationProvisioner', () => {
       managerUsername: 'srs-a1b2c3d4-operator',
       managerPassword: 'synthetic-manager-password',
       feedPrivateKey: 'synthetic-feed-private-key',
+      postageBatchId: POSTAGE_BATCH_ID,
     });
     await assert.rejects(restarted.provision(), /unresolved.*manual reconciliation/i);
     assert.equal(profiles.calls, 1);
+  });
+
+  it('returns the completed topology after restart without starting a second deployment', async () => {
+    const fixturePlan = plan();
+    const journal = new ResourceJournal(fixturePlan.outputRoot);
+    const firstProcess = new RecordingProcess();
+    const profiles = new ProfileClient();
+    await provisioner(fixturePlan, firstProcess, profiles, journal).provision();
+
+    const restartedProcess = new RecordingProcess();
+    const restarted = new GuardedApplicationProvisioner({
+      plan: fixturePlan,
+      targets: targets(),
+      process: restartedProcess,
+      profiles,
+      journal,
+      managerUsername: 'srs-a1b2c3d4-operator',
+      managerPassword: 'synthetic-manager-password',
+      feedPrivateKey: 'synthetic-feed-private-key',
+      postageBatchId: POSTAGE_BATCH_ID,
+    });
+
+    const topology = await restarted.provision();
+
+    assert.equal(topology.guardedActivations.at(-1)?.slot.id, INSTANCE_ID);
+    assert.equal(restartedProcess.calls.length, 0);
+    assert.equal(profiles.calls, 1);
+    assert.equal(profiles.startCalls.length, 1);
   });
 });
 

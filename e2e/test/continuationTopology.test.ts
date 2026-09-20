@@ -115,8 +115,26 @@ describe('continuation fixture topology', () => {
     assert.deepEqual(service(plan, 'admin-api').aliases, ['admin-api', 'api']);
     assert.deepEqual(
       service(plan, 'srs').ports.map((port) => port.containerPort),
-      [1935, 1985, 8080, 10080],
+      [10012, 10019, 10013, 10011],
     );
+    assert.equal(plan.internalEndpoints.srs, `http://${FIXTURE_ID}-srs:10019`);
+    assert.equal(plan.internalEndpoints.uploader, `http://${FIXTURE_ID}-uploader:10010`);
+    assert.deepEqual(
+      Object.fromEntries(service(plan, 'srs').environment
+        .filter(({ name }) => name.startsWith('SRS_'))
+        .map(({ name, value }) => [name, value.kind === 'literal' ? value.value : value.kind])),
+      {
+        SRS_ADAPTER_HOST: 'uploader',
+        SRS_ADAPTER_PORT: '10010',
+        SRS_HTTP_API_PORT: '10019',
+        SRS_HTTP_PORT: '10013',
+        SRS_RTMP_PORT: '10012',
+        SRS_SRT_PORT: '10011',
+        SRS_WEBHOOK_TOKEN: 'input',
+      },
+    );
+    const senderRtmp = service(plan, 'media-sender').environment.find(({ name }) => name === 'SRS_RTMP_URL')?.value;
+    assert.equal(senderRtmp?.kind === 'literal' ? senderRtmp.value : null, 'rtmp://srs:10012/live');
     assert.deepEqual(
       service(plan, 'uploader').mounts.map((mount) => [mount.target, mount.source.kind, mount.source.role]),
       [
@@ -206,7 +224,7 @@ describe('continuation fixture topology', () => {
       [
         ['activate-admin-managed', 'activate-guarded-release'],
         ['activate-viewer', 'activate-guarded-release'],
-        ['activate-uploader', 'activate-guarded-release'],
+        ['start-manager-uploader', 'start-manager-uploader'],
         ['submit-release-guard-receipts', 'submit-release-guard-receipts'],
         ['start-test-controls', 'start-services'],
       ],
@@ -293,12 +311,12 @@ describe('continuation fixture topology', () => {
     );
     assert.deepEqual(
       topology.bootstrap
-        .filter((step) => step.kind === 'activate-guarded-release')
+        .filter((step) => step.kind === 'activate-guarded-release' || step.kind === 'start-manager-uploader')
         .map((step) => [step.id, step.after]),
       [
         ['activate-admin-managed', []],
         ['activate-viewer', ['activate-admin-managed']],
-        ['activate-uploader', ['activate-viewer']],
+        ['start-manager-uploader', ['activate-viewer']],
       ],
     );
     const createProfile = initial.bootstrap.find((step) => step.kind === 'create-manager-profile');

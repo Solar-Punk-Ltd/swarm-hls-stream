@@ -8,6 +8,9 @@ const INSTANCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const INTERNAL_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
+const DEPLOY_TIMEOUT_MS = 10 * 60_000;
+const MAX_SSE_BYTES = 1024 * 1024;
+const POSTAGE_BATCH_ID = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const REQUESTED_WITH_HEADER = 'x-requested-with';
 const REQUESTED_WITH_VALUE = 'streaming-infra-manager';
 const SESSION_COOKIE = 'sim_session=';
@@ -38,6 +41,11 @@ export interface HeldUploaderProfile {
   name: string;
   instanceId: string;
   portSlot: number;
+}
+
+export interface StartHeldUploaderInput {
+  profile: HeldUploaderProfile;
+  postageBatchId: string;
 }
 
 interface ProfileResponse {
@@ -130,6 +138,53 @@ export class FetchManagerProfileClient {
       return { name, instanceId: current.instanceId, portSlot };
     }
     throw new FixtureRefusal('manager profile did not reach a terminal state within the poll bound');
+  }
+
+  async setStampAndStartUploader(input: StartHeldUploaderInput): Promise<void> {
+    const { profile } = input;
+    if (
+      !PROFILE_NAME.test(profile.name) ||
+      !INSTANCE_ID.test(profile.instanceId) ||
+      profile.portSlot !== 1 ||
+      !POSTAGE_BATCH_ID.test(input.postageBatchId)
+    ) {
+      throw new FixtureRefusal('manager uploader start input is malformed');
+    }
+    const sessionCookie = await this.login();
+    const encodedName = encodeURIComponent(profile.name);
+    const stamped = profileFrom(
+      await this.jsonRequest(`/profiles/${encodedName}/stamp/set`, {
+        method: 'POST',
+        headers: authenticatedHeaders(sessionCookie, true),
+        body: JSON.stringify({ stamp_id: input.postageBatchId }),
+      }, new Set([200])),
+      'manager stamp set',
+    );
+    assertProfileIdentity(stamped, profile.name, profile.portSlot, profile.instanceId);
+    if (stamped.pendingStamp) {
+      throw new FixtureRefusal('manager did not persist the fixture postage batch');
+    }
+
+    const deploy = await this.fetch(this.url(`/profiles/${encodedName}/deploy-uploader`), {
+      method: 'POST',
+      headers: authenticatedHeaders(sessionCookie, true),
+      redirect: 'error',
+      signal: AbortSignal.timeout(DEPLOY_TIMEOUT_MS),
+    });
+    if (deploy.status !== 200 || !deploy.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) {
+      throw new FixtureRefusal(`manager guarded uploader start returned HTTP ${deploy.status}`);
+    }
+    await requireSuccessfulDeployStream(deploy);
+
+    const current = profileFrom(
+      await this.jsonRequest(`/profiles/${encodedName}`, {
+        method: 'GET',
+        headers: authenticatedHeaders(sessionCookie, false),
+      }, new Set([200])),
+      'manager uploader readback',
+    );
+    assertProfileIdentity(current, profile.name, profile.portSlot, profile.instanceId);
+    assertStartedUploader(current);
   }
 
   private async login(): Promise<string> {
@@ -282,6 +337,60 @@ async function boundedJson(response: Response, maximumBytes: number): Promise<un
   }
 }
 
+async function requireSuccessfulDeployStream(response: Response): Promise<void> {
+  if (response.body === null) {
+    throw new FixtureRefusal('manager guarded uploader start response is missing');
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let next = await reader.read();
+  while (!next.done) {
+    total += next.value.byteLength;
+    if (total > MAX_SSE_BYTES) {
+      await reader.cancel();
+      throw new FixtureRefusal('manager guarded uploader start exceeded its byte bound');
+    }
+    chunks.push(next.value);
+    next = await reader.read();
+  }
+  const events = Buffer.concat(chunks, total).toString('utf8').replaceAll('\r\n', '\n').split('\n\n');
+  let successfulDone = 0;
+  for (const block of events) {
+    const lines = block.split('\n');
+    const event = lines.find((line) => line.startsWith('event: '))?.slice(7);
+    if (event === 'error') {
+      throw new FixtureRefusal('manager guarded uploader start reported an error');
+    }
+    if (event !== 'done') {
+      continue;
+    }
+    const data = lines.find((line) => line.startsWith('data: '))?.slice(6);
+    if (data === undefined) {
+      throw new FixtureRefusal('manager guarded uploader start completion is malformed');
+    }
+    let outcome: unknown;
+    try {
+      outcome = JSON.parse(data) as unknown;
+    } catch {
+      throw new FixtureRefusal('manager guarded uploader start completion is malformed');
+    }
+    if (
+      outcome === null ||
+      typeof outcome !== 'object' ||
+      Array.isArray(outcome) ||
+      (outcome as Record<string, unknown>).code !== 0 ||
+      (outcome as Record<string, unknown>).signal !== null
+    ) {
+      throw new FixtureRefusal('manager guarded uploader start did not complete successfully');
+    }
+    successfulDone += 1;
+  }
+  if (successfulDone !== 1) {
+    throw new FixtureRefusal('manager guarded uploader start did not complete successfully');
+  }
+}
+
 function profileFrom(value: unknown, label: string): ProfileResponse {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new FixtureRefusal(`${label} is malformed`);
@@ -345,5 +454,13 @@ function assertHeldUploader(profile: ProfileResponse): void {
   const uploaderCount = profile.containers.filter((service) => service === 'stream-uploader').length;
   if (!profile.pendingStamp || srsCount !== 1 || uploaderCount !== 0) {
     throw new FixtureRefusal('manager profile did not keep stream-uploader held while SRS started');
+  }
+}
+
+function assertStartedUploader(profile: ProfileResponse): void {
+  const srsCount = profile.containers.filter((service) => service === 'srs').length;
+  const uploaderCount = profile.containers.filter((service) => service === 'stream-uploader').length;
+  if (profile.status !== 'RUNNING' || profile.pendingStamp || srsCount !== 1 || uploaderCount !== 1) {
+    throw new FixtureRefusal('manager profile did not reach the guarded uploader running state');
   }
 }

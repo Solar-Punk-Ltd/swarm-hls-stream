@@ -10,6 +10,7 @@ import {
   validateFixturePlan,
 } from './fixture.js';
 import { managerUploaderProfileName } from './managerProfile.js';
+import { stackPortsForSlot } from './stackPorts.js';
 
 const MANAGER_INSTANCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -210,6 +211,13 @@ export interface CreateManagerProfileStep extends BootstrapStepBase {
   output: 'manager.uploaderInstanceId';
 }
 
+export interface StartManagerUploaderStep extends BootstrapStepBase {
+  kind: 'start-manager-uploader';
+  profileName: string;
+  postageBatchId: 'storage.postageBatchId';
+  action: 'set-stamp-and-deploy-uploader';
+}
+
 export type BootstrapStep =
   | StartServicesStep
   | LoadAnvilStateStep
@@ -219,6 +227,7 @@ export type BootstrapStep =
   | ProvisionPostageStep
   | ActivateGuardedReleaseStep
   | CreateManagerProfileStep
+  | StartManagerUploaderStep
   | SubmitReleaseGuardReceiptsStep;
 
 export type ReadinessProbeId =
@@ -399,6 +408,7 @@ function beeCommand(role: TopologyServiceRole): readonly CommandPart[] {
 }
 
 function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderId: string): ServiceTopology {
+  const stackPorts = stackPortsForSlot(1);
   const container = containerFor(plan, role);
   const base = {
     role,
@@ -482,8 +492,8 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderI
         literal('FEED_TOPIC', 'swarm-stream'),
         input('INTERNAL_API_TOKEN', 'adminInternalApiToken'),
         literal('INGEST_HOST', 'srs'),
-        literal('INGEST_SRT_PORT', '10080'),
-        literal('INGEST_RTMP_PORT', '1935'),
+        literal('INGEST_SRT_PORT', String(stackPorts.srsSrt)),
+        literal('INGEST_RTMP_PORT', String(stackPorts.srsRtmp)),
         input('INGEST_SRT_PASSPHRASE', 'srsPassphrase'),
         literal('INGEST_KEY_VERIFIED', 'true'),
         literal('INGEST_MANAGED_LIFECYCLE_VERSION', '1'),
@@ -523,11 +533,11 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderI
         input('SRT_PASSPHRASE', 'srsPassphrase'),
         input('SRS_WEBHOOK_TOKEN', 'srsWebhookToken'),
         literal('SRS_ADAPTER_HOST', 'uploader'),
-        literal('SRS_ADAPTER_PORT', '3000'),
-        literal('SRS_RTMP_PORT', '1935'),
-        literal('SRS_HTTP_PORT', '8080'),
-        literal('SRS_SRT_PORT', '10080'),
-        literal('SRS_HTTP_API_PORT', '1985'),
+        literal('SRS_ADAPTER_PORT', String(stackPorts.uploaderApi)),
+        literal('SRS_RTMP_PORT', String(stackPorts.srsRtmp)),
+        literal('SRS_HTTP_PORT', String(stackPorts.srsHttp)),
+        literal('SRS_SRT_PORT', String(stackPorts.srsSrt)),
+        literal('SRS_HTTP_API_PORT', String(stackPorts.srsHttpApi)),
         literal('HLS_FRAGMENT', '0.5'),
         literal('HLS_SEGMENT_MAX', '2.5'),
         literal('HLS_WINDOW', '15'),
@@ -541,10 +551,10 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderI
         volumeMount(plan, 'srs-media', '/usr/local/srs/objs/nginx/html'),
       ].sort((left, right) => left.target.localeCompare(right.target)),
       ports: [
-        { name: 'rtmp', containerPort: 1935, protocol: 'tcp' },
-        { name: 'api', containerPort: 1985, protocol: 'tcp' },
-        { name: 'http', containerPort: 8080, protocol: 'tcp' },
-        { name: 'srt', containerPort: 10080, protocol: 'udp' },
+        { name: 'rtmp', containerPort: stackPorts.srsRtmp, protocol: 'tcp' },
+        { name: 'api', containerPort: stackPorts.srsHttpApi, protocol: 'tcp' },
+        { name: 'http', containerPort: stackPorts.srsHttp, protocol: 'tcp' },
+        { name: 'srt', containerPort: stackPorts.srsSrt, protocol: 'udp' },
       ],
       dependsOn: ['uploader'],
     };
@@ -566,14 +576,14 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderI
         input('ADMIN_API_TOKEN', 'adminInternalApiToken'),
         literal('SRS_LIFECYCLE_VERSION', '1'),
         literal('SRS_UPLOADER_ID', uploaderId),
-        literal('API_PORT', '3000'),
+        literal('API_PORT', String(stackPorts.uploaderApi)),
         literal('STATE_DIR', '/app/state'),
         literal('ENGINE', 'srs'),
         literal('SRS_MEDIA_PATH', '/media'),
         literal('UPLOADER_START_GATES', 'refuse'),
       ],
       mounts: [volumeMount(plan, 'uploader-data', '/app/state'), volumeMount(plan, 'srs-media', '/media')],
-      ports: [{ name: 'api', containerPort: 3000, protocol: 'tcp' }],
+      ports: [{ name: 'api', containerPort: stackPorts.uploaderApi, protocol: 'tcp' }],
       dependsOn: ['bee-queen', 'admin-api'],
     };
   }
@@ -598,7 +608,10 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderI
   if (role === 'media-sender') {
     return {
       ...base,
-      environment: [literal('SRS_RTMP_URL', 'rtmp://srs:1935/live'), input('SRT_PASSPHRASE', 'srsPassphrase')],
+      environment: [
+        literal('SRS_RTMP_URL', `rtmp://srs:${stackPorts.srsRtmp}/live`),
+        input('SRT_PASSPHRASE', 'srsPassphrase'),
+      ],
       dependsOn: ['srs', 'uploader'],
     };
   }
@@ -722,8 +735,9 @@ function validateTopologyPrerequisites(plan: FixturePlan): void {
   assertEndpoint(plan, 'rpc', 8545);
   assertEndpoint(plan, 'bee', 1633);
   assertEndpoint(plan, 'admin', 9877);
-  assertEndpoint(plan, 'srs', 1985);
-  assertEndpoint(plan, 'uploader', 3000);
+  const stackPorts = stackPortsForSlot(1);
+  assertEndpoint(plan, 'srs', stackPorts.srsHttpApi);
+  assertEndpoint(plan, 'uploader', stackPorts.uploaderApi);
   assertEndpoint(plan, 'viewer', 80);
   volumeMount(plan, 'srs-media', '/unused');
   const published = new Map(plan.publishedPorts.map((entry) => [entry.role, entry]));
@@ -919,9 +933,11 @@ export function createContinuationTopology(plan: FixturePlan, uploaderId: string
       after: ['activate-admin-managed'],
     },
     {
-      id: 'activate-uploader',
-      kind: 'activate-guarded-release',
-      activationRole: 'uploader',
+      id: 'start-manager-uploader',
+      kind: 'start-manager-uploader',
+      profileName: managerUploaderProfileName(plan.fixtureId),
+      postageBatchId: 'storage.postageBatchId',
+      action: 'set-stamp-and-deploy-uploader',
       after: ['activate-viewer'],
     },
     {
@@ -937,7 +953,7 @@ export function createContinuationTopology(plan: FixturePlan, uploaderId: string
         { role: 'viewer', id: 'default' },
         { role: 'uploader', id: uploaderId },
       ],
-      after: ['activate-uploader'],
+      after: ['start-manager-uploader'],
     },
     {
       id: 'start-test-controls',

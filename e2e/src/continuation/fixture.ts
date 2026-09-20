@@ -1,6 +1,8 @@
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 
+import { stackPortsForSlot } from './stackPorts.js';
+
 export const FIXTURE_LABEL = 'org.solarpunk.srs-continuation.fixture';
 export const MANAGED_LABEL = 'org.solarpunk.srs-continuation.managed';
 
@@ -188,6 +190,9 @@ export interface ResourceJournalDocument {
   intents: ResourceIntent[];
   stages: StageRecord[];
   readiness?: ReadinessEvidence;
+  managerProfile?:
+    | { status: 'creating'; name: string; portSlot: number }
+    | { status: 'created' | 'ready'; name: string; portSlot: number; instanceId: string };
 }
 
 export interface ResourceIntent {
@@ -240,6 +245,7 @@ function volume(fixtureId: string, role: string): VolumePlan {
 }
 
 export function createFixturePlan(input: CreateFixturePlanInput): FixturePlan {
+  const stackPorts = stackPortsForSlot(1);
   const network: NetworkPlan = {
     kind: 'network',
     name: resourceName(input.fixtureId, 'network'),
@@ -290,8 +296,8 @@ export function createFixturePlan(input: CreateFixturePlanInput): FixturePlan {
     rpc: `http://${resourceName(input.fixtureId, 'blockchain')}:8545`,
     bee: `http://${resourceName(input.fixtureId, 'bee-queen')}:1633`,
     admin: `http://${resourceName(input.fixtureId, 'admin-api')}:9877`,
-    srs: `http://${resourceName(input.fixtureId, 'srs')}:1985`,
-    uploader: `http://${resourceName(input.fixtureId, 'uploader')}:3000`,
+    srs: `http://${resourceName(input.fixtureId, 'srs')}:${stackPorts.srsHttpApi}`,
+    uploader: `http://${resourceName(input.fixtureId, 'uploader')}:${stackPorts.uploaderApi}`,
     viewer: `http://${resourceName(input.fixtureId, 'viewer')}:80`,
   };
 
@@ -473,6 +479,39 @@ export class ResourceJournal {
   recordReadiness(readiness: ReadinessEvidence): void {
     const document = this.read();
     document.readiness = structuredClone(readiness);
+    this.write(document);
+  }
+
+  beginManagerProfile(name: string, portSlot: number): void {
+    const document = this.read();
+    if (document.managerProfile !== undefined) {
+      throw new FixtureRefusal('manager profile creation is already recorded');
+    }
+    document.managerProfile = { status: 'creating', name, portSlot };
+    this.write(document);
+  }
+
+  completeManagerProfile(name: string, portSlot: number, instanceId: string): void {
+    const document = this.read();
+    const current = document.managerProfile;
+    if (
+      current?.status !== 'creating' ||
+      current.name !== name ||
+      current.portSlot !== portSlot
+    ) {
+      throw new FixtureRefusal('manager profile creation marker does not match its result');
+    }
+    document.managerProfile = { status: 'created', name, portSlot, instanceId };
+    this.write(document);
+  }
+
+  markManagerProfileReady(instanceId: string): void {
+    const document = this.read();
+    const current = document.managerProfile;
+    if (current?.status !== 'created' || current.instanceId !== instanceId) {
+      throw new FixtureRefusal('manager profile is not ready for final fixture completion');
+    }
+    document.managerProfile = { ...current, status: 'ready' };
     this.write(document);
   }
 
