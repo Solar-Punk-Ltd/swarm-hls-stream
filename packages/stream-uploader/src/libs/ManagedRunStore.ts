@@ -9,7 +9,7 @@ export const MANAGED_RUN_MISSING = 'missing' as const;
 export const MANAGED_RUN_LOADED = 'loaded' as const;
 export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
 
-export type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed';
+export type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
 
 export interface ManagedRungConnectionRecord {
   readonly streamId: string;
@@ -130,7 +130,7 @@ const nodeFileOps: DurableFileOps = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const STATES = new Set<ManagedRunState>(['claiming', 'claimed', 'live', 'waiting', 'closed']);
+const STATES = new Set<ManagedRunState>(['claiming', 'claimed', 'live', 'waiting', 'closed', 'vod']);
 const PTS_MODULUS = 2 ** 33;
 
 function isNonNegativeInteger(value: unknown): value is number {

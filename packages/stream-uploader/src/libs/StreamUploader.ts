@@ -122,6 +122,7 @@ function isFeedHeadNotFound(error: unknown): boolean {
 interface FeedHeadQuestion {
   asked: string;
   consequence: string;
+  includeReference: boolean;
   /**
    * What a 404 from the head read means for this caller, which is the one thing the two disagree
    * about and the reason this is a parameter rather than a constant.
@@ -151,6 +152,7 @@ const RECORDING_ALREADY_PUBLISHED: FeedHeadQuestion = {
     'recording over one that may already be in the feed. Where the feed has been established by hand ' +
     "to hold nothing, clearing socIndex in this stream's recovery entry makes the next boot publish afresh",
   emptyFeedIsAnAnswer: false,
+  includeReference: true,
 };
 
 const FEED_HEAD_ON_START: FeedHeadQuestion = {
@@ -159,7 +161,15 @@ const FEED_HEAD_ON_START: FeedHeadQuestion = {
     'Refusing this manifest publish and retrying at the next segment, rather than starting again at ' +
     'SOC index 0 and writing over the previous session on the same topic',
   emptyFeedIsAnAnswer: true,
+  includeReference: false,
 };
+
+export interface PublishedStreamManifest {
+  readonly topic: string;
+  readonly index: number;
+  readonly reference: string;
+  readonly duration: number;
+}
 
 /**
  * The head of a feed this stream has written to came back 404, which is inconclusive rather than an
@@ -311,6 +321,8 @@ export interface StreamUploaderOptions {
     onSegmentUploaded?: (token: string, reference: string, state: StreamState) => void;
     onSegmentSettled?: (token: string) => void;
     onTrackStateChanged?: (state: StreamState) => void;
+    onTrackFinalized?: (manifest: PublishedStreamManifest, state: StreamState) => void;
+    onMasterFinalized?: (manifest: PublishedStreamManifest) => void;
   };
   /**
    * The actual write completion of every earlier session on this topic, when any are still pending.
@@ -739,9 +751,9 @@ export class StreamUploader {
       return;
     }
 
-    const alreadyPublished = await this.publishedRecordingIndex();
+    const alreadyPublished = await this.publishedRecording();
     if (alreadyPublished !== null) {
-      this.logger.log(finalizeResumed(this.streamId, alreadyPublished));
+      this.logger.log(finalizeResumed(this.streamId, alreadyPublished.index));
       return this.completeFinalize(alreadyPublished);
     }
 
@@ -769,12 +781,12 @@ export class StreamUploader {
     }
 
     const vodManifest = this.manifestManager.buildVODManifest();
-    const vodIndex = (await this.manifestQueue.add(() => this.commitManifest(vodManifest))) ?? null;
-    if (vodIndex === null) {
+    const vod = (await this.manifestQueue.add(() => this.commitManifest(vodManifest))) ?? null;
+    if (vod === null) {
       throw new Error(`Failed to upload VOD manifest for stream ${this.streamId}`);
     }
 
-    return this.completeFinalize(vodIndex);
+    return this.completeFinalize(vod);
   }
 
   /**
@@ -787,10 +799,36 @@ export class StreamUploader {
    * was live, so deleting it before the catalog names the recording is the one step that cannot be
    * taken back.
    *
-   * @param vodIndex where the recording sits in this stream's own manifest feed, which is what the
-   * catalog entry points a viewer at.
+   * @param vod immutable location of the recording in this stream's manifest feed.
    */
-  private async completeFinalize(vodIndex: number): Promise<void> {
+  private async completeFinalize(vod: PublishedStreamManifest): Promise<void> {
+    const vodIndex = vod.index;
+    if (this.managedLifecycle) {
+      this.managedLifecycle.onTrackFinalized?.(vod, this.getStreamState());
+      if (this.ladder) {
+        const announced = await this.announceRendition({
+          index: vodIndex,
+          duration: this.manifestManager.getTotalDuration(),
+        });
+        if (
+          announced?.flippedToFinished &&
+          announced.masterIndex !== null &&
+          announced.masterReference
+        ) {
+          this.managedLifecycle.onMasterFinalized?.({
+            topic: this.ladder.group,
+            index: announced.masterIndex,
+            reference: announced.masterReference,
+            duration: announced.duration ?? this.manifestManager.getTotalDuration(),
+          });
+        }
+      } else {
+        this.managedLifecycle.onMasterFinalized?.(vod);
+      }
+      this.metrics?.recordStreamFinalized();
+      this.clearRecoveryEntry();
+      return;
+    }
     if (this.admin && this.ladder) {
       // ⛔ The index reported is the MASTER's, never this rung's own VOD index. A viewer in admin mode
       // is pointed at the declared topic, and for a ladder that topic holds the master playlist, so an
@@ -909,7 +947,7 @@ export class StreamUploader {
    * recording" and buy that answer with the whole of its failure surface: a warming node costs the
    * broadcast its finalize, and the recovery entry it strands is a recording nobody publishes.
    */
-  private async publishedRecordingIndex(): Promise<number | null> {
+  private async publishedRecording(): Promise<PublishedStreamManifest | null> {
     // A stream that never committed a manifest has an empty feed, so there is nothing to read and
     // the closing playlist below is the first thing this topic will ever hold.
     if (!this.resumedFromCrash || this.socIndex === null || this.announcedThrough !== null) {
@@ -917,7 +955,14 @@ export class StreamUploader {
     }
 
     const head = await this.readManifestFeedHead(RECORDING_ALREADY_PUBLISHED);
-    return head !== null && isFinishedRecording(head.manifest) ? head.index : null;
+    return head !== null && head.reference && isFinishedRecording(head.manifest)
+      ? {
+          topic: this.streamRawTopic,
+          index: head.index,
+          reference: head.reference,
+          duration: this.manifestManager.getTotalDuration(),
+        }
+      : null;
   }
 
   /**
@@ -1053,7 +1098,9 @@ export class StreamUploader {
    * this whole guard off. Both shapes are the ones `StreamCatalog` already runs in production:
    * `init` takes the index this way and `fetchCurrentState` takes the payload this way.
    */
-  private async readManifestFeedHead(question: FeedHeadQuestion): Promise<{ index: number; manifest: string } | null> {
+  private async readManifestFeedHead(
+    question: FeedHeadQuestion,
+  ): Promise<{ index: number; manifest: string; reference?: string } | null> {
     const owner = this.streamSigner.publicKey().address();
     const feedReader = this.bee.makeFeedReader(Topic.fromString(this.streamRawTopic), owner);
 
@@ -1087,7 +1134,11 @@ export class StreamUploader {
       // and answering "nothing was published" to that is the mistake this method exists to refuse.
       const update = await this.readWithinWindow(() => feedReader.downloadPayload({ index: head.feedIndex }));
 
-      return { index: Number(head.feedIndex.toBigInt()), manifest: update.payload.toUtf8() };
+      const reference = question.includeReference
+        ? (await this.readWithinWindow(() => feedReader.downloadReference({ index: head.feedIndex }))).reference.toHex()
+        : undefined;
+
+      return { index: Number(head.feedIndex.toBigInt()), manifest: update.payload.toUtf8(), reference };
     } catch (error) {
       throw new Error(
         `Cannot tell ${question.asked} for stream ${this.streamId}, because its ` +
@@ -1338,8 +1389,8 @@ export class StreamUploader {
       const neverNamed =
         this.announcedThrough === null ? 0 : this.manifestManager.segmentsNeverNamed(this.announcedThrough);
 
-      const index = await this.commitManifest(manifest, sourceGeneration);
-      if (index === null) {
+      const published = await this.commitManifest(manifest, sourceGeneration);
+      if (published === null) {
         this.recordManifestPublishFailure();
         return;
       }
@@ -1392,7 +1443,10 @@ export class StreamUploader {
     return this.segmentsNeverNamed;
   }
 
-  private async commitManifest(manifestContent: string, sourceGeneration?: number): Promise<number | null> {
+  private async commitManifest(
+    manifestContent: string,
+    sourceGeneration?: number,
+  ): Promise<PublishedStreamManifest | null> {
     // ⛔ Before the head read, because the head is only worth reading once it is final. The session
     // this one replaced shares the declared topic and is still writing its closing and VOD manifests
     // onto it; reading past it would hand both sessions the same next index, and its VOD would then
@@ -1445,7 +1499,12 @@ export class StreamUploader {
 
     this.logger.log(manifestUploaded(this.streamId, nextIndex));
     this.persistState();
-    return nextIndex;
+    return {
+      topic: this.streamRawTopic,
+      index: nextIndex,
+      reference: result.reference.toHex(),
+      duration: this.manifestManager.getTotalDuration(),
+    };
   }
 
   /**

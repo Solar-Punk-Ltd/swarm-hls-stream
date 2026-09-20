@@ -148,6 +148,7 @@ export class AdminLadderRegistry implements LadderRegistry {
 
     return {
       masterIndex: published?.index ?? null,
+      masterReference: published?.reference ?? null,
       flippedToFinished: report.ladder.flippedToFinished || finishedButUnreported,
       duration: report.ladder.duration,
     };

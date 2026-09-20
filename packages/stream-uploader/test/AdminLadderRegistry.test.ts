@@ -214,7 +214,12 @@ describe('what a rendition announce does in admin mode', () => {
 
     const announced = await harness.registry.upsertRendition(IDENTITY, finished[0]);
 
-    assert.deepEqual(announced, { masterIndex: 0, flippedToFinished: true, duration: 12 });
+    assert.deepEqual(announced, {
+      masterIndex: 0,
+      masterReference: 'ref',
+      flippedToFinished: true,
+      duration: 12,
+    });
   });
 
   /**
@@ -234,7 +239,12 @@ describe('what a rendition announce does in admin mode', () => {
 
     const announced = await harness.registry.upsertRendition(IDENTITY, finished[0]);
 
-    assert.deepEqual(announced, { masterIndex: 0, flippedToFinished: true, duration: 12 });
+    assert.deepEqual(announced, {
+      masterIndex: 0,
+      masterReference: 'ref',
+      flippedToFinished: true,
+      duration: 12,
+    });
   });
 
   it('does not report a finished ladder again once the admin holds the stream as vod', async () => {

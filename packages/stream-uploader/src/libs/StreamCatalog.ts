@@ -431,6 +431,7 @@ export class StreamCatalog implements LadderRegistry {
     let flippedToVod = false;
     let shapeThatLanded: string | null = null;
     let masterIndex: number | null = null;
+    let masterReference: string | null = null;
     let duration: number | null = null;
 
     await this.queue.add(async () => {
@@ -462,6 +463,7 @@ export class StreamCatalog implements LadderRegistry {
         if (published) {
           shapeThatLanded = ladderShape(advertised.map((rendition) => rendition.name));
           masterIndex = published.index;
+          masterReference = published.reference;
         }
 
         return [
@@ -490,7 +492,7 @@ export class StreamCatalog implements LadderRegistry {
       }
     });
 
-    return { masterIndex, flippedToFinished: flippedToVod, duration };
+    return { masterIndex, masterReference, flippedToFinished: flippedToVod, duration };
   }
 
   /**

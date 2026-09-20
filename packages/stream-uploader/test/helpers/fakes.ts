@@ -124,6 +124,16 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
         const payload = opts?.index === undefined ? OVERSIZED_PAYLOAD_WRAPPER : head.manifest;
         return { feedIndex: FeedIndex.fromBigInt(BigInt(head.index)), payload: { toUtf8: () => payload } };
       },
+      downloadReference: async (opts?: { index?: FeedIndex }) => {
+        const head = uploads.feedHead ? uploads.feedHead() : CRASHED_MID_BROADCAST;
+        if (head === null || (opts?.index !== undefined && Number(opts.index.toBigInt()) !== head.index)) {
+          throw feedNotFound();
+        }
+        return {
+          feedIndex: FeedIndex.fromBigInt(BigInt(head.index)),
+          reference: { toHex: () => `soc${head.index}` },
+        };
+      },
     }),
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, data: unknown, opts: { index: number }) =>
@@ -156,7 +166,12 @@ export function makeFakeCatalog(overrides: Record<string, unknown> = {}): Stream
     // master written and no flip, which is the real catalog's answer for a rung it holds no entry
     // for. Missing, every rung announce in every orchestrator test died with a TypeError the error
     // handler swallowed, and fifteen tests passed over it — the fourth time this fake went stale.
-    upsertRendition: async () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
+    upsertRendition: async () => ({
+      masterIndex: null,
+      masterReference: null,
+      flippedToFinished: false,
+      duration: null,
+    }),
     ...overrides,
   } as unknown as StreamCatalog;
 }

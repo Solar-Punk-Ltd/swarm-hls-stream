@@ -47,6 +47,8 @@ export interface RenditionAnnouncement {
    * to name.
    */
   masterIndex: number | null;
+  /** Exact immutable Swarm reference written at masterIndex, or null when no master landed. */
+  masterReference?: string | null;
   /** Whether this announce is the moment every rung of the ladder had finalized, and none before it. */
   flippedToFinished: boolean;
   /** Playing time of the finished recording in seconds, when the ladder flipped. */

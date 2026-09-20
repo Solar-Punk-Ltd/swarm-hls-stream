@@ -77,7 +77,10 @@ import { Logger } from './Logger.js';
 import {
   ManagedCheckpointPersistence,
   ManagedCheckpointRecord,
+  ManagedCompletedRecording,
   ManagedExpectedRendition,
+  ManagedImmutableMediaReference,
+  ManagedImmutableRenditionReference,
 } from './ManagedCheckpointStore.js';
 import {
   ManagedMediaAcceptance,
@@ -100,7 +103,7 @@ import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { MetricsSnapshot, ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
-import { StreamUploader } from './StreamUploader.js';
+import { PublishedStreamManifest, StreamUploader } from './StreamUploader.js';
 
 /**
  * How much media a broadcast may withhold while waiting for its first video frame, before it is
@@ -229,6 +232,7 @@ interface ManagedSourceState {
 type ManagedReportEvent =
   | { readonly state: 'live' }
   | { readonly state: 'waiting'; readonly reconnectDeadline: string }
+  | { readonly state: 'vod'; readonly completedRecording: ManagedCompletedRecording }
   | {
       readonly state: 'closed';
       readonly reason: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
@@ -270,6 +274,18 @@ function sameSource(left: SourceConnectionIdentity, right: SourceConnectionIdent
     left.serviceId === right.serviceId &&
     left.clientId === right.clientId &&
     left.generation === right.generation
+  );
+}
+
+function sameManagedMediaReference(
+  left: ManagedImmutableMediaReference,
+  right: ManagedImmutableMediaReference,
+): boolean {
+  return (
+    left.topic === right.topic &&
+    left.index === right.index &&
+    left.reference === right.reference &&
+    left.duration === right.duration
   );
 }
 
@@ -676,7 +692,7 @@ export class StreamOrchestrator {
         record.mediaType !== attempt.mediaType ||
         !this.sameManagedExpectedRenditions(record.expectedRenditions, attempt.expectedRenditions) ||
         !this.hasManagedCheckpoint(record) ||
-        record.state === 'closed'
+        (record.state === 'closed' || record.state === 'vod')
       ) {
         return null;
       }
@@ -698,7 +714,7 @@ export class StreamOrchestrator {
         record.mediaType !== attempt.mediaType ||
         !this.sameManagedExpectedRenditions(record.expectedRenditions, attempt.expectedRenditions) ||
         !this.hasManagedCheckpoint(record) ||
-        record.state === 'closed'
+        (record.state === 'closed' || record.state === 'vod')
       ) {
         return null;
       }
@@ -948,7 +964,7 @@ export class StreamOrchestrator {
       mediatype: record.mediaType,
       lastProgressPts: record.lastProgressPts ?? undefined,
       deadline: this.clock.now() + remaining,
-      closed: record.state === 'closed',
+      closed: record.state === 'closed' || record.state === 'vod',
     };
     this.managedSources.set(streamId, state);
     if (record.state === 'claiming') {
@@ -1713,6 +1729,71 @@ export class StreamOrchestrator {
     void this.flushManagedReports(streamId, state);
   }
 
+  private checkpointManagedTrack(
+    managedStreamId: string,
+    streamId: string,
+    trackState: StreamState,
+    manifest: PublishedStreamManifest,
+  ): void {
+    const state = this.managedSources.get(managedStreamId);
+    const store = this.config.managedCheckpointStore;
+    if (!state || !store || !state.closed || (state.record.state !== 'closed' && state.record.state !== 'vod')) {
+      throw new Error(`Managed track ${streamId} cannot finalize outside its closed run`);
+    }
+
+    let rendition: string | null = null;
+    let immutable: ManagedImmutableMediaReference | ManagedImmutableRenditionReference = manifest;
+    if (state.record.expectedRenditions.length === 0) {
+      if (streamId !== managedStreamId || manifest.topic !== state.record.topic) {
+        throw new Error(`Managed single track ${streamId} does not match its frozen run topic`);
+      }
+    } else {
+      const match = this.config.ladder?.match(streamId) ?? null;
+      const expected = match
+        ? state.record.expectedRenditions.find((candidate) => candidate.name === match.rung.name)
+        : undefined;
+      if (!match || match.baseStreamId !== managedStreamId || !expected || manifest.topic !== expected.topic) {
+        throw new Error(`Managed rendition ${streamId} does not match its frozen run shape`);
+      }
+      rendition = expected.name;
+      immutable = { ...manifest, ...expected };
+    }
+
+    store.saveTrack(state.record.checkpointReference, {
+      streamId,
+      rendition,
+      state: trackState,
+      manifest: immutable,
+    });
+  }
+
+  private completeManagedCheckpoint(managedStreamId: string, master: PublishedStreamManifest): void {
+    const state = this.managedSources.get(managedStreamId);
+    const store = this.config.managedCheckpointStore;
+    if (!state || !store || !state.closed || (state.record.state !== 'closed' && state.record.state !== 'vod')) {
+      throw new Error(`Managed run ${managedStreamId} cannot publish a recording before durable closure`);
+    }
+    if (state.record.state === 'vod') {
+      const checkpoint = store.read(state.record.checkpointReference);
+      if (
+        checkpoint?.completedRecording &&
+        sameManagedMediaReference(checkpoint.completedRecording.master, master)
+      ) {
+        return;
+      }
+      throw new Error(`Managed run ${managedStreamId} was already finalized with a different recording`);
+    }
+
+    const completedRecording = store.complete(state.record.checkpointReference, master);
+    const record = this.appendManagedReport(
+      { ...state.record, state: 'vod' },
+      { state: 'vod', completedRecording },
+    );
+    this.config.managedRunStore?.save(record);
+    state.record = record;
+    void this.flushManagedReports(managedStreamId, state);
+  }
+
   private appendManagedReport(record: ManagedRunRecord, event: ManagedReportEvent): ManagedRunRecord {
     if (record.claimId === null) {
       return record;
@@ -2255,6 +2336,9 @@ export class StreamOrchestrator {
                     trackState,
                   )
               : undefined,
+            onTrackFinalized: (manifest, trackState) =>
+              this.checkpointManagedTrack(managedStreamId, streamId, trackState, manifest),
+            onMasterFinalized: (manifest) => this.completeManagedCheckpoint(managedStreamId, manifest),
           }
         : undefined,
       predecessorDrained,
@@ -3010,6 +3094,9 @@ export class StreamOrchestrator {
                     trackState,
                   )
               : undefined,
+            onTrackFinalized: (manifest, trackState) =>
+              this.checkpointManagedTrack(managedStreamId, streamId, trackState, manifest),
+            onMasterFinalized: (manifest) => this.completeManagedCheckpoint(managedStreamId, manifest),
           }
         : undefined,
     });

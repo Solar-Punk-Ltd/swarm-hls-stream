@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 
 import { AbrLadder } from '../src/libs/AbrLadder.js';
@@ -9,6 +12,12 @@ import {
   STATE_REPORT_FAILED,
   StateReportOutcome,
 } from '../src/libs/AdminApiClient.js';
+import { LadderRegistry } from '../src/libs/LadderRegistry.js';
+import {
+  ManagedCheckpointPersistence,
+  ManagedCheckpointStore,
+} from '../src/libs/ManagedCheckpointStore.js';
+import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import {
   MANAGED_RUN_LOADED,
   MANAGED_RUN_MISSING,
@@ -144,6 +153,16 @@ function reportingAdmin(
 async function settleReports(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('condition did not settle');
 }
 
 function provision(target: StreamOrchestrator, source: SourceConnectionIdentity): boolean {
@@ -580,6 +599,228 @@ describe('managed run recovery', () => {
     assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
     assert.equal(provision(target, SOURCE_B), false, 'generic stop erased the managed closed permission');
     await target.cleanup();
+  });
+
+  it('checkpoints the final manifest before appending a managed VOD report', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-finalization-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const checkpoints = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'media'));
+    const target = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+        managedMediaStore: mediaStore,
+      },
+      {
+        uploadData: async () => ({ reference: { toHex: () => 'a'.repeat(64) } }),
+        uploadPayload: async (index) => ({
+          reference: { toHex: () => String(index + 1).padStart(64, '0') },
+        }),
+      },
+    );
+
+    try {
+      assert.equal(target.prepareManagedRun(CLAIM), true);
+      assert.equal(provision(target, SOURCE_A), true);
+      assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+      await activeUploader(target)!.segmentQueue.onIdle();
+      assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
+
+      const run = runs.records.get(STREAM_ID);
+      const checkpoint = checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber);
+      assert.equal(checkpoint?.status, 'complete');
+      assert.deepEqual(run?.pendingReports.map((report) => report.state), ['waiting', 'closed', 'vod']);
+      const completed = run?.pendingReports.at(-1)?.completedRecording as
+        | { master: { topic: string; index: number; reference: string } }
+        | undefined;
+      assert.equal(completed?.master.topic, CLAIM.topic);
+      assert.equal(completed?.master.reference, String((completed?.master.index ?? -1) + 1).padStart(64, '0'));
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('completes an ABR checkpoint only after its frozen rung and master are immutable', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-abr-finalization-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const checkpoints = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'media'));
+    const ladder = AbrLadder.parse('360p:640:360:700');
+    const expectedRenditions = [
+      {
+        name: '360p',
+        topic: rungTopicFor(CLAIM.topic, '360p'),
+        width: 640,
+        height: 360,
+        bandwidth: 700_000,
+        avgBandwidth: 700_000,
+      },
+    ];
+    const ladderRegistry = {
+      recordRungDelivered: () => {},
+      upsertRendition: async () => ({
+        masterIndex: 9,
+        masterReference: 'b'.repeat(64),
+        flippedToFinished: true,
+        duration: 0.1,
+      }),
+    } as LadderRegistry;
+    const target = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+        managedMediaStore: mediaStore,
+        ladder,
+        ladderRegistry,
+      },
+      {
+        uploadData: async () => ({ reference: { toHex: () => 'a'.repeat(64) } }),
+        uploadPayload: async (index) => ({
+          reference: { toHex: () => String(index + 1).padStart(64, '0') },
+        }),
+      },
+    );
+
+    try {
+      assert.equal(target.prepareManagedRun({ ...CLAIM, expectedRenditions }), true);
+      assert.equal(provision(target, SOURCE_A), true);
+      assert.deepEqual(
+        target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),
+        { accepted: true },
+      );
+      assert.equal(
+        target.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_A, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
+        true,
+      );
+      assert.deepEqual(
+        target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
+        { accepted: true },
+      );
+      await activeUploader(target, RUNG_ID)!.segmentQueue.onIdle();
+
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
+
+      const completed = checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.completedRecording;
+      assert.deepEqual(completed?.master, {
+        topic: CLAIM.topic,
+        index: 9,
+        reference: 'b'.repeat(64),
+        duration: 0.1,
+      });
+      assert.deepEqual(completed?.expectedRenditions, ['360p']);
+      assert.equal(completed?.renditions[0]?.name, '360p');
+      assert.equal(completed?.renditions[0]?.topic, expectedRenditions[0].topic);
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps accepted media pending and reports no VOD when every upload fails', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-failed-finalization-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const checkpoints = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'media'));
+    const target = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+        managedMediaStore: mediaStore,
+      },
+      { uploadData: rejectImmediately },
+    );
+
+    try {
+      assert.equal(target.prepareManagedRun(CLAIM), true);
+      assert.equal(provision(target, SOURCE_A), true);
+      assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+      await activeUploader(target)!.segmentQueue.onIdle();
+
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => activeUploader(target) === undefined);
+
+      assert.equal(runs.records.get(STREAM_ID)?.state, 'closed');
+      assert.equal(runs.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'vod'), false);
+      assert.equal(checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status, 'prepared');
+      assert.deepEqual(mediaStore.listRun(CLAIM.adminStreamId, CLAIM.runNumber).map((record) => record.status), [
+        'pending',
+      ]);
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains recovery and withholds VOD when the final track checkpoint fails', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-checkpoint-failure-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const durable = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const removeRecovery = mock.fn();
+    const recovery = makeFakeRecoveryStore({ remove: removeRecovery });
+    const checkpoints: ManagedCheckpointPersistence = {
+      createRun: (input) => durable.createRun(input),
+      prepare: (operation) => durable.prepare(operation),
+      saveTrack: () => {
+        throw new Error('injected track checkpoint failure');
+      },
+      complete: (reference, master) => durable.complete(reference, master),
+      sealEmpty: (reference, count) => durable.sealEmpty(reference, count),
+      read: (reference) => durable.read(reference),
+      findRun: (streamId, runNumber) => durable.findRun(streamId, runNumber),
+    };
+    const target = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+      },
+      {
+        uploadData: async () => ({ reference: { toHex: () => 'a'.repeat(64) } }),
+        uploadPayload: async (index) => ({
+          reference: { toHex: () => String(index + 1).padStart(64, '0') },
+        }),
+      },
+      recovery,
+    );
+
+    try {
+      assert.equal(target.prepareManagedRun(CLAIM), true);
+      assert.equal(provision(target, SOURCE_A), true);
+      assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+      await activeUploader(target)!.segmentQueue.onIdle();
+
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => activeUploader(target) === undefined);
+
+      assert.equal(runs.records.get(STREAM_ID)?.state, 'closed');
+      assert.equal(runs.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'vod'), false);
+      assert.equal(durable.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status, 'prepared');
+      assert.equal(removeRecovery.mock.callCount(), 0);
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('retries the exact durable report after restart', async () => {

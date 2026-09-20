@@ -14,6 +14,7 @@ const MASTER_RETRY_WINDOW_MS = 10_000;
 export interface PublishedMaster {
   topic: string;
   index: number;
+  reference: string;
 }
 
 /**
@@ -64,7 +65,7 @@ export class MasterFeedWriter {
       const publisher = this.publishers.coordinator();
 
       const writer = publisher.bee.makeFeedWriter(topic, this.signer);
-      await retryUntilDeadlineAsync(
+      const result = await retryUntilDeadlineAsync(
         () => writer.uploadPayload(publisher.stamp, playlist, { index, deferred: true }),
         MASTER_RETRY_WINDOW_MS,
       );
@@ -75,7 +76,7 @@ export class MasterFeedWriter {
           `${publisher.rung} with ${renditions.length} rung(s): ${renditions.map((r) => r.name).join(', ')}`,
       );
 
-      return { topic: group, index: Number(index.toBigInt()) };
+      return { topic: group, index: Number(index.toBigInt()), reference: result.reference.toHex() };
     });
 
     return published ?? null;
