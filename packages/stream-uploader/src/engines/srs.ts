@@ -760,6 +760,7 @@ async function handleStreams(
           revision: lifecycle.revision,
           runNumber: lifecycle.runNumber,
           uploaderId: lifecycle.uploaderId,
+          expectedRenditions: verdict.draft.expectedRenditions,
         });
         if (!claimDecision) {
           srsResponse(res, SRS_REJECT);

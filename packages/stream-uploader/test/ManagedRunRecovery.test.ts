@@ -21,9 +21,11 @@ import {
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, SourceConnectionIdentity } from '../src/types.js';
+import { rungTopicFor } from '../src/utils/rungTopic.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import { FakeUploads, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
+import { MemoryManagedCheckpoints } from './helpers/managedCheckpoint.js';
 import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 
 const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
@@ -41,6 +43,7 @@ const CLAIM: ManagedRunClaim = {
   uploaderId: 'srs-157-90-34-105',
   claimId: '44444444-4444-4444-8444-444444444444',
   eventSequence: 1,
+  expectedRenditions: [],
 };
 const ADMIN = { id: CLAIM.adminStreamId, topic: CLAIM.topic };
 const CLAIMANT = { address: '198.51.100.7', isAuthenticated: true };
@@ -88,6 +91,8 @@ interface OrchestratorInternals {
   managedSources: Map<string, unknown>;
 }
 
+const checkpointsByRunStore = new WeakMap<ManagedRunPersistence, MemoryManagedCheckpoints>();
+
 function activeUploader(orchestrator: StreamOrchestrator, streamId = STREAM_ID): StreamUploader | undefined {
   return (orchestrator as unknown as OrchestratorInternals).activeStreams.get(streamId);
 }
@@ -98,12 +103,22 @@ function orchestrator(
   store: ManagedRunPersistence,
   adminApi?: AdminApiClient,
   uploads: FakeUploads = {},
+  checkpoints?: MemoryManagedCheckpoints,
 ): StreamOrchestrator {
+  let managedCheckpointStore = checkpointsByRunStore.get(store);
+  if (checkpoints) {
+    managedCheckpointStore = checkpoints;
+    checkpointsByRunStore.set(store, checkpoints);
+  } else if (!managedCheckpointStore) {
+    managedCheckpointStore = new MemoryManagedCheckpoints();
+    checkpointsByRunStore.set(store, managedCheckpointStore);
+  }
   return makeTestOrchestrator({
     clock,
     wallClock: wallNow,
     managedSourceReconnectMs: RECONNECT_MS,
     managedRunStore: store,
+    managedCheckpointStore,
     adminApi,
   }, uploads);
 }
@@ -153,6 +168,7 @@ describe('managed run recovery', () => {
       revision: 7,
       runNumber: CLAIM.runNumber,
       uploaderId: CLAIM.uploaderId,
+      expectedRenditions: CLAIM.expectedRenditions,
     };
 
     const decision = first.beginManagedClaimAttempt(attempt);
@@ -180,6 +196,7 @@ describe('managed run recovery', () => {
       revision: 7,
       runNumber: CLAIM.runNumber,
       uploaderId: CLAIM.uploaderId,
+      expectedRenditions: CLAIM.expectedRenditions,
     };
     assert.equal(target.beginManagedClaimAttempt(attempt)?.needsClaim, true);
     await clock.advance(30_000);
@@ -192,6 +209,7 @@ describe('managed run recovery', () => {
         runNumber: CLAIM.runNumber,
         uploaderId: CLAIM.uploaderId,
         claimId: CLAIM.claimId,
+        expectedRenditions: CLAIM.expectedRenditions,
         state: 'claimed',
         permission: 'claimed',
       }),
@@ -218,6 +236,7 @@ describe('managed run recovery', () => {
       revision: 7,
       runNumber: CLAIM.runNumber,
       uploaderId: CLAIM.uploaderId,
+      expectedRenditions: CLAIM.expectedRenditions,
     };
     const original = first.beginManagedClaimAttempt(attempt);
 
@@ -231,6 +250,7 @@ describe('managed run recovery', () => {
         runNumber: CLAIM.runNumber,
         uploaderId: CLAIM.uploaderId,
         claimId: CLAIM.claimId,
+        expectedRenditions: CLAIM.expectedRenditions,
         state: 'claimed',
         permission: 'claimed',
       }),
@@ -301,6 +321,7 @@ describe('managed run recovery', () => {
       revision: CLAIM.revision,
       runNumber: CLAIM.runNumber,
       uploaderId: CLAIM.uploaderId,
+      expectedRenditions: CLAIM.expectedRenditions,
     });
 
     assert.equal(decision?.needsClaim, false);
@@ -323,6 +344,7 @@ describe('managed run recovery', () => {
       revision: CLAIM.revision,
       runNumber: CLAIM.runNumber,
       uploaderId: CLAIM.uploaderId,
+      expectedRenditions: CLAIM.expectedRenditions,
     });
 
     assert.equal(decision?.needsClaim, false);
@@ -339,6 +361,51 @@ describe('managed run recovery', () => {
     assert.equal(target.prepareManagedRun(CLAIM), false);
     assert.equal(provision(target, SOURCE_A), false);
     assert.equal(store.records.size, 0);
+  });
+
+  it('does not admit a run whose checkpoint could not be durably created', () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const checkpoints = new MemoryManagedCheckpoints();
+    checkpoints.failCreate = true;
+    const target = orchestrator(clock, () => WALL_START, store, undefined, {}, checkpoints);
+
+    assert.equal(target.prepareManagedRun(CLAIM), false);
+    assert.equal(provision(target, SOURCE_A), false);
+    assert.equal(store.records.size, 0, 'admission was persisted without its recovery checkpoint');
+  });
+
+  it('refuses an ABR run whose frozen expected rung differs from local configuration', () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const checkpoints = new MemoryManagedCheckpoints();
+    const target = makeTestOrchestrator({
+      clock,
+      wallClock: () => WALL_START,
+      managedSourceReconnectMs: RECONNECT_MS,
+      managedRunStore: store,
+      managedCheckpointStore: checkpoints,
+      ladder: AbrLadder.parse('360p:640:360:700'),
+    });
+
+    assert.equal(
+      target.prepareManagedRun({
+        ...CLAIM,
+        expectedRenditions: [
+          {
+            name: '360p',
+            topic: '77777777-7777-4777-8777-777777777777',
+            width: 640,
+            height: 360,
+            bandwidth: 700_000,
+            avgBandwidth: 700_000,
+          },
+        ],
+      }),
+      false,
+    );
+    assert.equal(store.records.size, 0);
+    assert.equal(checkpoints.runs.size, 0);
   });
 
   it('restores only the unused part of the original deadline', async () => {
@@ -617,14 +684,26 @@ describe('managed run recovery', () => {
   it('keeps managed ABR rung uploaders through reconnect grace and finalizes them at cutoff', async () => {
     const clock = new FakeClock();
     const store = new MemoryManagedRuns();
+    const checkpoints = new MemoryManagedCheckpoints();
+    const expectedRenditions = [
+      {
+        name: '360p',
+        topic: rungTopicFor(CLAIM.topic, '360p'),
+        width: 640,
+        height: 360,
+        bandwidth: 700_000,
+        avgBandwidth: 700_000,
+      },
+    ];
     const target = makeTestOrchestrator({
       clock,
       wallClock: () => WALL_START + clock.now(),
       managedSourceReconnectMs: RECONNECT_MS,
       managedRunStore: store,
+      managedCheckpointStore: checkpoints,
       ladder: AbrLadder.parse('360p:640:360:700'),
     });
-    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(target.prepareManagedRun({ ...CLAIM, expectedRenditions }), true);
     assert.equal(provision(target, SOURCE_A), true);
     assert.deepEqual(
       target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),

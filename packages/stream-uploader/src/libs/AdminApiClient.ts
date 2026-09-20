@@ -4,6 +4,7 @@ import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, Rendition } from '../typ
 import { getErrorMessage } from '../utils/common.js';
 
 import { Logger } from './Logger.js';
+import { ManagedExpectedRendition } from './ManagedCheckpointStore.js';
 
 /**
  * The admin service this uploader answers to when `ADMIN_API_URL` is set. See the "Admin mode"
@@ -113,6 +114,7 @@ export type AdminIngestLookup =
   | (AdminStreamDraft & {
       lifecycleVersion: 1;
       mode: 'managed';
+      expectedRenditions: readonly ManagedExpectedRendition[];
       lifecycle: {
         revision: number;
         runNumber: number;
@@ -136,6 +138,7 @@ export interface ManagedClaimedRun {
   runNumber: number;
   uploaderId: string;
   claimId: string;
+  expectedRenditions: readonly ManagedExpectedRendition[];
   state: 'claimed';
   permission: 'claimed';
 }
@@ -147,6 +150,7 @@ interface ManagedRunView {
   revision: number;
   uploaderId: string;
   claimId: string;
+  expectedRenditions: readonly ManagedExpectedRendition[];
   state: ManagedLifecycleState;
   permission: ManagedRunPermission;
   lastAcceptedEvent: { sequence: number; digest: string };
@@ -314,6 +318,33 @@ function isPositiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
+function asExpectedRenditions(value: unknown): readonly ManagedExpectedRendition[] | null {
+  if (!Array.isArray(value)) {return null;}
+  const names = new Set<string>();
+  let previousName: string | undefined;
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') {return null;}
+    const rendition = entry as Record<string, unknown>;
+    if (
+      typeof rendition.name !== 'string' ||
+      rendition.name.length === 0 ||
+      names.has(rendition.name) ||
+      (previousName !== undefined && previousName >= rendition.name) ||
+      typeof rendition.topic !== 'string' ||
+      !UUID.test(rendition.topic) ||
+      !isPositiveInteger(rendition.width) ||
+      !isPositiveInteger(rendition.height) ||
+      !isPositiveInteger(rendition.bandwidth) ||
+      !isPositiveInteger(rendition.avgBandwidth)
+    ) {
+      return null;
+    }
+    names.add(rendition.name);
+    previousName = rendition.name;
+  }
+  return value as ManagedExpectedRendition[];
+}
+
 function asIngestLookup(body: unknown, lifecycleVersion?: 1): AdminIngestLookup | null {
   const draft = asDraft(body);
   if (!draft) {
@@ -337,6 +368,7 @@ function asIngestLookup(body: unknown, lifecycleVersion?: 1): AdminIngestLookup 
   }
   const managed = lifecycle as Record<string, unknown>;
   if (
+    asExpectedRenditions(candidate.expectedRenditions) === null ||
     !isNonNegativeInteger(managed.revision) ||
     !isPositiveInteger(managed.runNumber) ||
     typeof managed.state !== 'string' ||
@@ -370,7 +402,8 @@ function asClaimedRun(
     typeof candidate.claimId !== 'string' ||
     !UUID.test(candidate.claimId) ||
     candidate.state !== 'claimed' ||
-    candidate.permission !== 'claimed'
+    candidate.permission !== 'claimed' ||
+    asExpectedRenditions(candidate.expectedRenditions) === null
   ) {
     return null;
   }
@@ -399,6 +432,7 @@ function asManagedRunView(
     !MANAGED_STATES.has(candidate.state as ManagedLifecycleState) ||
     typeof candidate.permission !== 'string' ||
     !MANAGED_PERMISSIONS.has(candidate.permission as ManagedRunPermission) ||
+    asExpectedRenditions(candidate.expectedRenditions) === null ||
     !candidate.lastAcceptedEvent ||
     typeof candidate.lastAcceptedEvent !== 'object' ||
     !isPositiveInteger((candidate.lastAcceptedEvent as Record<string, unknown>).sequence) ||

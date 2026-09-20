@@ -75,6 +75,11 @@ import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
 import { LadderRegistry } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import {
+  ManagedCheckpointPersistence,
+  ManagedCheckpointRecord,
+  ManagedExpectedRendition,
+} from './ManagedCheckpointStore.js';
+import {
   ManagedMediaAcceptance,
   ManagedMediaInput,
   ManagedMediaPersistence,
@@ -136,6 +141,8 @@ export interface StreamOrchestratorConfig {
   managedRunStore?: ManagedRunPersistence;
   /** Durable raw callbacks and cumulative placed track history for lifecycle-v1 managed SRS streams. */
   managedMediaStore?: ManagedMediaPersistence;
+  /** Durable cumulative finalization checkpoint for lifecycle-v1 managed SRS streams. */
+  managedCheckpointStore?: ManagedCheckpointPersistence;
   /**
    * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
    * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
@@ -665,6 +672,8 @@ export class StreamOrchestrator {
         record.uploaderId !== attempt.uploaderId ||
         record.topic !== attempt.topic ||
         record.mediaType !== attempt.mediaType ||
+        !this.sameManagedExpectedRenditions(record.expectedRenditions, attempt.expectedRenditions) ||
+        !this.hasManagedCheckpoint(record) ||
         record.state === 'closed'
       ) {
         return null;
@@ -685,6 +694,8 @@ export class StreamOrchestrator {
         record.uploaderId !== attempt.uploaderId ||
         record.topic !== attempt.topic ||
         record.mediaType !== attempt.mediaType ||
+        !this.sameManagedExpectedRenditions(record.expectedRenditions, attempt.expectedRenditions) ||
+        !this.hasManagedCheckpoint(record) ||
         record.state === 'closed'
       ) {
         return null;
@@ -706,9 +717,14 @@ export class StreamOrchestrator {
       return null;
     }
 
+    const checkpoint = this.createManagedCheckpoint(attempt);
+    if (!checkpoint) {
+      return null;
+    }
     const wallNow = this.wallClock();
     const record: ManagedRunRecord = {
       ...attempt,
+      checkpointReference: checkpoint.checkpointReference,
       claimId: null,
       claimRequestId: crypto.randomUUID(),
       eventSequence: 0,
@@ -743,7 +759,8 @@ export class StreamOrchestrator {
       claimed.state !== 'claimed' ||
       claimed.permission !== 'claimed' ||
       claimed.runNumber !== state.record.runNumber ||
-      claimed.uploaderId !== state.record.uploaderId
+      claimed.uploaderId !== state.record.uploaderId ||
+      !this.sameManagedExpectedRenditions(claimed.expectedRenditions, state.record.expectedRenditions)
     ) {
       return false;
     }
@@ -786,9 +803,14 @@ export class StreamOrchestrator {
       return false;
     }
 
+    const checkpoint = this.createManagedCheckpoint(claim);
+    if (!checkpoint) {
+      return false;
+    }
     const wallNow = this.wallClock();
     const record: ManagedRunRecord = {
       ...claim,
+      checkpointReference: checkpoint.checkpointReference,
       state: 'claimed',
       deadlineWallMs: wallNow + reconnectMs,
       deadlineRecordedAtWallMs: wallNow,
@@ -811,6 +833,84 @@ export class StreamOrchestrator {
     return true;
   }
 
+  private createManagedCheckpoint(
+    run: Pick<ManagedRunClaim, 'adminStreamId' | 'runNumber' | 'topic' | 'mediaType' | 'expectedRenditions'>,
+  ): ManagedCheckpointRecord | null {
+    const store = this.config.managedCheckpointStore;
+    if (!store || !this.expectedRenditionsMatchConfig(run.topic, run.mediaType, run.expectedRenditions)) {
+      return null;
+    }
+    try {
+      return store.createRun({
+        adminStreamId: run.adminStreamId,
+        runNumber: run.runNumber,
+        topic: run.topic,
+        mediaType: run.mediaType,
+        expectedRenditions: run.expectedRenditions,
+      });
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed checkpoint ${run.adminStreamId}:`, error);
+      return null;
+    }
+  }
+
+  private hasManagedCheckpoint(record: ManagedRunRecord): boolean {
+    try {
+      const checkpoint = this.config.managedCheckpointStore?.findRun(record.adminStreamId, record.runNumber);
+      return (
+        checkpoint?.checkpointReference === record.checkpointReference &&
+        checkpoint.topic === record.topic &&
+        checkpoint.mediaType === record.mediaType &&
+        this.sameManagedExpectedRenditions(checkpoint.expectedRenditions, record.expectedRenditions) &&
+        this.expectedRenditionsMatchConfig(record.topic, record.mediaType, record.expectedRenditions)
+      );
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Refused unreadable managed checkpoint ${record.adminStreamId}:`, error);
+      return false;
+    }
+  }
+
+  private expectedRenditionsMatchConfig(
+    topic: string,
+    mediaType: MediaType,
+    expected: readonly ManagedExpectedRendition[],
+  ): boolean {
+    const configured =
+      mediaType === MEDIA_TYPE_VIDEO && this.config.ladder
+        ? this.config.ladder.rungs().map((rung) => ({
+            name: rung.name,
+            topic: rungTopicFor(topic, rung.name),
+            width: rung.width,
+            height: rung.height,
+            bandwidth: rung.configuredKbps * 1_000,
+            avgBandwidth: rung.configuredKbps * 1_000,
+          }))
+        : [];
+    configured.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    return this.sameManagedExpectedRenditions(configured, expected);
+  }
+
+  private sameManagedExpectedRenditions(
+    left: readonly ManagedExpectedRendition[],
+    right: readonly ManagedExpectedRendition[],
+  ): boolean {
+    return (
+      left.length === right.length &&
+      left.every((expected, index) => {
+        const actual = right[index];
+        return (
+          actual !== undefined &&
+          expected.name === actual.name &&
+          expected.topic === actual.topic &&
+          expected.width === actual.width &&
+          expected.height === actual.height &&
+          expected.bandwidth === actual.bandwidth &&
+          expected.avgBandwidth === actual.avgBandwidth
+        );
+      })
+    );
+  }
+
   /** Restore one known claim. Missing or corrupt state remains closed to callbacks. */
   public restoreManagedRun(streamId: string): 'loaded' | 'missing' | 'unreadable' {
     const reconnectMs = this.config.managedSourceReconnectMs;
@@ -824,6 +924,9 @@ export class StreamOrchestrator {
     }
 
     const record = entry.record;
+    if (!this.hasManagedCheckpoint(record)) {
+      return 'unreadable';
+    }
     const remaining = remainingManagedDeadline(record, this.wallClock());
     const state: ManagedSourceState = {
       record,

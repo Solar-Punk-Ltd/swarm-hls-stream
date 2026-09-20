@@ -202,7 +202,14 @@ describe('ManagedCheckpointStore', () => {
       mediaType: 'video',
       expectedRenditions: [
         { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 800_000, avgBandwidth: 700_000 },
-        { name: '720p', topic: 'c'.repeat(64), width: 1280, height: 720, bandwidth: 2_800_000 },
+        {
+          name: '720p',
+          topic: 'c'.repeat(64),
+          width: 1280,
+          height: 720,
+          bandwidth: 2_800_000,
+          avgBandwidth: 2_800_000,
+        },
       ],
     });
     const stateA = trackState(1, undefined, REFERENCES[0]);
@@ -217,6 +224,26 @@ describe('ManagedCheckpointStore', () => {
           duration: 2,
         }),
       /expected rendition 720p/i,
+    );
+  });
+
+  it('does not reuse a run checkpoint with different frozen rendition input', () => {
+    const root = tempRoot();
+    const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
+    const input = {
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video' as const,
+      expectedRenditions: [
+        { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 800_000, avgBandwidth: 700_000 },
+      ],
+    };
+    store.createRun(input);
+
+    assert.throws(
+      () => store.createRun({ ...input, expectedRenditions: [{ ...input.expectedRenditions[0], topic: 'c'.repeat(64) }] }),
+      /different immutable input/i,
     );
   });
 

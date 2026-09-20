@@ -36,10 +36,10 @@ export interface ManagedEmptyOutcome {
 export interface ManagedExpectedRendition {
   readonly name: string;
   readonly topic: string;
-  readonly width?: number;
-  readonly height?: number;
-  readonly bandwidth?: number;
-  readonly avgBandwidth?: number;
+  readonly width: number;
+  readonly height: number;
+  readonly bandwidth: number;
+  readonly avgBandwidth: number;
 }
 
 export interface ManagedContinuationOperation {
@@ -116,12 +116,23 @@ const nodeFileOps: ManagedCheckpointFileOps = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REFERENCE = /^[0-9a-f]{64}$/i;
 
-interface CreateManagedRun {
+export interface CreateManagedRun {
   readonly adminStreamId: string;
   readonly runNumber: number;
   readonly topic: string;
   readonly mediaType: MediaType;
   readonly expectedRenditions: readonly ManagedExpectedRendition[];
+}
+
+/** Durable checkpoint operations used by the orchestrator and replaceable with a faulting store in tests. */
+export interface ManagedCheckpointPersistence {
+  createRun(input: CreateManagedRun): ManagedCheckpointRecord;
+  prepare(operation: ManagedContinuationOperation): ManagedCheckpointRecord;
+  saveTrack(checkpointReference: string, track: ManagedTrackFinalization): ManagedCheckpointRecord;
+  complete(checkpointReference: string, master: ManagedImmutableMediaReference): ManagedCompletedRecording;
+  sealEmpty(checkpointReference: string, acceptedMediaCount: number): ManagedEmptyOutcome;
+  read(checkpointReference: string): ManagedCheckpointRecord | null;
+  findRun(adminStreamId: string, runNumber: number): ManagedCheckpointRecord | null;
 }
 
 interface ManagedRunIndex {
@@ -199,6 +210,27 @@ function sameExpectedRendition(
   );
 }
 
+function sameExpectedRenditions(
+  left: readonly ManagedExpectedRendition[],
+  right: readonly ManagedExpectedRendition[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((expected, index) => {
+      const actual = right[index];
+      return (
+        actual !== undefined &&
+        expected.name === actual.name &&
+        expected.topic === actual.topic &&
+        expected.width === actual.width &&
+        expected.height === actual.height &&
+        expected.bandwidth === actual.bandwidth &&
+        expected.avgBandwidth === actual.avgBandwidth
+      );
+    })
+  );
+}
+
 function validExpectedRendition(value: unknown): value is ManagedExpectedRendition {
   if (!value || typeof value !== 'object') {return false;}
   const rendition = value as Partial<ManagedExpectedRendition>;
@@ -207,10 +239,10 @@ function validExpectedRendition(value: unknown): value is ManagedExpectedRenditi
     rendition.name.length > 0 &&
     typeof rendition.topic === 'string' &&
     rendition.topic.length > 0 &&
-    (rendition.width === undefined || safePositiveInteger(rendition.width)) &&
-    (rendition.height === undefined || safePositiveInteger(rendition.height)) &&
-    (rendition.bandwidth === undefined || safePositiveInteger(rendition.bandwidth)) &&
-    (rendition.avgBandwidth === undefined || safePositiveInteger(rendition.avgBandwidth))
+    safePositiveInteger(rendition.width) &&
+    safePositiveInteger(rendition.height) &&
+    safePositiveInteger(rendition.bandwidth) &&
+    safePositiveInteger(rendition.avgBandwidth)
   );
 }
 
@@ -273,7 +305,16 @@ export class ManagedCheckpointStore {
   public createRun(input: CreateManagedRun): ManagedCheckpointRecord {
     this.validateCreate(input);
     const existing = this.findRun(input.adminStreamId, input.runNumber);
-    if (existing) {return existing;}
+    if (existing) {
+      if (
+        existing.topic !== input.topic ||
+        existing.mediaType !== input.mediaType ||
+        !sameExpectedRenditions(existing.expectedRenditions, input.expectedRenditions)
+      ) {
+        throw new Error('Managed checkpoint run is already prepared with different immutable input');
+      }
+      return existing;
+    }
     const checkpointReference = this.makeReference();
     if (!UUID.test(checkpointReference)) {throw new Error('Checkpoint reference generator returned an invalid UUID');}
     const record: ManagedCheckpointRecord = {

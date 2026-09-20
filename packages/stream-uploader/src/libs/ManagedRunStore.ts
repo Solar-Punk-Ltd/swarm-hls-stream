@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { MediaType, SourceConnectionIdentity } from '../types.js';
 
+import { ManagedExpectedRendition } from './ManagedCheckpointStore.js';
+
 export const MANAGED_RUN_MISSING = 'missing' as const;
 export const MANAGED_RUN_LOADED = 'loaded' as const;
 export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
@@ -22,6 +24,8 @@ export interface ManagedRunRecord {
   readonly claimId: string | null;
   readonly claimRequestId: string;
   readonly eventSequence: number;
+  readonly expectedRenditions: readonly ManagedExpectedRendition[];
+  readonly checkpointReference: string;
   readonly state: ManagedRunState;
   readonly deadlineWallMs: number;
   readonly deadlineRecordedAtWallMs: number;
@@ -55,6 +59,7 @@ export type ManagedRunClaim = Omit<
   | 'lastProgressPts'
   | 'source'
   | 'claimRequestId'
+  | 'checkpointReference'
   | 'pendingReports'
 >;
 
@@ -74,6 +79,7 @@ export interface ManagedClaimCompletion {
   readonly runNumber: number;
   readonly uploaderId: string;
   readonly claimId: string;
+  readonly expectedRenditions: readonly ManagedExpectedRendition[];
   readonly state: 'claimed';
   readonly permission: 'claimed';
 }
@@ -161,6 +167,11 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     typeof record.claimRequestId === 'string' &&
     UUID.test(record.claimRequestId) &&
     isNonNegativeInteger(record.eventSequence) &&
+    Array.isArray(record.expectedRenditions) &&
+    record.expectedRenditions.every(isExpectedRendition) &&
+    new Set(record.expectedRenditions.map((rendition) => rendition.name)).size === record.expectedRenditions.length &&
+    typeof record.checkpointReference === 'string' &&
+    UUID.test(record.checkpointReference) &&
     typeof record.state === 'string' &&
     STATES.has(record.state as ManagedRunState) &&
     isNonNegativeInteger(record.deadlineWallMs) &&
@@ -180,6 +191,21 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
       report.eventSequence === record.eventSequence - record.pendingReports.length + index + 1,
     ) &&
     (record.state === 'claiming' ? record.claimId === null : record.claimId !== null)
+  );
+}
+
+function isExpectedRendition(value: unknown): value is ManagedExpectedRendition {
+  if (!value || typeof value !== 'object') {return false;}
+  const rendition = value as Partial<ManagedExpectedRendition>;
+  return (
+    typeof rendition.name === 'string' &&
+    rendition.name.length > 0 &&
+    typeof rendition.topic === 'string' &&
+    rendition.topic.length > 0 &&
+    isPositiveInteger(rendition.width) &&
+    isPositiveInteger(rendition.height) &&
+    isPositiveInteger(rendition.bandwidth) &&
+    isPositiveInteger(rendition.avgBandwidth)
   );
 }
 

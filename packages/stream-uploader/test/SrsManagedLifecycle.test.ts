@@ -83,6 +83,7 @@ async function withManagedSrs(
         : {
             ...draft,
             mode: 'managed' as const,
+            expectedRenditions: [],
             lifecycle: {
               revision: 7,
               runNumber: 2,
@@ -101,6 +102,7 @@ async function withManagedSrs(
         runNumber: 2,
         uploaderId: UPLOADER_ID,
         claimId: CLAIM_ID,
+        expectedRenditions: [],
         state: 'claimed' as const,
         permission: 'claimed' as const,
       };

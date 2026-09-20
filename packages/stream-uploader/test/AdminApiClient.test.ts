@@ -227,6 +227,7 @@ describe('the admin API client, negotiating lifecycle v1', () => {
     ...DRAFT,
     lifecycleVersion: 1 as const,
     mode: 'managed' as const,
+    expectedRenditions: [],
     lifecycle: {
       revision: 7,
       runNumber: 2,
@@ -266,6 +267,28 @@ describe('the admin API client, negotiating lifecycle v1', () => {
     });
   }
 
+  it('refuses an expected rendition array that is not in lexical name order', async () => {
+    const expected = (name: string, topic: string) => ({
+      avgBandwidth: 700_000,
+      bandwidth: 700_000,
+      height: 360,
+      name,
+      topic,
+      width: 640,
+    });
+    const body = {
+      ...managed,
+      expectedRenditions: [
+        expected('720p', '77777777-7777-4777-8777-777777777777'),
+        expected('360p', '33333333-3333-4333-8333-333333333333'),
+      ],
+    };
+
+    await withAdmin(always(200, body), async ({ client }) => {
+      await assert.rejects(() => client.lookupByIngestId(STREAM_ID), /lifecycle/);
+    }, { lifecycleVersion: 1 });
+  });
+
   it('claims the exact run and validates the returned binding', async () => {
     const request: ManagedClaimRequest = {
       lifecycleVersion: 1,
@@ -280,6 +303,7 @@ describe('the admin API client, negotiating lifecycle v1', () => {
       runNumber: 2,
       uploaderId: request.uploaderId,
       claimId: '44444444-4444-4444-8444-444444444444',
+      expectedRenditions: [],
       state: 'claimed' as const,
       permission: 'claimed' as const,
     };
@@ -305,6 +329,7 @@ describe('the admin API client, negotiating lifecycle v1', () => {
         runNumber: 2,
         uploaderId: request.uploaderId,
         claimId: '44444444-4444-4444-8444-444444444444',
+        expectedRenditions: [],
         state: 'claimed',
         permission: 'claimed',
       }),
@@ -382,6 +407,7 @@ describe('the admin API client, negotiating lifecycle v1', () => {
           revision: 10,
           uploaderId: report.uploaderId,
           claimId: report.claimId,
+          expectedRenditions: [],
           state: 'waiting',
           permission: 'claimed',
           lastAcceptedEvent: {
@@ -412,6 +438,7 @@ describe('the admin API client, negotiating lifecycle v1', () => {
           revision: 10,
           uploaderId: report.uploaderId,
           claimId: report.claimId,
+          expectedRenditions: [],
           state: 'vod',
           permission: 'closed',
           lastAcceptedEvent: {

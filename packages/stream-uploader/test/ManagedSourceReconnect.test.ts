@@ -25,6 +25,7 @@ import {
 
 import { FakeClock } from './helpers/fakeClock.js';
 import { makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+import { MemoryManagedCheckpoints } from './helpers/managedCheckpoint.js';
 import { audioOnlySegment, FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 import { waitFor } from './helpers/waiting.js';
 
@@ -77,6 +78,8 @@ class MemoryManagedRuns implements ManagedRunPersistence {
   }
 }
 
+const checkpointsByRunStore = new WeakMap<ManagedRunPersistence, MemoryManagedCheckpoints>();
+
 function activeUploader(orchestrator: StreamOrchestrator): StreamUploader | undefined {
   return (orchestrator as unknown as OrchestratorInternals).activeStreams.get(STREAM_ID);
 }
@@ -91,12 +94,18 @@ function makeManagedOrchestrator(
   uploads: Parameters<typeof makeTestOrchestrator>[1] = {},
   managedRunStore: ManagedRunPersistence = new MemoryManagedRuns(),
 ): StreamOrchestrator {
+  let managedCheckpointStore = checkpointsByRunStore.get(managedRunStore);
+  if (!managedCheckpointStore) {
+    managedCheckpointStore = new MemoryManagedCheckpoints();
+    checkpointsByRunStore.set(managedRunStore, managedCheckpointStore);
+  }
   const orchestrator = makeTestOrchestrator(
     {
       clock,
       wallClock: () => 1_000_000 + clock.now(),
       managedSourceReconnectMs: RECONNECT_MS,
       managedRunStore,
+      managedCheckpointStore,
       managedMediaStore,
       maxQueueSize,
     },
@@ -118,6 +127,7 @@ function makeManagedOrchestrator(
       uploaderId: 'srs-157-90-34-105',
       claimId: '44444444-4444-4444-8444-444444444444',
       eventSequence: 1,
+      expectedRenditions: [],
     }),
     true,
   );
@@ -543,6 +553,7 @@ describe('managed SRS source reconnect foundation', () => {
         wallClock: () => 1_000_000 + clockB.now(),
         managedSourceReconnectMs: RECONNECT_MS,
         managedRunStore: runs,
+        managedCheckpointStore: checkpointsByRunStore.get(runs),
         managedMediaStore: storeB,
       },
       {
@@ -598,6 +609,7 @@ describe('managed SRS source reconnect foundation', () => {
           wallClock: () => 1_000_000 + clock.now(),
           managedSourceReconnectMs: RECONNECT_MS,
           managedRunStore: runs,
+          managedCheckpointStore: checkpointsByRunStore.get(runs),
           managedMediaStore: store,
         },
         uploads,

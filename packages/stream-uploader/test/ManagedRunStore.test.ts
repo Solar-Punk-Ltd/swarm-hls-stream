@@ -42,6 +42,8 @@ function record(overrides: Partial<ManagedRunRecord> = {}): ManagedRunRecord {
     claimId: '44444444-4444-4444-8444-444444444444',
     claimRequestId: '33333333-3333-4333-8333-333333333333',
     eventSequence: 1,
+    expectedRenditions: [],
+    checkpointReference: '55555555-5555-4555-8555-555555555555',
     state: 'live',
     deadlineWallMs: 1_060_000,
     deadlineRecordedAtWallMs: 1_000_000,
