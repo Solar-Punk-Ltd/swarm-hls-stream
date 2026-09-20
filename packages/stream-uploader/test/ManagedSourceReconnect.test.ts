@@ -13,6 +13,7 @@ import { StreamUploader } from '../src/libs/StreamUploader.js';
 import {
   MEDIA_TYPE_AUDIO,
   MEDIA_TYPE_VIDEO,
+  MediaType,
   SourceConnectionIdentity,
   STREAM_STATUS_VOD,
   StreamState,
@@ -71,7 +72,7 @@ function makeManagedOrchestrator(
   published: unknown[] = [],
   saved: StreamState[] = [],
   maxQueueSize = 100,
-  mediaType = MEDIA_TYPE_VIDEO,
+  mediaType: MediaType = MEDIA_TYPE_VIDEO,
 ): StreamOrchestrator {
   const orchestrator = makeTestOrchestrator(
     {
