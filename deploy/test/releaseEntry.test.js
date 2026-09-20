@@ -20,21 +20,36 @@ const FAST_WATCH = {
   DEPLOY_READY_TIMEOUT_SECONDS: '0.05',
 };
 
-function installGuard(home, mode) {
+function installGuard(home, mode, protectedProfiles = ['default']) {
   const bin = join(home, '.local', 'bin');
   const state = join(home, '.local', 'state', 'streaming-release-guard');
   mkdirSync(bin, { recursive: true });
   mkdirSync(state, { recursive: true });
   const guard = join(bin, 'streaming-release-guard');
+  const protectedCase = protectedProfiles.map((profile) => `${profile}) exit 1 ;;`).join('\n    ');
   writeFileSync(guard, `#!/bin/bash
 set -euo pipefail
+printf '%s\\n' "$*" >> "$HOME/guard-calls.log"
 case "\${1:-}" in
   begin-legacy) printf '%s\\n' ${JSON.stringify(mode)} ;;
   finish-legacy) printf '%s\\n' 'legacy release lease released' ;;
+  begin-stack-legacy)
+    profile=""
+    while [ "$#" -gt 0 ]; do
+      [ "$1" = "--profile" ] && profile="$2" && break
+      shift
+    done
+    case "$profile" in
+    ${protectedCase}
+    esac
+    printf '%s\\n' 'legacy:22222222-2222-4222-8222-222222222222'
+    ;;
+  finish-stack-legacy) printf '%s\\n' 'legacy stack deployment lease released' ;;
   *) exit 1 ;;
 esac
 `);
   chmodSync(guard, 0o700);
+  writeFileSync(join(home, 'guard-calls.log'), '');
 }
 
 async function waitForPath(path) {
@@ -100,19 +115,73 @@ describe('the supported stack deployment entry', () => {
   });
 
   it('refuses the raw deploy entry after the installation is managed', async () => {
-    const sandbox = makeSandbox();
-    installGuard(sandbox.root, 'managed');
+    const sandbox = makeSandbox({
+      project: 'release-a',
+      envFiles: {
+        '.env': 'STAMP=stamp\nSTREAM_KEY=key\n',
+        '.env.release-a': 'STAMP=stamp-a\nSTREAM_KEY=key-a\n',
+      },
+    });
+    installGuard(sandbox.root, 'managed', ['release-a']);
 
     const result = await runScript(
       sandbox,
       'deploy.sh',
-      ['srs', 'stream-uploader'],
+      ['--profile=release-a', 'srs', 'stream-uploader'],
       { ...FAST_WATCH, HOME: sandbox.root },
     );
 
     assert.notEqual(result.exitCode, 0);
-    assert.match(`${result.stdout}${result.stderr}`, /installed streaming-release-guard uploader/i);
+    assert.match(`${result.stdout}${result.stderr}`, /installed release guard refused/i);
     assert.deepEqual(sandbox.calls(), []);
+  });
+
+  it('keeps an unrelated legacy profile deployable after another profile activates the guard', async () => {
+    const sandbox = makeSandbox({
+      project: 'release-b',
+      envFiles: {
+        '.env': 'STAMP=stamp\nSTREAM_KEY=key\n',
+        '.env.release-b': 'STAMP=stamp-b\nSTREAM_KEY=key-b\n',
+      },
+    });
+    installGuard(sandbox.root, 'managed', ['release-a']);
+
+    const result = await runScript(
+      sandbox,
+      'deploy.sh',
+      ['--profile=release-b', 'srs'],
+      { ...FAST_WATCH, HOME: sandbox.root },
+    );
+
+    assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
+    assert.ok(sandbox.calls().some((call) => call.includes('compose')));
+    assert.match(readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8'), /begin-stack-legacy .*--profile release-b/);
+    assert.match(readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8'), /finish-stack-legacy .*--owner-token 22222222/);
+  });
+
+  it('retains an unrelated profile lease when its standalone deployment fails', async () => {
+    const sandbox = makeSandbox({
+      project: 'release-b',
+      envFiles: {
+        '.env': 'STAMP=stamp\nSTREAM_KEY=key\n',
+        '.env.release-b': 'STAMP=stamp-b\nSTREAM_KEY=key-b\n',
+      },
+    });
+    installGuard(sandbox.root, 'managed', ['release-a']);
+    writeFileSync(sandbox.scriptPath('deploy-standalone.sh'), '#!/bin/bash\nexit 42\n');
+    chmodSync(sandbox.scriptPath('deploy-standalone.sh'), 0o700);
+
+    const result = await runScript(
+      sandbox,
+      'deploy.sh',
+      ['--profile=release-b', 'srs'],
+      { ...FAST_WATCH, HOME: sandbox.root },
+    );
+
+    assert.equal(result.exitCode, 42);
+    const guardCalls = readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8');
+    assert.match(guardCalls, /begin-stack-legacy .*--profile release-b/);
+    assert.doesNotMatch(guardCalls, /finish-stack-legacy/);
   });
 
   it('keeps an installed but unactivated stack on the owner-bound legacy path', async () => {

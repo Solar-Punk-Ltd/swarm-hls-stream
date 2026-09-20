@@ -96,6 +96,11 @@ finish_bootstrap() {
 }
 
 begin_release() {
+    profile="${1:-default}"
+    if [[ ! "$profile" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
+        echo "ERROR: stack release profile is invalid" >&2
+        exit 1
+    fi
     guard_exists=false
     state_exists=false
     if path_exists "$GUARD_BIN"; then guard_exists=true; fi
@@ -116,7 +121,23 @@ begin_release() {
 
     result="$("$GUARD_BIN" begin-legacy --state-root "$GUARD_STATE_ROOT")"
     case "$result" in
-        managed) printf '%s\n' managed ;;
+        managed)
+            result="$("$GUARD_BIN" begin-stack-legacy --state-root "$GUARD_STATE_ROOT" --profile "$profile")"
+            case "$result" in
+                legacy:*)
+                    owner_token="${result#legacy:}"
+                    if [[ ! "$owner_token" =~ $UUID_PATTERN ]]; then
+                        echo "ERROR: release guard returned an invalid stack legacy lease" >&2
+                        exit 1
+                    fi
+                    printf 'stack-guard:%s\n' "$owner_token"
+                    ;;
+                *)
+                    echo "ERROR: release guard returned an invalid stack legacy lease" >&2
+                    exit 1
+                    ;;
+            esac
+            ;;
         legacy:*)
             owner_token="${result#legacy:}"
             if [[ ! "$owner_token" =~ $UUID_PATTERN ]]; then
@@ -133,7 +154,7 @@ begin_release() {
 }
 
 case "${1:-begin}" in
-    begin) begin_release ;;
+    begin) begin_release "${2:-}" ;;
     begin-bootstrap-install)
         require_absent_installation
         begin_bootstrap
@@ -141,6 +162,9 @@ case "${1:-begin}" in
     finish-bootstrap) finish_bootstrap "${2:-}" ;;
     finish-guard)
         "$GUARD_BIN" finish-legacy --state-root "$GUARD_STATE_ROOT" --owner-token "${2:-}"
+        ;;
+    finish-stack-guard)
+        "$GUARD_BIN" finish-stack-legacy --state-root "$GUARD_STATE_ROOT" --owner-token "${2:-}"
         ;;
     *)
         echo "ERROR: release mode command is invalid" >&2

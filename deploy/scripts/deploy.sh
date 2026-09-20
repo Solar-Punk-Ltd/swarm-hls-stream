@@ -44,6 +44,7 @@ finish_lease() {
   case "${lease_kinds[$index]}" in
     bootstrap) release_mode "${lease_targets[$index]}" finish-bootstrap "${lease_owners[$index]}" >/dev/null ;;
     guard) release_mode "${lease_targets[$index]}" finish-guard "${lease_owners[$index]}" >/dev/null ;;
+    stack-guard) release_mode "${lease_targets[$index]}" finish-stack-guard "${lease_owners[$index]}" >/dev/null ;;
   esac
 }
 
@@ -58,8 +59,9 @@ for target in $(get_targets); do
   services=($(get_filtered_services_for_target "$target"))
   [ ${#services[@]} -gt 0 ] || continue
 
-  if ! mode="$(release_mode "$target" begin)"; then
+  if ! mode="$(release_mode "$target" begin "$PROFILE")"; then
     finish_all_leases
+    log_error "The installed release guard refused raw deployment for profile '$PROFILE'."
     exit 1
   fi
   case "$mode" in
@@ -69,7 +71,7 @@ for target in $(get_targets); do
       log_error "Raw deploy.sh cannot move a managed installation."
       exit 1
       ;;
-    bootstrap:*|guard:*)
+    bootstrap:*|guard:*|stack-guard:*)
       lease_targets+=("$target")
       lease_kinds+=("${mode%%:*}")
       lease_owners+=("${mode#*:}")
