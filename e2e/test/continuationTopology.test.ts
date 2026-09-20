@@ -13,6 +13,7 @@ const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 const COMMIT = 'a'.repeat(40);
 const IMAGE_ID = `sha256:${'b'.repeat(64)}`;
 const BATCH_HASH = `sha256:${'c'.repeat(64)}`;
+const UPLOADER_ID = '11111111-1111-4111-8111-111111111111';
 
 function correctedPlan(): FixturePlan {
   return createFixturePlan({
@@ -41,7 +42,7 @@ function correctedPlan(): FixturePlan {
 }
 
 function service(plan: FixturePlan, role: string) {
-  const topology = createContinuationTopology(plan);
+  const topology = createContinuationTopology(plan, UPLOADER_ID);
   const found = topology.services.find((candidate) => candidate.role === role);
   assert.ok(found, `missing ${role}`);
   return found;
@@ -69,14 +70,14 @@ function readyAnswers(): Record<string, unknown> {
       identity: 'stream-uploader',
       version: COMMIT,
       lifecycleVersion: 1,
-      uploaderId: 'fixture-srs-uploader',
+      uploaderId: UPLOADER_ID,
     },
     admin: {
       ready: true,
       identity: 'web2-admin',
       version: COMMIT,
       lifecycleVersion: 1,
-      uploaderId: 'fixture-srs-uploader',
+      uploaderId: UPLOADER_ID,
     },
     viewer: { ready: true, identity: 'viewer', version: COMMIT },
     storage: {
@@ -97,7 +98,7 @@ function readyAnswers(): Record<string, unknown> {
 describe('continuation fixture topology', () => {
   it('wires exact aliases, internal ports, mounts, and symbolic secret inputs', () => {
     const plan = correctedPlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
 
     assert.equal(topology.network, plan.network.name);
     assert.equal(topology.services.length, 14);
@@ -171,7 +172,7 @@ describe('continuation fixture topology', () => {
     assert.ok(queen.command.some((part) => part.kind === 'bootstrap' && part.output === 'chain.postageStampAddress'));
     assert.ok(worker.command.some((part) => part.kind === 'bootstrap' && part.output === 'bee.queenBootnode'));
     assert.deepEqual(
-      createContinuationTopology(plan)
+      createContinuationTopology(plan, UPLOADER_ID)
         .services.filter((entry) => entry.entrypointAssumptionStatus === 'runtime-unverified')
         .map((entry) => entry.role),
       ['postgres', 'media-sender'],
@@ -180,7 +181,7 @@ describe('continuation fixture topology', () => {
 
   it('orders chain restore, Bee bootstrapping, storage, and application startup', () => {
     const plan = correctedPlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
 
     assert.deepEqual(
       topology.bootstrap.map((step) => [step.id, step.kind]),
@@ -244,7 +245,7 @@ describe('continuation fixture topology', () => {
       },
       {
         role: 'uploader',
-        slot: { role: 'uploader', id: 'fixture-srs-uploader' },
+        slot: { role: 'uploader', id: UPLOADER_ID },
         candidateRole: 'stack',
         services: ['srs', 'stream-uploader'],
         serviceBindings: [
@@ -282,7 +283,7 @@ describe('continuation fixture topology', () => {
       resources: current.resources.filter((resource) => resource.role !== 'srs-media'),
     };
 
-    assert.throws(() => createContinuationTopology(stale), /admin.*9877/i);
+    assert.throws(() => createContinuationTopology(stale, UPLOADER_ID), /admin.*9877/i);
     const fixedPort = {
       ...stale,
       internalEndpoints: { ...stale.internalEndpoints, admin: `http://${FIXTURE_ID}-admin-api:9877` },
@@ -290,14 +291,14 @@ describe('continuation fixture topology', () => {
         port.role === 'admin' ? { ...port, containerPort: 9877 } : port,
       ),
     };
-    assert.throws(() => createContinuationTopology(fixedPort), /srs-media/i);
+    assert.throws(() => createContinuationTopology(fixedPort, UPLOADER_ID), /srs-media/i);
   });
 });
 
 describe('continuation readiness inspection', () => {
   it('runs the bounded internal probe set and produces existing readiness evidence', async () => {
     const plan = correctedPlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const transport = new FakeProbeTransport(readyAnswers());
 
     const evidence = await inspectContinuationReadiness(plan, topology, transport);
@@ -345,7 +346,7 @@ describe('continuation readiness inspection', () => {
 
   it('refuses malformed component identity without including the raw response', async () => {
     const plan = correctedPlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const answers = readyAnswers();
     answers.uploader = { ready: true, identity: 'foreign', raw: 'SENTINEL-MUST-NOT-LEAK' };
 
@@ -362,7 +363,7 @@ describe('continuation readiness inspection', () => {
 
   it('refuses an uploader that cannot prove lifecycle version and assignment', async () => {
     const plan = correctedPlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const answers = readyAnswers();
     answers.uploader = {
       ready: true,
@@ -380,7 +381,12 @@ describe('continuation readiness inspection', () => {
 
   it('refuses an external probe endpoint before transport is called', async () => {
     const plan = correctedPlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
+
+    assert.throws(
+      () => createContinuationTopology(plan, 'fixture-srs-uploader'),
+      /manager profile instance/i,
+    );
     const transport = new FakeProbeTransport(readyAnswers());
     const external = {
       ...topology,

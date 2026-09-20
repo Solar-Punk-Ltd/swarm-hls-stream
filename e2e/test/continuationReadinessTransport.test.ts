@@ -34,6 +34,7 @@ const IMAGE_ID = `sha256:${'d'.repeat(64)}`;
 const BATCH_HASH = `sha256:${'e'.repeat(64)}`;
 const STATE_DIGEST = 'f'.repeat(64);
 const INSTALLATION_ID = '11111111-1111-4111-8111-111111111111';
+const UPLOADER_ID = '22222222-2222-4222-8222-222222222222';
 const encoder = new TextEncoder();
 
 function fixturePlan(): FixturePlan {
@@ -74,7 +75,7 @@ function guard(
   const candidateCommit = role === 'admin' ? ADMIN_COMMIT : STACK_COMMIT;
   const treeDigest = role === 'admin' ? '1'.repeat(64) : '2'.repeat(64);
   return {
-    slot: { role, id: role === 'uploader' ? 'fixture-srs-uploader' : 'default' },
+    slot: { role, id: role === 'uploader' ? UPLOADER_ID : 'default' },
     installationId: INSTALLATION_ID,
     generation: 1,
     stateDigest: STATE_DIGEST,
@@ -94,7 +95,7 @@ class FakeObservationSource implements ReadinessObservationSource {
   readonly containers = new Map<TopologyServiceRole, ContainerReadinessObservation>();
   readonly guards = new Map<ReleaseGuardRole, GuardedReleaseObservation>();
   capability: CapabilityReadObservation = {
-    uploaderId: 'fixture-srs-uploader',
+    uploaderId: UPLOADER_ID,
     lifecycleVersion: 1,
     profileDigests: [{ mediaType: 'video', digest: '3'.repeat(64) }],
     receivedAt: '2026-09-21T00:00:00.000Z',
@@ -277,7 +278,7 @@ class FakeObservationSource implements ReadinessObservationSource {
 describe('observed continuation readiness transport', () => {
   it('normalizes bounded service, guard, capability and control observations', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     const transport = new ObservedReadinessTransport(plan, topology, source);
 
@@ -314,7 +315,7 @@ describe('observed continuation readiness transport', () => {
 
   it('refuses a response beyond its byte bound without exposing its body', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     const original = source.request.bind(source);
     source.request = async (request) =>
@@ -339,7 +340,7 @@ describe('observed continuation readiness transport', () => {
 
   it('refuses a running image that is absent from its persisted guard artifact', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     source.containers.get('uploader')!.imageId = `sha256:${'9'.repeat(64)}`;
 
@@ -355,7 +356,7 @@ describe('observed continuation readiness transport', () => {
 
   it('refuses admin health when the mounted active artifact differs from the receipt', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     source.containers.get('admin-api')!.activeArtifact!.generation = 2;
 
@@ -371,7 +372,7 @@ describe('observed continuation readiness transport', () => {
 
   it('refuses an uploader capability after the admin server freshness window', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     source.capability = { ...source.capability, serverNow: source.capability.freshUntil };
 
@@ -387,7 +388,7 @@ describe('observed continuation readiness transport', () => {
 
   it('does not retain a fresh capability across a later inspection', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     const transport = new ObservedReadinessTransport(plan, topology, source);
 
@@ -402,7 +403,7 @@ describe('observed continuation readiness transport', () => {
 
   it('refuses capacity evidence that omits a required Bee service', async () => {
     const plan = fixturePlan();
-    const topology = createContinuationTopology(plan);
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
     const source = new FakeObservationSource(plan, topology);
     const encoded = source.controls.get('capacity');
     assert.ok(encoded);

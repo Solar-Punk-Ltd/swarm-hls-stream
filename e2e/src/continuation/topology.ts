@@ -10,7 +10,7 @@ import {
   validateFixturePlan,
 } from './fixture.js';
 
-export const FIXTURE_UPLOADER_ID = 'fixture-srs-uploader';
+const MANAGER_INSTANCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type TopologyServiceRole =
   | 'blockchain'
@@ -373,7 +373,7 @@ function beeCommand(role: TopologyServiceRole): readonly CommandPart[] {
   return common;
 }
 
-function serviceTopology(plan: FixturePlan, role: TopologyServiceRole): ServiceTopology {
+function serviceTopology(plan: FixturePlan, role: TopologyServiceRole, uploaderId: string): ServiceTopology {
   const container = containerFor(plan, role);
   const base = {
     role,
@@ -462,7 +462,7 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole): ServiceT
         input('INGEST_SRT_PASSPHRASE', 'srsPassphrase'),
         literal('INGEST_KEY_VERIFIED', 'true'),
         literal('INGEST_MANAGED_LIFECYCLE_VERSION', '1'),
-        literal('INGEST_MANAGED_UPLOADER_ID', FIXTURE_UPLOADER_ID),
+        literal('INGEST_MANAGED_UPLOADER_ID', uploaderId),
       ],
       mounts: [
         {
@@ -540,7 +540,7 @@ function serviceTopology(plan: FixturePlan, role: TopologyServiceRole): ServiceT
         endpoint('ADMIN_API_URL', 'admin'),
         input('ADMIN_API_TOKEN', 'adminInternalApiToken'),
         literal('SRS_LIFECYCLE_VERSION', '1'),
-        literal('SRS_UPLOADER_ID', FIXTURE_UPLOADER_ID),
+        literal('SRS_UPLOADER_ID', uploaderId),
         literal('API_PORT', '3000'),
         literal('STATE_DIR', '/app/state'),
         literal('ENGINE', 'srs'),
@@ -584,7 +584,7 @@ function endpointUrl(plan: FixturePlan, name: keyof FixturePlan['internalEndpoin
   return `${plan.internalEndpoints[name]}${path}`;
 }
 
-function readinessProbes(plan: FixturePlan): readonly ReadinessProbe[] {
+function readinessProbes(plan: FixturePlan, uploaderId: string): readonly ReadinessProbe[] {
   const stackCommit = plan.candidates.find((entry) => entry.role === 'stack')?.commit;
   const adminCommit = plan.candidates.find((entry) => entry.role === 'admin')?.commit;
   if (!stackCommit || !adminCommit) {
@@ -621,7 +621,7 @@ function readinessProbes(plan: FixturePlan): readonly ReadinessProbe[] {
       maxResponseBytes: MAX_JSON_BYTES,
       expectedIdentity: 'stream-uploader',
       expectedVersion: stackCommit,
-      expectedUploaderId: FIXTURE_UPLOADER_ID,
+      expectedUploaderId: uploaderId,
     },
     {
       id: 'admin',
@@ -630,7 +630,7 @@ function readinessProbes(plan: FixturePlan): readonly ReadinessProbe[] {
       maxResponseBytes: MAX_JSON_BYTES,
       expectedIdentity: 'web2-admin',
       expectedVersion: adminCommit,
-      expectedUploaderId: FIXTURE_UPLOADER_ID,
+      expectedUploaderId: uploaderId,
     },
     {
       id: 'viewer',
@@ -718,9 +718,12 @@ function validateTopologyPrerequisites(plan: FixturePlan): void {
   }
 }
 
-export function createContinuationTopology(plan: FixturePlan): ContinuationTopology {
+export function createContinuationTopology(plan: FixturePlan, uploaderId: string): ContinuationTopology {
   validateTopologyPrerequisites(plan);
-  const services = EXPECTED_ROLES.map((role) => serviceTopology(plan, role));
+  if (!MANAGER_INSTANCE_ID.test(uploaderId)) {
+    throw new FixtureRefusal('uploader identity must be the persisted manager profile instance UUID');
+  }
+  const services = EXPECTED_ROLES.map((role) => serviceTopology(plan, role, uploaderId));
   const workers = ['bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4'] as const;
   const fixtureNetwork = { name: plan.network.name, fixtureId: plan.fixtureId };
   const guardedActivations: readonly GuardedActivation[] = [
@@ -754,7 +757,7 @@ export function createContinuationTopology(plan: FixturePlan): ContinuationTopol
     },
     {
       role: 'uploader',
-      slot: { role: 'uploader', id: FIXTURE_UPLOADER_ID },
+      slot: { role: 'uploader', id: uploaderId },
       candidateRole: 'stack',
       services: ['srs', 'stream-uploader'],
       serviceBindings: [
@@ -867,7 +870,7 @@ export function createContinuationTopology(plan: FixturePlan): ContinuationTopol
     publishedPorts: [...plan.publishedPorts],
     guardedActivations,
     bootstrap,
-    readiness: readinessProbes(plan),
+    readiness: readinessProbes(plan, uploaderId),
   };
 }
 
