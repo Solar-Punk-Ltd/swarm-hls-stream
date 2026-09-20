@@ -6,6 +6,11 @@ import { retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { BeePublisherPool } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
+import {
+  ManagedMasterBinding,
+  ManagedMasterIntent,
+  ManagedMasterPersistence,
+} from './ManagedMasterStore.js';
 import { buildMasterPlaylist } from './MasterPlaylist.js';
 
 const MASTER_RETRY_WINDOW_MS = 10_000;
@@ -80,6 +85,93 @@ export class MasterFeedWriter {
     });
 
     return published ?? null;
+  }
+
+  /** Publish one lifecycle-v1 master event from a durable fixed-index intent. */
+  public async publishManaged(
+    group: string,
+    renditions: Rendition[],
+    eventId: string,
+    binding: ManagedMasterBinding,
+    store: ManagedMasterPersistence,
+  ): Promise<PublishedMaster | null> {
+    if (renditions.length === 0) {
+      return null;
+    }
+    if (binding.group !== group) {
+      throw new Error(`Managed master binding ${binding.group} does not match ladder ${group}`);
+    }
+    const published = await this.queue.add(async () => {
+      const topic = Topic.fromString(group);
+      const playlist = buildMasterPlaylist(this.owner, renditions);
+      const previous = store.read(binding);
+      if (previous?.eventId === eventId) {
+        if (previous.playlist !== playlist) {
+          throw new Error(`Managed master event ${eventId} rebuilt with another playlist`);
+        }
+        return this.settleManagedIntent(topic, previous, store);
+      }
+      let previousIndex = previous?.index;
+      if (previous?.status === 'pending') {
+        previousIndex = (await this.settleManagedIntent(topic, previous, store)).index;
+      }
+      let index: FeedIndex;
+      if (previousIndex !== undefined) {
+        index = FeedIndex.fromBigInt(BigInt(previousIndex)).next();
+      } else {
+        const probed = await this.nextIndex(group, topic);
+        const durableFloor = store.latestCommittedIndex(group);
+        index = durableFloor !== null && probed.toBigInt() <= BigInt(durableFloor)
+          ? FeedIndex.fromBigInt(BigInt(durableFloor)).next()
+          : probed;
+      }
+      const intent = store.prepare({
+        ...binding,
+        eventId,
+        index: Number(index.toBigInt()),
+        playlist,
+      });
+      return this.settleManagedIntent(topic, intent, store);
+    });
+    return published ?? null;
+  }
+
+  private async settleManagedIntent(
+    topic: Topic,
+    intent: ManagedMasterIntent,
+    store: ManagedMasterPersistence,
+  ): Promise<PublishedMaster> {
+    if (intent.status === 'committed') {
+      this.indices.set(intent.group, FeedIndex.fromBigInt(BigInt(intent.index)));
+      return { topic: intent.group, index: intent.index, reference: intent.reference! };
+    }
+
+    const index = FeedIndex.fromBigInt(BigInt(intent.index));
+    const publisher = this.publishers.coordinator();
+    const reader = publisher.bee.makeFeedReader(topic, this.signer.publicKey().address());
+    try {
+      const update = await reader.downloadPayload({ index });
+      if (update.payload.toUtf8() !== intent.playlist) {
+        throw new Error(`Managed master index ${intent.index} already contains another playlist`);
+      }
+      const reference = (await reader.downloadReference({ index })).reference.toHex();
+      const committed = store.commit(intent, reference);
+      this.indices.set(intent.group, index);
+      return { topic: intent.group, index: intent.index, reference: committed.reference! };
+    } catch (error) {
+      if (!(error instanceof BeeResponseError) || (error.status !== 404 && error.status !== 503)) {
+        throw error;
+      }
+    }
+
+    const writer = publisher.bee.makeFeedWriter(topic, this.signer);
+    const result = await retryUntilDeadlineAsync(
+      () => writer.uploadPayload(publisher.stamp, intent.playlist, { index, deferred: true }),
+      MASTER_RETRY_WINDOW_MS,
+    );
+    const committed = store.commit(intent, result.reference.toHex());
+    this.indices.set(intent.group, index);
+    return { topic: intent.group, index: intent.index, reference: committed.reference! };
   }
 
   /**

@@ -21,6 +21,7 @@ import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
 import { ManagedCheckpointStore } from './libs/ManagedCheckpointStore.js';
+import { ManagedMasterStore } from './libs/ManagedMasterStore.js';
 import { ManagedMediaStore } from './libs/ManagedMediaStore.js';
 import { ManagedRenditionStore } from './libs/ManagedRenditionStore.js';
 import { ManagedRunStore } from './libs/ManagedRunStore.js';
@@ -163,6 +164,9 @@ async function start() {
     const managedRenditionStore = config.srsLifecycle
       ? new ManagedRenditionStore(path.join(config.stateDir, 'managed-renditions'))
       : undefined;
+    const managedMasterStore = config.srsLifecycle
+      ? new ManagedMasterStore(path.join(config.stateDir, 'managed-masters'))
+      : undefined;
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
     const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
@@ -195,7 +199,12 @@ async function start() {
     // `libs/AdminLadderRegistry.ts` and the "Admin mode" section of the package README.
     const ladderRegistry: LadderRegistry =
       adminApi && masterWriter
-        ? new AdminLadderRegistry({ client: adminApi, masterWriter, managedStore: managedRenditionStore })
+        ? new AdminLadderRegistry({
+            client: adminApi,
+            masterWriter,
+            managedStore: managedRenditionStore,
+            managedMasterStore,
+          })
         : streamCatalog;
     if (adminApi && masterWriter) {
       logger.info(

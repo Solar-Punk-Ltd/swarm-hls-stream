@@ -10,6 +10,7 @@ import {
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
 import { LadderIdentity, LadderRegistry, ManagedLadderRun, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
+import { ManagedMasterBinding, ManagedMasterPersistence } from './ManagedMasterStore.js';
 import { ManagedRenditionBinding, ManagedRenditionStore } from './ManagedRenditionStore.js';
 import { MasterFeedWriter } from './MasterFeedWriter.js';
 import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
@@ -18,6 +19,7 @@ interface AdminLadderRegistryOptions {
   client: AdminApiClient;
   masterWriter: MasterFeedWriter;
   managedStore?: ManagedRenditionStore;
+  managedMasterStore?: ManagedMasterPersistence;
   observedAt?: () => string;
   /**
    * A monotonic reading in milliseconds, for the one thing here that measures a duration: how long a
@@ -79,6 +81,7 @@ export class AdminLadderRegistry implements LadderRegistry {
   private readonly client: AdminApiClient;
   private readonly masterWriter: MasterFeedWriter;
   private readonly managedStore?: ManagedRenditionStore;
+  private readonly managedMasterStore?: ManagedMasterPersistence;
   private readonly observedAt: () => string;
   private readonly rewrites: MasterRewriteSchedule;
 
@@ -100,11 +103,16 @@ export class AdminLadderRegistry implements LadderRegistry {
   /** The catalog write index behind {@link merged}, by group, and absent while no answer carried one. */
   private readonly newestFeedIndex = new Map<string, number>();
   private readonly newestManagedRun = new Map<string, number>();
+  private readonly managedMasterContexts = new Map<
+    string,
+    { binding: ManagedMasterBinding; renditionRevision: number }
+  >();
 
   constructor(options: AdminLadderRegistryOptions) {
     this.client = options.client;
     this.masterWriter = options.masterWriter;
     this.managedStore = options.managedStore;
+    this.managedMasterStore = options.managedMasterStore;
     this.observedAt = options.observedAt ?? (() => new Date().toISOString());
     this.rewrites = new MasterRewriteSchedule(options.now ?? (() => performance.now()));
   }
@@ -176,8 +184,8 @@ export class AdminLadderRegistry implements LadderRegistry {
     adminStreamId: string,
     rendition: Rendition,
   ): Promise<RenditionAnnouncement> {
-    if (!this.managedStore) {
-      throw new Error(`Managed ladder ${identity.group} has no durable rendition report store`);
+    if (!this.managedStore || !this.managedMasterStore) {
+      throw new Error(`Managed ladder ${identity.group} has no durable report and master stores`);
     }
     const binding: ManagedRenditionBinding = {
       streamId: adminStreamId,
@@ -218,7 +226,15 @@ export class AdminLadderRegistry implements LadderRegistry {
       const key = this.managedGroupKey(identity.group, binding.runNumber);
       this.merged.set(key, report.renditions);
       const advertised = advertisableRenditions(report.renditions, this.livenessOf(key));
-      const published = await this.masterWriter.publish(identity.group, advertised);
+      const masterBinding: ManagedMasterBinding = { ...binding, group: identity.group };
+      this.managedMasterContexts.set(key, { binding: masterBinding, renditionRevision: report.renditionRevision });
+      const published = await this.masterWriter.publishManaged(
+        identity.group,
+        advertised,
+        `rendition:${report.renditionRevision}`,
+        masterBinding,
+        this.managedMasterStore,
+      );
       if (published) {
         this.rewrites.recordAdvertised(key, ladderShape(advertised.map((item) => item.name)));
       }
@@ -335,7 +351,16 @@ export class AdminLadderRegistry implements LadderRegistry {
       // announce just published would take a rung back off the ladder until something else moved.
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
       const advertised = advertisableRenditions(this.merged.get(group) ?? [], this.livenessOf(group));
-      const published = await this.masterWriter.publish(publishGroup, advertised);
+      const managed = this.managedMasterContexts.get(group);
+      const published = managed && this.managedMasterStore
+        ? await this.masterWriter.publishManaged(
+            publishGroup,
+            advertised,
+            `rendition:${managed.renditionRevision}:shape:${shape}`,
+            managed.binding,
+            this.managedMasterStore,
+          )
+        : await this.masterWriter.publish(publishGroup, advertised);
       if (published) {
         this.logger.log(
           `[AdminLadderRegistry] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,

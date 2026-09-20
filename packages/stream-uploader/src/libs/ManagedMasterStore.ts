@@ -22,6 +22,7 @@ export interface ManagedMasterIntent extends ManagedMasterBinding {
 
 export interface ManagedMasterPersistence {
   read(binding: ManagedMasterBinding): ManagedMasterIntent | null;
+  latestCommittedIndex(group: string): number | null;
   prepare(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status' | 'reference'>): ManagedMasterIntent;
   commit(intent: ManagedMasterIntent, reference: string): ManagedMasterIntent;
 }
@@ -107,6 +108,29 @@ export class ManagedMasterStore implements ManagedMasterPersistence {
     } catch {
       throw new Error(`Managed master intent ${filePath} is unreadable`);
     }
+  }
+
+  public latestCommittedIndex(group: string): number | null {
+    this.flushDirectory(this.stateDir);
+    let latest: number | null = null;
+    for (const name of this.fileOps.readdirSync(this.stateDir)) {
+      if (!name.endsWith('.json')) {
+        continue;
+      }
+      const filePath = path.join(this.stateDir, name);
+      try {
+        const parsed: unknown = JSON.parse(this.fileOps.readFileSync(filePath, 'utf8'));
+        if (!isIntent(parsed)) {
+          throw new Error('invalid intent');
+        }
+        if (parsed.group === group && parsed.status === 'committed') {
+          latest = Math.max(latest ?? 0, parsed.index);
+        }
+      } catch {
+        throw new Error(`Managed master intent ${filePath} is unreadable`);
+      }
+    }
+    return latest;
   }
 
   public prepare(

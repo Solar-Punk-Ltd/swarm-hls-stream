@@ -13,6 +13,7 @@ import {
 import { AdminLadderRegistry } from '../src/libs/AdminLadderRegistry.js';
 import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
 import { LadderIdentity } from '../src/libs/LadderRegistry.js';
+import { ManagedMasterStore } from '../src/libs/ManagedMasterStore.js';
 import { ManagedRenditionStore } from '../src/libs/ManagedRenditionStore.js';
 import { MasterFeedWriter } from '../src/libs/MasterFeedWriter.js';
 import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
@@ -119,7 +120,8 @@ function makeHarness(
     registry: new AdminLadderRegistry({
       client: new AdminApiClient({ baseUrl: ADMIN_URL, token: ADMIN_TOKEN, fetcher, sleep: async () => {} }),
       masterWriter: new MasterFeedWriter(publishers, new PrivateKey(TEST_KEY)),
-      managedStore: new ManagedRenditionStore(root),
+      managedStore: new ManagedRenditionStore(path.join(root, 'renditions')),
+      managedMasterStore: new ManagedMasterStore(path.join(root, 'masters')),
       observedAt: () => OBSERVED_AT,
     }),
     reports,
