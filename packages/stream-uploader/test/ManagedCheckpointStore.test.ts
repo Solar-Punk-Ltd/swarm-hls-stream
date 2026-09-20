@@ -150,13 +150,19 @@ describe('ManagedCheckpointStore', () => {
     assert.equal(adopted.checkpointReference, CHECKPOINT_IDS[0]);
     assert.equal(adopted.renditions[0].bandwidth, 800_000, 'legacy measured bitrate is retained');
     assert.equal(store.adoptLegacy(structuredClone(input)).checkpointReference, adopted.checkpointReference);
+    assert.equal(
+      store.adoptLegacy({ ...structuredClone(input), operationId: '99999999-9999-4999-8999-999999999999' })
+        .checkpointReference,
+      adopted.checkpointReference,
+      'a replacement admin operation reuses the exact sealed proof',
+    );
 
     const next = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[1]).prepare(operation(1, adopted));
     assert.deepEqual(next.tracks[0].formatFingerprint, VIDEO_FORMAT);
     assert.equal(next.expectedRenditions[0].bandwidth, 900_000, 'managed target bitrate stays frozen separately');
   });
 
-  it('refuses a different candidate or immutable reference after adoption is sealed', () => {
+  it('refuses an internally inconsistent immutable reference after adoption is sealed', () => {
     const root = tempRoot();
     const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
     const state = trackState(1, undefined, REFERENCES[0]);
@@ -180,12 +186,55 @@ describe('ManagedCheckpointStore', () => {
     };
     const adopted = store.adoptLegacy(input);
 
-    assert.throws(() => store.adoptLegacy({ ...input, candidateDigest: 'b'.repeat(64) }), /different/i);
     assert.throws(
       () => store.adoptLegacy({ ...input, master: { ...input.master, reference: REFERENCES[2] } }),
       /different|does not match/i,
     );
     assert.equal(store.read(adopted.checkpointReference)?.completedRecording?.master.reference, REFERENCES[1]);
+  });
+
+  it('preserves a cancelled proof while a changed replacement candidate seals a new checkpoint', () => {
+    const root = tempRoot();
+    const ids = [...CHECKPOINT_IDS];
+    const store = new ManagedCheckpointStore(root, undefined, () => ids.shift()!);
+    const firstState = { ...trackState(1, undefined, REFERENCES[0]), streamRawTopic: TOPIC };
+    const first = store.adoptLegacy({
+      operationId: '88888888-8888-4888-8888-888888888888',
+      candidateDigest: 'a'.repeat(64),
+      adminStreamId: ADMIN_STREAM_ID,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [],
+      tracks: [{
+        streamId: firstState.streamId,
+        rendition: null,
+        state: firstState,
+        manifest: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
+        formatFingerprint: VIDEO_FORMAT,
+      }],
+      master: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
+    });
+    const nextState = trackState(1, firstState, REFERENCES[3]);
+    const second = store.adoptLegacy({
+      operationId: '99999999-9999-4999-8999-999999999999',
+      candidateDigest: 'b'.repeat(64),
+      adminStreamId: ADMIN_STREAM_ID,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [],
+      tracks: [{
+        streamId: nextState.streamId,
+        rendition: null,
+        state: { ...nextState, streamRawTopic: TOPIC },
+        manifest: { topic: TOPIC, index: 13, reference: REFERENCES[4], duration: 4 },
+        formatFingerprint: VIDEO_FORMAT,
+      }],
+      master: { topic: TOPIC, index: 13, reference: REFERENCES[4], duration: 4 },
+    });
+
+    assert.notEqual(second.checkpointReference, first.checkpointReference);
+    assert.equal(store.read(first.checkpointReference)?.completedRecording?.master.index, 12);
+    assert.equal(store.findRun(ADMIN_STREAM_ID, 1)?.checkpointReference, second.checkpointReference);
   });
 
   it('rebuilds cumulative A+B+C state in three fresh processes with stable feed topics', () => {

@@ -378,16 +378,19 @@ export class ManagedCheckpointStore {
     const existing = this.findRun(input.adminStreamId, 1);
     if (existing) {
       const planned = this.legacyAdoptionRecord(input, existing.checkpointReference);
-      if (
-        existing.status !== 'complete' ||
-        existing.operationId !== input.operationId ||
-        existing.adoptionCandidateDigest !== input.candidateDigest ||
-        !existing.completedRecording ||
-        !sameValue(existing, planned)
-      ) {
+      if (existing.adoptionCandidateDigest === input.candidateDigest) {
+        if (
+          existing.status !== 'complete' ||
+          !existing.completedRecording ||
+          !sameValue({ ...existing, operationId: input.operationId }, planned)
+        ) {
+          throw new Error('Legacy adoption run is already sealed with different immutable input');
+        }
+        return existing.completedRecording;
+      }
+      if (!existing.adoptionCandidateDigest) {
         throw new Error('Legacy adoption run is already sealed with different immutable input');
       }
-      return existing.completedRecording;
     }
     const planned = this.legacyAdoptionRecord(input, this.makeReference());
     if (!UUID.test(planned.checkpointReference)) {
