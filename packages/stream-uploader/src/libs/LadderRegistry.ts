@@ -1,5 +1,14 @@
 import { MediaType, Rendition } from '../types.js';
 
+import { ManagedExpectedRendition } from './ManagedCheckpointStore.js';
+
+export interface ManagedLadderRun {
+  readonly runNumber: number;
+  readonly uploaderId: string;
+  readonly claimId: string;
+  readonly expectedRenditions: readonly ManagedExpectedRendition[];
+}
+
 /**
  * Everything about a ladder that is the same for all of its rungs.
  *
@@ -23,6 +32,8 @@ export interface LadderIdentity {
    * where nothing is reported to anybody — {@link StreamCatalog} never reads it.
    */
   adminStreamId?: string;
+  /** Immutable lifecycle-v1 authority for this ladder announce. */
+  managedRun?: ManagedLadderRun;
 }
 
 /**
@@ -77,5 +88,5 @@ export interface LadderRegistry {
    * a delivery is known to have actually landed rather than been attempted. It is also the only path
    * that can notice a rung *stopping*, which no announce ever reports. See `LadderLiveness`.
    */
-  recordRungDelivered(group: string, rung: string): void;
+  recordRungDelivered(group: string, rung: string, managedRun?: ManagedLadderRun): void;
 }

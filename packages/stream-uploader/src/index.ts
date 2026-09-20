@@ -22,6 +22,7 @@ import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
 import { ManagedCheckpointStore } from './libs/ManagedCheckpointStore.js';
 import { ManagedMediaStore } from './libs/ManagedMediaStore.js';
+import { ManagedRenditionStore } from './libs/ManagedRenditionStore.js';
 import { ManagedRunStore } from './libs/ManagedRunStore.js';
 import { ManagedStateLock } from './libs/ManagedStateLock.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
@@ -159,6 +160,9 @@ async function start() {
     const managedCheckpointStore = config.srsLifecycle
       ? new ManagedCheckpointStore(path.join(config.stateDir, 'managed-checkpoints'))
       : undefined;
+    const managedRenditionStore = config.srsLifecycle
+      ? new ManagedRenditionStore(path.join(config.stateDir, 'managed-renditions'))
+      : undefined;
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
     const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
@@ -190,7 +194,9 @@ async function start() {
     // record, and the admin writes `renditions` into the catalog entry it already owns. See
     // `libs/AdminLadderRegistry.ts` and the "Admin mode" section of the package README.
     const ladderRegistry: LadderRegistry =
-      adminApi && masterWriter ? new AdminLadderRegistry({ client: adminApi, masterWriter }) : streamCatalog;
+      adminApi && masterWriter
+        ? new AdminLadderRegistry({ client: adminApi, masterWriter, managedStore: managedRenditionStore })
+        : streamCatalog;
     if (adminApi && masterWriter) {
       logger.info(
         '[Admin] ABR ladder in admin mode: the declared topic is the ladder master feed, each rung publishes ' +

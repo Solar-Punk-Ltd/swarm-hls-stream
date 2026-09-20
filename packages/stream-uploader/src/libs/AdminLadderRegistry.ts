@@ -1,16 +1,24 @@
 import { Rendition } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
-import { ADMIN_STATE_VOD, AdminApiClient, RenditionReportResponse } from './AdminApiClient.js';
+import {
+  ADMIN_STATE_VOD,
+  AdminApiClient,
+  ManagedRenditionReportResponse,
+  RenditionReportResponse,
+} from './AdminApiClient.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
-import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
+import { LadderIdentity, LadderRegistry, ManagedLadderRun, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
+import { ManagedRenditionBinding, ManagedRenditionStore } from './ManagedRenditionStore.js';
 import { MasterFeedWriter } from './MasterFeedWriter.js';
 import { ladderShape, MasterRewriteSchedule } from './MasterRewriteSchedule.js';
 
 interface AdminLadderRegistryOptions {
   client: AdminApiClient;
   masterWriter: MasterFeedWriter;
+  managedStore?: ManagedRenditionStore;
+  observedAt?: () => string;
   /**
    * A monotonic reading in milliseconds, for the one thing here that measures a duration: how long a
    * failed master rewrite waits before a delivery may try it again. See {@link MasterRewriteSchedule}.
@@ -70,6 +78,8 @@ export class AdminLadderRegistry implements LadderRegistry {
   private readonly logger = Logger.getInstance();
   private readonly client: AdminApiClient;
   private readonly masterWriter: MasterFeedWriter;
+  private readonly managedStore?: ManagedRenditionStore;
+  private readonly observedAt: () => string;
   private readonly rewrites: MasterRewriteSchedule;
 
   /** How far each ladder's rungs have got, one tracker per group. */
@@ -89,10 +99,13 @@ export class AdminLadderRegistry implements LadderRegistry {
 
   /** The catalog write index behind {@link merged}, by group, and absent while no answer carried one. */
   private readonly newestFeedIndex = new Map<string, number>();
+  private readonly newestManagedRun = new Map<string, number>();
 
   constructor(options: AdminLadderRegistryOptions) {
     this.client = options.client;
     this.masterWriter = options.masterWriter;
+    this.managedStore = options.managedStore;
+    this.observedAt = options.observedAt ?? (() => new Date().toISOString());
     this.rewrites = new MasterRewriteSchedule(options.now ?? (() => performance.now()));
   }
 
@@ -120,6 +133,10 @@ export class AdminLadderRegistry implements LadderRegistry {
       throw new Error(
         `Ladder ${identity.group} has no admin stream id, so its rung ${rendition.name} has nothing to report to`,
       );
+    }
+
+    if (identity.managedRun) {
+      return this.upsertManagedRendition(identity, adminStreamId, rendition);
     }
 
     const report = await this.client.reportRendition(adminStreamId, rendition);
@@ -154,6 +171,93 @@ export class AdminLadderRegistry implements LadderRegistry {
     };
   }
 
+  private async upsertManagedRendition(
+    identity: LadderIdentity,
+    adminStreamId: string,
+    rendition: Rendition,
+  ): Promise<RenditionAnnouncement> {
+    if (!this.managedStore) {
+      throw new Error(`Managed ladder ${identity.group} has no durable rendition report store`);
+    }
+    const binding: ManagedRenditionBinding = {
+      streamId: adminStreamId,
+      runNumber: identity.managedRun!.runNumber,
+      uploaderId: identity.managedRun!.uploaderId,
+      claimId: identity.managedRun!.claimId,
+    };
+
+    for (;;) {
+      const prepared = this.managedStore.prepare(binding, rendition, this.observedAt());
+      const report = await this.client.reportManagedRendition(adminStreamId, binding.runNumber, prepared.report);
+      if (report === null) {
+        throw new Error(
+          `Could not report managed rendition ${rendition.name} of ladder ${identity.group} run ${binding.runNumber}`,
+        );
+      }
+      this.validateManagedResponse(identity.managedRun!, report);
+      this.managedStore.accept(binding, prepared.report, report.renditionRevision);
+      if (!prepared.target) {
+        continue;
+      }
+
+      const newestRun = this.newestManagedRun.get(identity.group);
+      const newestRevision = this.managedStore.latestRevision(adminStreamId, binding.runNumber);
+      if (
+        (newestRun !== undefined && binding.runNumber < newestRun) ||
+        (newestRevision !== null && report.renditionRevision < newestRevision)
+      ) {
+        return {
+          masterIndex: null,
+          masterReference: null,
+          flippedToFinished: false,
+          duration: report.ladder.duration,
+        };
+      }
+
+      this.newestManagedRun.set(identity.group, binding.runNumber);
+      const key = this.managedGroupKey(identity.group, binding.runNumber);
+      this.merged.set(key, report.renditions);
+      const advertised = advertisableRenditions(report.renditions, this.livenessOf(key));
+      const published = await this.masterWriter.publish(identity.group, advertised);
+      if (published) {
+        this.rewrites.recordAdvertised(key, ladderShape(advertised.map((item) => item.name)));
+      }
+      return {
+        masterIndex: published?.index ?? null,
+        masterReference: published?.reference ?? null,
+        flippedToFinished: report.ladder.flippedToFinished,
+        duration: report.ladder.duration,
+      };
+    }
+  }
+
+  private validateManagedResponse(run: ManagedLadderRun, report: ManagedRenditionReportResponse): void {
+    const expected = new Map(run.expectedRenditions.map((rendition) => [rendition.name, rendition]));
+    if (new Set(report.renditions.map((rendition) => rendition.name)).size !== report.renditions.length) {
+      throw new Error('Managed rendition response contains a duplicate rung');
+    }
+    for (const rendition of report.renditions) {
+      const frozen = expected.get(rendition.name);
+      if (
+        !frozen ||
+        frozen.topic !== rendition.topic ||
+        frozen.width !== rendition.width ||
+        frozen.height !== rendition.height ||
+        frozen.bandwidth !== rendition.bandwidth ||
+        frozen.avgBandwidth !== rendition.avgBandwidth
+      ) {
+        throw new Error(`Managed rendition response contains rung ${rendition.name} outside the frozen run shape`);
+      }
+    }
+    if (
+      report.ladder.finished &&
+      (report.renditions.length !== run.expectedRenditions.length ||
+        report.renditions.some((rendition) => rendition.index === undefined))
+    ) {
+      throw new Error('Managed rendition response claims a finished ladder without every frozen rung');
+    }
+  }
+
   /**
    * Take an answer as the ladder this process holds for a group, unless a newer one has already been
    * taken, and say which ladder the master is to be written from.
@@ -184,10 +288,20 @@ export class AdminLadderRegistry implements LadderRegistry {
     return report.renditions;
   }
 
-  public recordRungDelivered(group: string, rung: string): void {
-    const liveness = this.livenessOf(group);
+  public recordRungDelivered(group: string, rung: string, managedRun?: ManagedLadderRun): void {
+    if (managedRun) {
+      const newestRun = this.newestManagedRun.get(group);
+      if (newestRun !== undefined && managedRun.runNumber < newestRun) {
+        return;
+      }
+      if (newestRun === undefined || managedRun.runNumber > newestRun) {
+        this.newestManagedRun.set(group, managedRun.runNumber);
+      }
+    }
+    const key = managedRun ? this.managedGroupKey(group, managedRun.runNumber) : group;
+    const liveness = this.livenessOf(key);
     liveness.recordDelivered(rung);
-    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+    this.republishIfLadderShapeChanged(key, liveness.liveRungs(), group);
   }
 
   /**
@@ -197,7 +311,7 @@ export class AdminLadderRegistry implements LadderRegistry {
    * behind a queue. The whole of the ⛔⛔⛔ account of why this exists at all — a rung dying is not an
    * announce, so the announce path never asks — is on `StreamCatalog.republishIfLadderShapeChanged`.
    */
-  private republishIfLadderShapeChanged(group: string, liveRungs: readonly string[]): void {
+  private republishIfLadderShapeChanged(group: string, liveRungs: readonly string[], publishGroup: string = group): void {
     if (!this.merged.has(group)) {
       // Nothing has announced this ladder yet, so there is no master to correct and no ladder to write
       // one from. The first announce publishes the right shape anyway.
@@ -209,11 +323,11 @@ export class AdminLadderRegistry implements LadderRegistry {
       return;
     }
 
-    void this.rewriteMaster(group, shape);
+    void this.rewriteMaster(group, shape, publishGroup);
   }
 
   /** Runs one rewrite and records what it actually achieved. Never rejects: its caller is a segment. */
-  private async rewriteMaster(group: string, shape: string): Promise<void> {
+  private async rewriteMaster(group: string, shape: string, publishGroup: string): Promise<void> {
     try {
       // ⛔ The ladder as it stands when the write runs, never the one it stood at when this rewrite was
       // scheduled. A rewrite is queued from a segment and settles turns later, so a sibling rung's
@@ -221,7 +335,7 @@ export class AdminLadderRegistry implements LadderRegistry {
       // announce just published would take a rung back off the ladder until something else moved.
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
       const advertised = advertisableRenditions(this.merged.get(group) ?? [], this.livenessOf(group));
-      const published = await this.masterWriter.publish(group, advertised);
+      const published = await this.masterWriter.publish(publishGroup, advertised);
       if (published) {
         this.logger.log(
           `[AdminLadderRegistry] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,
@@ -253,5 +367,9 @@ export class AdminLadderRegistry implements LadderRegistry {
     const created = new LadderLiveness();
     this.liveness.set(group, created);
     return created;
+  }
+
+  private managedGroupKey(group: string, runNumber: number): string {
+    return `${group}\u0000${runNumber}`;
   }
 }

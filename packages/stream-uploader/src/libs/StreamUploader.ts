@@ -50,7 +50,7 @@ import { BeePublisher } from './BeePublisherPool.js';
 import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
-import { LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
+import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { continuesFrom, ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -317,6 +317,7 @@ export interface StreamUploaderOptions {
   admin?: AdminReporting;
   /** Lifecycle-v1 durable media and publication callbacks. */
   managedLifecycle?: {
+    run: NonNullable<LadderIdentity['managedRun']>;
     onLivePublished: (sourceGeneration: number) => void;
     onSegmentUploaded?: (token: string, reference: string, state: StreamState) => void;
     onSegmentSettled?: (token: string) => void;
@@ -576,7 +577,7 @@ export class StreamUploader {
     if (this.ladder) {
       // Beside the metric and not instead of it: the metric is an observation, this decides what the
       // master is allowed to advertise. Both want the same moment, which is a segment that landed.
-      this.ladderRegistry.recordRungDelivered(this.ladder.group, this.ladder.rung.name);
+      this.ladderRegistry.recordRungDelivered(this.ladder.group, this.ladder.rung.name, this.managedLifecycle?.run);
     }
     this.uploadLiveManifest();
     await this.refreshBandwidthIfDrifted();
@@ -1326,6 +1327,7 @@ export class StreamUploader {
         // Absent standalone, where the catalog never reads it. In admin mode it is what addresses the
         // report, and it is the ladder's rather than this rung's: one declared stream is one ladder.
         adminStreamId: this.admin?.id,
+        managedRun: this.managedLifecycle?.run,
       },
       rendition,
     );

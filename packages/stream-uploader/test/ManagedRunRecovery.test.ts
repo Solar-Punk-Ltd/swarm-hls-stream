@@ -12,7 +12,7 @@ import {
   STATE_REPORT_FAILED,
   StateReportOutcome,
 } from '../src/libs/AdminApiClient.js';
-import { LadderRegistry } from '../src/libs/LadderRegistry.js';
+import { LadderIdentity, LadderRegistry } from '../src/libs/LadderRegistry.js';
 import {
   ManagedCheckpointPersistence,
   ManagedCheckpointStore,
@@ -894,14 +894,18 @@ describe('managed run recovery', () => {
         avgBandwidth: 700_000,
       },
     ];
+    const announcedIdentities: LadderIdentity[] = [];
     const ladderRegistry = {
       recordRungDelivered: () => {},
-      upsertRendition: async () => ({
-        masterIndex: 9,
-        masterReference: 'b'.repeat(64),
-        flippedToFinished: true,
-        duration: 0.1,
-      }),
+      upsertRendition: async (identity: LadderIdentity) => {
+        announcedIdentities.push(structuredClone(identity));
+        return {
+          masterIndex: 9,
+          masterReference: 'b'.repeat(64),
+          flippedToFinished: true,
+          duration: 0.1,
+        };
+      },
     } as LadderRegistry;
     const target = makeTestOrchestrator(
       {
@@ -952,6 +956,12 @@ describe('managed run recovery', () => {
       assert.deepEqual(completed?.expectedRenditions, ['360p']);
       assert.equal(completed?.renditions[0]?.name, '360p');
       assert.equal(completed?.renditions[0]?.topic, expectedRenditions[0].topic);
+      assert.deepEqual(announcedIdentities.at(-1)?.managedRun, {
+        runNumber: CLAIM.runNumber,
+        uploaderId: CLAIM.uploaderId,
+        claimId: CLAIM.claimId,
+        expectedRenditions,
+      });
     } finally {
       await target.cleanup();
       fs.rmSync(root, { recursive: true, force: true });

@@ -2672,6 +2672,15 @@ export class StreamOrchestrator {
           ladder?.rung.name ?? null,
         )
       : null;
+    const managedRun =
+      managedState?.record.claimId
+        ? {
+            runNumber: managedState.record.runNumber,
+            uploaderId: managedState.record.uploaderId,
+            claimId: managedState.record.claimId,
+            expectedRenditions: managedState.record.expectedRenditions,
+          }
+        : undefined;
     if (managedRestore) {
       streamTopic = managedRestore.streamRawTopic;
       anchor = managedRestore.anchor ?? anchor;
@@ -2693,8 +2702,9 @@ export class StreamOrchestrator {
       restoreState: managedRestore ?? undefined,
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
-      managedLifecycle: managedState
+      managedLifecycle: managedState && managedRun
         ? {
+            run: managedRun,
             onLivePublished: (sourceGeneration) =>
               this.markManagedManifestPublished(managedStreamId, sourceGeneration),
             onSegmentUploaded: this.config.managedMediaStore
@@ -3393,6 +3403,15 @@ export class StreamOrchestrator {
         `Refused legacy recovery for managed track ${streamId} without its managed-media journal`,
       );
     }
+    const managedRun =
+      managedState?.record.claimId
+        ? {
+            runNumber: managedState.record.runNumber,
+            uploaderId: managedState.record.uploaderId,
+            claimId: managedState.record.claimId,
+            expectedRenditions: managedState.record.expectedRenditions,
+          }
+        : undefined;
 
     if (state.ladder && base !== null) {
       // Written back to disk rather than only read into memory. The recovery entry and the group
@@ -3451,8 +3470,9 @@ export class StreamOrchestrator {
       // this is the only surviving record of which declaration it belongs to. Absent on an entry
       // written before admin mode, and on every entry written outside it.
       admin: this.adminReportingFor(state.adminStreamId),
-      managedLifecycle: managedState
+      managedLifecycle: managedState && managedRun
         ? {
+            run: managedRun,
             onLivePublished: (sourceGeneration) =>
               this.markManagedManifestPublished(managedStreamId, sourceGeneration),
             onSegmentUploaded: this.config.managedMediaStore
