@@ -168,4 +168,15 @@ describe('ServiceLifecycle', () => {
 
     assert.deepEqual(recorded.order, ['api closed']);
   });
+
+  it('releases the managed state lock only after streams and the api have drained', async () => {
+    const { lifecycle, recorded } = lifecycleUnderTest();
+    lifecycle.trackOrchestrator(orchestratorThat(async () => void recorded.order.push('streams stopped')));
+    lifecycle.trackApiServer(apiServerThat(async () => void recorded.order.push('api closed')));
+    lifecycle.trackStateLock({ release: () => void recorded.order.push('lock released') });
+
+    await lifecycle.shutdown('SIGTERM');
+
+    assert.deepEqual(recorded.order, ['streams stopped', 'api closed', 'lock released']);
+  });
 });

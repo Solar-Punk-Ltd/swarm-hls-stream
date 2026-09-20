@@ -7,6 +7,10 @@ export interface StreamCleanup {
   cleanup(): Promise<void>;
 }
 
+export interface StateLock {
+  release(): void;
+}
+
 /**
  * How the process ends. Injected because the alternative is a module that calls `process.exit` and can
  * therefore only be run once, by the process it kills.
@@ -33,6 +37,7 @@ export class ServiceLifecycle {
   private isShuttingDown = false;
   private orchestrator: StreamCleanup | undefined;
   private apiServer: ApiServerHandle | undefined;
+  private stateLock: StateLock | undefined;
 
   constructor(private readonly exit: ExitProcess, private readonly logger = Logger.getInstance()) {}
 
@@ -44,6 +49,10 @@ export class ServiceLifecycle {
 
   public trackApiServer(apiServer: ApiServerHandle): void {
     this.apiServer = apiServer;
+  }
+
+  public trackStateLock(stateLock: StateLock): void {
+    this.stateLock = stateLock;
   }
 
   public async shutdown(signal: string): Promise<void> {
@@ -65,6 +74,9 @@ export class ServiceLifecycle {
         await this.apiServer.close();
         this.apiServer = undefined;
       }
+
+      this.stateLock?.release();
+      this.stateLock = undefined;
 
       this.logger.info('Graceful shutdown completed');
       this.exit(0);

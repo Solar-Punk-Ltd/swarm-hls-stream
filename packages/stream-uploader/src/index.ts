@@ -23,6 +23,7 @@ import { Logger } from './libs/Logger.js';
 import { ManagedCheckpointStore } from './libs/ManagedCheckpointStore.js';
 import { ManagedMediaStore } from './libs/ManagedMediaStore.js';
 import { ManagedRunStore } from './libs/ManagedRunStore.js';
+import { ManagedStateLock } from './libs/ManagedStateLock.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { assertNodeReachable, waitForNode } from './libs/NodeWait.js';
 import { PostageGate } from './libs/PostageGate.js';
@@ -123,7 +124,12 @@ async function assertAdminSignsAsThisService(adminApi: AdminApiClient, signerOwn
 }
 
 async function start() {
+  let managedStateLock: ManagedStateLock | undefined;
   try {
+    if (config.srsLifecycle) {
+      managedStateLock = ManagedStateLock.acquire(config.stateDir);
+      lifecycle.trackStateLock(managedStateLock);
+    }
     const publishers = buildPublishers(config.beeRequestTimeoutMs);
     const adminApi = buildAdminApi();
     const signerOwner = new PrivateKey(config.streamKey).publicKey().address().toHex();
@@ -320,6 +326,7 @@ async function start() {
 
     logger.info('Stream uploader started, waiting for engine connections');
   } catch (error) {
+    managedStateLock?.release();
     logger.error('Failed to start:', error);
     process.exit(1);
   }
