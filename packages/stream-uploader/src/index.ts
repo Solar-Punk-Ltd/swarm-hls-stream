@@ -21,12 +21,14 @@ import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
 import { ManagedCheckpointStore } from './libs/ManagedCheckpointStore.js';
+import { ManagedFormatStore } from './libs/ManagedFormatStore.js';
 import { ManagedMasterStore } from './libs/ManagedMasterStore.js';
 import { ManagedMediaStore } from './libs/ManagedMediaStore.js';
 import { ManagedRenditionStore } from './libs/ManagedRenditionStore.js';
 import { ManagedRunStore } from './libs/ManagedRunStore.js';
 import { ManagedStateLock } from './libs/ManagedStateLock.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
+import { MediaFormatProbe } from './libs/MediaFormatProbe.js';
 import { assertNodeReachable, waitForNode } from './libs/NodeWait.js';
 import { PostageGate } from './libs/PostageGate.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
@@ -158,6 +160,9 @@ async function start() {
     const managedMediaStore = config.srsLifecycle
       ? new ManagedMediaStore(path.join(config.stateDir, 'managed-media'))
       : undefined;
+    const managedFormatStore = config.srsLifecycle
+      ? new ManagedFormatStore(path.join(config.stateDir, 'managed-formats'))
+      : undefined;
     const managedCheckpointStore = config.srsLifecycle
       ? new ManagedCheckpointStore(path.join(config.stateDir, 'managed-checkpoints'))
       : undefined;
@@ -231,6 +236,8 @@ async function start() {
       managedRunStore,
       managedMediaStore,
       managedCheckpointStore,
+      managedFormatStore,
+      mediaFormatInspector: config.srsLifecycle ? new MediaFormatProbe() : undefined,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);

@@ -933,7 +933,7 @@ export function resolveSegmentPath(mediaRootPath: string, file: string): string 
  * retry is possible. Other dropped segments are accounted so manifests do not present a media hole
  * as contiguous and the health signal can observe the loss.
  */
-function handleHls(
+async function handleHls(
   req: Request,
   res: Response,
   streamOrchestrator: StreamOrchestrator,
@@ -1036,9 +1036,15 @@ function handleHls(
       srsResponse(res, SRS_ACCEPT);
       return;
     }
-    const result = managedIdentity
+    const result = await (managedIdentity
       ? role.kind === 'source'
-        ? streamOrchestrator.handleManagedSourceProgress(streamId, managedIdentity, payload.duration, segmentData)
+        ? streamOrchestrator.handleManagedSourceProgress(
+            streamId,
+            managedIdentity,
+            payload.duration,
+            segmentData,
+            payload.seq_no,
+          )
         : streamOrchestrator.handleManagedSegment(
             streamId,
             managedIdentity,
@@ -1055,7 +1061,7 @@ function handleHls(
             payload.duration,
             segmentData,
           )
-        : streamOrchestrator.handleSegment(streamId, payload.seq_no, payload.duration, segmentData);
+        : streamOrchestrator.handleSegment(streamId, payload.seq_no, payload.duration, segmentData));
 
     if (result.accepted) {
       fs.rmSync(segmentPath, { force: true });

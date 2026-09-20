@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
 import { ManagedFormatInput, ManagedFormatStore } from '../src/libs/ManagedFormatStore.js';
+import { DurableFileOps } from '../src/libs/ManagedRunStore.js';
 import { MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
 
 const roots: string[] = [];
@@ -27,6 +28,35 @@ function root(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-formats-'));
   roots.push(directory);
   return directory;
+}
+
+function failDirectoryFlushOnce(target: string): DurableFileOps {
+  const paths = new Map<number, string>();
+  let failed = false;
+  return {
+    mkdirSync: (entry, options) => fs.mkdirSync(entry, options),
+    existsSync: (entry) => fs.existsSync(entry),
+    readdirSync: (entry) => fs.readdirSync(entry),
+    readFileSync: (entry, encoding) => fs.readFileSync(entry, encoding),
+    openSync: (entry, flags, mode) => {
+      const fd = fs.openSync(entry, flags, mode);
+      paths.set(fd, entry);
+      return fd;
+    },
+    writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+    fsyncSync: (fd) => {
+      if (!failed && paths.get(fd) === target) {
+        failed = true;
+        throw new Error('injected directory fsync failure');
+      }
+      fs.fsyncSync(fd);
+    },
+    closeSync: (fd) => {
+      paths.delete(fd);
+      fs.closeSync(fd);
+    },
+    renameSync: (from, to) => fs.renameSync(from, to),
+  };
 }
 
 afterEach(() => {
@@ -99,5 +129,16 @@ describe('ManagedFormatStore', () => {
       /changed from its durable fingerprint/,
     );
     assert.deepEqual(store.commit(sourceB, FINGERPRINT), FINGERPRINT);
+  });
+
+  it('does not acknowledge staged opening bytes until a renamed record is durably flushed', () => {
+    const directory = root();
+    const store = new ManagedFormatStore(directory, 1024, failDirectoryFlushOnce(directory));
+
+    assert.throws(() => store.stage(INPUT, Buffer.from('opening')), /injected directory fsync failure/);
+    assert.deepEqual(store.stage(INPUT, Buffer.from('opening')), {
+      kind: 'ready',
+      bytes: Buffer.from('opening'),
+    });
   });
 });

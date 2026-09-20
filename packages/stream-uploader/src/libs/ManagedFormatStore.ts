@@ -58,6 +58,8 @@ export interface ManagedFormatPersistence {
   read(input: Omit<ManagedFormatInput, 'sequence' | 'source'>): ManagedFormatRecord | null;
 }
 
+export class ManagedFormatMismatchError extends Error {}
+
 const nodeFileOps: DurableFileOps = {
   mkdirSync: (target, options) => fs.mkdirSync(target, options),
   existsSync: (target) => fs.existsSync(target),
@@ -211,7 +213,9 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
     }
     const required = expected ?? record.baseline;
     if (required && !sameMediaFormatFingerprint(required, fingerprint)) {
-      throw new Error(`Managed format track ${input.streamId} changed from its durable fingerprint`);
+      throw new ManagedFormatMismatchError(
+        `Managed format track ${input.streamId} changed from its durable fingerprint`,
+      );
     }
     const baseline = record.baseline ?? fingerprint;
     const updated: ManagedFormatRecord = {

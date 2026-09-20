@@ -43,6 +43,10 @@ export interface MediaFormatProbeOptions {
   readonly maxConcurrent?: number;
 }
 
+export interface MediaFormatInspector {
+  inspect(data: Buffer): Promise<MediaFormatProbeResult>;
+}
+
 interface FfprobeStream {
   codec_type?: unknown;
   codec_name?: unknown;
@@ -88,11 +92,42 @@ function canonicalTrackKey(track: MediaFormatTrack): string {
   return JSON.stringify(track);
 }
 
+function hasExactKeys(value: object, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
 export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFingerprint {
   if (!value || typeof value !== 'object') {return false;}
   const fingerprint = value as Partial<MediaFormatFingerprint>;
-  if (fingerprint.version !== 1 || fingerprint.container !== 'mpegts' || !Array.isArray(fingerprint.tracks)) {
+  if (
+    !hasExactKeys(value, ['version', 'container', 'tracks']) ||
+    fingerprint.version !== 1 ||
+    fingerprint.container !== 'mpegts' ||
+    !Array.isArray(fingerprint.tracks)
+  ) {
     return false;
+  }
+  for (const track of fingerprint.tracks) {
+    if (!track || typeof track !== 'object' || !('kind' in track)) {return false;}
+    const exact =
+      track.kind === 'video'
+        ? hasExactKeys(track, [
+            'kind',
+            'codec',
+            'profile',
+            'level',
+            'width',
+            'height',
+            'pixelFormat',
+            'chromaLocation',
+            'bitsPerRawSample',
+          ])
+        : track.kind === 'audio'
+          ? hasExactKeys(track, ['kind', 'codec', 'profile', 'sampleRate', 'channels', 'channelLayout'])
+          : false;
+    if (!exact) {return false;}
   }
   const normalized = mediaFormatFingerprintFromFfprobe({
     streams: fingerprint.tracks.map((track) =>
@@ -118,7 +153,7 @@ export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFi
           },
     ),
   });
-  return normalized !== null && JSON.stringify(normalized) === JSON.stringify(value);
+  return normalized !== null;
 }
 
 export function sameMediaFormatFingerprint(

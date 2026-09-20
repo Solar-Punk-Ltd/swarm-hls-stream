@@ -89,6 +89,11 @@ import {
   ManagedImmutableRenditionReference,
 } from './ManagedCheckpointStore.js';
 import {
+  ManagedFormatInput,
+  ManagedFormatMismatchError,
+  ManagedFormatPersistence,
+} from './ManagedFormatStore.js';
+import {
   ManagedMediaAcceptance,
   ManagedMediaInput,
   ManagedMediaPersistence,
@@ -105,6 +110,11 @@ import {
   ManagedRunReportRecord,
   remainingManagedDeadline,
 } from './ManagedRunStore.js';
+import {
+  MediaFormatFingerprint,
+  MediaFormatInspector,
+  sameMediaFormatFingerprint,
+} from './MediaFormatProbe.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { MetricsSnapshot, ServiceMetrics } from './ServiceMetrics.js';
@@ -153,6 +163,10 @@ export interface StreamOrchestratorConfig {
   managedMediaStore?: ManagedMediaPersistence;
   /** Durable cumulative finalization checkpoint for lifecycle-v1 managed SRS streams. */
   managedCheckpointStore?: ManagedCheckpointPersistence;
+  /** Durable bounded openings and actual codec fingerprints for lifecycle-v1 managed tracks. */
+  managedFormatStore?: ManagedFormatPersistence;
+  /** Bounded actual-media inspector. Required by production lifecycle-v1 wiring. */
+  mediaFormatInspector?: MediaFormatInspector;
   /**
    * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
    * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
@@ -369,6 +383,11 @@ export class StreamOrchestrator {
   private managedQueuedMedia = new Set<string>();
   /** Last durable source lineage queued for each track, so recovered generations get a seam. */
   private managedQueuedSources = new Map<string, string>();
+  private managedFormatInspections = new Map<
+    string,
+    { source: SourceConnectionIdentity; promise: Promise<RejectReason | null>; waiters: number }
+  >();
+  private managedValidatedFormats = new Map<string, SourceConnectionIdentity>();
   /**
    * The drain running for a stream id, with the session it is draining. The uploader is what makes the
    * entry answerable: a reconnect registers a replacement under the same id while the outgoing drain is
@@ -1555,7 +1574,7 @@ export class StreamOrchestrator {
     duration: number,
     data: Buffer,
     discontinuity = false,
-  ): SegmentResult {
+  ): SegmentResult | Promise<SegmentResult> {
     const state = this.managedSources.get(streamId);
     const reconnectMs = this.config.managedSourceReconnectMs;
     if (!state || state.closed || reconnectMs === undefined) {
@@ -1564,6 +1583,18 @@ export class StreamOrchestrator {
     if (state.deadline !== undefined && this.clock.now() >= state.deadline) {
       this.closeManagedSourceAtDeadline(streamId, state);
       return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    if (!this.managedFormatSourceIsCurrent(streamId, streamId, identity)) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+
+    const format = this.ensureManagedFormat(streamId, streamId, identity, segmentIndex, data, null);
+    if (format) {
+      return format.then((reason) =>
+        reason
+          ? { accepted: false, reason }
+          : this.handleManagedSegment(streamId, identity, segmentIndex, duration, data, discontinuity),
+      );
     }
 
     if (state.current && sameSource(state.current, identity)) {
@@ -1688,7 +1719,7 @@ export class StreamOrchestrator {
     duration: number,
     data: Buffer,
     discontinuity = false,
-  ): SegmentResult {
+  ): SegmentResult | Promise<SegmentResult> {
     const state = this.managedSources.get(baseStreamId);
     if (
       !state ||
@@ -1699,6 +1730,23 @@ export class StreamOrchestrator {
       (state.deadline !== undefined && this.clock.now() >= state.deadline)
     ) {
       return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    const rendition = this.config.ladder?.match(streamId)?.rung.name ?? null;
+    const format = this.ensureManagedFormat(baseStreamId, streamId, identity, segmentIndex, data, rendition);
+    if (format) {
+      return format.then((reason) =>
+        reason
+          ? { accepted: false, reason }
+          : this.handleManagedRenditionSegment(
+              streamId,
+              baseStreamId,
+              identity,
+              segmentIndex,
+              duration,
+              data,
+              discontinuity,
+            ),
+      );
     }
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
@@ -1746,6 +1794,182 @@ export class StreamOrchestrator {
       discontinuity,
       identity.generation,
       durable,
+    );
+  }
+
+  private ensureManagedFormat(
+    managedStreamId: string,
+    streamId: string,
+    source: SourceConnectionIdentity,
+    sequence: number,
+    data: Buffer,
+    rendition: string | null,
+    observationOnly = false,
+  ): Promise<RejectReason | null> | null {
+    const store = this.config.managedFormatStore;
+    const inspector = this.config.mediaFormatInspector;
+    if (!store || !inspector) {
+      return null;
+    }
+    const state = this.managedSources.get(managedStreamId);
+    if (!state) {
+      return Promise.resolve(REJECT_STALE_SOURCE);
+    }
+    const key = `${managedStreamId}\u0000${streamId}`;
+    const cached = this.managedValidatedFormats.get(key);
+    if (cached && sameSource(cached, source)) {
+      return null;
+    }
+    const existing = this.managedFormatInspections.get(key);
+    if (existing && sameSource(existing.source, source)) {
+      if (existing.waiters >= 1) {
+        return Promise.resolve(REJECT_UNVERIFIED_SOURCE_MEDIA);
+      }
+      existing.waiters++;
+      return existing.promise;
+    }
+    const input = this.managedFormatInput(state, streamId, source, sequence, rendition, observationOnly);
+    if (!input) {
+      return Promise.resolve(REJECT_UNVERIFIED_SOURCE_MEDIA);
+    }
+    let staged;
+    try {
+      staged = store.stage(input, data);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed format opening ${streamId}:`, error);
+      return Promise.resolve(REJECT_DURABILITY_FAILED);
+    }
+    if (staged.kind === 'validated') {
+      const expected = this.expectedManagedFormat(state, rendition, observationOnly);
+      if (
+        expected === false ||
+        !this.managedFormatMatchesRun(state, rendition, staged.fingerprint) ||
+        (expected !== null && !sameMediaFormatFingerprint(expected, staged.fingerprint))
+      ) {
+        return Promise.resolve(REJECT_UNVERIFIED_SOURCE_MEDIA);
+      }
+      this.managedValidatedFormats.set(key, source);
+      return null;
+    }
+    if (staged.kind === 'conflict' || staged.kind === 'limit') {
+      return Promise.resolve(REJECT_UNVERIFIED_SOURCE_MEDIA);
+    }
+    const promise = inspector
+      .inspect(staged.bytes)
+      .then((result): RejectReason | null => {
+        if (result.kind !== 'valid') {
+          return REJECT_UNVERIFIED_SOURCE_MEDIA;
+        }
+        if (!this.managedFormatSourceIsCurrent(managedStreamId, streamId, source)) {
+          return REJECT_STALE_SOURCE;
+        }
+        const current = this.managedSources.get(managedStreamId);
+        if (!current || current.closed || (current.deadline !== undefined && this.clock.now() >= current.deadline)) {
+          return REJECT_STALE_SOURCE;
+        }
+        const expected = this.expectedManagedFormat(current, rendition, observationOnly);
+        if (expected === false || !this.managedFormatMatchesRun(current, rendition, result.fingerprint)) {
+          return REJECT_UNVERIFIED_SOURCE_MEDIA;
+        }
+        try {
+          store.commit(input, result.fingerprint, expected ?? undefined);
+        } catch (error) {
+          if (error instanceof ManagedFormatMismatchError) {
+            return REJECT_UNVERIFIED_SOURCE_MEDIA;
+          }
+          this.logger.error(`[StreamOrchestrator] Failed to bind managed format ${streamId}:`, error);
+          return REJECT_DURABILITY_FAILED;
+        }
+        this.managedValidatedFormats.set(key, source);
+        return null;
+      })
+      .finally(() => {
+        const current = this.managedFormatInspections.get(key);
+        if (current?.promise === promise) {
+          this.managedFormatInspections.delete(key);
+        }
+      });
+    this.managedFormatInspections.set(key, { source, promise, waiters: 0 });
+    return promise;
+  }
+
+  private managedFormatInput(
+    state: ManagedSourceState,
+    streamId: string,
+    source: SourceConnectionIdentity,
+    sequence: number,
+    rendition: string | null,
+    observationOnly: boolean,
+  ): ManagedFormatInput | null {
+    const expected = rendition
+      ? state.record.expectedRenditions.find((candidate) => candidate.name === rendition)
+      : undefined;
+    const topic = expected?.topic ?? (rendition === null ? state.record.topic : undefined);
+    if (!topic || (!observationOnly && state.record.expectedRenditions.length > 0 && !expected)) {
+      return null;
+    }
+    return {
+      adminStreamId: state.record.adminStreamId,
+      runNumber: state.record.runNumber,
+      streamId,
+      topic,
+      rendition,
+      source,
+      sequence,
+    };
+  }
+
+  private managedFormatSourceIsCurrent(
+    managedStreamId: string,
+    streamId: string,
+    source: SourceConnectionIdentity,
+  ): boolean {
+    const state = this.managedSources.get(managedStreamId);
+    const sourceMatches =
+      (state?.current && sameSource(state.current, source)) ||
+      (state?.candidate && sameSource(state.candidate.identity, source));
+    return Boolean(sourceMatches && (streamId === managedStreamId || this.streamBases.get(streamId) === managedStreamId));
+  }
+
+  private expectedManagedFormat(
+    state: ManagedSourceState,
+    rendition: string | null,
+    observationOnly: boolean,
+  ): MediaFormatFingerprint | null | false {
+    if (observationOnly && state.record.expectedRenditions.length > 0) {
+      return null;
+    }
+    try {
+      const checkpoint = this.config.managedCheckpointStore?.read(state.record.checkpointReference);
+      const track = checkpoint?.tracks.find((candidate) => candidate.rendition === rendition);
+      return track?.formatFingerprint ?? null;
+    } catch {
+      return false;
+    }
+  }
+
+  private managedFormatMatchesRun(
+    state: ManagedSourceState,
+    rendition: string | null,
+    fingerprint: MediaFormatFingerprint,
+  ): boolean {
+    const video = fingerprint.tracks.filter((track) => track.kind === 'video');
+    const audio = fingerprint.tracks.filter((track) => track.kind === 'audio');
+    if (state.record.mediaType === MEDIA_TYPE_AUDIO) {
+      return video.length === 0 && audio.length > 0;
+    }
+    if (video.length === 0) {
+      return false;
+    }
+    if (rendition === null) {
+      return true;
+    }
+    const expected = state.record.expectedRenditions.find((candidate) => candidate.name === rendition);
+    return Boolean(
+      expected &&
+        video.length === 1 &&
+        video[0].width === expected.width &&
+        video[0].height === expected.height,
     );
   }
 
@@ -1927,7 +2151,8 @@ export class StreamOrchestrator {
     identity: SourceConnectionIdentity,
     duration: number,
     data: Buffer,
-  ): SegmentResult {
+    sequence = 0,
+  ): SegmentResult | Promise<SegmentResult> {
     const state = this.managedSources.get(streamId);
     const reconnectMs = this.config.managedSourceReconnectMs;
     if (!state || state.closed || reconnectMs === undefined) {
@@ -1936,6 +2161,18 @@ export class StreamOrchestrator {
     if (state.deadline !== undefined && this.clock.now() >= state.deadline) {
       this.closeManagedSourceAtDeadline(streamId, state);
       return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    if (!this.managedFormatSourceIsCurrent(streamId, streamId, identity)) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+
+    const format = this.ensureManagedFormat(streamId, streamId, identity, sequence, data, null, true);
+    if (format) {
+      return format.then((reason) =>
+        reason
+          ? { accepted: false, reason }
+          : this.handleManagedSourceProgress(streamId, identity, duration, data, sequence),
+      );
     }
 
     const candidate = state.candidate;
@@ -2140,7 +2377,32 @@ export class StreamOrchestrator {
       rendition,
       state: trackState,
       manifest: immutable,
+      formatFingerprint: this.requireManagedTrackFingerprint(state, streamId, rendition),
     });
+  }
+
+  private requireManagedTrackFingerprint(
+    state: ManagedSourceState,
+    streamId: string,
+    rendition: string | null,
+  ): MediaFormatFingerprint | undefined {
+    const store = this.config.managedFormatStore;
+    if (!store) {return undefined;}
+    const expected = rendition
+      ? state.record.expectedRenditions.find((candidate) => candidate.name === rendition)
+      : undefined;
+    const topic = expected?.topic ?? state.record.topic;
+    const record = store.read({
+      adminStreamId: state.record.adminStreamId,
+      runNumber: state.record.runNumber,
+      streamId,
+      topic,
+      rendition,
+    });
+    if (!record?.baseline) {
+      throw new Error(`Managed track ${streamId} has no durable actual-format fingerprint`);
+    }
+    return record.baseline;
   }
 
   private completeManagedCheckpoint(managedStreamId: string, master: PublishedStreamManifest): void {

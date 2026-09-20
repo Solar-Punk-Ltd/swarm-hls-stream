@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import { MediaType, StreamState } from '../types.js';
 
+import { isMediaFormatFingerprint, MediaFormatFingerprint } from './MediaFormatProbe.js';
+
 export interface ManagedImmutableMediaReference {
   readonly topic: string;
   readonly index: number;
@@ -63,6 +65,7 @@ export interface ManagedTrackFinalization {
   readonly rendition: string | null;
   readonly state: StreamState;
   readonly manifest: ManagedImmutableMediaReference | ManagedImmutableRenditionReference;
+  readonly formatFingerprint?: MediaFormatFingerprint;
 }
 
 export interface ManagedTrackCheckpoint {
@@ -70,6 +73,7 @@ export interface ManagedTrackCheckpoint {
   readonly rendition: string | null;
   readonly state: StreamState;
   readonly manifest?: ManagedImmutableMediaReference | ManagedImmutableRenditionReference;
+  readonly formatFingerprint?: MediaFormatFingerprint;
 }
 
 export interface ManagedCheckpointRecord {
@@ -274,7 +278,8 @@ function validTrack(value: unknown): value is ManagedTrackCheckpoint {
     (track.rendition === null || (typeof track.rendition === 'string' && track.rendition.length > 0)) &&
     validStreamState(track.state) &&
     track.state.streamId === track.streamId &&
-    (track.manifest === undefined || validMediaReference(track.manifest))
+    (track.manifest === undefined || validMediaReference(track.manifest)) &&
+    (track.formatFingerprint === undefined || isMediaFormatFingerprint(track.formatFingerprint))
   );
 }
 

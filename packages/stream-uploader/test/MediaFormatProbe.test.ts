@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
 import {
+  isMediaFormatFingerprint,
   mediaFormatFingerprintFromFfprobe,
   MediaFormatProbe,
 } from '../src/libs/MediaFormatProbe.js';
@@ -140,6 +141,32 @@ describe('MediaFormatProbe', () => {
         ],
       }),
       null,
+    );
+  });
+
+  it('validates reordered persisted fields and refuses malformed track values', () => {
+    const reordered = {
+      tracks: [
+        {
+          channelLayout: 'stereo',
+          channels: 2,
+          sampleRate: 48_000,
+          profile: 'LC',
+          codec: 'aac',
+          kind: 'audio',
+        },
+      ],
+      container: 'mpegts',
+      version: 1,
+    };
+    assert.equal(isMediaFormatFingerprint(reordered), true);
+    assert.equal(isMediaFormatFingerprint({ ...reordered, tracks: [null] }), false);
+    assert.equal(
+      isMediaFormatFingerprint({
+        ...reordered,
+        tracks: [{ ...reordered.tracks[0], channelLayout: 'unknown' }],
+      }),
+      false,
     );
   });
 
