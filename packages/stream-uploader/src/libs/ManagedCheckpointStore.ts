@@ -86,6 +86,7 @@ export interface ManagedCheckpointRecord {
   readonly expectedRenditions: readonly ManagedExpectedRendition[];
   readonly previousCheckpointReference?: string;
   readonly operationId?: string;
+  readonly adoptionCandidateDigest?: string;
   readonly status: 'prepared' | 'complete' | 'empty';
   readonly tracks: readonly ManagedTrackCheckpoint[];
   readonly retainedRecording?: ManagedCompletedRecording;
@@ -128,9 +129,21 @@ export interface CreateManagedRun {
   readonly expectedRenditions: readonly ManagedExpectedRendition[];
 }
 
+export interface AdoptLegacyRecording {
+  readonly operationId: string;
+  readonly candidateDigest: string;
+  readonly adminStreamId: string;
+  readonly topic: string;
+  readonly mediaType: MediaType;
+  readonly expectedRenditions: readonly ManagedExpectedRendition[];
+  readonly tracks: readonly ManagedTrackFinalization[];
+  readonly master: ManagedImmutableMediaReference;
+}
+
 /** Durable checkpoint operations used by the orchestrator and replaceable with a faulting store in tests. */
 export interface ManagedCheckpointPersistence {
   createRun(input: CreateManagedRun): ManagedCheckpointRecord;
+  adoptLegacy(input: AdoptLegacyRecording): ManagedCompletedRecording;
   prepare(operation: ManagedContinuationOperation): ManagedCheckpointRecord;
   saveTrack(checkpointReference: string, track: ManagedTrackFinalization): ManagedCheckpointRecord;
   complete(checkpointReference: string, master: ManagedImmutableMediaReference): ManagedCompletedRecording;
@@ -357,6 +370,34 @@ export class ManagedCheckpointStore {
     return record;
   }
 
+  public adoptLegacy(input: AdoptLegacyRecording): ManagedCompletedRecording {
+    this.validateCreate({ ...input, runNumber: 1 });
+    if (!UUID.test(input.operationId) || !REFERENCE.test(input.candidateDigest) || !validMediaReference(input.master)) {
+      throw new Error('Refused invalid legacy adoption checkpoint');
+    }
+    const existing = this.findRun(input.adminStreamId, 1);
+    if (existing) {
+      const planned = this.legacyAdoptionRecord(input, existing.checkpointReference);
+      if (
+        existing.status !== 'complete' ||
+        existing.operationId !== input.operationId ||
+        existing.adoptionCandidateDigest !== input.candidateDigest ||
+        !existing.completedRecording ||
+        !sameValue(existing, planned)
+      ) {
+        throw new Error('Legacy adoption run is already sealed with different immutable input');
+      }
+      return existing.completedRecording;
+    }
+    const planned = this.legacyAdoptionRecord(input, this.makeReference());
+    if (!UUID.test(planned.checkpointReference)) {
+      throw new Error('Checkpoint reference generator returned an invalid UUID');
+    }
+    this.save(planned);
+    this.saveRunIndex(planned);
+    return planned.completedRecording!;
+  }
+
   public prepare(operation: ManagedContinuationOperation): ManagedCheckpointRecord {
     if (operation.lifecycleVersion !== 1 || operation.status !== 'pending') {
       throw new Error('Refused invalid managed continuation operation');
@@ -401,6 +442,7 @@ export class ManagedCheckpointStore {
         streamId: track.streamId,
         rendition: track.rendition,
         state: track.state,
+        formatFingerprint: track.formatFingerprint,
       })),
       retainedRecording: operation.retainedRecording,
     };
@@ -626,6 +668,7 @@ export class ManagedCheckpointStore {
       new Set(record.tracks.map((track) => track.rendition ?? '')).size === record.tracks.length &&
       (record.previousCheckpointReference === undefined || UUID.test(record.previousCheckpointReference)) &&
       (record.operationId === undefined || UUID.test(record.operationId)) &&
+      (record.adoptionCandidateDigest === undefined || REFERENCE.test(record.adoptionCandidateDigest)) &&
       (record.retainedRecording === undefined || validCompletedRecording(record.retainedRecording)) &&
       (record.status === 'prepared' || record.status === 'complete' || record.status === 'empty') &&
       (record.status !== 'complete' ||
@@ -637,6 +680,71 @@ export class ManagedCheckpointStore {
           record.emptyOutcome.runNumber === record.runNumber &&
           record.emptyOutcome.checkpointReference === record.checkpointReference))
     );
+  }
+
+  private legacyAdoptionRecord(input: AdoptLegacyRecording, checkpointReference: string): ManagedCheckpointRecord {
+    if (input.master.topic !== input.topic || input.tracks.length === 0) {
+      throw new Error('Refused invalid legacy adoption checkpoint');
+    }
+    const base: ManagedCheckpointRecord = {
+      lifecycleVersion: 1,
+      checkpointReference,
+      adminStreamId: input.adminStreamId,
+      runNumber: 1,
+      topic: input.topic,
+      mediaType: input.mediaType,
+      expectedRenditions: [...input.expectedRenditions],
+      operationId: input.operationId,
+      adoptionCandidateDigest: input.candidateDigest,
+      status: 'complete',
+      tracks: input.tracks.map((track) => structuredClone(track)),
+    };
+    const renditions: ManagedImmutableRenditionReference[] = [];
+    if (input.expectedRenditions.length === 0) {
+      const track = input.tracks[0];
+      if (
+        input.tracks.length !== 1 ||
+        track.rendition !== null ||
+        !track.formatFingerprint ||
+        !sameValue(track.manifest, input.master) ||
+        track.state.streamRawTopic !== input.topic
+      ) {
+        throw new Error('Legacy single-track adoption does not match its immutable recording');
+      }
+    } else {
+      if (input.tracks.length !== input.expectedRenditions.length) {
+        throw new Error('Legacy ladder adoption is missing an expected rendition');
+      }
+      for (const expected of input.expectedRenditions) {
+        const track = input.tracks.find((candidate) => candidate.rendition === expected.name);
+        const manifest = track?.manifest;
+        if (
+          !track ||
+          !track.formatFingerprint ||
+          !manifest ||
+          !('name' in manifest) ||
+          manifest.name !== expected.name ||
+          manifest.topic !== expected.topic ||
+          manifest.width !== expected.width ||
+          manifest.height !== expected.height ||
+          track.state.streamRawTopic !== expected.topic
+        ) {
+          throw new Error(`Legacy adoption rendition ${expected.name} does not match its managed profile`);
+        }
+        renditions.push(manifest);
+      }
+    }
+    if (!base.tracks.every(validTrack)) {
+      throw new Error('Legacy adoption contains an invalid retained track');
+    }
+    const completedRecording: ManagedCompletedRecording = {
+      runNumber: 1,
+      checkpointReference,
+      master: input.master,
+      expectedRenditions: input.expectedRenditions.map(({ name }) => name),
+      renditions,
+    };
+    return { ...base, completedRecording };
   }
 
   private save(record: ManagedCheckpointRecord): void {

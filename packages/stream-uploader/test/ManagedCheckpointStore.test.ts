@@ -12,6 +12,7 @@ import {
   ManagedEmptyOutcome,
   ManagedTrackFinalization,
 } from '../src/libs/ManagedCheckpointStore.js';
+import { MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
 import { StreamState } from '../src/types.js';
 
 const roots: string[] = [];
@@ -24,6 +25,23 @@ const CHECKPOINT_IDS = [
   '22222222-2222-4222-8222-222222222223',
   '33333333-3333-4333-8333-333333333333',
 ];
+const VIDEO_FORMAT: MediaFormatFingerprint = {
+  version: 1,
+  container: 'mpegts',
+  tracks: [
+    {
+      kind: 'video',
+      codec: 'h264',
+      profile: 'High',
+      level: 40,
+      width: 640,
+      height: 360,
+      pixelFormat: 'yuv420p',
+      chromaLocation: 'left',
+      bitsPerRawSample: 8,
+    },
+  ],
+};
 
 afterEach(() => {
   for (const root of roots.splice(0)) {fs.rmSync(root, { recursive: true, force: true });}
@@ -93,6 +111,83 @@ function operation(
 }
 
 describe('ManagedCheckpointStore', () => {
+  it('seals an adopted legacy recording once and carries its actual format into continuation', () => {
+    const root = tempRoot();
+    const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
+    const state = trackState(1, undefined, REFERENCES[0]);
+    const input = {
+      operationId: '88888888-8888-4888-8888-888888888888',
+      candidateDigest: 'a'.repeat(64),
+      adminStreamId: ADMIN_STREAM_ID,
+      topic: TOPIC,
+      mediaType: 'video' as const,
+      expectedRenditions: [
+        { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 900_000, avgBandwidth: 850_000 },
+      ],
+      tracks: [
+        {
+          streamId: state.streamId,
+          rendition: '360p',
+          state,
+          manifest: {
+            name: '360p',
+            topic: RUNG_TOPIC,
+            index: 10,
+            reference: REFERENCES[1],
+            duration: 2,
+            width: 640,
+            height: 360,
+            bandwidth: 800_000,
+            avgBandwidth: 700_000,
+          },
+          formatFingerprint: VIDEO_FORMAT,
+        },
+      ],
+      master: { topic: TOPIC, index: 12, reference: REFERENCES[2], duration: 2 },
+    };
+
+    const adopted = store.adoptLegacy(input);
+    assert.equal(adopted.checkpointReference, CHECKPOINT_IDS[0]);
+    assert.equal(adopted.renditions[0].bandwidth, 800_000, 'legacy measured bitrate is retained');
+    assert.equal(store.adoptLegacy(structuredClone(input)).checkpointReference, adopted.checkpointReference);
+
+    const next = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[1]).prepare(operation(1, adopted));
+    assert.deepEqual(next.tracks[0].formatFingerprint, VIDEO_FORMAT);
+    assert.equal(next.expectedRenditions[0].bandwidth, 900_000, 'managed target bitrate stays frozen separately');
+  });
+
+  it('refuses a different candidate or immutable reference after adoption is sealed', () => {
+    const root = tempRoot();
+    const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
+    const state = trackState(1, undefined, REFERENCES[0]);
+    const input = {
+      operationId: '88888888-8888-4888-8888-888888888888',
+      candidateDigest: 'a'.repeat(64),
+      adminStreamId: ADMIN_STREAM_ID,
+      topic: TOPIC,
+      mediaType: 'video' as const,
+      expectedRenditions: [],
+      tracks: [
+        {
+          streamId: state.streamId,
+          rendition: null,
+          state: { ...state, streamRawTopic: TOPIC },
+          manifest: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
+          formatFingerprint: VIDEO_FORMAT,
+        },
+      ],
+      master: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
+    };
+    const adopted = store.adoptLegacy(input);
+
+    assert.throws(() => store.adoptLegacy({ ...input, candidateDigest: 'b'.repeat(64) }), /different/i);
+    assert.throws(
+      () => store.adoptLegacy({ ...input, master: { ...input.master, reference: REFERENCES[2] } }),
+      /different|does not match/i,
+    );
+    assert.equal(store.read(adopted.checkpointReference)?.completedRecording?.master.reference, REFERENCES[1]);
+  });
+
   it('rebuilds cumulative A+B+C state in three fresh processes with stable feed topics', () => {
     const root = tempRoot();
     const ids = [...CHECKPOINT_IDS];

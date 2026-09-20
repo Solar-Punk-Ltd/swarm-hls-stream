@@ -1,4 +1,5 @@
 import {
+  AdoptLegacyRecording,
   CreateManagedRun,
   ManagedCheckpointPersistence,
   ManagedCheckpointRecord,
@@ -34,6 +35,10 @@ export class MemoryManagedCheckpoints implements ManagedCheckpointPersistence {
     };
     this.runs.set(key, structuredClone(record));
     return record;
+  }
+
+  public adoptLegacy(_input: AdoptLegacyRecording): ManagedCompletedRecording {
+    throw new Error('not implemented in memory checkpoint');
   }
 
   public prepare(_operation: ManagedContinuationOperation): ManagedCheckpointRecord {
