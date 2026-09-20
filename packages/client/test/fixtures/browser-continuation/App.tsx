@@ -1,19 +1,12 @@
 import { useSyncExternalStore } from 'react';
 
 import type { Stream } from '../../../src/types/stream';
+import type { ContinuationWatchTest } from './window';
 
 type AppState = {
   isStreamListLoaded: boolean;
   streamList: Stream[];
 };
-
-declare global {
-  interface Window {
-    __continuationWatchTest?: {
-      setStreams: (streams: Stream[]) => void;
-    };
-  }
-}
 
 let state: AppState = { isStreamListLoaded: false, streamList: [] };
 const listeners = new Set<() => void>();
@@ -29,7 +22,7 @@ function setStreams(streamList: Stream[]): void {
   notify();
 }
 
-window.__continuationWatchTest = { setStreams };
+window.__continuationWatchTest = { setStreams } satisfies ContinuationWatchTest;
 
 export function useAppContext(): AppState {
   return useSyncExternalStore(

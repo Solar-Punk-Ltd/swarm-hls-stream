@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import type { ContinuationPlayerTest } from './window';
 
 type Replay = {
   master: { reference: string };
@@ -12,16 +13,7 @@ type PlayerProps = {
   pinnedRecording?: Replay;
 };
 
-declare global {
-  interface Window {
-    __continuationPlayerTest?: {
-      created: number;
-      destroyed: number;
-    };
-  }
-}
-
-const session = { created: 0, destroyed: 0 };
+const session: ContinuationPlayerTest = { created: 0, destroyed: 0 };
 window.__continuationPlayerTest = session;
 
 export function SwarmHlsPlayer({ topicString, renditions, replay, pinnedRecording }: PlayerProps) {

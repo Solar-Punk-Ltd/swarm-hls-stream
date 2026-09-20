@@ -6,6 +6,14 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { type Browser, chromium, type Locator } from 'playwright-core';
+import type { ContinuationPlayerTest, ContinuationWatchTest } from '../../../packages/client/test/fixtures/browser-continuation/window';
+
+declare global {
+  interface Window {
+    __continuationWatchTest?: ContinuationWatchTest;
+    __continuationPlayerTest?: ContinuationPlayerTest;
+  }
+}
 
 const E2E_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const REPOSITORY_ROOT = dirname(E2E_ROOT);
