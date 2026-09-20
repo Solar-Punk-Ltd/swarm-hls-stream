@@ -234,13 +234,19 @@ export class DockerMediaScenarioSpawn implements MediaScenarioSpawn {
     owned.handle = handle;
     owned.status = 'running';
     void handle.completion.then(
-      (result) => this.complete(owned, result.code === 0 && result.signal === null),
+      (result) => this.complete(owned, result.code === 0 && !result.signal),
       () => this.complete(owned, false),
     );
     return {
       wait: () => handle.completion,
       stop: () => this.stop(owned),
     };
+  }
+
+  assertIdle(): void {
+    if (this.activeInvocation) {
+      throw new FixtureRefusal('media sender is not idle');
+    }
   }
 
   private assertAvailable(): void {

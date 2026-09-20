@@ -1101,6 +1101,7 @@ async function observeClosedPublisherTermination(
     await stopControlledPublisher(publisher, source.markerId);
     throw new FixtureRefusal('publisher completed successfully before Continue');
   }
+  await stopControlledPublisher(publisher, source.markerId);
   if (typeof result.code === 'number' && result.code !== 0) {
     return { kind: 'nonzero_exit', exitCode: result.code };
   }
