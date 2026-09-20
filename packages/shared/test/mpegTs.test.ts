@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { countPesPackets, readVideoPts, TS_PACKET_BYTES } from '../src/mpegTs.js';
+import { countPesPackets, readAudioPts, readVideoPts, TS_PACKET_BYTES } from '../src/mpegTs.js';
 
 /** 90kHz, so 3000 ticks is one frame at 30fps. */
 const FRAME_TICKS = 3_000;
@@ -170,6 +170,41 @@ describe('reading a segment video timestamps out of its own bytes', () => {
     // Reading the tail would put the span at 897000 ticks, just under ten seconds, which
     // `isUsableDuration` accepts and publishes as `#EXTINF` for a segment holding one frame.
     assert.deepEqual(readVideoPts(truncated), [FRAME_TICKS]);
+  });
+});
+
+describe('reading audio timestamps independently from video', () => {
+  it('reads advancing timestamps from an audio-only transport stream', () => {
+    const bytes = segment(
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: 0 }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: FRAME_TICKS }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: 2 * FRAME_TICKS }),
+    );
+
+    assert.deepEqual(readAudioPts(bytes), [0, FRAME_TICKS, 2 * FRAME_TICKS]);
+  });
+
+  it('keeps audio and video timing separate in a mixed segment', () => {
+    const bytes = segment(
+      packet({ pid: VIDEO_PID, streamId: VIDEO_STREAM_ID, pts: 90_000 }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: 45_000 }),
+      packet({ pid: VIDEO_PID, streamId: VIDEO_STREAM_ID, pts: 93_000 }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: 48_000 }),
+    );
+
+    assert.deepEqual(readAudioPts(bytes), [45_000, 48_000]);
+    assert.deepEqual(readVideoPts(bytes), [90_000, 93_000]);
+  });
+
+  it('preserves the 33-bit values and packet order across a PTS wrap', () => {
+    const beforeWrap = 8_589_933_591;
+    const afterWrap = 2_000;
+    const bytes = segment(
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: beforeWrap }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: afterWrap }),
+    );
+
+    assert.deepEqual(readAudioPts(bytes), [beforeWrap, afterWrap]);
   });
 });
 

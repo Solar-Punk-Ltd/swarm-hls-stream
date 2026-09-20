@@ -113,11 +113,11 @@ function forEachPesHeader(segment: Uint8Array, visit: (streamId: number, at: num
   }
 }
 
-export function readVideoPts(segment: Uint8Array): number[] {
+function readElementaryStreamPts(segment: Uint8Array, accepts: (streamId: number) => boolean): number[] {
   const timestamps: number[] = [];
 
   forEachPesHeader(segment, (streamId, at) => {
-    if (!isVideoStreamId(streamId)) {
+    if (!accepts(streamId)) {
       return;
     }
     // The top two bits of this byte say which of PTS and DTS follow. A PES header is allowed to
@@ -129,6 +129,20 @@ export function readVideoPts(segment: Uint8Array): number[] {
   });
 
   return timestamps;
+}
+
+export function readVideoPts(segment: Uint8Array): number[] {
+  return readElementaryStreamPts(segment, isVideoStreamId);
+}
+
+/**
+ * Every audio presentation timestamp in one MPEG-TS segment, in packet order.
+ *
+ * Kept separate from video because their frame rates differ. Combining them would make a timing
+ * span look like it advances even when one declared media track is repeating the same timestamps.
+ */
+export function readAudioPts(segment: Uint8Array): number[] {
+  return readElementaryStreamPts(segment, isAudioStreamId);
 }
 
 /** How many elementary stream packets of each kind a segment opens. */
