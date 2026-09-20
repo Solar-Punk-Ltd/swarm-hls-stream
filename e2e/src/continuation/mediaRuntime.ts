@@ -160,9 +160,19 @@ export interface DockerMediaScenarioSpawnOptions {
   launcher?: InteractiveProcessLauncher;
 }
 
+type OwnedInvocationStatus = 'launching' | 'running' | 'completed' | 'failed' | 'stopping' | 'stopped' | 'stop-failed';
+
+interface OwnedInvocation {
+  status: OwnedInvocationStatus;
+  handle?: InteractiveProcessHandle;
+  stopPromise?: Promise<void>;
+}
+
 /** Runs FFmpeg in the exact journal-owned sender and routes secret bytes only through stdin. */
 export class DockerMediaScenarioSpawn implements MediaScenarioSpawn {
   private readonly launcher: InteractiveProcessLauncher;
+  private activeInvocation?: OwnedInvocation;
+  private restartRequired = false;
 
   constructor(private readonly options: DockerMediaScenarioSpawnOptions) {
     if (!SAFE_CONTAINER_ID.test(options.senderContainerId)) {
@@ -199,27 +209,102 @@ export class DockerMediaScenarioSpawn implements MediaScenarioSpawn {
     }
     const secretValues = references.map((reference) => secret(this.options.secrets, reference));
     const script = ffmpegShellScript(invocation, references);
-    const handle = await this.launcher.start({
-      file: 'docker',
-      args: ['exec', '-i', this.options.senderContainerId, '/bin/sh', '-c', script],
-      stdin: secretValues.map((value) => `${value}\n`).join(''),
-      timeoutMs: invocation.timeoutMs,
-      maxOutputBytes: invocation.maxOutputBytes,
-    });
-    let stopped = false;
+    this.assertAvailable();
+    const owned: OwnedInvocation = { status: 'launching' };
+    this.activeInvocation = owned;
+    let handle: InteractiveProcessHandle;
+    try {
+      if (this.restartRequired) {
+        await this.options.command.run('docker', ['container', 'start', this.options.senderContainerId]);
+        this.restartRequired = false;
+      }
+      handle = await this.launcher.start({
+        file: 'docker',
+        args: ['exec', '-i', this.options.senderContainerId, '/bin/sh', '-c', script],
+        stdin: secretValues.map((value) => `${value}\n`).join(''),
+        timeoutMs: invocation.timeoutMs,
+        maxOutputBytes: invocation.maxOutputBytes,
+      });
+    } catch (error) {
+      if (this.activeInvocation === owned) {
+        this.activeInvocation = undefined;
+      }
+      throw error;
+    }
+    owned.handle = handle;
+    owned.status = 'running';
+    void handle.completion.then(
+      (result) => this.complete(owned, result.code === 0 && result.signal === null),
+      () => this.complete(owned, false),
+    );
     return {
       wait: () => handle.completion,
-      stop: async () => {
-        if (stopped) {
-          return;
-        }
-        stopped = true;
-        await this.options.command.run('docker', [
-          'container', 'stop', '--time', '5', this.options.senderContainerId,
-        ]);
-        await handle.stopClient();
-      },
+      stop: () => this.stop(owned),
     };
+  }
+
+  private assertAvailable(): void {
+    if (this.activeInvocation?.status === 'stopping' || this.activeInvocation?.status === 'stop-failed') {
+      throw new FixtureRefusal('media sender stop is unresolved');
+    }
+    if (this.activeInvocation) {
+      throw new FixtureRefusal('media sender already owns an active invocation');
+    }
+  }
+
+  private complete(owned: OwnedInvocation, successful: boolean): void {
+    if (owned.status !== 'running') {
+      return;
+    }
+    owned.status = successful ? 'completed' : 'failed';
+    if (!successful) {
+      return;
+    }
+    if (this.activeInvocation === owned) {
+      this.activeInvocation = undefined;
+    }
+  }
+
+  private stop(owned: OwnedInvocation): Promise<void> {
+    if (owned.stopPromise) {
+      return owned.stopPromise;
+    }
+    if (owned.status === 'completed' || owned.status === 'stopped') {
+      return Promise.resolve();
+    }
+    if ((owned.status !== 'running' && owned.status !== 'failed') || !owned.handle) {
+      return Promise.reject(new FixtureRefusal('media sender invocation cannot be stopped from its current state'));
+    }
+    owned.status = 'stopping';
+    owned.stopPromise = this.stopOwnedInvocation(owned, owned.handle);
+    return owned.stopPromise;
+  }
+
+  private async stopOwnedInvocation(owned: OwnedInvocation, handle: InteractiveProcessHandle): Promise<void> {
+    let remoteError: unknown;
+    try {
+      await this.options.command.run('docker', ['container', 'stop', '--time', '5', this.options.senderContainerId]);
+    } catch (error) {
+      remoteError = error;
+    }
+    let clientError: unknown;
+    try {
+      await handle.stopClient();
+    } catch (error) {
+      clientError = error;
+    }
+    if (remoteError !== undefined || clientError !== undefined) {
+      owned.status = 'stop-failed';
+      if (remoteError !== undefined) {
+        throw remoteError;
+      }
+      throw new FixtureRefusal('media process client did not close after sender stop');
+    }
+    owned.status = 'stopped';
+    this.restartRequired = true;
+    if (this.activeInvocation === owned) {
+      this.activeInvocation = undefined;
+    }
   }
 }
 
