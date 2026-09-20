@@ -96,10 +96,25 @@ export async function provisionManagedFixtureStream(
   );
   const publishedStream = objectBody(published.stream, 'admin fixture published stream');
   const publishedIdentity = streamIdentity(publishedStream, 'admin fixture published stream');
-  const lifecycle = objectBody(publishedStream.lifecycle, 'admin fixture managed lifecycle');
   if (
     publishedIdentity.id !== stream.id ||
     publishedIdentity.topic !== stream.topic ||
+    publishedStream.status !== 'published'
+  ) {
+    throw new FixtureRefusal('admin fixture publish result changed the stream identity');
+  }
+  const ownerView = objectBody(
+    (await request(fetchImpl, baseUrl, `/api/streams/${stream.id}`, {
+      method: 'GET',
+      headers: ownerHeaders(ownerCookie, false),
+    }, new Set([200]))).body,
+    'admin fixture managed owner read',
+  );
+  const ownerIdentity = streamIdentity(ownerView, 'admin fixture managed owner read');
+  const lifecycle = objectBody(ownerView.lifecycle, 'admin fixture managed lifecycle');
+  if (
+    ownerIdentity.id !== stream.id ||
+    ownerIdentity.topic !== stream.topic ||
     lifecycle.version !== 1 ||
     lifecycle.revision !== 1 ||
     lifecycle.runNumber !== 1 ||
