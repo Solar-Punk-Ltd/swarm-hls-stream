@@ -4,8 +4,8 @@ import { describe, it, mock } from 'node:test';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import {
-  MEDIA_TYPE_VIDEO,
   MEDIA_TYPE_AUDIO,
+  MEDIA_TYPE_VIDEO,
   SourceConnectionIdentity,
   STREAM_STATUS_VOD,
   StreamState,

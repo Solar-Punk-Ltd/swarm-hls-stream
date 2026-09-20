@@ -1,0 +1,193 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { MediaType, SourceConnectionIdentity } from '../types.js';
+
+export const MANAGED_RUN_MISSING = 'missing' as const;
+export const MANAGED_RUN_LOADED = 'loaded' as const;
+export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
+
+export type ManagedRunState = 'claimed' | 'live' | 'waiting' | 'closed';
+
+/** Admission state that must outlive normal media-recovery cleanup. */
+export interface ManagedRunRecord {
+  readonly lifecycleVersion: 1;
+  readonly streamId: string;
+  readonly adminStreamId: string;
+  readonly topic: string;
+  readonly mediaType: MediaType;
+  readonly revision: number;
+  readonly runNumber: number;
+  readonly uploaderId: string;
+  readonly claimId: string;
+  readonly eventSequence: number;
+  readonly state: ManagedRunState;
+  readonly deadlineWallMs: number;
+  readonly deadlineRecordedAtWallMs: number;
+  readonly deadlineRemainingMs: number;
+  readonly lastProgressPts: number | null;
+  readonly source: SourceConnectionIdentity | null;
+}
+
+export type ManagedRunEntry =
+  | { kind: typeof MANAGED_RUN_MISSING }
+  | { kind: typeof MANAGED_RUN_LOADED; record: ManagedRunRecord }
+  | { kind: typeof MANAGED_RUN_UNREADABLE };
+
+/** The synchronous operations whose completion makes one save durable enough to acknowledge. */
+export interface DurableFileOps {
+  mkdirSync(target: string, options: { recursive: true }): unknown;
+  existsSync(target: string): boolean;
+  readdirSync(target: string): string[];
+  readFileSync(target: string, encoding: BufferEncoding): string;
+  openSync(target: string, flags: string, mode?: number): number;
+  writeFileSync(fd: number, data: string): void;
+  fsyncSync(fd: number): void;
+  closeSync(fd: number): void;
+  renameSync(from: string, to: string): void;
+}
+
+const nodeFileOps: DurableFileOps = {
+  mkdirSync: (target, options) => fs.mkdirSync(target, options),
+  existsSync: (target) => fs.existsSync(target),
+  readdirSync: (target) => fs.readdirSync(target),
+  readFileSync: (target, encoding) => fs.readFileSync(target, encoding),
+  openSync: (target, flags, mode) => fs.openSync(target, flags, mode),
+  writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+  fsyncSync: (fd) => fs.fsyncSync(fd),
+  closeSync: (fd) => fs.closeSync(fd),
+  renameSync: (from, to) => fs.renameSync(from, to),
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const STATES = new Set<ManagedRunState>(['claimed', 'live', 'waiting', 'closed']);
+const PTS_MODULUS = 2 ** 33;
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function isSource(value: unknown): value is SourceConnectionIdentity {
+  if (!value || typeof value !== 'object') {return false;}
+  const source = value as Partial<SourceConnectionIdentity>;
+  return (
+    typeof source.serverId === 'string' &&
+    source.serverId.length > 0 &&
+    typeof source.serviceId === 'string' &&
+    source.serviceId.length > 0 &&
+    typeof source.clientId === 'string' &&
+    source.clientId.length > 0 &&
+    isNonNegativeInteger(source.generation)
+  );
+}
+
+function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
+  if (!value || typeof value !== 'object') {return false;}
+  const record = value as Partial<ManagedRunRecord>;
+  return (
+    record.lifecycleVersion === 1 &&
+    typeof record.streamId === 'string' &&
+    record.streamId.length > 0 &&
+    typeof record.adminStreamId === 'string' &&
+    UUID.test(record.adminStreamId) &&
+    typeof record.topic === 'string' &&
+    record.topic.length > 0 &&
+    (record.mediaType === 'video' || record.mediaType === 'audio') &&
+    isNonNegativeInteger(record.revision) &&
+    isPositiveInteger(record.runNumber) &&
+    typeof record.uploaderId === 'string' &&
+    record.uploaderId.length > 0 &&
+    typeof record.claimId === 'string' &&
+    UUID.test(record.claimId) &&
+    isNonNegativeInteger(record.eventSequence) &&
+    typeof record.state === 'string' &&
+    STATES.has(record.state as ManagedRunState) &&
+    isNonNegativeInteger(record.deadlineWallMs) &&
+    isNonNegativeInteger(record.deadlineRecordedAtWallMs) &&
+    isNonNegativeInteger(record.deadlineRemainingMs) &&
+    (record.lastProgressPts === null ||
+      (isNonNegativeInteger(record.lastProgressPts) && record.lastProgressPts < PTS_MODULUS)) &&
+    (record.source === null || isSource(record.source))
+  );
+}
+
+function entryName(streamId: string): string {
+  return `${encodeURIComponent(streamId)}.json`;
+}
+
+/**
+ * Remaining monotonic budget reconstructed conservatively from a persisted wall checkpoint.
+ * A wall clock that moved backwards is untrustworthy and expires the run instead of granting time.
+ */
+export function remainingManagedDeadline(record: ManagedRunRecord, nowWallMs: number): number {
+  if (!Number.isFinite(nowWallMs) || nowWallMs < record.deadlineRecordedAtWallMs) {
+    return 0;
+  }
+  const elapsed = nowWallMs - record.deadlineRecordedAtWallMs;
+  const fromCheckpoint = Math.max(0, record.deadlineRemainingMs - elapsed);
+  const fromAbsoluteDeadline = Math.max(0, record.deadlineWallMs - nowWallMs);
+  return Math.min(fromCheckpoint, fromAbsoluteDeadline);
+}
+
+export class ManagedRunStore {
+  constructor(
+    private readonly stateDir: string,
+    private readonly fileOps: DurableFileOps = nodeFileOps,
+  ) {
+    if (!this.fileOps.existsSync(stateDir)) {
+      this.fileOps.mkdirSync(stateDir, { recursive: true });
+    }
+  }
+
+  /** Returns only after file contents and the renamed directory entry have both been flushed. */
+  public save(record: ManagedRunRecord): void {
+    if (!isManagedRunRecord(record)) {
+      throw new Error('Refused to persist an invalid managed run record');
+    }
+    const filePath = path.join(this.stateDir, entryName(record.streamId));
+    const tmpPath = `${filePath}.tmp`;
+    const file = this.fileOps.openSync(tmpPath, 'w', 0o600);
+    try {
+      this.fileOps.writeFileSync(file, JSON.stringify(record));
+      this.fileOps.fsyncSync(file);
+    } finally {
+      this.fileOps.closeSync(file);
+    }
+
+    this.fileOps.renameSync(tmpPath, filePath);
+    const directory = this.fileOps.openSync(this.stateDir, 'r');
+    try {
+      this.fileOps.fsyncSync(directory);
+    } finally {
+      this.fileOps.closeSync(directory);
+    }
+  }
+
+  public read(streamId: string): ManagedRunEntry {
+    const filePath = path.join(this.stateDir, entryName(streamId));
+    if (!this.fileOps.existsSync(filePath)) {
+      return { kind: MANAGED_RUN_MISSING };
+    }
+    try {
+      const parsed: unknown = JSON.parse(this.fileOps.readFileSync(filePath, 'utf8'));
+      if (!isManagedRunRecord(parsed) || parsed.streamId !== streamId) {
+        return { kind: MANAGED_RUN_UNREADABLE };
+      }
+      return { kind: MANAGED_RUN_LOADED, record: parsed };
+    } catch {
+      return { kind: MANAGED_RUN_UNREADABLE };
+    }
+  }
+
+  public list(): string[] {
+    if (!this.fileOps.existsSync(this.stateDir)) {return [];}
+    return this.fileOps
+      .readdirSync(this.stateDir)
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => decodeURIComponent(name.slice(0, -'.json'.length)));
+  }
+}
