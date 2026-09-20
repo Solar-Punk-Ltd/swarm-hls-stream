@@ -182,6 +182,32 @@ describe('managed actual opening format validation', () => {
     await orchestrator.cleanup();
   });
 
+  it('does not let a displaced incomplete inspection mutate the replacement opening', async () => {
+    const inspector = new DeferredInspector();
+    const { orchestrator, formatStore } = create(inspector);
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    const pendingA = media(orchestrator, SOURCE_A, 0);
+    assert.equal(orchestrator.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    assert.equal(provision(orchestrator, SOURCE_B), true);
+    const pendingB = media(orchestrator, SOURCE_B, 0);
+
+    inspector.resolve({ kind: 'incomplete' });
+    assert.deepEqual(await pendingA, { accepted: false, reason: 'stale_source' });
+    assert.deepEqual(
+      formatStore.read({
+        adminStreamId: ADMIN_STREAM_ID,
+        runNumber: 1,
+        streamId: STREAM_ID,
+        topic: 'managed-format-topic',
+        rendition: null,
+      })?.source,
+      SOURCE_B,
+    );
+    inspector.resolve({ kind: 'valid', fingerprint: FORMAT });
+    assert.deepEqual(await pendingB, { accepted: true });
+    await orchestrator.cleanup();
+  });
+
   it('shares one in-flight inspection and durably refuses a changed reconnect format', async () => {
     const inspector = new DeferredInspector();
     const { orchestrator, formatStore } = create(inspector);

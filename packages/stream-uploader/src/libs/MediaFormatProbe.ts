@@ -89,7 +89,9 @@ function nullableNonNegativeInteger(value: unknown): number | null {
 }
 
 function canonicalTrackKey(track: MediaFormatTrack): string {
-  return JSON.stringify(track);
+  return JSON.stringify(
+    Object.fromEntries(Object.entries(track).sort(([left], [right]) => left.localeCompare(right))),
+  );
 }
 
 function normalizeFingerprint(fingerprint: MediaFormatFingerprint): MediaFormatFingerprint | null {
@@ -223,9 +225,11 @@ export function mediaFormatFingerprintFromFfprobe(value: unknown): MediaFormatFi
     return null;
   }
   tracks.sort((left, right) => {
+    const kindOrder = left.kind.localeCompare(right.kind);
+    if (kindOrder !== 0) {return kindOrder;}
     const leftKey = canonicalTrackKey(left);
     const rightKey = canonicalTrackKey(right);
-    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    return leftKey.localeCompare(rightKey);
   });
   return { version: 1, container: 'mpegts', tracks };
 }

@@ -102,6 +102,31 @@ describe('MediaFormatProbe', () => {
     });
   });
 
+  it('orders same-kind tracks by the frozen alphabetized-field canonical JSON', () => {
+    const fingerprint = mediaFormatFingerprintFromFfprobe({
+      streams: [
+        {
+          codec_type: 'audio',
+          codec_name: 'aac',
+          profile: 'LC',
+          sample_rate: '48000',
+          channels: 2,
+          channel_layout: 'stereo',
+        },
+        {
+          codec_type: 'audio',
+          codec_name: 'mp3',
+          profile: 'unknown',
+          sample_rate: '44100',
+          channels: 1,
+          channel_layout: 'mono',
+        },
+      ],
+    });
+
+    assert.deepEqual(fingerprint?.tracks.map((track) => track.codec), ['mp3', 'aac']);
+  });
+
   it('refuses missing compatibility fields instead of guessing them', () => {
     assert.equal(
       mediaFormatFingerprintFromFfprobe({

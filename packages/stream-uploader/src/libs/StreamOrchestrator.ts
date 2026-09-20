@@ -1857,6 +1857,14 @@ export class StreamOrchestrator {
     const promise = inspector
       .inspect(staged.bytes)
       .then((result): RejectReason | null => {
+        const active = this.managedFormatInspections.get(key);
+        if (
+          active?.promise !== promise ||
+          !sameSource(active.source, source) ||
+          !this.managedFormatSourceIsCurrent(managedStreamId, streamId, source)
+        ) {
+          return REJECT_STALE_SOURCE;
+        }
         if (result.kind === 'incomplete') {
           try {
             store.recordIncomplete(input);
@@ -1868,9 +1876,6 @@ export class StreamOrchestrator {
         }
         if (result.kind !== 'valid') {
           return REJECT_UNVERIFIED_SOURCE_MEDIA;
-        }
-        if (!this.managedFormatSourceIsCurrent(managedStreamId, streamId, source)) {
-          return REJECT_STALE_SOURCE;
         }
         const current = this.managedSources.get(managedStreamId);
         if (!current || current.closed || (current.deadline !== undefined && this.clock.now() >= current.deadline)) {
