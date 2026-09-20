@@ -26,6 +26,10 @@ const FIXTURE_NETWORK = Object.freeze({
   fixtureId: FIXTURE_ID,
 });
 const FIXTURE_NETWORK_ID = '9'.repeat(64);
+const FIXTURE_VOLUME_NAMES = Object.freeze([
+  'release-a_srs-media',
+  'release-a_uploader-state',
+]);
 const IMAGE_IDS = Object.freeze({
   'stream-uploader': `sha256:${'a'.repeat(64)}`,
   srs: `sha256:${'b'.repeat(64)}`,
@@ -154,6 +158,7 @@ function planFor(f, phase, changes = {}) {
           ...f.argumentsValue.fixtureNetwork,
           networkId: FIXTURE_NETWORK_ID,
         },
+        ...(f.role === 'uploader' ? { fixtureVolumeNames: FIXTURE_VOLUME_NAMES } : {}),
       }
       : f.argumentsValue,
     ...changes,
@@ -190,6 +195,7 @@ describe('guarded uploader release adapter', () => {
       uploaderId: 'srs-uploader-a',
       adminApiConfigured: true,
       fixtureNetworkId: FIXTURE_NETWORK_ID,
+      fixtureVolumeNames: FIXTURE_VOLUME_NAMES,
     });
     assert.match(readFileSync(f.journal, 'utf8'), new RegExp(`network inspect .*${FIXTURE_NETWORK.name}`));
   });
@@ -227,6 +233,8 @@ describe('guarded uploader release adapter', () => {
     assert.match(override, new RegExp(`org\\.solarpunk\\.srs-continuation\\.fixture: "${FIXTURE_ID}"`));
     assert.match(override, /org\.solarpunk\.srs-continuation\.managed: "true"/);
     assert.doesNotMatch(override, /127\.0\.0\.1:/);
+    assert.match(override, /srs-media:\n {4}labels:/);
+    assert.match(override, /uploader-state:\n {4}labels:/);
   });
 
   it('refuses receipt when a selected container is not on the bound fixture network id', async () => {
@@ -239,6 +247,44 @@ describe('guarded uploader release adapter', () => {
 
     assert.notEqual(result.exitCode, 0);
     assert.match(result.stderr, /fixture network/);
+  });
+
+  it('refuses receipt for an unlabeled fixture volume or an unexpected published port', async () => {
+    const unlabeledVolume = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    assert.equal((await run(unlabeledVolume, 'release-adapter.sh', 'transition')).exitCode, 0);
+    unlabeledVolume.env.DOCKER_STUB_VOLUME_MANAGED_LABEL = 'false';
+    const unlabeledResult = await run(unlabeledVolume, 'release-adapter.sh', 'verify');
+    assert.notEqual(unlabeledResult.exitCode, 0);
+    assert.match(unlabeledResult.stderr, /fixture volume/);
+
+    const publishedPort = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    assert.equal((await run(publishedPort, 'release-adapter.sh', 'transition')).exitCode, 0);
+    publishedPort.env.DOCKER_STUB_PUBLISHED_PORTS = 'unexpected';
+    const publishedResult = await run(publishedPort, 'release-adapter.sh', 'verify');
+    assert.notEqual(publishedResult.exitCode, 0);
+    assert.match(publishedResult.stderr, /published ports/);
+  });
+
+  it('refuses receipt for missing container labels or incorrect volume mounts', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    assert.equal((await run(f, 'release-adapter.sh', 'transition')).exitCode, 0);
+
+    f.env.DOCKER_STUB_CONTAINER_MANAGED_LABEL = 'false';
+    const unlabeled = await run(f, 'release-adapter.sh', 'verify');
+    assert.notEqual(unlabeled.exitCode, 0);
+    assert.match(unlabeled.stderr, /fixture labels/);
+
+    delete f.env.DOCKER_STUB_CONTAINER_MANAGED_LABEL;
+    f.env.DOCKER_STUB_WRONG_MOUNTS = '1';
+    const wrongMount = await run(f, 'release-adapter.sh', 'verify');
+    assert.notEqual(wrongMount.exitCode, 0);
+    assert.match(wrongMount.stderr, /fixture mounts/);
   });
 
   it('reports only the bounded effective managed configuration', async () => {
@@ -408,6 +454,11 @@ describe('guarded viewer release adapter', () => {
 
     const verified = await run(f, 'viewer-release-adapter.sh', 'verify');
     assert.equal(verified.exitCode, 0, `${verified.stdout}${verified.stderr}`);
+
+    f.env.DOCKER_STUB_PUBLISHED_PORTS = 'unexpected';
+    const exposed = await run(f, 'viewer-release-adapter.sh', 'verify');
+    assert.notEqual(exposed.exitCode, 0);
+    assert.match(exposed.stderr, /published ports/);
   });
 
   it('accepts a client that preserves its configured external gateway', async () => {
@@ -488,6 +539,16 @@ if (argv[0] === 'network' && argv[1] === 'inspect') {
   }]));
   process.exit(0);
 }
+if (argv[0] === 'volume' && argv[1] === 'inspect') {
+  console.log(JSON.stringify([{
+    Name: argv.at(-1),
+    Labels: {
+      'org.solarpunk.srs-continuation.fixture': fixtureId,
+      'org.solarpunk.srs-continuation.managed': process.env.DOCKER_STUB_VOLUME_MANAGED_LABEL || 'true',
+    },
+  }]));
+  process.exit(0);
+}
 if (argv[0] === 'compose') {
   const command = ['build', 'pull', 'up', 'ps', 'images', 'config'].find((value) => argv.includes(value));
   if (command === 'ps') console.log('c-' + argv.at(-1));
@@ -501,6 +562,23 @@ if (argv[0] === 'inspect') {
   else if (format.includes('.State.Health')) console.log(process.env.DOCKER_STUB_NO_HEALTH === service ? '' : process.env.DOCKER_STUB_UNHEALTHY === service ? 'unhealthy' : 'healthy');
   else if (format.includes('.Image')) console.log(process.env.DOCKER_STUB_WRONG_IMAGE === service ? 'sha256:' + 'f'.repeat(64) : ids[service]);
   else if (format.includes('.NetworkSettings.Networks')) console.log(process.env.DOCKER_STUB_CONTAINER_NETWORK_ID || fixtureNetworkId);
+  else if (format.includes('.Config.Labels')) console.log(JSON.stringify({
+    'org.solarpunk.srs-continuation.fixture': fixtureId,
+    'org.solarpunk.srs-continuation.managed': process.env.DOCKER_STUB_CONTAINER_MANAGED_LABEL || 'true',
+  }));
+  else if (format.includes('.NetworkSettings.Ports')) {
+    if (process.env.DOCKER_STUB_PUBLISHED_PORTS === 'unexpected') console.log(JSON.stringify({ '1935/tcp': [{ HostIp: '0.0.0.0', HostPort: '1935' }] }));
+    else if (process.env.RELEASE_ADAPTER_ROLE === 'viewer') console.log(JSON.stringify({ '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '10074' }] }));
+    else console.log(JSON.stringify({ '3000/tcp': null }));
+  } else if (format.includes('.Mounts')) {
+    if (process.env.DOCKER_STUB_WRONG_MOUNTS === '1') console.log('[]');
+    else if (service === 'srs') console.log(JSON.stringify([{ Type: 'volume', Name: 'release-a_srs-media', Destination: '/usr/local/srs/objs/nginx/html' }]));
+    else if (service === 'stream-uploader') console.log(JSON.stringify([
+      { Type: 'volume', Name: 'release-a_srs-media', Destination: '/media' },
+      { Type: 'volume', Name: 'release-a_uploader-state', Destination: '/app/state' },
+    ]));
+    else console.log('[]');
+  }
   process.exit(0);
 }
 process.exit(0);

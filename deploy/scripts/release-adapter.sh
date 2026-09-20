@@ -43,7 +43,13 @@ if ! jq -e --arg phase "$phase" --arg role "$role" '
   .temporaryProject == ("release-" + (.treeDigest[0:20])) and
   (.slot | type == "object" and (keys | sort) == ["id", "role"] and .role == $role and (.id | type == "string")) and
   (.arguments | type == "object" and
-    ((keys | sort) == ["target"] or (keys | sort) == ["fixtureNetwork", "target"]) and
+    (if has("fixtureNetwork") then
+      (if $phase == "preflight" or $role == "viewer" then
+        (keys | sort) == ["fixtureNetwork", "target"]
+      else
+        (keys | sort) == ["fixtureNetwork", "fixtureVolumeNames", "target"]
+      end)
+    else (keys | sort) == ["target"] end) and
     (.target | type == "object" and (keys | sort) == ["portSlot", "profile", "services", "target"] and
       (.profile | type == "string") and (.portSlot | type == "number") and .target == "local" and
       (.services | type == "array" and length >= 1 and all(.[]; type == "string"))) and
@@ -56,7 +62,13 @@ if ! jq -e --arg phase "$phase" --arg role "$role" '
           (.networkId | type == "string" and test("^[0-9a-f]{64}$"))
         end) and
         (.fixtureId | type == "string" and test("^srs-continuation-20260920-[a-z0-9]{8,16}$")) and
-        .name == (.fixtureId + "-network"))
+        .name == (.fixtureId + "-network")) and
+      (if $phase != "preflight" and $role == "uploader" then
+        .fixtureVolumeNames == [
+          (.target.profile + "_srs-media"),
+          (.target.profile + "_uploader-state")
+        ]
+      else true end)
     else true end)) and
   (.images | type == "array") and
   (if ($phase == "transition" or $phase == "verify") then
@@ -87,6 +99,7 @@ fixture_network_id="$(jq -r '.arguments.fixtureNetwork.networkId // empty' "$pla
 if [ -n "$fixture_id" ]; then
   [[ "$fixture_id" =~ ^srs-continuation-20260920-[a-z0-9]{8,16}$ ]] || refuse "$role release fixture network is invalid"
   [ "$fixture_network_name" = "${fixture_id}-network" ] || refuse "$role release fixture network is invalid"
+  [[ "$profile" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || refuse "$role release fixture profile is invalid"
   if [ "$phase" != "preflight" ]; then
     [[ "$fixture_network_id" =~ ^[0-9a-f]{64}$ ]] || refuse "$role release fixture network is invalid"
   fi
@@ -135,6 +148,13 @@ else
     refuse "viewer release service set is unsupported"
   fi
 fi
+if [ -n "$fixture_id" ]; then
+  if [ "$role" = "uploader" ]; then
+    [ "${services[*]}" = "srs stream-uploader" ] || refuse "uploader fixture release service set is unsupported"
+  else
+    [ "${services[*]}" = "client" ] || refuse "viewer fixture release service set is unsupported"
+  fi
+fi
 
 inspect_fixture_network() {
   local details actual_id expected_id="${1:-}"
@@ -158,6 +178,69 @@ inspect_fixture_network() {
     refuse "$role release fixture network identity changed"
   fi
   fixture_network_id="$actual_id"
+}
+
+inspect_fixture_volume() {
+  local volume_name="$1" details
+  if ! details="$(docker volume inspect "$volume_name")"; then
+    refuse "$role release fixture volume is unavailable"
+  fi
+  [ "${#details}" -le 65536 ] || refuse "$role release fixture volume is invalid"
+  if ! jq -e --arg name "$volume_name" --arg fixture "$fixture_id" '
+    type == "array" and length == 1 and
+    (.[0] | type == "object" and .Name == $name and
+      (.Labels | type == "object") and
+      .Labels["org.solarpunk.srs-continuation.fixture"] == $fixture and
+      .Labels["org.solarpunk.srs-continuation.managed"] == "true")
+  ' <<< "$details" >/dev/null 2>&1; then
+    refuse "$role release fixture volume is invalid"
+  fi
+}
+
+verify_fixture_container() {
+  local service="$1" container="$2" labels ports mounts
+  labels="$(docker inspect --format '{{json .Config.Labels}}' "$container")"
+  if ! jq -e --arg fixture "$fixture_id" '
+    type == "object" and
+    .["org.solarpunk.srs-continuation.fixture"] == $fixture and
+    .["org.solarpunk.srs-continuation.managed"] == "true"
+  ' <<< "$labels" >/dev/null 2>&1; then
+    refuse "$role release service fixture labels are invalid"
+  fi
+  ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' "$container")"
+  [ "${#ports}" -le 65536 ] || refuse "$role release service published ports are invalid"
+  if [ "$role" = "viewer" ]; then
+    if ! jq -e --arg port "$CLIENT_PORT" '
+      type == "object" and has("80/tcp") and
+      all(to_entries[];
+        if .key == "80/tcp" then
+          .value == [{"HostIp":"127.0.0.1","HostPort":$port}]
+        else .value == null or .value == [] end)
+    ' <<< "$ports" >/dev/null 2>&1; then
+      refuse "$role release service published ports are invalid"
+    fi
+  elif ! jq -e '. == null or (type == "object" and all(.[]; . == null or . == []))' <<< "$ports" >/dev/null 2>&1; then
+    refuse "$role release service published ports are invalid"
+  fi
+  mounts="$(docker inspect --format '{{json .Mounts}}' "$container")"
+  [ "${#mounts}" -le 65536 ] || refuse "$role release service fixture mounts are invalid"
+  case "$service" in
+    srs)
+      jq -e --arg media "${profile}_srs-media" '
+        [.[] | select(.Type == "volume") | {Name, Destination}] | sort_by(.Name) ==
+        [{"Name":$media,"Destination":"/usr/local/srs/objs/nginx/html"}]
+      ' <<< "$mounts" >/dev/null 2>&1 || refuse "$role release service fixture mounts are invalid"
+      ;;
+    stream-uploader)
+      jq -e --arg media "${profile}_srs-media" --arg state "${profile}_uploader-state" '
+        [.[] | select(.Type == "volume") | {Name, Destination}] | sort_by(.Name) ==
+        ([
+          {"Name":$media,"Destination":"/media"},
+          {"Name":$state,"Destination":"/app/state"}
+        ] | sort_by(.Name))
+      ' <<< "$mounts" >/dev/null 2>&1 || refuse "$role release service fixture mounts are invalid"
+      ;;
+  esac
 }
 
 sorted_services=()
@@ -292,7 +375,7 @@ write_preflight() {
   umask 077
   if [ "$role" = "uploader" ]; then
     if [ -n "$fixture_id" ]; then
-      printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true,"fixtureNetworkId":"%s"}\n' "$slot_id" "$fixture_network_id" > "$temporary"
+      printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true,"fixtureNetworkId":"%s","fixtureVolumeNames":["%s_srs-media","%s_uploader-state"]}\n' "$slot_id" "$fixture_network_id" "$profile" "$profile" > "$temporary"
     else
       printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true}\n' "$slot_id" > "$temporary"
     fi
@@ -376,6 +459,12 @@ case "$phase" in
     done
     if [ -n "$fixture_id" ]; then
       printf 'networks:\n  default:\n    external: true\n    name: %s\n' "$fixture_network_name" >> "$temporary"
+      if [ "$role" = "uploader" ]; then
+        printf 'volumes:\n' >> "$temporary"
+        for volume in srs-media uploader-state; do
+          printf '  %s:\n    labels:\n      org.solarpunk.srs-continuation.fixture: "%s"\n      org.solarpunk.srs-continuation.managed: "true"\n' "$volume" "$fixture_id" >> "$temporary"
+        done
+      fi
     fi
     mv "$temporary" "$override"
     if [ -n "$fixture_id" ]; then
@@ -415,10 +504,15 @@ case "$phase" in
       if [ -n "$fixture_id" ]; then
         container_network_id="$(docker inspect --format "{{with index .NetworkSettings.Networks \"$fixture_network_name\"}}{{.NetworkID}}{{end}}" "$container")"
         [ "$container_network_id" = "$fixture_network_id" ] || refuse "$role release service is not on the bound fixture network"
+        verify_fixture_container "$service" "$container"
       fi
       result_services+=("$service")
       result_images+=("$image_id")
     done
+    if [ -n "$fixture_id" ] && [ "$role" = "uploader" ]; then
+      inspect_fixture_volume "${profile}_srs-media"
+      inspect_fixture_volume "${profile}_uploader-state"
+    fi
     write_images
     ;;
 esac
