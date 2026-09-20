@@ -24,20 +24,25 @@ describe('continuation admin fixture bootstrap', () => {
           id: STREAM_ID,
           topic: TOPIC,
           status: 'published',
-          lifecycle: {
-            version: 1,
-            revision: 1,
-            runNumber: 1,
-            state: 'ready',
-            permission: 'open',
-            canContinue: false,
-          },
         },
         feed: { index: 1 },
       },
+      {
+        id: STREAM_ID,
+        topic: TOPIC,
+        status: 'published',
+        lifecycle: {
+          version: 1,
+          revision: 1,
+          runNumber: 1,
+          state: 'ready',
+          permission: 'open',
+          canContinue: false,
+        },
+      },
       { streamId: `video/${TOPIC}`, publishKey: PUBLISH_KEY },
     ];
-    const statuses = [200, 201, 200, 200];
+    const statuses = [200, 201, 200, 200, 200];
     const result = await provisionManagedFixtureStream(
       {
         fixtureId: FIXTURE_ID,
@@ -82,6 +87,7 @@ describe('continuation admin fixture bootstrap', () => {
     assert.equal(new Headers(httpCalls[1]?.init.headers).get('cookie'), COOKIE);
     assert.equal(new Headers(httpCalls[2]?.init.headers).get('cookie'), COOKIE);
     assert.equal(new Headers(httpCalls[3]?.init.headers).get('cookie'), COOKIE);
+    assert.equal(new Headers(httpCalls[4]?.init.headers).get('cookie'), COOKIE);
     assert.equal(new Headers(httpCalls[1]?.init.headers).get('x-requested-with'), 'web2-admin');
     assert.equal(new Headers(httpCalls[2]?.init.headers).get('x-requested-with'), 'web2-admin');
     assert.match(String(httpCalls[1]?.init.body), /scheduledStartTime/);
@@ -93,8 +99,9 @@ describe('continuation admin fixture bootstrap', () => {
       { user: { id: STREAM_ID } },
       { id: STREAM_ID, topic: TOPIC, status: 'draft' },
       { stream: { id: STREAM_ID, topic: TOPIC, status: 'published' }, feed: { index: 1 } },
+      { id: STREAM_ID, topic: TOPIC, status: 'published' },
     ];
-    const statuses = [200, 201, 200];
+    const statuses = [200, 201, 200, 200];
 
     await assert.rejects(
       provisionManagedFixtureStream(
