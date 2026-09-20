@@ -449,7 +449,7 @@ function audioDecodeInvocation(
       '-map',
       '0:a:0',
       '-af',
-      'aresample=8000,asetnsamples=n=8000:p=1,aspectralstats=measure=centroid,ametadata=print:key=lavfi.aspectralstats.1.centroid',
+      'aresample=8000,asetnsamples=n=8000:p=1,aspectralstats=measure=centroid:win_size=2048:overlap=0.5,ametadata=print:key=lavfi.aspectralstats.1.centroid',
       '-f',
       'null',
       '-',

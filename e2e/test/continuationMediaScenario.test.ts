@@ -311,6 +311,7 @@ describe('runContinuationMediaScenario', () => {
     assert.equal(JSON.stringify(decoders).includes('http://client/bee/bytes/'), true);
     assert.equal(JSON.stringify(decoders).includes('-allowed_extensions'), true);
     assert.equal(JSON.stringify(decoders).includes('-extension_picky'), true);
+    assert.equal(JSON.stringify(decoders).includes('aspectralstats=measure=centroid:win_size=2048:overlap=0.5'), true);
     assert.equal(
       evidence.snapshots.every((snapshot) => snapshot.decoded.evidenceKind === 'sampled-order'),
       true,
