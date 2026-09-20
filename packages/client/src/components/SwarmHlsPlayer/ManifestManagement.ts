@@ -529,6 +529,7 @@ export class ManifestFetcher {
     this.pinnedRecordings.set(sourceUrl, recording);
     for (const rendition of recording.renditions) {
       this.pinnedRungs.set(buildSwarmUri(owner, rendition.topic), rendition);
+      this.pinnedRungs.set(recordingSourceUrl(rendition), rendition);
     }
   }
 
@@ -536,6 +537,7 @@ export class ManifestFetcher {
     this.pinnedRecordings.delete(sourceUrl);
     for (const rendition of recording.renditions) {
       this.pinnedRungs.delete(buildSwarmUri(owner, rendition.topic));
+      this.pinnedRungs.delete(recordingSourceUrl(rendition));
     }
   }
 

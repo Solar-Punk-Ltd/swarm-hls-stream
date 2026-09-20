@@ -121,10 +121,13 @@ describe('completed recording playback', () => {
     const source = buildSwarmUri('current-owner', 'stable-master-topic');
     fetcher.pinRecording(source, 'current-owner', recording);
 
-    const rung = await fetcher.fetch(buildSwarmUri('current-owner', 'old-rung'));
+    const master = await fetcher.fetchSource(source);
+    const rungUri = master.split('\n').at(-1);
+    assert.ok(rungUri, 'the pinned master has to name its captured rung');
+    const rung = await fetcher.fetch(rungUri);
 
     assert.match(rung, new RegExp(`${BEE_URL}/bytes/captured-segment-reference`));
-    assert.deepEqual(requested, [`${BEE_URL}/bytes/old-rung-reference`]);
+    assert.deepEqual(requested, [`${BEE_URL}/bytes/old-master-reference`, `${BEE_URL}/bytes/old-rung-reference`]);
     fetcher.unpinRecording(source, 'current-owner', recording);
   });
 });
