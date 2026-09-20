@@ -48,8 +48,24 @@ describe('ManagedFormatStore', () => {
       kind: 'ready',
       bytes: Buffer.from('abcde'),
     });
-    assert.deepEqual(store.stage({ ...INPUT, sequence: 6 }, Buffer.from('fghi')), { kind: 'limit' });
+    assert.deepEqual(store.stage({ ...INPUT, sequence: 6 }, Buffer.from('fghi')), {
+      kind: 'ready',
+      bytes: Buffer.from('abcdefgh'),
+    });
+    assert.deepEqual(store.stage({ ...INPUT, sequence: 7 }, Buffer.from('j')), { kind: 'limit' });
     assert.deepEqual(store.stage(INPUT, Buffer.from('changed')), { kind: 'conflict' });
+  });
+
+  it('retains only the bounded inspection prefix of a larger valid segment', () => {
+    const store = new ManagedFormatStore(root(), 4);
+    assert.deepEqual(store.stage(INPUT, Buffer.from('abcdefgh')), {
+      kind: 'ready',
+      bytes: Buffer.from('abcd'),
+    });
+    assert.deepEqual(store.stage(INPUT, Buffer.from('abcdefgh')), {
+      kind: 'ready',
+      bytes: Buffer.from('abcd'),
+    });
   });
 
   it('seals a canonical fingerprint and reloads it without retaining raw opening bytes', () => {

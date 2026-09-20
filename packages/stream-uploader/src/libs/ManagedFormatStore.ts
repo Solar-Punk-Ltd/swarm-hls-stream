@@ -24,6 +24,7 @@ export interface ManagedFormatInput {
 interface ManagedOpeningPart {
   readonly sequence: number;
   readonly digest: string;
+  readonly inputByteLength: number;
   readonly byteLength: number;
 }
 
@@ -123,8 +124,10 @@ function validRecord(value: unknown): value is ManagedFormatRecord {
       Number.isSafeInteger(part.sequence) &&
       part.sequence >= 0 &&
       DIGEST.test(part.digest) &&
+      Number.isSafeInteger(part.inputByteLength) &&
+      part.inputByteLength > 0 &&
       Number.isSafeInteger(part.byteLength) &&
-      part.byteLength > 0,
+      part.byteLength >= 0,
   );
   if (!partsValid || new Set(record.openingParts.map((part) => part.sequence)).size !== record.openingParts.length) {
     return false;
@@ -175,18 +178,22 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
     const digest = createHash('sha256').update(data).digest('hex');
     const existing = record.openingParts.find((part) => part.sequence === input.sequence);
     if (existing) {
-      return existing.digest === digest && existing.byteLength === data.length
+      return existing.digest === digest && existing.inputByteLength === data.length
         ? { kind: 'ready', bytes: Buffer.from(record.openingBytes, 'base64') }
         : { kind: 'conflict' };
     }
     const previous = Buffer.from(record.openingBytes, 'base64');
-    if (previous.length + data.length > this.maxOpeningBytes) {
+    if (previous.length >= this.maxOpeningBytes) {
       return { kind: 'limit' };
     }
-    const bytes = Buffer.concat([previous, data]);
+    const retained = data.subarray(0, this.maxOpeningBytes - previous.length);
+    const bytes = Buffer.concat([previous, retained]);
     const updated: ManagedFormatRecord = {
       ...record,
-      openingParts: [...record.openingParts, { sequence: input.sequence, digest, byteLength: data.length }],
+      openingParts: [
+        ...record.openingParts,
+        { sequence: input.sequence, digest, inputByteLength: data.length, byteLength: retained.length },
+      ],
       openingBytes: bytes.toString('base64'),
     };
     this.save(updated);

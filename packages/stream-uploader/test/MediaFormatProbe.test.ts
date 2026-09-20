@@ -113,6 +113,34 @@ describe('MediaFormatProbe', () => {
       }),
       null,
     );
+    assert.equal(
+      mediaFormatFingerprintFromFfprobe({
+        streams: [
+          {
+            codec_type: 'video',
+            codec_name: 'h264',
+            width: 1280,
+            height: 720,
+            pix_fmt: 'unknown',
+          },
+        ],
+      }),
+      null,
+    );
+    assert.equal(
+      mediaFormatFingerprintFromFfprobe({
+        streams: [
+          {
+            codec_type: 'audio',
+            codec_name: 'aac',
+            sample_rate: '48000',
+            channels: 2,
+            channel_layout: 'N/A',
+          },
+        ],
+      }),
+      null,
+    );
   });
 
   it('passes bytes only on stdin with the fixed MPEG-TS and pipe protocol arguments', async () => {

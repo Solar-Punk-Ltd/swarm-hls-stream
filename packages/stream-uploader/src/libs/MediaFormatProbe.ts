@@ -64,7 +64,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_CONCURRENT = 2;
 
 function nonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
+  return typeof value === 'string' && value.length > 0 && value !== 'unknown' && value !== 'N/A' ? value : null;
 }
 
 function nullableString(value: unknown): string | null {
