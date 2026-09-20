@@ -8,6 +8,7 @@ import { createFixturePlan, ResourceJournal, type FixturePlan } from '../src/con
 import type { HeldUploaderProfile } from '../src/continuation/managerProfile.js';
 import {
   GuardedApplicationProvisioner,
+  SpawnBoundedProcess,
   type ProcessInvocation,
   type ProcessResult,
   type ReleaseFixtureTargets,
@@ -195,5 +196,46 @@ describe('GuardedApplicationProvisioner', () => {
     });
     await assert.rejects(restarted.provision(), /unresolved.*manual reconciliation/i);
     assert.equal(profiles.calls, 1);
+  });
+});
+
+describe('SpawnBoundedProcess', () => {
+  it('routes process-only stdin and environment without putting either value in argv', async () => {
+    const subject = new SpawnBoundedProcess();
+    const result = await subject.run({
+      file: process.execPath,
+      args: [
+        '-e',
+        "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({stdin:d.length,env:process.env.FIXTURE_SENTINEL?.length})))",
+      ],
+      stdin: 'synthetic-stdin-secret',
+      environment: { FIXTURE_SENTINEL: 'synthetic-env-secret' },
+      timeoutMs: 2_000,
+      maxOutputBytes: 1_024,
+    });
+
+    assert.deepEqual(JSON.parse(result.stdout), { stdin: 22, env: 20 });
+  });
+
+  it('reports only bounded byte counts when a child prints secret values and fails', async () => {
+    const subject = new SpawnBoundedProcess();
+    const sentinel = 'synthetic-child-secret';
+
+    await assert.rejects(
+      subject.run({
+        file: process.execPath,
+        args: ['-e', 'process.stdin.pipe(process.stdout);process.stdin.on(\'end\',()=>{process.stderr.write(process.env.FIXTURE_SENTINEL ?? \'\');process.exitCode=7})'],
+        stdin: sentinel,
+        environment: { FIXTURE_SENTINEL: sentinel },
+        timeoutMs: 2_000,
+        maxOutputBytes: 1_024,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /exit 7.*stdout [1-9][0-9]* bytes.*stderr [1-9][0-9]* bytes/i);
+        assert.doesNotMatch(error.message, new RegExp(sentinel));
+        return true;
+      },
+    );
   });
 });
