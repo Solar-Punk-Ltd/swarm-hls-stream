@@ -64,6 +64,29 @@ describe('continuation measurement snapshots', () => {
     assert.equal(saved.phase, 'before');
     assert.match(JSON.stringify(saved), /full service metrics/);
     assert.match(JSON.stringify(saved), /neighbor/);
+    assert.deepEqual(saved.rolesWithoutServiceMetrics, [
+      'blockchain',
+      'postgres',
+      'admin-api',
+      'admin-web',
+      'viewer',
+      'browser',
+      'media-sender',
+    ]);
+    const metricUrls = command.calls
+      .filter(({ args }) => args[0] === 'exec' && args.some((argument) => argument.startsWith('http://')))
+      .map(({ args }) => args.find((argument) => argument.startsWith('http://')));
+    assert.deepEqual(metricUrls, [
+      `http://${FIXTURE_ID}-bee-queen:1633/metrics`,
+      `http://${FIXTURE_ID}-bee-worker-1:1635/metrics`,
+      `http://${FIXTURE_ID}-bee-worker-2:1637/metrics`,
+      `http://${FIXTURE_ID}-bee-worker-3:1639/metrics`,
+      `http://${FIXTURE_ID}-bee-worker-4:1641/metrics`,
+      'http://srs:10019/api/v1/summaries',
+    ]);
+    assert.ok(command.calls
+      .filter(({ args }) => args[0] === 'exec' && args.some((argument) => argument.startsWith('http://')))
+      .every(({ args }) => args.at(-1) === String(256 * 1024)));
     assert.equal(command.calls.filter(({ args }) => args[0] === 'stats').length, 1);
     assert.equal(command.calls.filter(({ args }) => args[0] === 'inspect').length, 14);
     assert.ok(command.calls.every(({ args }) => !args.includes('env')));
