@@ -222,6 +222,7 @@ describe('LegacyRecordingAdopter', () => {
     const result = await adopter.inspect(assigned, []);
     const state = result.checkpoint.tracks[0].state;
     assert.equal(state.anchor?.fragmentSeconds, 2);
+    assert.equal(state.anchor?.startedAtMs, Date.parse('2026-09-20T09:59:50.000Z'));
     assert.deepEqual(state.segments.map(({ sequence, discontinuity }) => ({ sequence, discontinuity })), [
       { sequence: 5, discontinuity: undefined },
       { sequence: 7, discontinuity: true },
@@ -230,6 +231,7 @@ describe('LegacyRecordingAdopter', () => {
     const manifest = new ManifestManager(state.anchor!);
     manifest.restoreState(state.segments, state.hlsHeaders);
     const rebuilt = manifest.buildVODManifest();
+    assert.match(rebuilt, /#EXT-X-PROGRAM-DATE-TIME:2026-09-20T10:00:03\.000Z\n#EXTINF:2,\ngap-6/);
     assert.match(rebuilt, /#EXTINF:2,\ngap-6/);
     assert.match(rebuilt, /gap-6\n#EXT-X-DISCONTINUITY\n#EXT-X-PROGRAM-DATE-TIME:2026-09-20T10:00:05\.000Z/);
   });

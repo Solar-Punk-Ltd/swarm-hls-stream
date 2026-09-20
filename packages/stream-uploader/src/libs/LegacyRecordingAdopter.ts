@@ -212,7 +212,8 @@ export class LegacyRecordingAdopter {
         ? {
             anchor: {
               startedAtMs:
-                segments[0].presentedAtMs ?? this.wallClock() - segments[0].sequence! * gapDurations[0] * 1_000,
+                (segments[0].presentedAtMs ?? this.wallClock())
+                - segments[0].sequence! * gapDurations[0] * 1_000,
               fragmentSeconds: gapDurations[0],
             },
           }
