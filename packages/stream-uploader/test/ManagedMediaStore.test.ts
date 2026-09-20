@@ -62,6 +62,47 @@ function state(reference = 'a'.repeat(64)): StreamState {
 }
 
 describe('ManagedMediaStore durability', () => {
+  it('persists an admitted empty track before its first media callback', () => {
+    const root = tempRoot();
+    const initial = {
+      ...state(),
+      socIndex: null,
+      segments: [],
+      isFirstSegmentReady: false,
+      isFirstManifestReady: false,
+    };
+
+    new ManagedMediaStore(root).initializeTrack(ADMIN_STREAM_ID, 2, STREAM_ID, '360p', initial);
+
+    const tracks = new ManagedMediaStore(root).listTrackStates(ADMIN_STREAM_ID, 2);
+    assert.equal(tracks.length, 1);
+    assert.deepEqual(tracks[0].state, initial);
+    assert.equal(tracks[0].lastToken, undefined);
+    assert.equal(tracks[0].lastReference, undefined);
+  });
+
+  it('does not replace an unreadable existing track journal with empty state', () => {
+    const root = tempRoot();
+    const store = new ManagedMediaStore(root);
+    const initial = {
+      ...state(),
+      socIndex: null,
+      segments: [],
+      isFirstSegmentReady: false,
+      isFirstManifestReady: false,
+    };
+    store.initializeTrack(ADMIN_STREAM_ID, 2, STREAM_ID, '360p', initial);
+    const journal = fs.readdirSync(root).find((name) => name.startsWith('track-'));
+    assert.ok(journal);
+    fs.writeFileSync(path.join(root, journal), '{corrupt');
+
+    assert.throws(
+      () => new ManagedMediaStore(root).initializeTrack(ADMIN_STREAM_ID, 2, STREAM_ID, '360p', initial),
+      /unreadable/,
+    );
+    assert.equal(fs.readFileSync(path.join(root, journal), 'utf8'), '{corrupt');
+  });
+
   it('persists accepted bytes and identity before acknowledging the callback', () => {
     const root = tempRoot();
     const accepted = new ManagedMediaStore(root).accept(input(), Buffer.from('segment-a'));

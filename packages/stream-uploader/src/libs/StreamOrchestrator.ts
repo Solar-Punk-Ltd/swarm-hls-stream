@@ -1090,6 +1090,23 @@ export class StreamOrchestrator {
     ) {
       return false;
     }
+    const uploader = this.activeStreams.get(streamId);
+    const rung = this.config.ladder?.match(streamId)?.rung;
+    if (!uploader || !rung) {
+      return false;
+    }
+    try {
+      this.config.managedMediaStore?.initializeTrack(
+        state.record.adminStreamId,
+        state.record.runNumber,
+        streamId,
+        rung.name,
+        uploader.getStreamState(),
+      );
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed rung initialization ${streamId}:`, error);
+      return false;
+    }
     const record: ManagedRunRecord = {
       ...state.record,
       rungConnections: [
@@ -2908,7 +2925,7 @@ export class StreamOrchestrator {
     const base = state.ladder ? baseStreamId(streamId, state.ladder.rung.name) : null;
     const managedStreamId = base ?? streamId;
     const managedState = this.managedSources.get(managedStreamId);
-    if (managedState) {
+    if (this.managedStreamIds.has(managedStreamId)) {
       if (this.activeStreams.has(streamId)) {
         return streamId;
       }

@@ -231,10 +231,10 @@ function callback(clientId: string, action = 'on_publish'): Record<string, unkno
   };
 }
 
-function rungCallback(action = 'on_publish', clientId = 'rung-client'): Record<string, unknown> {
+function rungCallback(action = 'on_publish', clientId = 'rung-client', rung = '360p'): Record<string, unknown> {
   return {
     ...callback(clientId, action),
-    stream: '11111111-1111-4111-8111-111111111111_360p',
+    stream: `11111111-1111-4111-8111-111111111111_${rung}`,
     vhost: 'abr',
     ip: '127.0.0.1',
   };
@@ -327,7 +327,7 @@ describe('SRS managed lifecycle callbacks', () => {
     const runStore = new ManagedRunStore(path.join(root, 'runs'));
     const checkpointStore = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
     const mediaStore = new ManagedMediaStore(path.join(root, 'managed-media'));
-    const ladder = AbrLadder.parse('360p:640:360:700');
+    const ladder = AbrLadder.parse('360p:640:360:700 720p:1280:720:2800');
     const wallStart = 1_000_000;
     const firstClock = new FakeClock();
     let reference = 0;
@@ -374,6 +374,14 @@ describe('SRS managed lifecycle callbacks', () => {
             bandwidth: 700_000,
             avgBandwidth: 700_000,
           },
+          {
+            name: '720p',
+            topic: rungTopicFor('a'.repeat(64), '720p'),
+            width: 1280,
+            height: 720,
+            bandwidth: 2_800_000,
+            avgBandwidth: 2_800_000,
+          },
         ],
       }),
       true,
@@ -410,6 +418,25 @@ describe('SRS managed lifecycle callbacks', () => {
       }),
       true,
     );
+    assert.equal(
+      first.provisionManagedRendition(
+        `${STREAM_ID}_720p`,
+        STREAM_ID,
+        source,
+        'video',
+        { address: '127.0.0.1', isAuthenticated: true },
+        { id: ADMIN_ID, topic: 'a'.repeat(64) },
+      ),
+      true,
+    );
+    assert.equal(
+      first.bindManagedRenditionConnection(`${STREAM_ID}_720p`, STREAM_ID, source, {
+        serverId: 'server-a',
+        serviceId: 'service-a',
+        clientId: 'rung-720-a',
+      }),
+      true,
+    );
     assert.deepEqual(
       first.handleManagedRenditionSegment(
         `${STREAM_ID}_360p`,
@@ -442,7 +469,7 @@ describe('SRS managed lifecycle callbacks', () => {
       new RecoveryStore(path.join(root, 'recovery')),
     );
     second.restoreManagedRuns();
-    assert.deepEqual(second.recoverManagedMedia(), [`${STREAM_ID}_360p`]);
+    assert.deepEqual(second.recoverManagedMedia(), [`${STREAM_ID}_360p`, `${STREAM_ID}_720p`]);
     assert.deepEqual(await second.recoverStreams(), [`${STREAM_ID}_360p`]);
     const engine = createSrsEngine(mediaRoot, {
       webhookToken: TOKEN,
@@ -514,6 +541,21 @@ describe('SRS managed lifecycle callbacks', () => {
       });
       assert.equal(await response.json(), 0);
       assert.equal(fs.existsSync(resumedRungPath), false);
+
+      const first720pPath = path.join(mediaRoot, 'video', 'first-720p.ts');
+      fs.writeFileSync(first720pPath, videoSegment(4, 4 * FRAME_TICKS));
+      const first720pResponse = await fetch(`${baseUrl}${engine.prefix}/hls?token=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...rungCallback('on_hls', 'rung-720-a', '720p'),
+          file: './objs/nginx/html/video/first-720p.ts',
+          seq_no: 0,
+          duration: 0.1,
+        }),
+      });
+      assert.equal(await first720pResponse.json(), 0);
+      assert.equal(fs.existsSync(first720pPath), false);
 
       await secondClock.advance(60_000);
       const expiredPath = path.join(mediaRoot, 'video', 'expired.ts');

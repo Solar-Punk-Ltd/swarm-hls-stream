@@ -31,8 +31,8 @@ export interface ManagedTrackJournal {
   readonly runNumber: number;
   readonly streamId: string;
   readonly rendition: string | null;
-  readonly lastToken: string;
-  readonly lastReference: string;
+  readonly lastToken?: string;
+  readonly lastReference?: string;
   readonly state: StreamState;
 }
 
@@ -44,6 +44,13 @@ export type ManagedMediaExisting = 'missing' | 'duplicate' | 'conflict';
 
 /** The durable managed-media boundary used by the orchestrator and replaceable in focused tests. */
 export interface ManagedMediaPersistence {
+  initializeTrack(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+    state: StreamState,
+  ): void;
   find(input: ManagedMediaInput, data: Uint8Array): ManagedMediaExisting;
   accept(input: ManagedMediaInput, data: Uint8Array): ManagedMediaAcceptance;
   commitUploaded(token: string, reference: string, trackState: StreamState): ManagedMediaRecord;
@@ -180,10 +187,11 @@ function isTrackJournal(value: unknown): value is ManagedTrackJournal {
     typeof journal.streamId === 'string' &&
     journal.streamId.length > 0 &&
     (journal.rendition === null || (typeof journal.rendition === 'string' && journal.rendition.length > 0)) &&
-    typeof journal.lastToken === 'string' &&
-    HEX_REFERENCE.test(journal.lastToken) &&
-    typeof journal.lastReference === 'string' &&
-    HEX_REFERENCE.test(journal.lastReference) &&
+    ((journal.lastToken === undefined && journal.lastReference === undefined) ||
+      (typeof journal.lastToken === 'string' &&
+        HEX_REFERENCE.test(journal.lastToken) &&
+        typeof journal.lastReference === 'string' &&
+        HEX_REFERENCE.test(journal.lastReference))) &&
     isStreamState(journal.state) &&
     journal.state.streamId === journal.streamId
   );
@@ -226,6 +234,42 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
       this.flushDirectory(path.dirname(stateDir));
     }
     this.loadOrdinals();
+  }
+
+  public initializeTrack(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+    state: StreamState,
+  ): void {
+    const identity = { adminStreamId, runNumber, streamId, rendition };
+    if (
+      !UUID.test(adminStreamId) ||
+      !positiveInteger(runNumber) ||
+      streamId.length === 0 ||
+      (rendition !== null && rendition.length === 0) ||
+      !isStreamState(state) ||
+      state.streamId !== streamId ||
+      state.segments.length !== 0
+    ) {
+      throw new Error(`Refused invalid managed track initialization for ${streamId}`);
+    }
+    const filePath = this.trackPath(identity);
+    const existing = this.readTrackJournal(identity);
+    if (existing) {
+      this.flushDirectory(this.stateDir);
+      return;
+    }
+    if (this.fileOps.existsSync(filePath)) {
+      throw new Error(`Managed track journal for ${streamId} is unreadable`);
+    }
+    const journal: ManagedTrackJournal = {
+      lifecycleVersion: 1,
+      ...identity,
+      state,
+    };
+    this.replaceDurably(filePath, JSON.stringify(journal));
   }
 
   public accept(input: ManagedMediaInput, data: Uint8Array): ManagedMediaAcceptance {

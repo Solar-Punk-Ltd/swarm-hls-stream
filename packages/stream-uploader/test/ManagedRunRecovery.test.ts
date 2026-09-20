@@ -24,7 +24,13 @@ import { MEDIA_TYPE_VIDEO, SourceConnectionIdentity } from '../src/types.js';
 import { rungTopicFor } from '../src/utils/rungTopic.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
-import { FakeUploads, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
+import {
+  FakeUploads,
+  makeFakeRecoveryStore,
+  makeRecoveredState,
+  makeTestOrchestrator,
+  rejectImmediately,
+} from './helpers/fakes.js';
 import { MemoryManagedCheckpoints } from './helpers/managedCheckpoint.js';
 import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 
@@ -519,6 +525,33 @@ describe('managed run recovery', () => {
       target.handleSegment(STREAM_ID, 0, 0.1, videoSegment(4, 0)),
       { accepted: false, reason: 'stale_source' },
     );
+  });
+
+  it('does not rebuild a legacy uploader for an unreadable reserved managed run', async () => {
+    const store: ManagedRunPersistence = {
+      save: () => undefined,
+      read: () => ({ kind: MANAGED_RUN_UNREADABLE }),
+      list: () => [STREAM_ID],
+    };
+    const recovery = makeFakeRecoveryStore({
+      listActive: () => [STREAM_ID],
+      load: () => makeRecoveredState(STREAM_ID),
+    });
+    const target = makeTestOrchestrator(
+      {
+        clock: new FakeClock(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: store,
+        managedCheckpointStore: new MemoryManagedCheckpoints(),
+      },
+      {},
+      recovery,
+    );
+
+    target.restoreManagedRuns();
+
+    assert.deepEqual(await target.recoverStreams(), []);
+    assert.equal(activeUploader(target), undefined);
   });
 
   it('expires a recovered run immediately after wall-clock rollback', () => {
