@@ -478,12 +478,12 @@ describe('managed run recovery', () => {
         mediaType: CLAIM.mediaType,
         uploaderId: CLAIM.uploaderId,
         previousRunNumber: attemptB.runNumber,
-        nextRunNumber: attemptB.runNumber + 1,
+        nextRunNumber: attemptB.runNumber + 2,
         revision: 30,
         status: 'pending',
         retainedRecording: recordingB,
       });
-      const attemptC = successor(attemptB.runNumber + 1, 31);
+      const attemptC = successor(attemptB.runNumber + 2, 31);
       const decisionC = restarted.beginManagedClaimAttempt(attemptC);
       assert.equal(decisionC?.needsClaim, true);
       assert.equal(runs.records.get(STREAM_ID)?.runNumber, attemptC.runNumber);

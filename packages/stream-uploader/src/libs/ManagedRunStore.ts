@@ -225,7 +225,14 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     record.pendingReports.every((report, index) =>
       report.eventSequence === record.eventSequence - record.pendingReports.length + index + 1,
     ) &&
-    (record.state === 'claiming' ? record.claimId === null : record.claimId !== null)
+    ((record.state === 'claiming' && record.claimId === null) ||
+      (record.state === 'closed' &&
+        record.claimId === null &&
+        record.deadlineRemainingMs === 0 &&
+        record.source === null &&
+        record.rungConnections.length === 0 &&
+        record.pendingReports.length === 0) ||
+      (record.state !== 'claiming' && record.claimId !== null))
   );
 }
 

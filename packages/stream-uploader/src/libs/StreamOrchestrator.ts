@@ -83,6 +83,7 @@ import {
   ManagedCheckpointPersistence,
   ManagedCheckpointRecord,
   ManagedCompletedRecording,
+  ManagedContinuationOperation,
   ManagedExpectedRendition,
   ManagedImmutableMediaReference,
   ManagedImmutableRenditionReference,
@@ -798,7 +799,7 @@ export class StreamOrchestrator {
       predecessor.uploaderId !== attempt.uploaderId ||
       predecessor.topic !== attempt.topic ||
       predecessor.mediaType !== attempt.mediaType ||
-      attempt.runNumber !== predecessor.runNumber + 1 ||
+      attempt.runNumber <= predecessor.runNumber ||
       predecessor.pendingReports.length !== 0 ||
       predecessorState?.reportInFlight ||
       this.hasManagedRunWriters(attempt.streamId, predecessor.expectedRenditions)
@@ -820,7 +821,7 @@ export class StreamOrchestrator {
         prepared.adminStreamId !== attempt.adminStreamId ||
         prepared.runNumber !== attempt.runNumber ||
         prepared.operationId === undefined ||
-        prepared.previousCheckpointReference !== predecessor.checkpointReference ||
+        !this.managedCheckpointContinuesFrom(prepared, predecessorCheckpoint) ||
         prepared.topic !== attempt.topic ||
         prepared.mediaType !== attempt.mediaType ||
         !this.sameManagedExpectedRenditions(prepared.expectedRenditions, attempt.expectedRenditions) ||
@@ -885,6 +886,37 @@ export class StreamOrchestrator {
   ): boolean {
     const trackIds = [streamId, ...expectedRenditions.map((rendition) => `${streamId}_${rendition.name}`)];
     return trackIds.some((trackId) => this.activeStreams.has(trackId) || this.drainPromises.has(trackId));
+  }
+
+  private managedCheckpointContinuesFrom(
+    prepared: ManagedCheckpointRecord,
+    predecessor: ManagedCheckpointRecord,
+  ): boolean {
+    let reference = prepared.previousCheckpointReference;
+    const visited = new Set<string>();
+    while (reference !== predecessor.checkpointReference) {
+      if (!reference || visited.has(reference)) {
+        return false;
+      }
+      visited.add(reference);
+      const skipped = this.config.managedCheckpointStore?.read(reference);
+      if (
+        skipped?.status !== 'empty' ||
+        !skipped.emptyOutcome ||
+        skipped.emptyOutcome.checkpointReference !== skipped.checkpointReference ||
+        skipped.emptyOutcome.runNumber !== skipped.runNumber ||
+        skipped.emptyOutcome.acceptedMediaCount !== 0 ||
+        skipped.adminStreamId !== predecessor.adminStreamId ||
+        skipped.topic !== predecessor.topic ||
+        skipped.mediaType !== predecessor.mediaType ||
+        skipped.runNumber <= predecessor.runNumber ||
+        skipped.runNumber >= prepared.runNumber
+      ) {
+        return false;
+      }
+      reference = skipped.previousCheckpointReference;
+    }
+    return true;
   }
 
   /** Bind the durable request attempt to the exact claim the admin returned. */
@@ -1177,6 +1209,7 @@ export class StreamOrchestrator {
     for (const operation of operations) {
       let preparation: ManagedContinuationPreparation;
       try {
+        this.reconcileManagedEmptyPredecessor(operation);
         const checkpoint = store.prepare(operation);
         preparation = {
           lifecycleVersion: 1,
@@ -1199,6 +1232,97 @@ export class StreamOrchestrator {
         operation.operationId,
         preparation,
       );
+    }
+  }
+
+  private reconcileManagedEmptyPredecessor(operation: ManagedContinuationOperation): void {
+    const outcome = operation.previousEmptyOutcome;
+    const checkpointStore = this.config.managedCheckpointStore;
+    const runStore = this.config.managedRunStore;
+    const mediaStore = this.config.managedMediaStore;
+    if (!outcome || !checkpointStore || !runStore) {
+      return;
+    }
+    const checkpoint = checkpointStore.read(outcome.checkpointReference);
+    if (checkpoint?.status !== 'prepared') {
+      return;
+    }
+    if (
+      checkpoint.adminStreamId !== operation.streamId ||
+      checkpoint.runNumber !== operation.previousRunNumber ||
+      checkpoint.runNumber !== outcome.runNumber ||
+      checkpoint.topic !== operation.topic ||
+      checkpoint.mediaType !== operation.mediaType ||
+      outcome.acceptedMediaCount !== 0 ||
+      !mediaStore ||
+      mediaStore.listRun(operation.streamId, outcome.runNumber).length !== 0
+    ) {
+      throw new Error('Cancelled continuation is not a locally verified empty run');
+    }
+
+    let local: { streamId: string; record: ManagedRunRecord } | undefined;
+    for (const streamId of runStore.list()) {
+      const entry = runStore.read(streamId);
+      if (entry.kind !== MANAGED_RUN_LOADED) {
+        if (entry.kind !== 'missing') {
+          throw new Error('Cancelled continuation admission state is unreadable');
+        }
+        continue;
+      }
+      if (entry.record.adminStreamId === operation.streamId && entry.record.runNumber === outcome.runNumber) {
+        if (local) {
+          throw new Error('Cancelled continuation has more than one local admission record');
+        }
+        local = { streamId, record: entry.record };
+      }
+    }
+
+    if (local) {
+      const { record } = local;
+      if (
+        record.uploaderId !== operation.uploaderId ||
+        record.topic !== operation.topic ||
+        record.mediaType !== operation.mediaType ||
+        record.checkpointReference !== outcome.checkpointReference ||
+        record.claimId !== null ||
+        (record.state !== 'claiming' && record.state !== 'closed') ||
+        record.pendingReports.length !== 0 ||
+        this.hasManagedRunWriters(local.streamId, record.expectedRenditions)
+      ) {
+        throw new Error('Cancelled continuation still has local admission authority');
+      }
+      const closed: ManagedRunRecord = {
+        ...record,
+        state: 'closed',
+        deadlineWallMs: Math.min(record.deadlineWallMs, this.wallClock()),
+        deadlineRecordedAtWallMs: this.wallClock(),
+        deadlineRemainingMs: 0,
+        lastProgressPts: null,
+        source: null,
+        rungConnections: [],
+      };
+      runStore.save(closed);
+      const state = this.managedSources.get(local.streamId);
+      if (state?.record.claimRequestId === record.claimRequestId) {
+        state.timer?.cancel();
+        state.heartbeat?.cancel();
+        state.reportRetry?.cancel();
+        state.closureRetry?.cancel();
+        state.finalizationRetry?.cancel();
+        state.record = closed;
+        state.current = undefined;
+        state.candidate = undefined;
+        state.closed = true;
+      }
+    }
+
+    const sealed = checkpointStore.sealEmpty(outcome.checkpointReference, 0);
+    if (
+      sealed.runNumber !== outcome.runNumber ||
+      sealed.checkpointReference !== outcome.checkpointReference ||
+      sealed.acceptedMediaCount !== 0
+    ) {
+      throw new Error('Cancelled continuation empty checkpoint did not match the admin proof');
     }
   }
 
