@@ -736,14 +736,14 @@ export class StreamOrchestrator {
       return false;
     }
     const wallNow = this.wallClock();
+    const remaining = remainingManagedDeadline(state.record, wallNow);
     const record: ManagedRunRecord = {
       ...state.record,
       revision: claimed.revision,
       claimId: claimed.claimId,
       state: 'claimed',
-      deadlineWallMs: wallNow + reconnectMs,
       deadlineRecordedAtWallMs: wallNow,
-      deadlineRemainingMs: reconnectMs,
+      deadlineRemainingMs: remaining,
     };
     try {
       store.save(record);
@@ -752,7 +752,11 @@ export class StreamOrchestrator {
       return false;
     }
     state.record = record;
-    state.deadline = this.clock.now() + reconnectMs;
+    state.deadline = this.clock.now() + remaining;
+    if (remaining === 0) {
+      this.closeManagedSourceAtDeadline(streamId, state);
+      return false;
+    }
     this.armManagedSourceDeadline(streamId, state);
     return true;
   }
@@ -1211,7 +1215,7 @@ export class StreamOrchestrator {
 
   private async flushManagedReports(streamId: string, state: ManagedSourceState): Promise<void> {
     const adminApi = this.config.adminApi;
-    if (!adminApi || state.reportInFlight) {
+    if (!adminApi || state.reportInFlight || this.managedSources.get(streamId) !== state) {
       return;
     }
     state.reportInFlight = true;
@@ -1219,6 +1223,9 @@ export class StreamOrchestrator {
       while (state.record.pendingReports.length > 0) {
         const report = state.record.pendingReports[0] as ManagedRunReport;
         const outcome = await adminApi.reportManagedRun(state.record.adminStreamId, state.record.runNumber, report);
+        if (this.managedSources.get(streamId) !== state) {
+          return;
+        }
         if (!stateWasReported(outcome)) {
           this.armManagedReportRetry(streamId, state);
           return;
