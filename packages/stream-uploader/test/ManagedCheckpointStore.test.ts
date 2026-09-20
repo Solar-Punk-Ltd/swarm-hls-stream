@@ -9,6 +9,7 @@ import {
   ManagedCheckpointStore,
   ManagedCompletedRecording,
   ManagedContinuationOperation,
+  ManagedEmptyOutcome,
   ManagedTrackFinalization,
 } from '../src/libs/ManagedCheckpointStore.js';
 import { StreamState } from '../src/types.js';
@@ -71,7 +72,8 @@ function finalized(run: number, state: StreamState, reference: string): ManagedT
 
 function operation(
   previousRunNumber: number,
-  retainedRecording: ManagedCompletedRecording,
+  retainedRecording?: ManagedCompletedRecording,
+  previousEmptyOutcome?: ManagedEmptyOutcome,
 ): ManagedContinuationOperation {
   return {
     lifecycleVersion: 1,
@@ -86,6 +88,7 @@ function operation(
     revision: previousRunNumber + 10,
     status: 'pending',
     retainedRecording,
+    previousEmptyOutcome,
   };
 }
 
@@ -314,6 +317,78 @@ describe('ManagedCheckpointStore', () => {
       () => new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[1]).createRun(input),
       /missing or unreadable|corrupt/i,
     );
+  });
+
+  it('prepares after a first verified-empty run without inventing a recording', () => {
+    const root = tempRoot();
+    const ids = [...CHECKPOINT_IDS];
+    const first = new ManagedCheckpointStore(root, undefined, () => ids.shift()!);
+    const run1 = first.createRun({
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [
+        { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 800_000, avgBandwidth: 700_000 },
+      ],
+    });
+    const empty = first.sealEmpty(run1.checkpointReference, 0);
+
+    const run2 = new ManagedCheckpointStore(root, undefined, () => ids.shift()!).prepare(operation(1, undefined, empty));
+
+    assert.equal(run2.runNumber, 2);
+    assert.equal(run2.previousCheckpointReference, run1.checkpointReference);
+    assert.equal(run2.tracks.length, 0);
+    assert.equal(run2.expectedRenditions[0].topic, RUNG_TOPIC);
+  });
+
+  it('keeps A as the retained replay after an empty B when preparing C', () => {
+    const root = tempRoot();
+    const ids = [...CHECKPOINT_IDS];
+    const first = new ManagedCheckpointStore(root, undefined, () => ids.shift()!);
+    const runA = first.createRun({
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [
+        { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 800_000, avgBandwidth: 700_000 },
+      ],
+    });
+    const stateA = trackState(1, undefined, REFERENCES[0]);
+    first.saveTrack(runA.checkpointReference, finalized(1, stateA, REFERENCES[1]));
+    const recordingA = first.complete(runA.checkpointReference, {
+      topic: TOPIC,
+      index: 11,
+      reference: REFERENCES[2],
+      duration: 2,
+    });
+
+    const second = new ManagedCheckpointStore(root, undefined, () => ids.shift()!);
+    const runB = second.prepare(operation(1, recordingA));
+    const emptyB = second.sealEmpty(runB.checkpointReference, 0);
+    const runC = new ManagedCheckpointStore(root, undefined, () => ids.shift()!).prepare(
+      operation(2, recordingA, emptyB),
+    );
+
+    assert.equal(runC.previousCheckpointReference, runB.checkpointReference);
+    assert.deepEqual(runC.tracks[0].state.segments.map((segment) => segment.ref), [REFERENCES[0]]);
+    assert.deepEqual(runC.retainedRecording, recordingA);
+  });
+
+  it('does not seal accepted media as empty when every upload failed', () => {
+    const root = tempRoot();
+    const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
+    const run = store.createRun({
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [],
+    });
+
+    assert.throws(() => store.sealEmpty(run.checkpointReference, 1), /accepted media/i);
+    assert.equal(store.read(run.checkpointReference)?.status, 'prepared');
   });
 });
 
