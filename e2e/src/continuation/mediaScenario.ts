@@ -13,6 +13,8 @@ const PUBLISH_DURATION_SECONDS = 6;
 const MAX_HTTP_BYTES = 256 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 256 * 1024;
 const MAX_SEAM_GAP_SECONDS = 4;
+const RECONNECT_CUTOFF_MARGIN_MS = POLL_INTERVAL_MS;
+const CONTROLLED_PUBLISH_DURATION_SECONDS = 120;
 
 export type SourceMarkerId = 'A' | 'B' | 'C';
 export type SourceProtocol = 'rtmp' | 'srt';
@@ -172,11 +174,52 @@ export interface MediaScenarioEvidence {
   };
 }
 
+export interface ReconnectAcceptanceEvidence {
+  evidenceKind: 'controller-observation';
+  fixtureId: string;
+  streamId: string;
+  sourceAttempts: Array<{
+    markerId: SourceMarkerId;
+    protocol: SourceProtocol;
+    runNumber: number;
+    outcome: 'admitted' | 'resumed' | 'refused_closed' | 'admitted_after_continue';
+  }>;
+  incumbentRun: {
+    runNumber: number;
+    firstPublisherStartedAtMs: number;
+    firstLiveRevision: number;
+    firstWaitingRevision: number;
+    firstReconnectRemainingMs: number;
+    firstWaitingReportReceivedAt: string;
+    firstWaitingObservationAgeMs: number;
+    reconnectPublisherStartedAtMs: number;
+    reconnectAttemptDelayMs: number;
+    resumedLiveRevision: number;
+    cutoffWaitingRevision: number;
+    reconnectRemainingMs: number;
+    waitingReportReceivedAt: string;
+    waitingObservationAgeMs: number;
+    cutoffWaitStartedAtMs: number;
+    terminalRevision: number;
+    terminalState: 'closed' | 'vod';
+    closeReason: 'reconnect_timeout';
+  };
+  continuedRun: {
+    runNumber: number;
+    liveRevision: number;
+  };
+}
+
 interface StreamLifecycle {
   revision: number;
   runNumber: number;
   state: 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
   permission: 'open' | 'claimed' | 'closed';
+  canContinue?: boolean;
+  reconnectRemainingMs?: number;
+  receivedAt?: string;
+  observationAgeMs?: number;
+  closeReason?: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty' | 'adopted';
 }
 
 interface CompletedRecording {
@@ -230,6 +273,11 @@ function finite(value: unknown, minimum = 0): number | null {
 
 function string(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function isoTimestamp(value: unknown): string | null {
+  const parsed = string(value);
+  return parsed && Number.isFinite(Date.parse(parsed)) ? parsed : null;
 }
 
 function isLoopback(hostname: string): boolean {
@@ -320,6 +368,7 @@ function publishTarget(input: ContinuationMediaScenarioInput, protocol: SourcePr
 function publisherInvocation(
   input: ContinuationMediaScenarioInput,
   source: SourcePlan,
+  durationSeconds = PUBLISH_DURATION_SECONDS,
 ): MediaScenarioProcessInvocation {
   const fps = 24;
   return {
@@ -327,7 +376,7 @@ function publisherInvocation(
     file: '/usr/bin/ffmpeg',
     markerId: source.markerId,
     protocol: source.protocol,
-    timeoutMs: 30_000,
+    timeoutMs: Math.max(30_000, (durationSeconds + 15) * 1_000),
     maxOutputBytes: 64 * 1024,
     args: [
       '-hide_banner',
@@ -343,7 +392,7 @@ function publisherInvocation(
       '-i',
       `sine=frequency=${source.frequency}:sample_rate=48000`,
       '-t',
-      String(PUBLISH_DURATION_SECONDS),
+      String(durationSeconds),
       '-c:v',
       'libx264',
       '-preset',
@@ -462,8 +511,9 @@ async function waitForProcess(
   invocation: MediaScenarioProcessInvocation,
   label: string,
 ): Promise<MediaScenarioProcessResult> {
+  let process: MediaScenarioProcess | undefined;
   try {
-    const process = await deps.spawn.spawn(invocation);
+    process = await deps.spawn.spawn(invocation);
     const result = await process.wait();
     if (result.code !== 0 || result.signal) {
       throw new Error('process failed');
@@ -473,6 +523,13 @@ async function waitForProcess(
     }
     return result;
   } catch {
+    if (process) {
+      try {
+        await process.stop();
+      } catch {
+        // The fixed diagnostic below withholds both child output and cleanup diagnostics.
+      }
+    }
     throw new FixtureRefusal(`${label} failed without exposing process arguments or diagnostics`);
   }
 }
@@ -576,13 +633,29 @@ function streamView(value: unknown, input: ContinuationMediaScenarioInput): Stre
   const runNumber = integer(value.lifecycle.runNumber, 1);
   const state = value.lifecycle.state;
   const permission = value.lifecycle.permission;
+  const canContinue = value.lifecycle.canContinue;
+  const reconnectRemainingMs =
+    value.lifecycle.reconnectRemainingMs === undefined ? undefined : finite(value.lifecycle.reconnectRemainingMs);
+  const receivedAt = value.lifecycle.receivedAt === undefined ? undefined : isoTimestamp(value.lifecycle.receivedAt);
+  const observationAgeMs =
+    value.lifecycle.observationAgeMs === undefined ? undefined : finite(value.lifecycle.observationAgeMs);
+  const closeReason = value.lifecycle.closeReason;
   if (
     id !== input.stream.id ||
     topic !== input.stream.topic ||
     revision === null ||
     runNumber === null ||
+    typeof canContinue !== 'boolean' ||
     !['ready', 'claimed', 'live', 'waiting', 'closed', 'vod'].includes(String(state)) ||
-    !['open', 'claimed', 'closed'].includes(String(permission))
+    !['open', 'claimed', 'closed'].includes(String(permission)) ||
+    (value.lifecycle.reconnectRemainingMs !== undefined && reconnectRemainingMs === null) ||
+    (value.lifecycle.receivedAt !== undefined && receivedAt === null) ||
+    (value.lifecycle.observationAgeMs !== undefined && observationAgeMs === null) ||
+    (receivedAt === undefined) !== (observationAgeMs === undefined) ||
+    (closeReason !== undefined &&
+      !['reconnect_timeout', 'cancelled', 'recovery_required', 'finalization_failed', 'empty', 'adopted'].includes(
+        String(closeReason),
+      ))
   ) {
     return null;
   }
@@ -598,6 +671,11 @@ function streamView(value: unknown, input: ContinuationMediaScenarioInput): Stre
       runNumber,
       state: state as StreamLifecycle['state'],
       permission: permission as StreamLifecycle['permission'],
+      canContinue,
+      ...(typeof reconnectRemainingMs === 'number' ? { reconnectRemainingMs } : {}),
+      ...(typeof receivedAt === 'string' ? { receivedAt } : {}),
+      ...(typeof observationAgeMs === 'number' ? { observationAgeMs } : {}),
+      ...(closeReason === undefined ? {} : { closeReason: closeReason as StreamLifecycle['closeReason'] }),
     },
     ...(recording ? { completedRecording: recording } : {}),
   };
@@ -879,6 +957,275 @@ function snapshotEvidence(stream: StreamView, decoded: DecodedReplayEvidence): C
     expectedRenditions: [...recording.expectedRenditions],
     renditions: recording.renditions.map((entry) => ({ ...entry })),
     decoded,
+  };
+}
+
+async function spawnControlledPublisher(
+  input: ContinuationMediaScenarioInput,
+  deps: MediaScenarioDependencies,
+  source: SourcePlan,
+): Promise<MediaScenarioProcess> {
+  try {
+    return await deps.spawn.spawn(publisherInvocation(input, source, CONTROLLED_PUBLISH_DURATION_SECONDS));
+  } catch {
+    throw new FixtureRefusal(
+      `FFmpeg publisher ${source.markerId} failed without exposing process arguments or diagnostics`,
+    );
+  }
+}
+
+async function stopControlledPublisher(process: MediaScenarioProcess, markerId: SourceMarkerId): Promise<void> {
+  try {
+    await process.stop();
+  } catch {
+    throw new FixtureRefusal(`FFmpeg publisher ${markerId} could not be stopped and reaped`);
+  }
+}
+
+async function pollExactRun(
+  input: ContinuationMediaScenarioInput,
+  deps: MediaScenarioDependencies,
+  runNumber: number,
+  accept: (stream: StreamView) => boolean,
+  label: string,
+  terminalBeforeAcceptance?: string,
+): Promise<StreamView> {
+  const deadline = deps.clock.now() + STATE_DEADLINE_MS;
+  do {
+    const current = await readStream(input, deps);
+    if (current.lifecycle.runNumber !== runNumber) {
+      throw new FixtureRefusal('admin replaced the managed run during reconnect observation');
+    }
+    if (accept(current)) {
+      return current;
+    }
+    if (terminalBeforeAcceptance && (current.lifecycle.state === 'closed' || current.lifecycle.state === 'vod')) {
+      throw new FixtureRefusal(terminalBeforeAcceptance);
+    }
+    await deps.clock.sleep(POLL_INTERVAL_MS);
+  } while (deps.clock.now() <= deadline);
+  throw new FixtureRefusal(`media scenario timed out waiting for ${label}`);
+}
+
+async function publishUntilLive(
+  input: ContinuationMediaScenarioInput,
+  deps: MediaScenarioDependencies,
+  source: SourcePlan,
+  runNumber: number,
+  terminalBeforeAcceptance: string,
+): Promise<{ live: StreamView; startedAtMs: number }> {
+  const startedAtMs = deps.clock.now();
+  const publisher = await spawnControlledPublisher(input, deps, source);
+  try {
+    const live = await pollExactRun(
+      input,
+      deps,
+      runNumber,
+      (stream) => stream.lifecycle.state === 'live' && stream.lifecycle.permission === 'claimed',
+      `run ${runNumber} live`,
+      terminalBeforeAcceptance,
+    );
+    await stopControlledPublisher(publisher, source.markerId);
+    return { live, startedAtMs };
+  } catch (error) {
+    try {
+      await publisher.stop();
+    } catch {
+      throw new FixtureRefusal(`FFmpeg publisher ${source.markerId} could not be stopped and reaped`);
+    }
+    throw error;
+  }
+}
+
+function requireWaitingObservation(stream: StreamView): {
+  reconnectRemainingMs: number;
+  receivedAt: string;
+  observationAgeMs: number;
+} {
+  const { lifecycle } = stream;
+  if (
+    lifecycle.state !== 'waiting' ||
+    lifecycle.permission !== 'claimed' ||
+    lifecycle.reconnectRemainingMs === undefined ||
+    lifecycle.reconnectRemainingMs <= 0 ||
+    lifecycle.reconnectRemainingMs > 60_000 ||
+    lifecycle.receivedAt === undefined ||
+    lifecycle.observationAgeMs === undefined ||
+    lifecycle.observationAgeMs > 30_000
+  ) {
+    throw new FixtureRefusal('admin did not expose a usable authoritative reconnect budget');
+  }
+  return {
+    reconnectRemainingMs: lifecycle.reconnectRemainingMs,
+    receivedAt: lifecycle.receivedAt,
+    observationAgeMs: lifecycle.observationAgeMs,
+  };
+}
+
+async function requireClosedPublisherRefusal(
+  input: ContinuationMediaScenarioInput,
+  deps: MediaScenarioDependencies,
+  source: SourcePlan,
+): Promise<void> {
+  const publisher = await spawnControlledPublisher(input, deps, source);
+  let result: MediaScenarioProcessResult;
+  try {
+    result = await publisher.wait();
+  } catch {
+    try {
+      await publisher.stop();
+    } catch {
+      throw new FixtureRefusal(`FFmpeg publisher ${source.markerId} could not be stopped and reaped`);
+    }
+    throw new FixtureRefusal('could not prove that SRS refused the publisher before Continue');
+  }
+  if (result.code === 0 && !result.signal) {
+    await stopControlledPublisher(publisher, source.markerId);
+    throw new FixtureRefusal('SRS accepted a publisher before Continue');
+  }
+}
+
+/**
+ * Exercises the owner-visible reconnect boundary with bounded publishers. This is controller
+ * evidence only. The injected executor supplies real media processes and authoritative services.
+ */
+export async function runReconnectAcceptanceScenario(
+  input: ContinuationMediaScenarioInput,
+  deps: MediaScenarioDependencies,
+): Promise<ReconnectAcceptanceEvidence> {
+  validateInput(input);
+  const initial = await readStream(input, deps);
+  if (initial.lifecycle.state !== 'ready' || initial.lifecycle.permission !== 'open') {
+    throw new FixtureRefusal('reconnect scenario must start from fresh open ready permission');
+  }
+  const incumbentRunNumber = initial.lifecycle.runNumber;
+  const first = await publishUntilLive(
+    input,
+    deps,
+    SOURCES[0],
+    incumbentRunNumber,
+    'managed run closed before its first source was admitted',
+  );
+  if (first.live.lifecycle.revision <= initial.lifecycle.revision) {
+    throw new FixtureRefusal('first source admission did not advance the managed run revision');
+  }
+  const firstWaiting = await pollExactRun(
+    input,
+    deps,
+    incumbentRunNumber,
+    (stream) => stream.lifecycle.state === 'waiting',
+    `run ${incumbentRunNumber} waiting after source A`,
+    'managed run closed before exposing its reconnect window',
+  );
+  const firstWaitingObservation = requireWaitingObservation(firstWaiting);
+  const firstWaitingObservedAtMs = deps.clock.now();
+  if (firstWaiting.lifecycle.revision <= first.live.lifecycle.revision) {
+    throw new FixtureRefusal('first source stop did not advance the managed run revision');
+  }
+
+  const resumed = await publishUntilLive(
+    input,
+    deps,
+    SOURCES[1],
+    incumbentRunNumber,
+    'managed run closed before the compatible reconnect was admitted',
+  );
+  if (resumed.live.lifecycle.revision <= firstWaiting.lifecycle.revision) {
+    throw new FixtureRefusal('managed reconnect did not advance the incumbent run revision');
+  }
+  const reconnectAttemptDelayMs = resumed.startedAtMs - firstWaitingObservedAtMs;
+  if (reconnectAttemptDelayMs < 0 || reconnectAttemptDelayMs >= firstWaitingObservation.reconnectRemainingMs) {
+    throw new FixtureRefusal('compatible reconnect did not start inside the authoritative reconnect budget');
+  }
+  const cutoffWaiting = await pollExactRun(
+    input,
+    deps,
+    incumbentRunNumber,
+    (stream) => stream.lifecycle.state === 'waiting',
+    `run ${incumbentRunNumber} waiting after source B`,
+    'managed run closed before exposing its renewed media-derived cutoff',
+  );
+  const cutoffObservation = requireWaitingObservation(cutoffWaiting);
+  if (cutoffWaiting.lifecycle.revision <= resumed.live.lifecycle.revision) {
+    throw new FixtureRefusal('reconnected source stop did not advance the managed run revision');
+  }
+  const cutoffWaitStartedAtMs = deps.clock.now();
+  await deps.clock.sleep(cutoffObservation.reconnectRemainingMs + RECONNECT_CUTOFF_MARGIN_MS);
+  const terminal = await pollExactRun(
+    input,
+    deps,
+    incumbentRunNumber,
+    (stream) =>
+      stream.lifecycle.state === 'vod' &&
+      stream.lifecycle.permission === 'closed' &&
+      stream.lifecycle.canContinue === true,
+    `run ${incumbentRunNumber} terminal replay after reconnect cutoff`,
+  );
+  if (terminal.lifecycle.state !== 'vod' || terminal.lifecycle.closeReason !== 'reconnect_timeout') {
+    throw new FixtureRefusal('managed run did not retain the reconnect-timeout close reason');
+  }
+  if (terminal.lifecycle.revision <= cutoffWaiting.lifecycle.revision) {
+    throw new FixtureRefusal('reconnect cutoff did not advance the managed run revision');
+  }
+
+  await requireClosedPublisherRefusal(input, deps, SOURCES[2]);
+  const afterRefusal = await readStream(input, deps);
+  if (
+    afterRefusal.lifecycle.runNumber !== terminal.lifecycle.runNumber ||
+    afterRefusal.lifecycle.revision !== terminal.lifecycle.revision ||
+    afterRefusal.lifecycle.state !== terminal.lifecycle.state ||
+    afterRefusal.lifecycle.permission !== 'closed' ||
+    afterRefusal.lifecycle.closeReason !== terminal.lifecycle.closeReason
+  ) {
+    throw new FixtureRefusal('closed publisher attempt changed the incumbent managed run');
+  }
+
+  const nextRunNumber = await prepareNextRun(input, deps, afterRefusal);
+  if (nextRunNumber <= incumbentRunNumber) {
+    throw new FixtureRefusal('Continue did not allocate a newer managed run');
+  }
+  const continued = await publishUntilLive(
+    input,
+    deps,
+    SOURCES[2],
+    nextRunNumber,
+    'continued managed run closed before its source was admitted',
+  );
+
+  return {
+    evidenceKind: 'controller-observation',
+    fixtureId: input.fixtureId,
+    streamId: input.stream.id,
+    sourceAttempts: [
+      { markerId: 'A', protocol: 'rtmp', runNumber: incumbentRunNumber, outcome: 'admitted' },
+      { markerId: 'B', protocol: 'srt', runNumber: incumbentRunNumber, outcome: 'resumed' },
+      { markerId: 'C', protocol: 'rtmp', runNumber: incumbentRunNumber, outcome: 'refused_closed' },
+      { markerId: 'C', protocol: 'rtmp', runNumber: nextRunNumber, outcome: 'admitted_after_continue' },
+    ],
+    incumbentRun: {
+      runNumber: incumbentRunNumber,
+      firstPublisherStartedAtMs: first.startedAtMs,
+      firstLiveRevision: first.live.lifecycle.revision,
+      firstWaitingRevision: firstWaiting.lifecycle.revision,
+      firstReconnectRemainingMs: firstWaitingObservation.reconnectRemainingMs,
+      firstWaitingReportReceivedAt: firstWaitingObservation.receivedAt,
+      firstWaitingObservationAgeMs: firstWaitingObservation.observationAgeMs,
+      reconnectPublisherStartedAtMs: resumed.startedAtMs,
+      reconnectAttemptDelayMs,
+      resumedLiveRevision: resumed.live.lifecycle.revision,
+      cutoffWaitingRevision: cutoffWaiting.lifecycle.revision,
+      reconnectRemainingMs: cutoffObservation.reconnectRemainingMs,
+      waitingReportReceivedAt: cutoffObservation.receivedAt,
+      waitingObservationAgeMs: cutoffObservation.observationAgeMs,
+      cutoffWaitStartedAtMs,
+      terminalRevision: terminal.lifecycle.revision,
+      terminalState: terminal.lifecycle.state,
+      closeReason: terminal.lifecycle.closeReason,
+    },
+    continuedRun: {
+      runNumber: nextRunNumber,
+      liveRevision: continued.live.lifecycle.revision,
+    },
   };
 }
 

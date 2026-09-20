@@ -430,4 +430,32 @@ describe('runContinuationMediaScenario', () => {
     assert.equal(spawn.processes.length, 1);
     assert.equal(spawn.processes[0].stopCalls, 1);
   });
+
+  it('stops and reaps a decoder when its bounded wait fails', async () => {
+    const fetch = successfulFetch();
+    const processes: Array<{ purpose: MediaScenarioProcessInvocation['purpose']; process: CompletedProcess }> = [];
+    const spawn: MediaScenarioSpawn = {
+      async spawn(invocation) {
+        const process = new CompletedProcess({
+          code: invocation.purpose === 'decode-video' ? 1 : 0,
+          stdout: new Uint8Array(),
+          stderr: 'withheld child diagnostics',
+        });
+        processes.push({ purpose: invocation.purpose, process });
+        return process;
+      },
+    };
+
+    await assert.rejects(
+      runContinuationMediaScenario(input(), {
+        fetch,
+        spawn,
+        clock: { now: () => 1_000, sleep: async () => {} },
+      }),
+      /video replay decode failed without exposing process arguments or diagnostics/i,
+    );
+    const decoder = processes.find((entry) => entry.purpose === 'decode-video');
+    assert.ok(decoder);
+    assert.equal(decoder.process.stopCalls, 1);
+  });
 });
