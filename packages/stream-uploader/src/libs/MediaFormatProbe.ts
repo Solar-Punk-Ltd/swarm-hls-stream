@@ -32,6 +32,7 @@ export interface MediaFormatFingerprint {
 export type MediaFormatProbeResult =
   | { readonly kind: 'valid'; readonly fingerprint: MediaFormatFingerprint }
   | { readonly kind: 'incomplete' }
+  | { readonly kind: 'busy' }
   | { readonly kind: 'failed'; readonly reason: string };
 
 export interface MediaFormatProbeOptions {
@@ -152,10 +153,9 @@ export class MediaFormatProbe {
   private readonly timeoutMs: number;
   private readonly maxConcurrent: number;
   private active = 0;
-  private readonly waiters: Array<() => void> = [];
 
   constructor(options: MediaFormatProbeOptions = {}) {
-    this.executable = options.executable ?? 'ffprobe';
+    this.executable = options.executable ?? '/usr/bin/ffprobe';
     this.maxInputBytes = options.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES;
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -178,31 +178,21 @@ export class MediaFormatProbe {
     if (data.length === 0 || data.length > this.maxInputBytes) {
       return { kind: 'failed', reason: 'input_limit' };
     }
-    await this.acquire();
+    if (this.active >= this.maxConcurrent) {
+      return { kind: 'busy' };
+    }
+    this.active++;
     try {
       return await this.run(data);
     } finally {
-      this.release();
+      this.active--;
     }
-  }
-
-  private async acquire(): Promise<void> {
-    if (this.active < this.maxConcurrent) {
-      this.active++;
-      return;
-    }
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.active++;
-  }
-
-  private release(): void {
-    this.active--;
-    this.waiters.shift()?.();
   }
 
   private run(data: Buffer): Promise<MediaFormatProbeResult> {
     return new Promise((resolve) => {
       let settled = false;
+      let terminalFailure: string | undefined;
       let stdout = Buffer.alloc(0);
       let stderr = Buffer.alloc(0);
       const child = spawn(
@@ -232,15 +222,15 @@ export class MediaFormatProbe {
       };
       const append = (current: Buffer, chunk: Buffer): Buffer | null => {
         if (current.length + chunk.length > this.maxOutputBytes) {
+          terminalFailure ??= 'output_limit';
           child.kill('SIGKILL');
-          finish({ kind: 'failed', reason: 'output_limit' });
           return null;
         }
         return Buffer.concat([current, chunk]);
       };
       const timer = setTimeout(() => {
+        terminalFailure ??= 'timeout';
         child.kill('SIGKILL');
-        finish({ kind: 'failed', reason: 'timeout' });
       }, this.timeoutMs);
       timer.unref();
       child.stdout.on('data', (chunk: Buffer) => {
@@ -254,6 +244,10 @@ export class MediaFormatProbe {
       child.on('error', (error) => finish({ kind: 'failed', reason: `spawn:${error.message}` }));
       child.on('close', (code) => {
         if (settled) {return;}
+        if (terminalFailure) {
+          finish({ kind: 'failed', reason: terminalFailure });
+          return;
+        }
         if (code !== 0) {
           finish({ kind: 'incomplete' });
           return;

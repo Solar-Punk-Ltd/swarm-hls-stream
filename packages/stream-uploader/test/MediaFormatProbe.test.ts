@@ -131,7 +131,7 @@ printf '%s' '{"streams":[{"codec_type":"audio","codec_name":"aac","profile":"LC"
     assert.equal((await probe.inspect(Buffer.from('mpeg-ts'))).kind, 'valid');
   });
 
-  it('bounds input, output, execution time and concurrent child processes', async () => {
+  it('bounds input, output and execution time', async () => {
     const inputBound = new MediaFormatProbe({ executable: executable('exit 0'), maxInputBytes: 3 });
     assert.deepEqual(await inputBound.inspect(Buffer.from('four')), { kind: 'failed', reason: 'input_limit' });
 
@@ -141,17 +141,34 @@ printf '%s' '{"streams":[{"codec_type":"audio","codec_name":"aac","profile":"LC"
     const timeoutBound = new MediaFormatProbe({ executable: executable('sleep 1'), timeoutMs: 20 });
     assert.deepEqual(await timeoutBound.inspect(Buffer.from('x')), { kind: 'failed', reason: 'timeout' });
 
-    const marker = path.join(temporaryDirectories.at(-1) ?? os.tmpdir(), 'marker');
-    const serial = new MediaFormatProbe({
+  });
+
+  it('refuses excess work without retaining queued input buffers', async () => {
+    const probe = new MediaFormatProbe({
       executable: executable(`
-if ! mkdir "${marker}" 2>/dev/null; then exit 3; fi
-sleep 0.03
-rmdir "${marker}"
+sleep 0.1
 printf '%s' '{"streams":[{"codec_type":"audio","codec_name":"aac","profile":"LC","sample_rate":"48000","channels":2,"channel_layout":"stereo"}]}'
       `),
       maxConcurrent: 1,
     });
-    const results = await Promise.all([serial.inspect(Buffer.from('a')), serial.inspect(Buffer.from('b'))]);
-    assert.deepEqual(results.map((result) => result.kind), ['valid', 'valid']);
+    const first = probe.inspect(Buffer.from('a'));
+    const refused = await Promise.all(Array.from({ length: 20 }, () => probe.inspect(Buffer.alloc(1024 * 1024))));
+    assert.deepEqual(new Set(refused.map((result) => result.kind)), new Set(['busy']));
+    assert.equal((await first).kind, 'valid');
+  });
+
+  it('holds its concurrency slot until a killed child and inherited output pipe close', async () => {
+    const probe = new MediaFormatProbe({
+      executable: executable(`
+printf '12345'
+(sleep 0.1) &
+wait
+      `),
+      maxConcurrent: 1,
+      maxOutputBytes: 4,
+    });
+    const first = probe.inspect(Buffer.from('a'));
+    assert.deepEqual(await probe.inspect(Buffer.from('b')), { kind: 'busy' });
+    assert.deepEqual(await first, { kind: 'failed', reason: 'output_limit' });
   });
 });
