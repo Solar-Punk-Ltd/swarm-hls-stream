@@ -12,6 +12,43 @@ import {
   ManagedStateLockFileOps,
 } from '../src/libs/ManagedStateLock.js';
 
+const HOLDER_READY_TIMEOUT_MS = 5_000;
+
+async function waitForHolderReady(holder: ReturnType<typeof spawn>): Promise<void> {
+  let stderr = '';
+  holder.stderr?.setEncoding('utf8');
+  holder.stderr?.on('data', (chunk: string) => {
+    stderr = `${stderr}${chunk}`.slice(-4_096);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`lock holder did not become ready: ${stderr}`)), HOLDER_READY_TIMEOUT_MS);
+    const cleanup = () => {
+      clearTimeout(timer);
+      holder.off('error', failed);
+      holder.off('exit', exited);
+      holder.stdout?.off('data', ready);
+    };
+    const failed = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const exited = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      reject(new Error(`lock holder exited before ready (${code ?? signal}): ${stderr}`));
+    };
+    const ready = (chunk: Buffer) => {
+      if (!chunk.toString('utf8').includes('ready\n')) {
+        return;
+      }
+      cleanup();
+      resolve();
+    };
+    holder.once('error', failed);
+    holder.once('exit', exited);
+    holder.stdout?.on('data', ready);
+  });
+}
+
 describe('ManagedStateLock', () => {
   it('retains the locked descriptor until release', () => {
     const closed: number[] = [];
@@ -60,7 +97,7 @@ describe('ManagedStateLock', () => {
         [...process.execArgv, fileURLToPath(new URL('./fixtures/managed-state-lock-holder.ts', import.meta.url)), root],
         { stdio: ['ignore', 'pipe', 'pipe'] },
       );
-      await once(holder.stdout!, 'data');
+      await waitForHolderReady(holder);
       assert.equal(spawnSync('flock', ['-n', '-E', '73', lockPath, 'true']).status, 73);
       holder.kill('SIGKILL');
       await once(holder, 'exit');
