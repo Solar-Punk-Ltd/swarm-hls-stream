@@ -16,7 +16,7 @@ class RecordingCommand implements BoundedCommand {
 
   async run(file: string, args: readonly string[]): Promise<CommandResult> {
     this.calls.push({ file, args: [...args] });
-    if (args[0] === 'exec' && args.includes('/metrics')) {
+    if (args[0] === 'exec' && args.some((argument) => argument.endsWith('/metrics'))) {
       return { stdout: '# full service metrics\nmetric_total 1\n', stderr: '' };
     }
     if (args[0] === 'exec') {
