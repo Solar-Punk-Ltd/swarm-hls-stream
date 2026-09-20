@@ -60,8 +60,13 @@ const SOURCE_B: SourceConnectionIdentity = {
 class MemoryManagedRuns implements ManagedRunPersistence {
   public records = new Map<string, ManagedRunRecord>();
   public failState?: ManagedRunRecord['state'];
+  public failClosedSaves = 0;
 
   public save(record: ManagedRunRecord): void {
+    if (record.state === 'closed' && this.failClosedSaves > 0) {
+      this.failClosedSaves -= 1;
+      throw new Error('injected closed save failure');
+    }
     if (record.state === this.failState) {
       throw new Error(`injected ${record.state} save failure`);
     }
@@ -382,6 +387,39 @@ describe('managed run recovery', () => {
     store.failState = undefined;
     await target.stopStream(STREAM_ID);
     assert.equal(store.records.get(STREAM_ID)?.state, 'closed', 'a later stop skipped the missing durable closure');
+    await target.cleanup();
+  });
+
+  it('retries a failed cutoff save without reopening or losing the attached source', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    store.failClosedSaves = 1;
+    const disconnected: SourceConnectionIdentity[] = [];
+    const target = orchestrator(clock, () => WALL_START + clock.now(), store);
+    target.registerManagedSourceDisconnector((source) => disconnected.push(source));
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    const uploader = activeUploader(target);
+    assert.ok(uploader);
+    const notifyStop = mock.method(uploader, 'notifyStop');
+    await uploader.segmentQueue.onIdle();
+
+    await clock.advance(RECONNECT_MS);
+
+    assert.notEqual(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(provision(target, SOURCE_B), false);
+    assert.deepEqual(disconnected, []);
+    assert.equal(notifyStop.mock.callCount(), 0);
+
+    await clock.advance(10_000);
+    await settleReports();
+
+    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(store.records.get(STREAM_ID)?.deadlineWallMs, WALL_START + RECONNECT_MS);
+    assert.deepEqual(disconnected, [SOURCE_A]);
+    assert.equal(notifyStop.mock.callCount(), 1);
+    assert.equal(provision(target, SOURCE_B), false);
     await target.cleanup();
   });
 

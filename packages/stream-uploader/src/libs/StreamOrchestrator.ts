@@ -212,8 +212,10 @@ interface ManagedSourceState {
   timer?: Timer;
   heartbeat?: Timer;
   reportRetry?: Timer;
+  closureRetry?: Timer;
   reportInFlight?: boolean;
   closed?: boolean;
+  closingSource?: SourceConnectionIdentity;
 }
 
 type ManagedReportEvent =
@@ -1507,13 +1509,15 @@ export class StreamOrchestrator {
     if (state !== expected || state.deadline === undefined || this.clock.now() < state.deadline) {
       return;
     }
-    const attached = state.current;
+    const attached = state.current ?? state.closingSource;
+    state.closingSource = attached;
     if (!this.persistManagedClosure(streamId, state, 'reconnect_timeout')) {
       return;
     }
     if (attached) {
       this.managedSourceDisconnector?.(attached);
     }
+    state.closingSource = undefined;
     for (const renditionId of this.managedRenditionsOf(streamId)) {
       void this.stopStream(renditionId, true);
     }
@@ -1527,6 +1531,7 @@ export class StreamOrchestrator {
     state: ManagedSourceState,
     reason: 'reconnect_timeout' | 'cancelled',
   ): boolean {
+    state.closingSource ??= state.current;
     const wallNow = this.wallClock();
     const record = this.appendManagedReport({
       ...state.record,
@@ -1534,7 +1539,7 @@ export class StreamOrchestrator {
       deadlineWallMs: Math.min(state.record.deadlineWallMs, wallNow),
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: 0,
-      source: state.current ?? state.record.source,
+      source: state.current ?? state.closingSource ?? state.record.source,
     }, { state: 'closed', reason });
     try {
       this.config.managedRunStore?.save(record);
@@ -1544,6 +1549,7 @@ export class StreamOrchestrator {
       state.candidate = undefined;
       state.timer?.cancel();
       state.timer = undefined;
+      this.armManagedClosureRetry(streamId, state, reason);
       this.logger.error(`[StreamOrchestrator] Failed to persist managed closure ${streamId}:`, error);
       return false;
     }
@@ -1554,10 +1560,33 @@ export class StreamOrchestrator {
     state.candidate = undefined;
     state.timer?.cancel();
     state.timer = undefined;
+    state.closureRetry?.cancel();
+    state.closureRetry = undefined;
     state.heartbeat?.cancel();
     state.heartbeat = undefined;
     void this.flushManagedReports(streamId, state);
     return true;
+  }
+
+  private armManagedClosureRetry(
+    streamId: string,
+    state: ManagedSourceState,
+    reason: 'reconnect_timeout' | 'cancelled',
+  ): void {
+    if (state.closureRetry) {
+      return;
+    }
+    state.closureRetry = this.clock.setTimer(() => {
+      state.closureRetry = undefined;
+      if (this.managedSources.get(streamId) !== state || state.record.state === 'closed') {
+        return;
+      }
+      if (reason === 'reconnect_timeout') {
+        this.closeManagedSourceAtDeadline(streamId, state);
+      } else {
+        void this.stopStream(streamId);
+      }
+    }, MANAGED_HEARTBEAT_MS, { unref: true });
   }
 
   private cancelManagedStallReaper(streamId: string): void {
@@ -2396,6 +2425,7 @@ export class StreamOrchestrator {
         if (managed.record.state !== 'closed' && !this.persistManagedClosure(streamId, managed, 'cancelled')) {
           return;
         }
+        managed.closingSource = undefined;
         preserveManagedSource = true;
         for (const renditionId of this.managedRenditionsOf(streamId)) {
           await this.stopStream(renditionId, true);
@@ -3097,6 +3127,7 @@ export class StreamOrchestrator {
       source.timer?.cancel();
       source.heartbeat?.cancel();
       source.reportRetry?.cancel();
+      source.closureRetry?.cancel();
     }
 
     // Clear all recovery timers
