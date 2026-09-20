@@ -46,10 +46,18 @@ interface ApiAppOptions {
    * the wait still drives.
    */
   waitingForNode?: () => NodeWaitReport | null;
+  /** Registers the authenticated lifecycle-v1 status endpoint only for an enrolled uploader. */
+  managedLifecycle?: { version: 1 };
 }
 
 export function createApiApp(streamOrchestrator: StreamOrchestrator, options: ApiAppOptions): express.Express {
-  const { authToken, engines = [], limits = DEFAULT_REQUEST_LIMITS, waitingForNode = () => null } = options;
+  const {
+    authToken,
+    engines = [],
+    limits = DEFAULT_REQUEST_LIMITS,
+    waitingForNode = () => null,
+    managedLifecycle,
+  } = options;
   const app = express();
 
   // Global middleware
@@ -132,7 +140,7 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
   }
 
   // Core routes
-  app.use('/stream', createStreamRouter(streamOrchestrator));
+  app.use('/stream', createStreamRouter(streamOrchestrator, managedLifecycle));
   app.use('/metrics', createMetricsRouter(streamOrchestrator));
   app.use(
     '/health',

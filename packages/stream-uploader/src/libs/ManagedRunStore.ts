@@ -10,6 +10,12 @@ export const MANAGED_RUN_LOADED = 'loaded' as const;
 export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
 
 export type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+export type ManagedRunCloseReason =
+  | 'reconnect_timeout'
+  | 'cancelled'
+  | 'recovery_required'
+  | 'finalization_failed'
+  | 'empty';
 
 export interface ManagedRungConnectionRecord {
   readonly streamId: string;
@@ -40,6 +46,9 @@ export interface ManagedRunRecord {
   readonly source: SourceConnectionIdentity | null;
   readonly rungConnections: readonly ManagedRungConnectionRecord[];
   readonly pendingReports: readonly ManagedRunReportRecord[];
+  /** Last durable observation that was validated locally. Missing only on records written before this field existed. */
+  readonly lastObservedAt?: string;
+  readonly closeReason?: ManagedRunCloseReason;
 }
 
 export interface ManagedRunReportRecord {
@@ -69,6 +78,8 @@ export type ManagedRunClaim = Omit<
   | 'claimRequestId'
   | 'checkpointReference'
   | 'pendingReports'
+  | 'lastObservedAt'
+  | 'closeReason'
 >;
 
 export type ManagedClaimAttempt = Omit<ManagedRunClaim, 'claimId' | 'eventSequence'>;
@@ -225,6 +236,14 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     record.pendingReports.every((report, index) =>
       report.eventSequence === record.eventSequence - record.pendingReports.length + index + 1,
     ) &&
+    (record.lastObservedAt === undefined ||
+      (typeof record.lastObservedAt === 'string' && Number.isFinite(Date.parse(record.lastObservedAt)))) &&
+    (record.closeReason === undefined ||
+      record.closeReason === 'reconnect_timeout' ||
+      record.closeReason === 'cancelled' ||
+      record.closeReason === 'recovery_required' ||
+      record.closeReason === 'finalization_failed' ||
+      record.closeReason === 'empty') &&
     ((record.state === 'claiming' && record.claimId === null) ||
       (record.state === 'closed' &&
         record.claimId === null &&

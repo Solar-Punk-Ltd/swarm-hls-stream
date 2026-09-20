@@ -214,6 +214,23 @@ export interface StreamOrchestratorConfig {
   ladderRegistry?: LadderRegistry;
 }
 
+export type ManagedLifecycleSummaryState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+
+export interface ManagedLifecycleSummary {
+  readonly lifecycleVersion: 1;
+  readonly observedAt: string;
+  readonly streams: readonly {
+    readonly streamId: string;
+    readonly adminStreamId: string;
+    readonly runNumber: number;
+    readonly state: ManagedLifecycleSummaryState;
+    readonly permission: 'open' | 'claimed' | 'closed';
+    readonly reconnectDeadline?: string;
+    readonly closeReason?: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
+    readonly lastObservedAt: string;
+  }[];
+}
+
 /**
  * A settled stop, kept until its window elapses.
  *
@@ -790,6 +807,7 @@ export class StreamOrchestrator {
       source: null,
       rungConnections: [],
       pendingReports: [],
+      lastObservedAt: new Date(wallNow).toISOString(),
     };
     try {
       store.save(record);
@@ -881,6 +899,7 @@ export class StreamOrchestrator {
       source: null,
       rungConnections: [],
       pendingReports: [],
+      lastObservedAt: new Date(wallNow).toISOString(),
     };
     try {
       store.save(record);
@@ -970,6 +989,7 @@ export class StreamOrchestrator {
       state: 'claimed',
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: remaining,
+      lastObservedAt: new Date(wallNow).toISOString(),
     };
     try {
       store.save(record);
@@ -1012,6 +1032,7 @@ export class StreamOrchestrator {
       rungConnections: [],
       claimRequestId: crypto.randomUUID(),
       pendingReports: [],
+      lastObservedAt: new Date(wallNow).toISOString(),
     };
     try {
       store.save(record);
@@ -1172,7 +1193,12 @@ export class StreamOrchestrator {
       return false;
     }
     const record = this.appendManagedReport(
-      { ...state.record, state: 'vod' },
+      {
+        ...state.record,
+        state: 'vod',
+        closeReason: undefined,
+        lastObservedAt: new Date(this.wallClock()).toISOString(),
+      },
       { state: 'vod', completedRecording: checkpoint.completedRecording },
     );
     state.record = record;
@@ -1215,6 +1241,55 @@ export class StreamOrchestrator {
       this.managedStreamIds.add(streamId);
       this.restoreManagedRun(streamId);
     }
+  }
+
+  /** Durable lifecycle facts exposed to the authenticated local release controller. */
+  public getManagedLifecycleSummary(): ManagedLifecycleSummary {
+    const store = this.config.managedRunStore;
+    if (!store || this.config.managedSourceReconnectMs === undefined) {
+      throw new Error('Managed lifecycle status is disabled');
+    }
+    const streams = [...new Set(store.list())].sort().map((streamId) => {
+      const entry = store.read(streamId);
+      if (entry.kind !== MANAGED_RUN_LOADED) {
+        throw new Error(`Managed lifecycle record is unreadable: ${streamId}`);
+      }
+      const record = entry.record;
+      const state: ManagedLifecycleSummaryState = record.state === 'claiming' ? 'ready' : record.state;
+      const permission: 'open' | 'claimed' | 'closed' =
+        state === 'ready' ? 'open' : state === 'closed' || state === 'vod' ? 'closed' : 'claimed';
+      const lastObservedAt =
+        record.lastObservedAt ?? new Date(record.deadlineRecordedAtWallMs).toISOString();
+      const closeReason =
+        record.closeReason ??
+        [...record.pendingReports]
+          .reverse()
+          .find((report) => report.state === 'closed')
+          ?.reason;
+      const common = {
+        streamId: record.streamId,
+        adminStreamId: record.adminStreamId,
+        runNumber: record.runNumber,
+        state,
+        permission,
+        lastObservedAt,
+      };
+      if (state === 'waiting') {
+        return { ...common, reconnectDeadline: new Date(record.deadlineWallMs).toISOString() };
+      }
+      if (state === 'closed') {
+        if (!closeReason) {
+          throw new Error(`Managed closed record has no durable close reason: ${streamId}`);
+        }
+        return { ...common, closeReason };
+      }
+      return common;
+    });
+    return {
+      lifecycleVersion: 1,
+      observedAt: new Date(this.wallClock()).toISOString(),
+      streams,
+    };
   }
 
   /** Prepare every private continuation assigned by the admin before it opens the next run. */
@@ -1319,6 +1394,8 @@ export class StreamOrchestrator {
         lastProgressPts: null,
         source: null,
         rungConnections: [],
+        closeReason: 'empty',
+        lastObservedAt: new Date(this.wallClock()).toISOString(),
       };
       runStore.save(closed);
       const state = this.managedSources.get(local.streamId);
@@ -2236,6 +2313,7 @@ export class StreamOrchestrator {
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: remaining,
       source: identity,
+      lastObservedAt: new Date(wallNow).toISOString(),
     }, { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() });
     try {
       this.config.managedRunStore?.save(record);
@@ -2313,6 +2391,7 @@ export class StreamOrchestrator {
       deadlineRemainingMs: reconnectMs,
       lastProgressPts: state.lastProgressPts ?? null,
       source: state.current ?? null,
+      lastObservedAt: new Date(wallNow).toISOString(),
     };
     try {
       this.config.managedRunStore?.save(record);
@@ -2344,7 +2423,14 @@ export class StreamOrchestrator {
     ) {
       return;
     }
-    const record = this.appendManagedReport({ ...state.record, state: 'live' }, { state: 'live' });
+    const record = this.appendManagedReport(
+      {
+        ...state.record,
+        state: 'live',
+        lastObservedAt: new Date(this.wallClock()).toISOString(),
+      },
+      { state: 'live' },
+    );
     try {
       this.config.managedRunStore?.save(record);
     } catch (error) {
@@ -2438,7 +2524,12 @@ export class StreamOrchestrator {
 
     const completedRecording = store.complete(state.record.checkpointReference, master);
     const record = this.appendManagedReport(
-      { ...state.record, state: 'vod' },
+      {
+        ...state.record,
+        state: 'vod',
+        closeReason: undefined,
+        lastObservedAt: new Date(this.wallClock()).toISOString(),
+      },
       { state: 'vod', completedRecording },
     );
     this.config.managedRunStore?.save(record);
@@ -2613,6 +2704,8 @@ export class StreamOrchestrator {
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: 0,
       source: state.current ?? state.closingSource ?? state.record.source,
+      closeReason: reason,
+      lastObservedAt: new Date(wallNow).toISOString(),
     }, { state: 'closed', reason });
     try {
       this.config.managedRunStore?.save(record);

@@ -271,6 +271,7 @@ async function start() {
       authToken: config.apiAuthToken,
       engines,
       waitingForNode: () => nodeWait,
+      managedLifecycle: config.srsLifecycle ? { version: 1 } : undefined,
     });
     lifecycle.trackApiServer(apiServer);
 

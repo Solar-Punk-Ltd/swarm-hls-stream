@@ -200,9 +200,16 @@ export async function startTestApi(
   limits?: RequestLimits,
   /** Omitted is a service whose boot has finished, which is what every test before D16 assumes. */
   waitingForNode?: () => NodeWaitReport | null,
+  managedLifecycle?: { version: 1 },
 ): Promise<ApiTestServer> {
   const server = http.createServer(
-    createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines, limits, waitingForNode }),
+    createApiApp(streamOrchestrator, {
+      authToken: TEST_AUTH_TOKEN,
+      engines,
+      limits,
+      waitingForNode,
+      managedLifecycle,
+    }),
   );
 
   await new Promise<void>((resolve, reject) => {
