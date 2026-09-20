@@ -37,6 +37,7 @@ import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
 import { runStartGates } from './libs/StartGates.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
+import { buildUploaderCapabilities } from './libs/UploaderCapabilities.js';
 import { config } from './utils/config.js';
 import { sameFeedOwner } from './utils/feedOwner.js';
 import { NodeWaitReport } from './types.js';
@@ -336,6 +337,10 @@ async function start() {
     // Only now, so nothing reaches an orchestrator whose catalog has never been read.
     nodeWait = null;
     if (config.srsLifecycle) {
+      streamOrchestrator.startManagedCapabilityHeartbeat(
+        config.srsLifecycle.uploaderId,
+        buildUploaderCapabilities(config.abr?.ladder),
+      );
       streamOrchestrator.startManagedContinuationPolling(config.srsLifecycle.uploaderId);
     }
 

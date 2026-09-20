@@ -59,6 +59,7 @@ import {
   ManagedContinuationPreparation,
   ManagedRunReport,
   stateWasReported,
+  UploaderCapabilities,
 } from './AdminApiClient.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { BroadcastDating, reanchorDecision, withEpoch } from './broadcastDating.js';
@@ -517,6 +518,10 @@ export class StreamOrchestrator {
   private managedContinuationUploaderId?: string;
   private managedContinuationTimer?: Timer;
   private managedContinuationInFlight = false;
+  private managedCapabilityUploaderId?: string;
+  private managedCapability?: UploaderCapabilities;
+  private managedCapabilityTimer?: Timer;
+  private managedCapabilityInFlight = false;
 
   constructor(
     private publishers: BeePublisherPool,
@@ -1477,6 +1482,46 @@ export class StreamOrchestrator {
             void this.runManagedContinuationPoll();
           },
           MANAGED_CONTINUATION_POLL_MS,
+          { unref: true },
+        );
+      }
+    }
+  }
+
+  /** Report immediately, then refresh the admin receipt every ten seconds without overlap. */
+  public startManagedCapabilityHeartbeat(uploaderId: string, capability: UploaderCapabilities): void {
+    if (this.managedCapabilityUploaderId !== undefined) {
+      return;
+    }
+    if (!this.config.adminApi) {
+      throw new Error('Managed capability reporting requires the admin API');
+    }
+    this.managedCapabilityUploaderId = uploaderId;
+    this.managedCapability = capability;
+    void this.runManagedCapabilityHeartbeat();
+  }
+
+  private async runManagedCapabilityHeartbeat(): Promise<void> {
+    const uploaderId = this.managedCapabilityUploaderId;
+    const capability = this.managedCapability;
+    const adminApi = this.config.adminApi;
+    if (!uploaderId || !capability || !adminApi || this.managedCapabilityInFlight) {
+      return;
+    }
+    this.managedCapabilityInFlight = true;
+    try {
+      await adminApi.reportUploaderCapabilities(uploaderId, capability);
+    } catch (error) {
+      this.logger.error('[StreamOrchestrator] Managed capability heartbeat failed:', error);
+    } finally {
+      this.managedCapabilityInFlight = false;
+      if (this.managedCapabilityUploaderId === uploaderId && this.managedCapability === capability) {
+        this.managedCapabilityTimer = this.clock.setTimer(
+          () => {
+            this.managedCapabilityTimer = undefined;
+            void this.runManagedCapabilityHeartbeat();
+          },
+          MANAGED_HEARTBEAT_MS,
           { unref: true },
         );
       }
@@ -4360,6 +4405,10 @@ export class StreamOrchestrator {
     this.managedContinuationUploaderId = undefined;
     this.managedContinuationTimer?.cancel();
     this.managedContinuationTimer = undefined;
+    this.managedCapabilityUploaderId = undefined;
+    this.managedCapability = undefined;
+    this.managedCapabilityTimer?.cancel();
+    this.managedCapabilityTimer = undefined;
     for (const source of this.managedSources.values()) {
       source.timer?.cancel();
       source.heartbeat?.cancel();

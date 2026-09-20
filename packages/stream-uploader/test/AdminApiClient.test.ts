@@ -34,6 +34,7 @@ import {
   STATE_REPORT_BACKOFF_MS,
   STATE_REPORT_FAILED,
   stateWasReported,
+  UploaderCapabilities,
 } from '../src/libs/AdminApiClient.js';
 import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
 
@@ -840,6 +841,51 @@ describe('the admin API client, reporting a managed run rendition', () => {
       assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
       assert.equal(received.length, 1);
       assert.deepEqual(sleeps, []);
+    }, { lifecycleVersion: 1 });
+  });
+});
+
+describe('the admin API client, reporting uploader capabilities', () => {
+  const uploaderId = 'srs-157-90-34-105';
+  const capability: UploaderCapabilities = {
+    lifecycleVersion: 1,
+    capabilities: { durableCheckpointStore: 1, legacyRecordingAdoption: 1 },
+    profiles: [
+      {
+        mediaType: 'video',
+        renditions: [
+          { name: '360p', width: 640, height: 360, bandwidth: 700_000, avgBandwidth: 700_000 },
+        ],
+      },
+      { mediaType: 'audio', renditions: [] },
+    ],
+  };
+  const receipt = {
+    lifecycleVersion: 1 as const,
+    uploaderId,
+    receivedAt: '2026-09-20T10:10:00.000Z',
+    freshUntil: '2026-09-20T10:10:30.000Z',
+    profileDigests: [
+      { mediaType: 'video' as const, digest: 'a'.repeat(64) },
+      { mediaType: 'audio' as const, digest: 'b'.repeat(64) },
+    ],
+  };
+
+  it('posts the exact profile under the configured uploader identity', async () => {
+    await withAdmin(always(200, receipt), async ({ client, received }) => {
+      assert.deepEqual(await client.reportUploaderCapabilities(uploaderId, capability), receipt);
+      assert.equal(received[0].url, `/api/internal/uploaders/${uploaderId}/capabilities`);
+      assert.equal(received[0].authorization, `Bearer ${TOKEN}`);
+      assert.deepEqual(received[0].body, capability);
+    }, { lifecycleVersion: 1 });
+  });
+
+  it('refuses a receipt bound to another uploader', async () => {
+    await withAdmin(always(200, { ...receipt, uploaderId: 'another-uploader' }), async ({ client }) => {
+      await assert.rejects(
+        () => client.reportUploaderCapabilities(uploaderId, capability),
+        /another uploader capability/,
+      );
     }, { lifecycleVersion: 1 });
   });
 });

@@ -190,6 +190,36 @@ export interface ManagedRenditionReportResponse {
   };
 }
 
+export interface UploaderRenditionProfile {
+  readonly name: string;
+  readonly width: number;
+  readonly height: number;
+  readonly bandwidth: number;
+  readonly avgBandwidth: number;
+}
+
+export interface UploaderMediaProfile {
+  readonly mediaType: MediaType;
+  readonly renditions: readonly UploaderRenditionProfile[];
+}
+
+export interface UploaderCapabilities {
+  readonly lifecycleVersion: 1;
+  readonly capabilities: {
+    readonly durableCheckpointStore: 1;
+    readonly legacyRecordingAdoption: 1;
+  };
+  readonly profiles: readonly UploaderMediaProfile[];
+}
+
+export interface UploaderCapabilityReceipt {
+  readonly lifecycleVersion: 1;
+  readonly uploaderId: string;
+  readonly receivedAt: string;
+  readonly freshUntil: string;
+  readonly profileDigests: readonly { readonly mediaType: MediaType; readonly digest: string }[];
+}
+
 interface ManagedRunView {
   lifecycleVersion: 1;
   streamId: string;
@@ -712,6 +742,45 @@ function asManagedRenditionReport(
   return candidate as unknown as ManagedRenditionReportResponse;
 }
 
+function asUploaderCapabilityReceipt(
+  body: unknown,
+  uploaderId: string,
+  capability: UploaderCapabilities,
+): UploaderCapabilityReceipt | null {
+  if (!body || typeof body !== 'object') {return null;}
+  const candidate = body as Record<string, unknown>;
+  const receivedAt = typeof candidate.receivedAt === 'string' ? Date.parse(candidate.receivedAt) : Number.NaN;
+  const freshUntil = typeof candidate.freshUntil === 'string' ? Date.parse(candidate.freshUntil) : Number.NaN;
+  if (
+    candidate.lifecycleVersion !== 1 ||
+    candidate.uploaderId !== uploaderId ||
+    !Number.isFinite(receivedAt) ||
+    !Number.isFinite(freshUntil) ||
+    freshUntil <= receivedAt ||
+    !Array.isArray(candidate.profileDigests) ||
+    candidate.profileDigests.length !== capability.profiles.length
+  ) {
+    return null;
+  }
+  const expectedMediaTypes = new Set(capability.profiles.map(({ mediaType }) => mediaType));
+  const receivedMediaTypes = new Set<MediaType>();
+  for (const entry of candidate.profileDigests) {
+    if (!entry || typeof entry !== 'object') {return null;}
+    const digest = entry as Record<string, unknown>;
+    if (
+      (digest.mediaType !== MEDIA_TYPE_VIDEO && digest.mediaType !== MEDIA_TYPE_AUDIO) ||
+      !expectedMediaTypes.has(digest.mediaType) ||
+      receivedMediaTypes.has(digest.mediaType) ||
+      typeof digest.digest !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(digest.digest)
+    ) {
+      return null;
+    }
+    receivedMediaTypes.add(digest.mediaType);
+  }
+  return body as UploaderCapabilityReceipt;
+}
+
 export class AdminApiClient {
   private readonly logger = Logger.getInstance();
   private readonly baseUrl: string;
@@ -840,6 +909,34 @@ export class AdminApiClient {
       throw new Error(`Admin API answered 200 for ${url} with a body that is not the claimed managed run`);
     }
     return claimed;
+  }
+
+  /** Refresh the admin's receipt for this uploader's exact lifecycle-v1 media shapes. */
+  public async reportUploaderCapabilities(
+    uploaderId: string,
+    capability: UploaderCapabilities,
+  ): Promise<UploaderCapabilityReceipt> {
+    if (this.lifecycleVersion !== 1) {
+      throw new Error('Uploader capability reporting requires lifecycle version 1');
+    }
+    const url = `${this.baseUrl}/api/internal/uploaders/${encodeURIComponent(uploaderId)}/capabilities`;
+    const response = await this.send(
+      url,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(capability),
+      },
+      this.reportTimeoutMs,
+    );
+    if (!response.ok) {
+      throw new Error(`Admin API answered ${response.status} for ${url}`);
+    }
+    const receipt = asUploaderCapabilityReceipt(await this.readJson(response), uploaderId, capability);
+    if (!receipt) {
+      throw new Error(`Admin API answered 200 for ${url} with another uploader capability receipt`);
+    }
+    return receipt;
   }
 
   /** Poll private continuation preparation work assigned to this exact uploader. */
