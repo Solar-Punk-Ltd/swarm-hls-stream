@@ -310,6 +310,7 @@ export interface StreamUploaderOptions {
     onLivePublished: (sourceGeneration: number) => void;
     onSegmentUploaded?: (token: string, reference: string, state: StreamState) => void;
     onSegmentSettled?: (token: string) => void;
+    onTrackStateChanged?: (state: StreamState) => void;
   };
   /**
    * The actual write completion of every earlier session on this topic, when any are still pending.
@@ -1430,6 +1431,8 @@ export class StreamUploader {
     }
 
     this.socIndex = nextIndex;
+
+    this.managedLifecycle?.onTrackStateChanged?.(this.getStreamState());
 
     if (this.managedLifecycle && sourceGeneration !== undefined && (!this.ladder || this.readiness === READINESS_ANNOUNCED)) {
       this.managedLifecycle.onLivePublished(sourceGeneration);

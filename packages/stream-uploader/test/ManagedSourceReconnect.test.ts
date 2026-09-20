@@ -45,6 +45,12 @@ const SOURCE_B: SourceConnectionIdentity = {
   clientId: 'client-b',
   generation: 2,
 };
+const SOURCE_C: SourceConnectionIdentity = {
+  serverId: 'srs-2',
+  serviceId: 'service-2',
+  clientId: 'client-c',
+  generation: 3,
+};
 
 interface OrchestratorInternals {
   activeStreams: Map<string, StreamUploader>;
@@ -65,6 +71,10 @@ class MemoryManagedRuns implements ManagedRunPersistence {
   public list(): string[] {
     return [...this.records.keys()];
   }
+
+  public current(streamId: string): ManagedRunRecord | undefined {
+    return this.records.get(streamId);
+  }
 }
 
 function activeUploader(orchestrator: StreamOrchestrator): StreamUploader | undefined {
@@ -79,13 +89,14 @@ function makeManagedOrchestrator(
   mediaType: MediaType = MEDIA_TYPE_VIDEO,
   managedMediaStore?: ManagedMediaStore,
   uploads: Parameters<typeof makeTestOrchestrator>[1] = {},
+  managedRunStore: ManagedRunPersistence = new MemoryManagedRuns(),
 ): StreamOrchestrator {
   const orchestrator = makeTestOrchestrator(
     {
       clock,
       wallClock: () => 1_000_000 + clock.now(),
       managedSourceReconnectMs: RECONNECT_MS,
-      managedRunStore: new MemoryManagedRuns(),
+      managedRunStore,
       managedMediaStore,
       maxQueueSize,
     },
@@ -446,6 +457,143 @@ describe('managed SRS source reconnect foundation', () => {
       assert.equal(store.listPending(ADMIN_SESSION.id, 2).length, 1, 'a failed upload was treated as empty');
     } finally {
       await orchestrator.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('replays pending A before reconnect B in a fresh process and keeps one cumulative track', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'managed-media-runtime-'));
+    const clockA = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const storeA = new ManagedMediaStore(root);
+    const processA = makeManagedOrchestrator(clockA, [], [], 100, MEDIA_TYPE_VIDEO, storeA, {
+      uploadData: async () => {
+        throw { status: 400, message: 'refused' };
+      },
+    }, runs);
+
+    const uploaded: string[] = [];
+    let reference = 0;
+    const clockB = new FakeClock();
+    const storeB = new ManagedMediaStore(root);
+    const processB = makeTestOrchestrator(
+      {
+        clock: clockB,
+        wallClock: () => 1_000_000 + clockB.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedMediaStore: storeB,
+      },
+      {
+        uploadData: async (_stamp, data) => {
+          uploaded.push(Buffer.from(data).toString('hex'));
+          return { reference: { toHex: () => String(++reference).padStart(64, '0') } };
+        },
+      },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog([]),
+    );
+
+    try {
+      assert.equal(provision(processA, SOURCE_A), true);
+      assert.deepEqual(media(processA, SOURCE_A, 0, 0), { accepted: true });
+      const uploaderA = activeUploader(processA);
+      assert.ok(uploaderA);
+      await uploaderA.segmentQueue.onIdle();
+      assert.equal(storeA.listPending(ADMIN_SESSION.id, 2).length, 1);
+
+      assert.equal(processB.restoreManagedRun(STREAM_ID), MANAGED_RUN_LOADED);
+      assert.equal(provision(processB, SOURCE_B), true);
+      assert.deepEqual(media(processB, SOURCE_B, 0, 4 * FRAME_TICKS), { accepted: true });
+      const uploaderB = activeUploader(processB);
+      assert.ok(uploaderB);
+      await uploaderB.segmentQueue.onIdle();
+
+      assert.equal(uploaded.length, 2, 'the fresh process did not replay A before accepting B');
+      assert.equal(storeB.listPending(ADMIN_SESSION.id, 2).length, 0);
+      const history = storeB.readTrackState(ADMIN_SESSION.id, 2, STREAM_ID, null)?.segments;
+      assert.equal(history?.length, 2);
+      assert.equal(history?.[1].discontinuity, true, 'the recovered A to B seam was not marked');
+    } finally {
+      await processA.cleanup();
+      await processB.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('restores committed A then appends B and C across fresh uploader processes', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'managed-media-runtime-'));
+    const runs = new MemoryManagedRuns();
+    let reference = 0;
+    const uploads = {
+      uploadData: async () => ({ reference: { toHex: () => String(++reference).padStart(64, '0') } }),
+    };
+    let finalProcess: StreamOrchestrator | undefined;
+
+    const fresh = (clock: FakeClock, store: ManagedMediaStore) =>
+      makeTestOrchestrator(
+        {
+          clock,
+          wallClock: () => 1_000_000 + clock.now(),
+          managedSourceReconnectMs: RECONNECT_MS,
+          managedRunStore: runs,
+          managedMediaStore: store,
+        },
+        uploads,
+        makeFakeRecoveryStore(),
+        makeRecordingCatalog([]),
+      );
+
+    try {
+      const clockA = new FakeClock();
+      const processA = makeManagedOrchestrator(
+        clockA,
+        [],
+        [],
+        100,
+        MEDIA_TYPE_VIDEO,
+        new ManagedMediaStore(root),
+        uploads,
+        runs,
+      );
+      assert.equal(provision(processA, SOURCE_A), true);
+      assert.deepEqual(media(processA, SOURCE_A, 0, 0), { accepted: true });
+      await activeUploader(processA)!.segmentQueue.onIdle();
+      await waitFor(() => runs.current(STREAM_ID)?.state === 'live', SETTLE_CEILING_MS);
+
+      const clockB = new FakeClock();
+      const processB = fresh(clockB, new ManagedMediaStore(root));
+      assert.equal(processB.restoreManagedRun(STREAM_ID), MANAGED_RUN_LOADED);
+      assert.equal(processB.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+      assert.equal(provision(processB, SOURCE_B), true);
+      assert.deepEqual(media(processB, SOURCE_B, 0, 4 * FRAME_TICKS), { accepted: true });
+      await activeUploader(processB)!.segmentQueue.onIdle();
+      await waitFor(
+        () => runs.current(STREAM_ID)?.state === 'live' && runs.current(STREAM_ID)?.source?.clientId === 'client-b',
+        SETTLE_CEILING_MS,
+      );
+
+      const clockC = new FakeClock();
+      const storeC = new ManagedMediaStore(root);
+      const processC = fresh(clockC, storeC);
+      finalProcess = processC;
+      assert.equal(processC.restoreManagedRun(STREAM_ID), MANAGED_RUN_LOADED);
+      assert.equal(processC.markManagedSourceUnpublished(STREAM_ID, SOURCE_B), true);
+      assert.equal(provision(processC, SOURCE_C), true);
+      assert.deepEqual(media(processC, SOURCE_C, 0, 8 * FRAME_TICKS), { accepted: true });
+      await activeUploader(processC)!.segmentQueue.onIdle();
+
+      const history = storeC.readTrackState(ADMIN_SESSION.id, 2, STREAM_ID, null)?.segments;
+      assert.equal(history?.length, 3);
+      assert.deepEqual(history?.map((segment) => segment.ref), [
+        '1'.padStart(64, '0'),
+        '2'.padStart(64, '0'),
+        '3'.padStart(64, '0'),
+      ]);
+      assert.equal(history?.[1].discontinuity, true);
+      assert.equal(history?.[2].discontinuity, true);
+    } finally {
+      await finalProcess?.cleanup();
       rmSync(root, { recursive: true, force: true });
     }
   });

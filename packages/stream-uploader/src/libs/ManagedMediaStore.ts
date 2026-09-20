@@ -50,7 +50,15 @@ export interface ManagedMediaPersistence {
   readBytes(token: string): Buffer | null;
   listPending(adminStreamId: string, runNumber: number): ManagedMediaRecord[];
   listRun(adminStreamId: string, runNumber: number): ManagedMediaRecord[];
+  listTrackStates(adminStreamId: string, runNumber: number): ManagedTrackJournal[];
   readTrackState(adminStreamId: string, runNumber: number, streamId: string, rendition: string | null): StreamState | null;
+  saveTrackState(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+    state: StreamState,
+  ): void;
 }
 
 /** Synchronous filesystem boundary required before an engine callback can be acknowledged. */
@@ -330,6 +338,28 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
       .sort((left, right) => left.ordinal - right.ordinal);
   }
 
+  public listTrackStates(adminStreamId: string, runNumber: number): ManagedTrackJournal[] {
+    const journals: ManagedTrackJournal[] = [];
+    for (const name of this.fileOps.readdirSync(this.stateDir)) {
+      if (!/^track-[0-9a-f]{64}\.json$/i.test(name)) {
+        continue;
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(this.fileOps.readFileSync(path.join(this.stateDir, name)).toString('utf8'));
+      } catch {
+        throw new Error(`Managed track journal ${name} is unreadable`);
+      }
+      if (!isTrackJournal(value)) {
+        throw new Error(`Managed track journal ${name} is invalid`);
+      }
+      if (value.adminStreamId === adminStreamId && value.runNumber === runNumber) {
+        journals.push(value);
+      }
+    }
+    return journals.sort((left, right) => left.streamId.localeCompare(right.streamId));
+  }
+
   public readTrackState(
     adminStreamId: string,
     runNumber: number,
@@ -338,6 +368,21 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
   ): StreamState | null {
     const journal = this.readTrackJournal({ adminStreamId, runNumber, streamId, rendition });
     return journal?.state ?? null;
+  }
+
+  public saveTrackState(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+    state: StreamState,
+  ): void {
+    const identity = { adminStreamId, runNumber, streamId, rendition };
+    const journal = this.readTrackJournal(identity);
+    if (!journal || !isStreamState(state) || state.streamId !== streamId || !isPrefix(journal.state.segments, state.segments)) {
+      throw new Error(`Refused invalid managed track state update for ${streamId}`);
+    }
+    this.replaceDurably(this.trackPath(identity), JSON.stringify({ ...journal, state }));
   }
 
   private requireRecord(token: string): ManagedMediaRecord {

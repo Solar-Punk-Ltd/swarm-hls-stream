@@ -329,6 +329,8 @@ export class StreamOrchestrator {
   private managedRenditionGenerations = new Map<string, number>();
   /** Media tokens already handed to an uploader queue in this process. */
   private managedQueuedMedia = new Set<string>();
+  /** Last durable source lineage queued for each track, so recovered generations get a seam. */
+  private managedQueuedSources = new Map<string, string>();
   /**
    * The drain running for a stream id, with the session it is draining. The uploader is what makes the
    * entry answerable: a reconnect registers a replacement under the same id while the outgoing drain is
@@ -951,15 +953,17 @@ export class StreamOrchestrator {
       this.spawnUploader(streamId, candidate.mediatype, candidate.claimant, candidate.admin);
     }
 
-    const result = this.enqueueManagedMedia(
-      streamId,
-      segmentIndex,
-      duration,
-      data,
-      resumed || discontinuity,
-      identity.generation,
-      durable,
-    );
+    const result = this.config.managedMediaStore
+      ? this.enqueuePendingManagedTrack(state, streamId)
+      : this.enqueueManagedMedia(
+          streamId,
+          segmentIndex,
+          duration,
+          data,
+          resumed || discontinuity,
+          identity.generation,
+          durable,
+        );
     if (result.accepted) {
       state.lastProgressPts = inspected.latestPts;
       if (!this.renewManagedSourceDeadline(streamId, state, reconnectMs)) {
@@ -1145,6 +1149,44 @@ export class StreamOrchestrator {
       this.managedQueuedMedia.delete(record.token);
     }
     return result;
+  }
+
+  private enqueuePendingManagedTrack(state: ManagedSourceState, streamId: string): SegmentResult {
+    const store = this.config.managedMediaStore;
+    if (!store) {
+      return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+    for (const record of store.listPending(state.record.adminStreamId, state.record.runNumber)) {
+      if (record.streamId !== streamId || this.managedQueuedMedia.has(record.token)) {
+        continue;
+      }
+      const data = store.readBytes(record.token);
+      if (!data) {
+        continue;
+      }
+      const sourceKey = `${record.source.serverId}\u0000${record.source.serviceId}\u0000${record.source.clientId}\u0000${record.source.generation}`;
+      const previousSource = this.managedQueuedSources.get(streamId);
+      let discontinuity = record.discontinuity;
+      if (previousSource !== undefined && previousSource !== sourceKey) {
+        this.processedSegments.set(streamId, this.newDuplicateFilter());
+        this.lastAccountedIndex.delete(streamId);
+        discontinuity = true;
+      }
+      const result = this.enqueueManagedMedia(
+        streamId,
+        record.sequence,
+        record.duration,
+        data,
+        discontinuity,
+        record.source.generation,
+        { kind: 'duplicate', record },
+      );
+      if (!result.accepted) {
+        break;
+      }
+      this.managedQueuedSources.set(streamId, sourceKey);
+    }
+    return { accepted: true };
   }
 
   /** Admit a managed transcode without replacing the uploader retained for reconnect grace. */
@@ -1796,6 +1838,19 @@ export class StreamOrchestrator {
 
     const managedStreamId = match?.baseStreamId ?? streamId;
     const managedState = this.managedSources.get(managedStreamId);
+    const managedRestore = managedState
+      ? this.config.managedMediaStore?.readTrackState(
+          managedState.record.adminStreamId,
+          managedState.record.runNumber,
+          streamId,
+          ladder?.rung.name ?? null,
+        )
+      : null;
+    if (managedRestore) {
+      streamTopic = managedRestore.streamRawTopic;
+      anchor = managedRestore.anchor ?? anchor;
+      this.broadcastAnchors.set(datingKey, anchor);
+    }
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
@@ -1809,6 +1864,7 @@ export class StreamOrchestrator {
       ladder,
       anchor,
       dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
+      restoreState: managedRestore ?? undefined,
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
       managedLifecycle: managedState
@@ -1820,6 +1876,16 @@ export class StreamOrchestrator {
                   this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
               : undefined,
             onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
+            onTrackStateChanged: this.config.managedMediaStore
+              ? (trackState) =>
+                  this.config.managedMediaStore!.saveTrackState(
+                    managedState.record.adminStreamId,
+                    managedState.record.runNumber,
+                    streamId,
+                    ladder?.rung.name ?? null,
+                    trackState,
+                  )
+              : undefined,
           }
         : undefined,
       predecessorDrained,
@@ -1830,14 +1896,18 @@ export class StreamOrchestrator {
     }
 
     this.activeStreams.set(streamId, uploader);
-    this.processedSegments.set(streamId, this.newDuplicateFilter());
+    const processed = this.newDuplicateFilter();
+    for (const segment of managedRestore?.segments ?? []) {
+      processed.add(segment.index);
+    }
+    this.processedSegments.set(streamId, processed);
     this.streamActivityAt.set(streamId, this.clock.now());
     this.streamIngestAt.set(streamId, this.clock.now());
     this.streamClaimants.set(streamId, claimant);
     // No manifest exists yet, so the next segment carrying video is the one every player will decide
     // its codec set from. An audio broadcast is left out: its segments all carry no video, and
     // withholding them would publish nothing at all.
-    if (mediatype === MEDIA_TYPE_VIDEO) {
+    if (mediatype === MEDIA_TYPE_VIDEO && !managedRestore?.segments.length) {
       this.withheldOpeningSeconds.set(streamId, 0);
     }
     if (!managedState) {
@@ -2552,6 +2622,16 @@ export class StreamOrchestrator {
                   this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
               : undefined,
             onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
+            onTrackStateChanged: this.config.managedMediaStore
+              ? (trackState) =>
+                  this.config.managedMediaStore!.saveTrackState(
+                    managedState.record.adminStreamId,
+                    managedState.record.runNumber,
+                    streamId,
+                    state.ladder?.rung.name ?? null,
+                    trackState,
+                  )
+              : undefined,
           }
         : undefined,
     });
