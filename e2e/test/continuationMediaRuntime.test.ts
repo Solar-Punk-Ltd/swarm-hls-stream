@@ -340,6 +340,38 @@ describe('continuation media runtime adapters', () => {
     ]);
   });
 
+  it('retains a failed encoder until remote stop and restart complete', async () => {
+    const launcher = new ControlledLauncher();
+    const firstHandle = new ControlledHandle();
+    launcher.enqueue(firstHandle);
+    launcher.enqueue(new ControlledHandle());
+    const command = new ControlledCommand();
+    const subject = new DockerMediaScenarioSpawn({
+      senderContainerId: 'sender-container-id',
+      secrets: new Map(),
+      launcher,
+      command,
+    });
+    const invocation: MediaScenarioProcessInvocation = {
+      purpose: 'decode-video',
+      file: '/usr/bin/ffmpeg',
+      args: ['-version'],
+      timeoutMs: 10_000,
+      maxOutputBytes: 4096,
+    };
+    const first = await subject.spawn(invocation);
+    firstHandle.completionResult.reject(new Error('synthetic encoder failure'));
+
+    await assert.rejects(first.wait(), /synthetic encoder failure/);
+    await first.stop();
+    await subject.spawn(invocation);
+
+    assert.deepEqual(command.calls, [
+      ['container', 'stop', '--time', '5', 'sender-container-id'],
+      ['container', 'start', 'sender-container-id'],
+    ]);
+  });
+
   it('does not let a completed stale handle stop the current invocation', async () => {
     const launcher = new ControlledLauncher();
     const firstHandle = new ControlledHandle();
