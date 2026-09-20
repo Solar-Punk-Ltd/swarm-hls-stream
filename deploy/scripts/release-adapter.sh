@@ -449,6 +449,46 @@ srs_effective_config_digest() {
   printf '%s' "$digest"
 }
 
+verify_srs_runtime_config() {
+  local container="$1" resolved candidate_environment actual_environment actual_entrypoint actual_mounts base_image_environment total_size image_id
+  if ! resolved="$(compose_for "$profile" config --format json srs 2>/dev/null)"; then
+    refuse "uploader release could not resolve the SRS effective configuration"
+  fi
+  if ! candidate_environment="$(jq -c '.services.srs' <<< "$resolved" 2>/dev/null)"; then
+    refuse "uploader release SRS effective configuration is invalid"
+  fi
+  if ! actual_environment="$(docker inspect --format '{{json .Config.Env}}' "$container" 2>/dev/null)" ||
+      ! actual_entrypoint="$(docker inspect --format '{{json .Config.Entrypoint}}' "$container" 2>/dev/null)" ||
+      ! actual_mounts="$(docker inspect --format '{{json .Mounts}}' "$container" 2>/dev/null)"; then
+    refuse "uploader release could not inspect the running SRS configuration"
+  fi
+  image_id="$(image_from_plan srs)"
+  if ! base_image_environment="$(docker image inspect --format '{{json .Config.Env}}' "$image_id" 2>/dev/null)"; then
+    refuse "uploader release could not inspect the SRS image configuration"
+  fi
+  total_size=$((${#candidate_environment} + ${#actual_environment} + ${#actual_entrypoint} + ${#actual_mounts} + ${#base_image_environment}))
+  [ "$total_size" -ge 5 ] && [ "$total_size" -le 1048576 ] || refuse "uploader release SRS effective configuration is invalid"
+  if ! printf '%s\n%s\n%s\n%s\n%s\n' "$candidate_environment" "$actual_environment" "$actual_entrypoint" "$actual_mounts" "$base_image_environment" |
+      jq -sc '{candidate:.[0],actualEnvironment:.[1],actualEntrypoint:.[2],actualMounts:.[3],baseImageEnvironment:.[4]}' 2>/dev/null |
+      node "$script_dir/release-effective-config.mjs" srs-runtime >/dev/null 2>&1; then
+    refuse "uploader release running SRS effective configuration does not match"
+  fi
+}
+
+bee_effective_config_hash() {
+  local service="$1" override temporary image_id hash_line
+  override="$(dirname "$plan")/release-validation-image-override.yml"
+  temporary="${override}.tmp.$$"
+  image_id="$(image_from_plan "$service")"
+  umask 077
+  printf 'services:\n  %s:\n    image: %s\n    pull_policy: never\n' "$service" "$image_id" > "$temporary"
+  mv "$temporary" "$override"
+  if ! hash_line="$(compose_for "$profile" -f "$override" config --hash "$service")"; then
+    refuse "uploader release could not resolve an untouched Bee configuration"
+  fi
+  printf '%s' "$hash_line"
+}
+
 verify_untouched_effective_config() {
   local service="$1" container="$2" project_label service_label actual_hash candidate_hash_line candidate_service candidate_hash extra expected_network_mode
   project_label="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")"
@@ -460,9 +500,7 @@ verify_untouched_effective_config() {
       actual_hash="$(docker inspect --format '{{index .Config.Labels "org.solarpunk.srs-continuation.srs-config"}}' "$container")"
       ;;
     bee-uploader|bee-gateway|bee-uploader-480p|bee-uploader-720p|bee-uploader-1080p)
-      if ! candidate_hash_line="$(compose_for "$profile" config --hash "$service")"; then
-        refuse "uploader release could not resolve an untouched Bee configuration"
-      fi
+      candidate_hash_line="$(bee_effective_config_hash "$service")"
       [ "${#candidate_hash_line}" -le 256 ] || refuse "uploader release untouched Bee configuration is invalid"
       read -r candidate_service candidate_hash extra <<< "$candidate_hash_line"
       [ "$candidate_service" = "$service" ] && [ -z "${extra:-}" ] && [[ "$candidate_hash" =~ ^[0-9a-f]{64}$ ]] || refuse "uploader release untouched Bee configuration is invalid"
@@ -471,6 +509,7 @@ verify_untouched_effective_config() {
     *) refuse "uploader release cannot prove an untouched service configuration" ;;
   esac
   [ "$actual_hash" = "$candidate_hash" ] || refuse "uploader release untouched service effective configuration does not match"
+  [ "$service" != srs ] || verify_srs_runtime_config "$container"
 
   if [ -n "$fixture_id" ]; then
     expected_network_mode="$fixture_network_name"

@@ -298,6 +298,7 @@ describe('guarded uploader release adapter', () => {
       fixtureNetwork: FIXTURE_NETWORK,
       env: {
         DOCKER_STUB_ABSENT_SERVICE: 'stream-uploader',
+        DOCKER_STUB_SRS_BIND_ROOT: prepared.root,
         DOCKER_STUB_SRS_CONFIG_DIGEST: preparedSrsDigest,
       },
     });
@@ -353,8 +354,23 @@ describe('guarded uploader release adapter', () => {
 
     const f = fixture('uploader', ['srs', 'stream-uploader'], {
       operation: { kind: 'update', mutatingServices: ['stream-uploader'] },
-      env: { DOCKER_STUB_SRS_CONFIG_DIGEST: preparedSrsDigest },
+      env: {
+        DOCKER_STUB_SRS_BIND_ROOT: prepared.root,
+        DOCKER_STUB_SRS_CONFIG_DIGEST: preparedSrsDigest,
+      },
     });
+    f.env.DOCKER_STUB_ACTUAL_SRS_ADAPTER_PORT = '3999';
+    const changedRuntime = await run(f, 'release-adapter.sh', 'validate');
+    assert.notEqual(changedRuntime.exitCode, 0);
+    assert.match(changedRuntime.stderr, /effective configuration/);
+    assert.equal(
+      readFileSync(f.journal, 'utf8')
+        .split('\n')
+        .some((call) => call.includes(' up -d ')),
+      false,
+    );
+    delete f.env.DOCKER_STUB_ACTUAL_SRS_ADAPTER_PORT;
+
     const customConfig = join(f.root, 'engines', 'srs', 'custom.conf');
     writeFileSync(customConfig, 'changed-config-at-the-same-path\n');
     const changedBytes = await run(f, 'release-adapter.sh', 'validate');
@@ -385,8 +401,18 @@ describe('guarded uploader release adapter', () => {
   it('refuses a changed untouched Bee configuration before updater movement', async () => {
     const f = fixture('uploader', ['srs', 'stream-uploader', 'bee-uploader'], {
       operation: { kind: 'update', mutatingServices: ['srs', 'stream-uploader'] },
-      env: { DOCKER_STUB_BAD_BEE_CONFIG_HASH: '1' },
     });
+    const accepted = await run(f, 'release-adapter.sh', 'validate');
+    assert.equal(accepted.exitCode, 0, `${accepted.stdout}${accepted.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(accepted.output, 'utf8')).images, [
+      { service: 'bee-uploader', imageId: IMAGE_IDS['bee-uploader'] },
+    ]);
+    assert.match(
+      readFileSync(f.journal, 'utf8'),
+      /release-validation-image-override\.yml .*config --hash bee-uploader/,
+    );
+
+    f.env.DOCKER_STUB_BAD_BEE_CONFIG_HASH = '1';
     const result = await run(f, 'release-adapter.sh', 'validate');
 
     assert.notEqual(result.exitCode, 0);
@@ -796,7 +822,8 @@ function serviceFrom(value) {
   return '';
 }
 if (argv[0] === 'image' && argv[1] === 'inspect') {
-  console.log(ids[serviceFrom(argv.at(-1))] || '');
+  if ((argv[3] || '').includes('.Config.Env')) console.log(JSON.stringify(['BASE_IMAGE_ENV=1']));
+  else console.log(ids[serviceFrom(argv.at(-1))] || '');
   process.exit(0);
 }
 if (argv[0] === 'network' && argv[1] === 'inspect') {
@@ -826,7 +853,7 @@ if (argv[0] === 'compose') {
   const service = serviceFrom(argv.at(-1));
   if (command === 'ps' && process.env.DOCKER_STUB_ABSENT_SERVICE !== service) console.log('c-' + argv.at(-1));
   if (command === 'config' && argv.includes('--images')) console.log(references[service] || '');
-  if (command === 'config' && argv.includes('--hash')) console.log(service + ' ' + composeHash);
+  if (command === 'config' && argv.includes('--hash')) console.log(service + ' ' + (argv.some((value) => value.includes('release-validation-image-override.yml')) ? composeHash : '6'.repeat(64)));
   if (command === 'config' && argv.includes('--format')) console.log(JSON.stringify({
     services: {
       srs: {
@@ -859,9 +886,18 @@ if (argv[0] === 'compose') {
 if (argv[0] === 'inspect') {
   const format = argv[2] || '';
   const service = serviceFrom(argv.at(-1));
+  const srsBindRoot = process.env.DOCKER_STUB_SRS_BIND_ROOT || ${JSON.stringify(candidateRoot)};
   if (format.includes('.State.Status')) console.log('running');
   else if (format.includes('.State.Health')) console.log(process.env.DOCKER_STUB_NO_HEALTH === service ? '' : process.env.DOCKER_STUB_UNHEALTHY === service ? 'unhealthy' : 'healthy');
   else if (format.includes('.Image')) console.log(process.env.DOCKER_STUB_WRONG_IMAGE === service ? 'sha256:' + 'f'.repeat(64) : ids[service]);
+  else if (format.includes('.Config.Env')) console.log(JSON.stringify([
+    'BASE_IMAGE_ENV=1',
+    'HLS_FRAGMENT=' + (process.env.HLS_FRAGMENT || '0.5'),
+    'SRS_ADAPTER_HOST=' + (process.env.SRS_ADAPTER_HOST || 'stream-uploader'),
+    'SRS_ADAPTER_PORT=' + (process.env.DOCKER_STUB_ACTUAL_SRS_ADAPTER_PORT || process.env.SRS_ADAPTER_PORT || '3000'),
+    'SRS_WEBHOOK_TOKEN=' + (process.env.SRS_WEBHOOK_TOKEN || ''),
+  ]));
+  else if (format.includes('.Config.Entrypoint')) console.log(JSON.stringify(['/bin/bash', '/usr/local/srs/conf/entrypoint.sh']));
   else if (format.includes('.HostConfig.NetworkMode')) console.log(process.env.DOCKER_STUB_NETWORK_MODE || 'release-a_default');
   else if (format.includes('.NetworkSettings.Networks')) console.log(process.env.DOCKER_STUB_CONTAINER_NETWORK_ID || fixtureNetworkId);
   else if (format.includes('com.docker.compose.config-hash')) console.log(process.env.DOCKER_STUB_BAD_BEE_CONFIG_HASH === '1' ? '8'.repeat(64) : composeHash);
@@ -882,7 +918,13 @@ if (argv[0] === 'inspect') {
     else console.log(JSON.stringify({ '3000/tcp': null }));
   } else if (format.includes('.Mounts')) {
     if (process.env.DOCKER_STUB_WRONG_MOUNTS === '1') console.log('[]');
-    else if (service === 'srs') console.log(JSON.stringify([{ Type: 'volume', Name: 'release-a_srs-media', Destination: '/usr/local/srs/objs/nginx/html' }]));
+    else if (service === 'srs') console.log(JSON.stringify([
+      { Type: 'bind', Source: srsBindRoot + '/engines/srs/srs.conf.template', Destination: '/usr/local/srs/conf/srs.conf.template', RW: false },
+      { Type: 'bind', Source: srsBindRoot + '/engines/srs/entrypoint.sh', Destination: '/usr/local/srs/conf/entrypoint.sh', RW: false },
+      { Type: 'bind', Source: srsBindRoot + '/engines/srs/healthcheck.sh', Destination: '/usr/local/srs/conf/healthcheck.sh', RW: false },
+      ...(process.env.SRS_CONF_FILE ? [{ Type: 'bind', Source: srsBindRoot + '/engines/srs/custom.conf', Destination: '/usr/local/srs/conf/srs.conf.custom', RW: false }] : []),
+      { Type: 'volume', Name: 'release-a_srs-media', Destination: '/usr/local/srs/objs/nginx/html', RW: true },
+    ]));
     else if (service === 'stream-uploader') console.log(JSON.stringify([
       { Type: 'volume', Name: 'release-a_srs-media', Destination: '/media' },
       { Type: 'volume', Name: 'release-a_uploader-state', Destination: '/app/state' },
