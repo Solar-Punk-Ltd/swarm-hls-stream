@@ -164,7 +164,24 @@ export interface ReadinessEvidence {
   callbacksReachUploader: boolean;
   openingFormatVerified: boolean;
   browserDecodedMedia: boolean;
+  browserDecode: {
+    decodedFramesBefore: number;
+    decodedFramesAfter: number;
+    decodedAudioBytesBefore: number;
+    decodedAudioBytesAfter: number;
+    currentTimeBefore: number;
+    currentTimeAfter: number;
+    codecs: string[];
+  };
   falseCodecControlRefused: boolean;
+  falseCodec: {
+    attemptedCodec: string;
+    supported: boolean;
+    sourceBufferAttempted: boolean;
+    sourceBufferAccepted: boolean;
+    sourceBufferRefused: boolean;
+    loadedMetadata: boolean;
+  };
   capacityAvailable: boolean;
 }
 
@@ -565,6 +582,8 @@ function stage(
 
 function readinessRefusal(plan: FixturePlan, evidence: ReadinessEvidence): string | null {
   const componentKeys = ['admin', 'bee', 'blockchain', 'srs', 'uploader', 'viewer'];
+  const browser = evidence.browserDecode;
+  const falseCodec = evidence.falseCodec;
   if (
     !Number.isSafeInteger(evidence.chainId) ||
     typeof evidence.chainOwner !== 'string' ||
@@ -579,7 +598,37 @@ function readinessRefusal(plan: FixturePlan, evidence: ReadinessEvidence): strin
     typeof evidence.callbacksReachUploader !== 'boolean' ||
     typeof evidence.openingFormatVerified !== 'boolean' ||
     typeof evidence.browserDecodedMedia !== 'boolean' ||
+    browser === null ||
+    typeof browser !== 'object' ||
+    !Number.isSafeInteger(browser.decodedFramesBefore) ||
+    browser.decodedFramesBefore < 0 ||
+    !Number.isSafeInteger(browser.decodedFramesAfter) ||
+    browser.decodedFramesAfter < 0 ||
+    !Number.isSafeInteger(browser.decodedAudioBytesBefore) ||
+    browser.decodedAudioBytesBefore < 0 ||
+    !Number.isSafeInteger(browser.decodedAudioBytesAfter) ||
+    browser.decodedAudioBytesAfter < 0 ||
+    typeof browser.currentTimeBefore !== 'number' ||
+    !Number.isFinite(browser.currentTimeBefore) ||
+    browser.currentTimeBefore < 0 ||
+    typeof browser.currentTimeAfter !== 'number' ||
+    !Number.isFinite(browser.currentTimeAfter) ||
+    browser.currentTimeAfter < 0 ||
+    !Array.isArray(browser.codecs) ||
+    browser.codecs.length < 1 ||
+    browser.codecs.length > 16 ||
+    browser.codecs.some((codec) => typeof codec !== 'string' || codec.length < 1 || codec.length > 200) ||
     typeof evidence.falseCodecControlRefused !== 'boolean' ||
+    falseCodec === null ||
+    typeof falseCodec !== 'object' ||
+    typeof falseCodec.attemptedCodec !== 'string' ||
+    falseCodec.attemptedCodec.length < 1 ||
+    falseCodec.attemptedCodec.length > 200 ||
+    typeof falseCodec.supported !== 'boolean' ||
+    typeof falseCodec.sourceBufferAttempted !== 'boolean' ||
+    typeof falseCodec.sourceBufferAccepted !== 'boolean' ||
+    typeof falseCodec.sourceBufferRefused !== 'boolean' ||
+    typeof falseCodec.loadedMetadata !== 'boolean' ||
     typeof evidence.capacityAvailable !== 'boolean'
   ) {
     return 'readiness evidence is malformed';
@@ -617,8 +666,24 @@ function readinessRefusal(plan: FixturePlan, evidence: ReadinessEvidence): strin
   if (!evidence.browserDecodedMedia) {
     return 'browser decode control did not pass';
   }
+  if (
+    browser.decodedFramesAfter <= browser.decodedFramesBefore ||
+    browser.decodedAudioBytesAfter <= browser.decodedAudioBytesBefore ||
+    browser.currentTimeAfter <= browser.currentTimeBefore
+  ) {
+    return 'browser decode evidence does not contain advancing video and audio counters';
+  }
   if (!evidence.falseCodecControlRefused) {
     return 'false codec control was not refused';
+  }
+  if (
+    falseCodec.supported ||
+    !falseCodec.sourceBufferAttempted ||
+    falseCodec.sourceBufferAccepted ||
+    !falseCodec.sourceBufferRefused ||
+    falseCodec.loadedMetadata
+  ) {
+    return 'false codec evidence does not contain a real SourceBuffer refusal';
   }
   if (!evidence.capacityAvailable) {
     return 'host capacity preflight did not pass';

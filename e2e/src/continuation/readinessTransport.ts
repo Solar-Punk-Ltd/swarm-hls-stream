@@ -430,24 +430,70 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
         if (result.source !== 'browser-media-control') {throw new FixtureRefusal('browserDecode readiness source does not match');}
         const codecs = result.codecs;
         if (!Array.isArray(codecs)) {throw new FixtureRefusal('browserDecode readiness codecs are malformed');}
+        const decodedFramesBefore = integerField('browserDecode', 'decodedFramesBefore', result.decodedFramesBefore);
+        const decodedFramesAfter = integerField('browserDecode', 'decodedFramesAfter', result.decodedFramesAfter);
+        const decodedAudioBytesBefore = integerField(
+          'browserDecode',
+          'decodedAudioBytesBefore',
+          result.decodedAudioBytesBefore,
+        );
+        const decodedAudioBytesAfter = integerField(
+          'browserDecode',
+          'decodedAudioBytesAfter',
+          result.decodedAudioBytesAfter,
+        );
+        const currentTimeBefore = numberField('browserDecode', 'currentTimeBefore', result.currentTimeBefore);
+        const currentTimeAfter = numberField('browserDecode', 'currentTimeAfter', result.currentTimeAfter);
         return {
           decodedMedia:
             result.playEvent === true &&
-            integerField('browserDecode', 'decodedFramesAfter', result.decodedFramesAfter) >
-              integerField('browserDecode', 'decodedFramesBefore', result.decodedFramesBefore) &&
-            numberField('browserDecode', 'currentTimeAfter', result.currentTimeAfter) >
-              numberField('browserDecode', 'currentTimeBefore', result.currentTimeBefore),
+            decodedFramesAfter > decodedFramesBefore &&
+            decodedAudioBytesAfter > decodedAudioBytesBefore &&
+            currentTimeAfter > currentTimeBefore,
+          decodedFramesBefore,
+          decodedFramesAfter,
+          decodedAudioBytesBefore,
+          decodedAudioBytesAfter,
+          currentTimeBefore,
+          currentTimeAfter,
           codecs: codecs.map((codec) => stringField('browserDecode', 'codec', codec)),
         };
       }
-      case 'falseCodec':
+      case 'falseCodec': {
         if (result.source !== 'browser-false-codec-control') {throw new FixtureRefusal('falseCodec readiness source does not match');}
-        stringField('falseCodec', 'attemptedCodec', result.attemptedCodec);
+        const attemptedCodec = stringField('falseCodec', 'attemptedCodec', result.attemptedCodec);
+        const supported = booleanField('falseCodec', 'supported', result.supported);
+        const sourceBufferAttempted = booleanField(
+          'falseCodec',
+          'sourceBufferAttempted',
+          result.sourceBufferAttempted,
+        );
+        const sourceBufferAccepted = booleanField(
+          'falseCodec',
+          'sourceBufferAccepted',
+          result.sourceBufferAccepted,
+        );
+        const sourceBufferRefused = booleanField(
+          'falseCodec',
+          'sourceBufferRefused',
+          result.sourceBufferRefused,
+        );
+        const loadedMetadata = booleanField('falseCodec', 'loadedMetadata', result.loadedMetadata);
         return {
           refused:
-            booleanField('falseCodec', 'supported', result.supported) === false &&
-            booleanField('falseCodec', 'loadedMetadata', result.loadedMetadata) === false,
+            !supported &&
+            sourceBufferAttempted &&
+            !sourceBufferAccepted &&
+            sourceBufferRefused &&
+            !loadedMetadata,
+          attemptedCodec,
+          supported,
+          sourceBufferAttempted,
+          sourceBufferAccepted,
+          sourceBufferRefused,
+          loadedMetadata,
         };
+      }
       case 'capacity': {
         if (result.source !== 'fixture-capacity-control' || !Array.isArray(result.services) || result.services.length < 1) {
           throw new FixtureRefusal('capacity readiness source does not match');

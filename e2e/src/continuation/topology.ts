@@ -1002,6 +1002,13 @@ function nonNegativeInteger(id: ReadinessProbeId, field: string, value: unknown)
   return value as number;
 }
 
+function nonNegativeNumber(id: ReadinessProbeId, field: string, value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new FixtureRefusal(`${id} readiness ${field} is malformed`);
+  }
+  return value;
+}
+
 function validateProbeOwnership(topology: ContinuationTopology): void {
   const hosts = new Set<string>();
   for (const service of topology.services) {
@@ -1130,7 +1137,44 @@ export async function inspectContinuationReadiness(
     callbacksReachUploader: booleanField('callbacks', 'reachedUploader', callbacks.reachedUploader),
     openingFormatVerified: booleanField('openingFormat', 'verified', opening.verified),
     browserDecodedMedia: booleanField('browserDecode', 'decodedMedia', browser.decodedMedia),
+    browserDecode: {
+      decodedFramesBefore: nonNegativeInteger('browserDecode', 'decodedFramesBefore', browser.decodedFramesBefore),
+      decodedFramesAfter: nonNegativeInteger('browserDecode', 'decodedFramesAfter', browser.decodedFramesAfter),
+      decodedAudioBytesBefore: nonNegativeInteger(
+        'browserDecode',
+        'decodedAudioBytesBefore',
+        browser.decodedAudioBytesBefore,
+      ),
+      decodedAudioBytesAfter: nonNegativeInteger(
+        'browserDecode',
+        'decodedAudioBytesAfter',
+        browser.decodedAudioBytesAfter,
+      ),
+      currentTimeBefore: nonNegativeNumber('browserDecode', 'currentTimeBefore', browser.currentTimeBefore),
+      currentTimeAfter: nonNegativeNumber('browserDecode', 'currentTimeAfter', browser.currentTimeAfter),
+      codecs: browser.codecs.map((codec) => boundedString('browserDecode', 'codec', codec)),
+    },
     falseCodecControlRefused: booleanField('falseCodec', 'refused', falseCodec.refused),
+    falseCodec: {
+      attemptedCodec: boundedString('falseCodec', 'attemptedCodec', falseCodec.attemptedCodec),
+      supported: booleanField('falseCodec', 'supported', falseCodec.supported),
+      sourceBufferAttempted: booleanField(
+        'falseCodec',
+        'sourceBufferAttempted',
+        falseCodec.sourceBufferAttempted,
+      ),
+      sourceBufferAccepted: booleanField(
+        'falseCodec',
+        'sourceBufferAccepted',
+        falseCodec.sourceBufferAccepted,
+      ),
+      sourceBufferRefused: booleanField(
+        'falseCodec',
+        'sourceBufferRefused',
+        falseCodec.sourceBufferRefused,
+      ),
+      loadedMetadata: booleanField('falseCodec', 'loadedMetadata', falseCodec.loadedMetadata),
+    },
     capacityAvailable: booleanField('capacity', 'available', capacity.available),
   };
 }

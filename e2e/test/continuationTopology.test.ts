@@ -90,8 +90,25 @@ function readyAnswers(): Record<string, unknown> {
     },
     callbacks: { reachedUploader: true },
     openingFormat: { verified: true, tool: 'ffprobe', container: 'mpegts' },
-    browserDecode: { decodedMedia: true, codecs: ['avc1', 'mp4a'] },
-    falseCodec: { refused: true },
+    browserDecode: {
+      decodedMedia: true,
+      decodedFramesBefore: 1,
+      decodedFramesAfter: 9,
+      decodedAudioBytesBefore: 2,
+      decodedAudioBytesAfter: 2_048,
+      currentTimeBefore: 0,
+      currentTimeAfter: 2.5,
+      codecs: ['avc1', 'mp4a'],
+    },
+    falseCodec: {
+      refused: true,
+      attemptedCodec: 'video/not-real',
+      supported: false,
+      sourceBufferAttempted: true,
+      sourceBufferAccepted: false,
+      sourceBufferRefused: true,
+      loadedMetadata: false,
+    },
     capacity: { available: true },
   };
 }
@@ -410,7 +427,24 @@ describe('continuation readiness inspection', () => {
       callbacksReachUploader: true,
       openingFormatVerified: true,
       browserDecodedMedia: true,
+      browserDecode: {
+        decodedFramesBefore: 1,
+        decodedFramesAfter: 9,
+        decodedAudioBytesBefore: 2,
+        decodedAudioBytesAfter: 2_048,
+        currentTimeBefore: 0,
+        currentTimeAfter: 2.5,
+        codecs: ['avc1', 'mp4a'],
+      },
       falseCodecControlRefused: true,
+      falseCodec: {
+        attemptedCodec: 'video/not-real',
+        supported: false,
+        sourceBufferAttempted: true,
+        sourceBufferAccepted: false,
+        sourceBufferRefused: true,
+        loadedMetadata: false,
+      },
       capacityAvailable: true,
     });
   });
