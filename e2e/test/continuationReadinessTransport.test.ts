@@ -195,6 +195,7 @@ class FakeObservationSource implements ReadinessObservationSource {
       this.containers.set(role, {
         role,
         name: service.container.name,
+        expectedName: service.container.name,
         configuredImage: service.container.image,
         imageId: IMAGE_ID,
         state: 'running',

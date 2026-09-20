@@ -52,6 +52,7 @@ interface ActiveArtifactObservation {
 export interface ContainerReadinessObservation {
   role: TopologyServiceRole;
   name: string;
+  expectedName: string;
   configuredImage: string;
   imageId: string;
   state: 'running' | 'stopped';
@@ -194,7 +195,7 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
     const observed = await this.source.inspectContainer(role);
     if (
       observed.role !== role ||
-      observed.name !== expected.container.name ||
+      observed.name !== observed.expectedName ||
       observed.state !== 'running' ||
       observed.health === 'unhealthy' ||
       observed.labels[FIXTURE_LABEL] !== this.plan.fixtureId ||
