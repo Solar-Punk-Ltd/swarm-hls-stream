@@ -55,7 +55,9 @@ class FakeCommand implements BoundedCommand {
         source: 'browser-false-codec-control',
         attemptedCodec: 'video/mp4; codecs="definitely-not-a-codec"',
         supported: false,
+        sourceBufferAttempted: true,
         sourceBufferAccepted: false,
+        sourceBufferRefused: true,
         loadedMetadata: false,
       });
     }
@@ -189,8 +191,12 @@ function generatedBrowserProgram(inputValue: Record<string, unknown>): string {
   return match[1];
 }
 
-async function runGeneratedBrowserProgram(mode: 'decode' | 'false-codec'): Promise<{
+async function runGeneratedBrowserProgram(
+  mode: 'decode' | 'false-codec',
+  emitSourceOpen = true,
+): Promise<{
   result: Record<string, unknown>;
+  codecQueries: string[];
   sourceOpenObserved: boolean;
   sourceBufferAttempted: boolean;
 }> {
@@ -198,6 +204,7 @@ async function runGeneratedBrowserProgram(mode: 'decode' | 'false-codec'): Promi
     mode === 'decode' ? { mode, mediaUrl: `http://client/bee/bytes/${REFERENCE}` } : { mode },
   );
   let rendered = '';
+  const codecQueries: string[] = [];
   let sourceOpenObserved = false;
   let sourceBufferAttempted = false;
   const videoListeners = new Map<string, () => void>();
@@ -216,7 +223,11 @@ async function runGeneratedBrowserProgram(mode: 'decode' | 'false-codec'): Promi
   };
   class MediaSourceStub {
     static isTypeSupported(codec: string): boolean {
-      return mode === 'decode' && (codec.includes('avc1.42c00a') || codec.includes('mp4a.40.2'));
+      codecQueries.push(codec);
+      return mode === 'decode' && [
+        'video/mp4; codecs="avc1.42c00a"',
+        'video/mp4; codecs="mp4a.40.2"',
+      ].includes(codec);
     }
 
     readyState = 'closed';
@@ -224,8 +235,10 @@ async function runGeneratedBrowserProgram(mode: 'decode' | 'false-codec'): Promi
     addEventListener(event: string, listener: () => void): void {
       if (event === 'sourceopen') {
         sourceOpenObserved = true;
-        this.readyState = 'open';
-        queueMicrotask(listener);
+        if (emitSourceOpen) {
+          this.readyState = 'open';
+          queueMicrotask(listener);
+        }
       }
     }
 
@@ -248,13 +261,14 @@ async function runGeneratedBrowserProgram(mode: 'decode' | 'false-codec'): Promi
       createElement: () => video,
     },
     setTimeout: (callback: () => void, milliseconds: number) => {
-      if (milliseconds > 1_000) {queueMicrotask(callback);}
+      if (milliseconds > 1_000 || !emitSourceOpen) {queueMicrotask(callback);}
       return 1;
     },
   });
   await Promise.resolve(completion);
   return {
     result: JSON.parse(rendered) as Record<string, unknown>,
+    codecQueries,
     sourceOpenObserved,
     sourceBufferAttempted,
   };
@@ -300,7 +314,9 @@ describe('FixtureReadinessControlExecutor', () => {
       source: 'browser-false-codec-control',
       attemptedCodec: 'video/mp4; codecs="definitely-not-a-codec"',
       supported: false,
+      sourceBufferAttempted: true,
       sourceBufferAccepted: false,
+      sourceBufferRefused: true,
       loadedMetadata: false,
     });
 
@@ -367,7 +383,9 @@ describe('FixtureReadinessControlExecutor', () => {
             source: 'browser-false-codec-control',
             attemptedCodec: 'video/mp4; codecs="definitely-not-a-codec"',
             supported: false,
+            sourceBufferAttempted: true,
             sourceBufferAccepted: true,
+            sourceBufferRefused: false,
             loadedMetadata: false,
           });
         }
@@ -384,6 +402,10 @@ describe('FixtureReadinessControlExecutor', () => {
     assert.equal(decoded.result.source, 'browser-media-control');
     assert.equal(decoded.result.decodedFramesAfter, 4);
     assert.equal(decoded.result.decodedAudioBytesAfter, 4_096);
+    assert.deepEqual(decoded.codecQueries, [
+      'video/mp4; codecs="avc1.42c00a"',
+      'video/mp4; codecs="mp4a.40.2"',
+    ]);
 
     const refused = await runGeneratedBrowserProgram('false-codec');
     assert.equal(refused.sourceOpenObserved, true);
@@ -392,9 +414,28 @@ describe('FixtureReadinessControlExecutor', () => {
       source: 'browser-false-codec-control',
       attemptedCodec: 'video/mp4; codecs="definitely-not-a-codec"',
       supported: false,
+      sourceBufferAttempted: true,
       sourceBufferAccepted: false,
+      sourceBufferRefused: true,
       loadedMetadata: false,
     });
+  });
+
+  it('treats a false-codec sourceopen timeout as inconclusive', async () => {
+    const timedOut = await runGeneratedBrowserProgram('false-codec', false);
+    assert.equal(timedOut.sourceOpenObserved, true);
+    assert.equal(timedOut.sourceBufferAttempted, false);
+
+    class SourceOpenTimeoutCommand extends FakeCommand {
+      override async run(file: string, args: readonly string[]): Promise<CommandResult> {
+        if (args.join('\n').includes('browser-false-codec-control')) {
+          return json(timedOut.result);
+        }
+        return super.run(file, args);
+      }
+    }
+    const controls = new FixtureReadinessControlExecutor(new SourceOpenTimeoutCommand(), input());
+    await assert.rejects(controls.run('falseCodec', 64 * 1024), /did not observe a browser refusal/i);
   });
 
   it('refuses callback evidence unless one real SRS rejection reached the uploader', async () => {

@@ -234,10 +234,18 @@ export class FixtureReadinessControlExecutor implements ReadinessControlExecutor
       source: exactString(raw, 'source', 'browser-false-codec-control'),
       attemptedCodec: stringField(raw, 'attemptedCodec'),
       supported: booleanField(raw, 'supported'),
+      sourceBufferAttempted: booleanField(raw, 'sourceBufferAttempted'),
       sourceBufferAccepted: booleanField(raw, 'sourceBufferAccepted'),
+      sourceBufferRefused: booleanField(raw, 'sourceBufferRefused'),
       loadedMetadata: booleanField(raw, 'loadedMetadata'),
     };
-    if (result.supported || result.sourceBufferAccepted || result.loadedMetadata) {
+    if (
+      result.supported ||
+      !result.sourceBufferAttempted ||
+      result.sourceBufferAccepted ||
+      !result.sourceBufferRefused ||
+      result.loadedMetadata
+    ) {
       throw new FixtureRefusal('false codec control did not observe a browser refusal');
     }
     return result;
@@ -644,7 +652,7 @@ const falseCodec = 'video/mp4; codecs="definitely-not-a-codec"';
 const quotedMediaUrl = JSON.stringify(input.mediaUrl);
 const program = input.mode === 'decode'
   ? "(async()=>{const v=document.createElement('video');v.muted=true;v.autoplay=true;v.src=" + quotedMediaUrl + ";document.body.append(v);let played=false;v.addEventListener('play',()=>{played=true},{once:true});const frameBefore=v.webkitDecodedFrameCount||0;const audioBefore=v.webkitAudioDecodedByteCount||0;const timeBefore=v.currentTime;try{await v.play()}catch{}await new Promise(r=>setTimeout(r,2500));const supported=['avc1.42c00a','mp4a.40.2'].filter(c=>MediaSource.isTypeSupported('video/mp4; codecs=\\\"'+c+'\\\"'));document.body.textContent=JSON.stringify({source:'browser-media-control',playEvent:played,decodedFramesBefore:frameBefore,decodedFramesAfter:v.webkitDecodedFrameCount||0,decodedAudioBytesBefore:audioBefore,decodedAudioBytesAfter:v.webkitAudioDecodedByteCount||0,currentTimeBefore:timeBefore,currentTimeAfter:v.currentTime,codecs:supported})})()"
-  : "(async()=>{const attemptedCodec=" + JSON.stringify(falseCodec) + ";let loaded=false;let sourceBufferAccepted=false;const v=document.createElement('video');v.addEventListener('loadedmetadata',()=>{loaded=true},{once:true});const supported=MediaSource.isTypeSupported(attemptedCodec)||v.canPlayType(attemptedCodec)!=='';try{const media=new MediaSource();v.src=URL.createObjectURL(media);const opened=await new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),1000);media.addEventListener('sourceopen',()=>{clearTimeout(timer);resolve(true)},{once:true})});if(opened&&media.readyState==='open'){media.addSourceBuffer(attemptedCodec);sourceBufferAccepted=true}}catch{}document.body.textContent=JSON.stringify({source:'browser-false-codec-control',attemptedCodec,supported,sourceBufferAccepted,loadedMetadata:loaded})})()";
+  : "(async()=>{const attemptedCodec=" + JSON.stringify(falseCodec) + ";let loaded=false;let sourceBufferAttempted=false;let sourceBufferAccepted=false;let sourceBufferRefused=false;const v=document.createElement('video');v.addEventListener('loadedmetadata',()=>{loaded=true},{once:true});const supported=MediaSource.isTypeSupported(attemptedCodec)||v.canPlayType(attemptedCodec)!=='';try{const media=new MediaSource();v.src=URL.createObjectURL(media);const opened=await new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),1000);media.addEventListener('sourceopen',()=>{clearTimeout(timer);resolve(true)},{once:true})});if(opened&&media.readyState==='open'){sourceBufferAttempted=true;try{media.addSourceBuffer(attemptedCodec);sourceBufferAccepted=true}catch{sourceBufferRefused=true}}}catch{}document.body.textContent=JSON.stringify({source:'browser-false-codec-control',attemptedCodec,supported,sourceBufferAttempted,sourceBufferAccepted,sourceBufferRefused,loadedMetadata:loaded})})()";
 const html = '<!doctype html><meta charset="utf-8"><body><script>' + program + '</script>';
 const target = 'data:text/html;base64,' + Buffer.from(html).toString('base64');
 const result = spawnSync('/opt/google/chrome/google-chrome', [
