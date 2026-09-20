@@ -249,6 +249,7 @@ export const REJECT_STALE_SOURCE = 'stale_source' as const;
 export const REJECT_UNVERIFIED_SOURCE_MEDIA = 'unverified_source_media' as const;
 /** The declared duration is not a number a manifest or a running total can hold. */
 export const REJECT_UNUSABLE_DURATION = 'unusable_duration' as const;
+export const REJECT_DURABILITY_FAILED = 'durability_failed' as const;
 
 export type RejectReason =
   | typeof REJECT_QUEUE_FULL
@@ -257,7 +258,8 @@ export type RejectReason =
   | typeof REJECT_DRAINING
   | typeof REJECT_STALE_SOURCE
   | typeof REJECT_UNVERIFIED_SOURCE_MEDIA
-  | typeof REJECT_UNUSABLE_DURATION;
+  | typeof REJECT_UNUSABLE_DURATION
+  | typeof REJECT_DURABILITY_FAILED;
 
 export type SegmentResult = { accepted: true } | { accepted: false; reason: RejectReason };
 

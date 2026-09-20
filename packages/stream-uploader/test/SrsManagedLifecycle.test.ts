@@ -28,6 +28,8 @@ interface Calls {
   unpublished: SourceConnectionIdentity[];
   managedRenditions: string[];
   managedRenditionSegments: Array<{ streamId: string; sourceClientId: string; segmentIndex: number }>;
+  managedSourceSegments: Array<{ streamId: string; sourceClientId: string; segmentIndex: number }>;
+  failedManagedSources: SourceConnectionIdentity[];
   legacySegments: Array<{ streamId: string; segmentIndex: number }>;
   legacyStarts: string[];
   stops: string[];
@@ -41,7 +43,12 @@ async function withManagedSrs(
     post: (body: Record<string, unknown>, route?: 'streams' | 'hls') => Promise<number>,
     calls: Calls,
   ) => Promise<void>,
-  options: { abr?: boolean; mediaRoot?: string; mode?: 'legacy' | 'managed' } = {},
+  options: {
+    abr?: boolean;
+    mediaRoot?: string;
+    mode?: 'legacy' | 'managed';
+    managedSegmentAccepted?: boolean;
+  } = {},
 ): Promise<void> {
   const calls: Calls = {
     attempts: [],
@@ -51,6 +58,8 @@ async function withManagedSrs(
     unpublished: [],
     managedRenditions: [],
     managedRenditionSegments: [],
+    managedSourceSegments: [],
+    failedManagedSources: [],
     legacySegments: [],
     legacyStarts: [],
     stops: [],
@@ -139,10 +148,25 @@ async function withManagedSrs(
       calls.managedRenditionSegments.push({ streamId, sourceClientId: source.clientId, segmentIndex });
       return { accepted: true };
     },
+    handleManagedSegment: (
+      streamId: string,
+      source: SourceConnectionIdentity,
+      segmentIndex: number,
+    ) => {
+      calls.managedSourceSegments.push({ streamId, sourceClientId: source.clientId, segmentIndex });
+      return options.managedSegmentAccepted === false
+        ? { accepted: false, reason: 'durability_failed' }
+        : { accepted: true };
+    },
+    failManagedSource: (_streamId: string, source: SourceConnectionIdentity) => {
+      calls.failedManagedSources.push(source);
+      return true;
+    },
     handleSegment: (streamId: string, segmentIndex: number) => {
       calls.legacySegments.push({ streamId, segmentIndex });
       return { accepted: true };
     },
+    handleSegmentLoss: () => true,
     stopStream: async (streamId: string) => {
       calls.stops.push(streamId);
     },
@@ -249,6 +273,39 @@ describe('SRS managed lifecycle callbacks', () => {
       await new Promise((resolve) => setImmediate(resolve));
       assert.deepEqual(calls.deletes, ['DELETE http://srs.test:1985/api/v1/clients/client-a']);
     });
+  });
+
+  it('rejects a managed callback whose durable acceptance failed and retains its file', async () => {
+    const mediaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-managed-durability-'));
+    fs.mkdirSync(path.join(mediaRoot, 'video'), { recursive: true });
+    const segmentPath = path.join(mediaRoot, 'video', 'segment.ts');
+    fs.writeFileSync(segmentPath, 'managed-segment');
+
+    try {
+      await withManagedSrs(
+        () => true,
+        async (post, calls) => {
+          assert.equal(await post(callback('source-a')), 0);
+          assert.equal(
+            await post(
+              {
+                ...callback('source-a', 'on_hls'),
+                file: './objs/nginx/html/video/segment.ts',
+                seq_no: 5,
+                duration: 4,
+              },
+              'hls',
+            ),
+            1,
+          );
+          assert.equal(fs.existsSync(segmentPath), true);
+          assert.deepEqual(calls.failedManagedSources.map((source) => source.clientId), ['source-a']);
+        },
+        { mediaRoot, managedSegmentAccepted: false },
+      );
+    } finally {
+      fs.rmSync(mediaRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps managed ABR rungs alive when their source enters reconnect grace', async () => {

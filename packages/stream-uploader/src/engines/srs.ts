@@ -5,7 +5,14 @@ import path from 'path';
 import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
-import { AdminSession, MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, SourceConnectionIdentity } from '../types.js';
+import {
+  AdminSession,
+  MEDIA_TYPE_AUDIO,
+  MEDIA_TYPE_VIDEO,
+  MediaType,
+  REJECT_DURABILITY_FAILED,
+  SourceConnectionIdentity,
+} from '../types.js';
 import { AbrGuard, readAbrConfig } from '../utils/abrConfig.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, required } from '../utils/env.js';
@@ -899,13 +906,11 @@ export function resolveSegmentPath(mediaRootPath: string, file: string): string 
 /**
  * A segment SRS has finished writing.
  *
- * Every path answers `SRS_ACCEPT`, including the ones that drop the segment. Answering a rejection
- * would not redeliver it: SRS reads a rejected `on_hls` as permission to keep running and drop every
- * later segment of that stream silently, so refusing costs the rest of the broadcast rather than
- * buying a retry. What a dropped segment does need is to be accounted, or the manifest tells a viewer
- * the media either side of the hole is contiguous and nothing moves `segments_lost_total` or the
- * health signal built on it. `handleSegmentLoss` decides for itself whether the loss is attributable,
- * no-opping for a stream that is unknown or already draining.
+ * Legacy paths answer `SRS_ACCEPT`, including the ones that drop the segment. Answering a rejection
+ * does not redeliver it. SRS keeps the stream running and silently drops every later segment, so a
+ * managed durability failure rejects the callback and closes the source instead of pretending that
+ * retry is possible. Other dropped segments are accounted so manifests do not present a media hole
+ * as contiguous and the health signal can observe the loss.
  */
 function handleHls(
   req: Request,
@@ -999,6 +1004,14 @@ function handleHls(
       fs.rmSync(segmentPath, { force: true });
     } else {
       logger.warn(`[SRS] Segment ${payload.seq_no} not accepted for ${streamId}: ${result.reason}`);
+      if (result.reason === REJECT_DURABILITY_FAILED && (managedIdentity || managedRungSource)) {
+        streamOrchestrator.failManagedSource(
+          role.kind === 'rung' ? role.baseStreamId : streamId,
+          managedIdentity ?? (managedRungSource as SourceConnectionIdentity),
+        );
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
       streamOrchestrator.handleSegmentLoss(streamId, payload.seq_no, 1);
     }
 
@@ -1006,6 +1019,18 @@ function handleHls(
   } catch (error) {
     const msg = getErrorMessage(error);
     logger.error(`[SRS] HLS handler error: ${msg}`);
+    if (managedLifecycle) {
+      const payload = req.body as Partial<SrsHlsPayload>;
+      const key = connectionKey(payload as SrsHlsPayload);
+      const identity = key ? managedConnections.get(key) ?? managedRungConnections.get(key)?.source : undefined;
+      if (identity && typeof payload.app === 'string' && typeof payload.stream === 'string') {
+        const streamId = buildStreamId(payload.app, payload.stream);
+        const role = classifyLadderStream(payload as SrsHlsPayload, streamId, abr);
+        streamOrchestrator.failManagedSource(role.kind === 'rung' ? role.baseStreamId : streamId, identity);
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+    }
     srsResponse(res, SRS_ACCEPT);
   }
 }

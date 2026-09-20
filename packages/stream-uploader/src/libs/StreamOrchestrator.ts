@@ -27,6 +27,7 @@ import {
   RECOVERY_ENTRY_MISSING,
   RECOVERY_ENTRY_UNREADABLE,
   REJECT_DRAINING,
+  REJECT_DURABILITY_FAILED,
   REJECT_QUEUE_FULL,
   REJECT_STALE_SOURCE,
   REJECT_UNKNOWN_STREAM,
@@ -225,6 +226,8 @@ type ManagedReportEvent =
       readonly state: 'closed';
       readonly reason: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
     };
+
+type ManagedClosureReason = 'reconnect_timeout' | 'cancelled' | 'recovery_required';
 
 const PTS_MODULUS = 2 ** 33;
 const PTS_HALF_RANGE = PTS_MODULUS / 2;
@@ -900,6 +903,9 @@ export class StreamOrchestrator {
         return { accepted: false, reason: refusal };
       }
       const durable = this.persistManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
+      if (durable === REJECT_DURABILITY_FAILED) {
+        return { accepted: false, reason: durable };
+      }
       if (durable === null) {
         return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
       }
@@ -935,6 +941,9 @@ export class StreamOrchestrator {
       return { accepted: false, reason: refusal };
     }
     const durable = this.persistManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
+    if (durable === REJECT_DURABILITY_FAILED) {
+      return { accepted: false, reason: durable };
+    }
     if (durable === null) {
       return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
     }
@@ -1021,6 +1030,9 @@ export class StreamOrchestrator {
       return { accepted: false, reason: refusal };
     }
     const durable = this.persistManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
+    if (durable === REJECT_DURABILITY_FAILED) {
+      return { accepted: false, reason: durable };
+    }
     if (durable === null) {
       return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
     }
@@ -1062,7 +1074,7 @@ export class StreamOrchestrator {
     duration: number,
     data: Buffer,
     discontinuity: boolean,
-  ): ManagedMediaAcceptance | null | undefined {
+  ): ManagedMediaAcceptance | typeof REJECT_DURABILITY_FAILED | null | undefined {
     const store = this.config.managedMediaStore;
     if (!store) {
       return undefined;
@@ -1079,7 +1091,7 @@ export class StreamOrchestrator {
       return accepted;
     } catch (error) {
       this.logger.error(`[StreamOrchestrator] Failed to durably accept managed media ${streamId}:${sequence}:`, error);
-      return null;
+      return REJECT_DURABILITY_FAILED;
     }
   }
 
@@ -1509,10 +1521,28 @@ export class StreamOrchestrator {
     if (state !== expected || state.deadline === undefined || this.clock.now() < state.deadline) {
       return;
     }
-    const attached = state.current ?? state.closingSource;
+    this.finishManagedClosure(streamId, state, 'reconnect_timeout');
+  }
+
+  /** Fail a managed source closed when its callback could not cross the durable acceptance boundary. */
+  public failManagedSource(streamId: string, identity: SourceConnectionIdentity): boolean {
+    const state = this.managedSources.get(streamId);
+    const attached = state?.current ?? state?.candidate?.identity ?? state?.closingSource;
+    if (!state || state.record.state === 'closed' || !attached || !sameSource(attached, identity)) {
+      return false;
+    }
+    return this.finishManagedClosure(streamId, state, 'recovery_required');
+  }
+
+  private finishManagedClosure(
+    streamId: string,
+    state: ManagedSourceState,
+    reason: Exclude<ManagedClosureReason, 'cancelled'>,
+  ): boolean {
+    const attached = state.current ?? state.candidate?.identity ?? state.closingSource;
     state.closingSource = attached;
-    if (!this.persistManagedClosure(streamId, state, 'reconnect_timeout')) {
-      return;
+    if (!this.persistManagedClosure(streamId, state, reason)) {
+      return false;
     }
     if (attached) {
       this.managedSourceDisconnector?.(attached);
@@ -1524,12 +1554,13 @@ export class StreamOrchestrator {
     if (this.activeStreams.has(streamId)) {
       void this.stopStream(streamId, true);
     }
+    return true;
   }
 
   private persistManagedClosure(
     streamId: string,
     state: ManagedSourceState,
-    reason: 'reconnect_timeout' | 'cancelled',
+    reason: ManagedClosureReason,
   ): boolean {
     state.closingSource ??= state.current;
     const wallNow = this.wallClock();
@@ -1571,7 +1602,7 @@ export class StreamOrchestrator {
   private armManagedClosureRetry(
     streamId: string,
     state: ManagedSourceState,
-    reason: 'reconnect_timeout' | 'cancelled',
+    reason: ManagedClosureReason,
   ): void {
     if (state.closureRetry) {
       return;
@@ -1581,10 +1612,10 @@ export class StreamOrchestrator {
       if (this.managedSources.get(streamId) !== state || state.record.state === 'closed') {
         return;
       }
-      if (reason === 'reconnect_timeout') {
-        this.closeManagedSourceAtDeadline(streamId, state);
-      } else {
+      if (reason === 'cancelled') {
         void this.stopStream(streamId);
+      } else {
+        this.finishManagedClosure(streamId, state, reason);
       }
     }, MANAGED_HEARTBEAT_MS, { unref: true });
   }

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 
-import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
+import { ManagedMediaFileOps, ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import {
   MANAGED_RUN_LOADED,
   MANAGED_RUN_MISSING,
@@ -422,6 +422,67 @@ describe('managed SRS source reconnect foundation', () => {
       assert.equal(committed[0].reference, reference);
       assert.equal(store.readBytes(committed[0].token), null, 'raw bytes survived durable placement');
       assert.equal(store.readTrackState(ADMIN_SESSION.id, 2, STREAM_ID, null)?.segments[0].ref, reference);
+    } finally {
+      await orchestrator.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a durability failure when the raw callback cannot be flushed', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'managed-media-runtime-'));
+    const opened = new Map<number, string>();
+    const ops: ManagedMediaFileOps = {
+      mkdirSync: (target, options) => fs.mkdirSync(target, options),
+      existsSync: (target) => fs.existsSync(target),
+      readdirSync: (target) => fs.readdirSync(target),
+      readFileSync: (target) => fs.readFileSync(target),
+      openSync: (target, flags, mode) => {
+        const fd = fs.openSync(target, flags, mode);
+        opened.set(fd, target);
+        return fd;
+      },
+      writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+      fsyncSync: (fd) => {
+        if (opened.get(fd)?.endsWith('.bin.tmp')) {
+          throw new Error('injected raw byte flush failure');
+        }
+        fs.fsyncSync(fd);
+      },
+      closeSync: (fd) => {
+        opened.delete(fd);
+        fs.closeSync(fd);
+      },
+      renameSync: (from, to) => fs.renameSync(from, to),
+      rmSync: (target) => fs.rmSync(target, { force: true }),
+    };
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const orchestrator = makeManagedOrchestrator(
+      clock,
+      [],
+      [],
+      100,
+      MEDIA_TYPE_VIDEO,
+      new ManagedMediaStore(root, ops),
+      {},
+      runs,
+    );
+    const disconnected: SourceConnectionIdentity[] = [];
+    orchestrator.registerManagedSourceDisconnector((source) => disconnected.push(source));
+
+    try {
+      assert.equal(provision(orchestrator, SOURCE_A), true);
+      assert.deepEqual(media(orchestrator, SOURCE_A, 0), {
+        accepted: false,
+        reason: 'durability_failed',
+      });
+      assert.equal(orchestrator.failManagedSource(STREAM_ID, SOURCE_A), true);
+      assert.equal(runs.current(STREAM_ID)?.state, 'closed');
+      assert.deepEqual(disconnected, [SOURCE_A]);
+      assert.deepEqual(media(orchestrator, SOURCE_A, 0), {
+        accepted: false,
+        reason: 'stale_source',
+      });
     } finally {
       await orchestrator.cleanup();
       rmSync(root, { recursive: true, force: true });
