@@ -137,16 +137,104 @@ describe('ManagedMediaStore durability', () => {
     const record = recovered.listRun(ADMIN_STREAM_ID, 2)[0];
     assert.equal(record.status, 'committed');
     assert.equal(record.reference, 'a'.repeat(64));
-    assert.deepEqual(record.trackState, state());
+    assert.deepEqual(recovered.readTrackState(ADMIN_STREAM_ID, 2, STREAM_ID, '360p'), state());
     assert.equal(recovered.readBytes(record.token), null, 'committed media was offered for upload twice');
     assert.equal(recovered.accept(input(), Buffer.from('segment-a')).kind, 'duplicate');
   });
+
+  it('recovers an uploaded placement when the process dies before segment metadata commits', () => {
+    const root = tempRoot();
+    const store = new ManagedMediaStore(root, faultingOps('commit-metadata-replace'));
+    const accepted = store.accept(input(), Buffer.from('segment-a'));
+    assert.equal(accepted.kind, 'accepted');
+    if (accepted.kind !== 'accepted') {return;}
+
+    assert.throws(
+      () => store.commitUploaded(accepted.record.token, 'a'.repeat(64), state()),
+      /injected committed metadata replace failure/,
+    );
+
+    const recovered = new ManagedMediaStore(root);
+    assert.equal(recovered.listPending(ADMIN_STREAM_ID, 2).length, 0);
+    assert.equal(recovered.listRun(ADMIN_STREAM_ID, 2)[0].reference, 'a'.repeat(64));
+    assert.equal(recovered.readBytes(accepted.record.token), null);
+  });
+
+  it('loads run ordinals once instead of rescanning every segment on acceptance', () => {
+    const root = tempRoot();
+    let directoryReads = 0;
+    const store = new ManagedMediaStore(root, countingOps(() => directoryReads++));
+
+    for (let sequence = 0; sequence < 20; sequence++) {
+      assert.equal(store.accept(input({ sequence }), Buffer.from(`segment-${sequence}`)).kind, 'accepted');
+    }
+
+    assert.equal(directoryReads, 1);
+    assert.equal(new ManagedMediaStore(root).listRun(ADMIN_STREAM_ID, 2).at(-1)?.ordinal, 19);
+  });
+
+  it('keeps retained metadata roughly linear as cumulative track history grows', () => {
+    const root = tempRoot();
+    const store = new ManagedMediaStore(root);
+    const persist = (sequence: number): void => {
+      const accepted = store.accept(input({ sequence }), Buffer.from(`segment-${sequence}`));
+      assert.equal(accepted.kind, 'accepted');
+      if (accepted.kind !== 'accepted') {return;}
+      const reference = sequence.toString(16).padStart(64, '0');
+      store.commitUploaded(accepted.record.token, reference, cumulativeState(sequence + 1));
+    };
+
+    for (let sequence = 0; sequence < 20; sequence++) {persist(sequence);}
+    const bytesAtTwenty = retainedJsonBytes(root);
+    for (let sequence = 20; sequence < 40; sequence++) {persist(sequence);}
+    const bytesAtForty = retainedJsonBytes(root);
+
+    assert.ok(bytesAtForty < bytesAtTwenty * 2.4, `${bytesAtTwenty} bytes grew to ${bytesAtForty}`);
+  });
 });
 
+function cumulativeState(count: number): StreamState {
+  return {
+    ...state((count - 1).toString(16).padStart(64, '0')),
+    segments: Array.from({ length: count }, (_, sequence) => ({
+      index: sequence,
+      duration: 2,
+      ref: sequence.toString(16).padStart(64, '0'),
+      sequence,
+    })),
+  };
+}
+
+function retainedJsonBytes(root: string): number {
+  return fs
+    .readdirSync(root)
+    .filter((name) => name.endsWith('.json'))
+    .reduce((total, name) => total + fs.statSync(path.join(root, name)).size, 0);
+}
+
+function countingOps(onDirectoryRead: () => void): ManagedMediaFileOps {
+  return {
+    mkdirSync: (target, options) => fs.mkdirSync(target, options),
+    existsSync: (target) => fs.existsSync(target),
+    readdirSync: (target) => {
+      onDirectoryRead();
+      return fs.readdirSync(target);
+    },
+    readFileSync: (target) => fs.readFileSync(target),
+    openSync: (target, flags, mode) => fs.openSync(target, flags, mode),
+    writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+    fsyncSync: (fd) => fs.fsyncSync(fd),
+    closeSync: (fd) => fs.closeSync(fd),
+    renameSync: (from, to) => fs.renameSync(from, to),
+    rmSync: (target) => fs.rmSync(target, { force: true }),
+  };
+}
+
 function faultingOps(
-  fault: 'byte-file-flush' | 'metadata-replace' | 'directory-flush' | 'raw-cleanup',
+  fault: 'byte-file-flush' | 'metadata-replace' | 'directory-flush' | 'raw-cleanup' | 'commit-metadata-replace',
 ): ManagedMediaFileOps {
   const opened = new Map<number, string>();
+  let segmentMetadataReplaces = 0;
   return {
     mkdirSync: (target, options) => fs.mkdirSync(target, options),
     existsSync: (target) => fs.existsSync(target),
@@ -175,6 +263,10 @@ function faultingOps(
     renameSync: (from, to) => {
       if (fault === 'metadata-replace' && from.endsWith('.json.tmp')) {
         throw new Error('injected metadata replace failure');
+      }
+      if (fault === 'commit-metadata-replace' && /^[0-9a-f]{64}\.json\.tmp$/i.test(path.basename(from))) {
+        segmentMetadataReplaces++;
+        if (segmentMetadataReplaces === 2) {throw new Error('injected committed metadata replace failure');}
       }
       fs.renameSync(from, to);
     },

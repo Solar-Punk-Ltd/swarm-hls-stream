@@ -219,7 +219,7 @@ describe('ManagedCheckpointStore', () => {
 
   it('does not acknowledge a checkpoint whose durable save fails', () => {
     const root = tempRoot();
-    const store = new ManagedCheckpointStore(root, faultingOps(), () => CHECKPOINT_IDS[0]);
+    const store = new ManagedCheckpointStore(root, faultingOps('checkpoint'), () => CHECKPOINT_IDS[0]);
 
     assert.throws(
       () =>
@@ -233,9 +233,91 @@ describe('ManagedCheckpointStore', () => {
       /injected checkpoint flush failure/,
     );
   });
+
+  it('does not acknowledge a new run until its durable lookup index is flushed', () => {
+    const root = tempRoot();
+    const input = {
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video' as const,
+      expectedRenditions: [],
+    };
+    const store = new ManagedCheckpointStore(root, faultingOps('index'), () => CHECKPOINT_IDS[0]);
+
+    assert.throws(() => store.createRun(input), /injected run index flush failure/);
+    assert.equal(
+      new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[1]).createRun(input).checkpointReference,
+      CHECKPOINT_IDS[0],
+      'a retry found the unacknowledged checkpoint instead of allocating another one',
+    );
+  });
+
+  it('keeps a completed checkpoint immutable under delayed finalization callbacks', () => {
+    const root = tempRoot();
+    const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
+    const checkpoint = store.createRun({
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [
+        { name: '360p', topic: RUNG_TOPIC, width: 640, height: 360, bandwidth: 800_000, avgBandwidth: 700_000 },
+      ],
+    });
+    const stateA = trackState(1, undefined, REFERENCES[0]);
+    const trackA = finalized(1, stateA, REFERENCES[1]);
+    store.saveTrack(checkpoint.checkpointReference, trackA);
+    const recording = store.complete(checkpoint.checkpointReference, {
+      topic: TOPIC,
+      index: 11,
+      reference: REFERENCES[2],
+      duration: 2,
+    });
+    const sealedBytes = fs.readFileSync(path.join(root, `${checkpoint.checkpointReference}.json`));
+
+    assert.equal(store.saveTrack(checkpoint.checkpointReference, trackA).status, 'complete');
+    assert.deepEqual(
+      store.complete(checkpoint.checkpointReference, recording.master),
+      recording,
+      'an exact completion retry returns the sealed result',
+    );
+    assert.throws(
+      () =>
+        store.saveTrack(
+          checkpoint.checkpointReference,
+          finalized(2, trackState(2, stateA, REFERENCES[3]), REFERENCES[4]),
+        ),
+      /complete/i,
+    );
+    assert.throws(
+      () => store.complete(checkpoint.checkpointReference, { ...recording.master, reference: REFERENCES[4] }),
+      /complete/i,
+    );
+    assert.deepEqual(fs.readFileSync(path.join(root, `${checkpoint.checkpointReference}.json`)), sealedBytes);
+  });
+
+  it('refuses to allocate fresh state when a known run checkpoint is corrupt', () => {
+    const root = tempRoot();
+    const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
+    const input = {
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video' as const,
+      expectedRenditions: [],
+    };
+    const checkpoint = store.createRun(input);
+    fs.writeFileSync(path.join(root, `${checkpoint.checkpointReference}.json`), '{broken');
+
+    assert.throws(
+      () => new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[1]).createRun(input),
+      /missing or unreadable|corrupt/i,
+    );
+  });
 });
 
-function faultingOps(): ManagedCheckpointFileOps {
+function faultingOps(fault: 'checkpoint' | 'index'): ManagedCheckpointFileOps {
   const opened = new Map<number, string>();
   return {
     mkdirSync: (target, options) => fs.mkdirSync(target, options),
@@ -250,7 +332,12 @@ function faultingOps(): ManagedCheckpointFileOps {
     writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
     fsyncSync: (fd) => {
       const target = opened.get(fd) ?? '';
-      if (target.endsWith('.json.tmp')) {throw new Error('injected checkpoint flush failure');}
+      if (fault === 'checkpoint' && target.endsWith('.json.tmp')) {
+        throw new Error('injected checkpoint flush failure');
+      }
+      if (fault === 'index' && target.endsWith('.index.tmp')) {
+        throw new Error('injected run index flush failure');
+      }
       fs.fsyncSync(fd);
     },
     closeSync: (fd) => {

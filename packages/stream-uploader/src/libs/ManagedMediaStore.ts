@@ -23,7 +23,17 @@ export interface ManagedMediaRecord extends ManagedMediaInput {
   readonly byteLength: number;
   readonly status: 'pending' | 'committed';
   readonly reference?: string;
-  readonly trackState?: StreamState;
+}
+
+export interface ManagedTrackJournal {
+  readonly lifecycleVersion: 1;
+  readonly adminStreamId: string;
+  readonly runNumber: number;
+  readonly streamId: string;
+  readonly rendition: string | null;
+  readonly lastToken: string;
+  readonly lastReference: string;
+  readonly state: StreamState;
 }
 
 export type ManagedMediaAcceptance =
@@ -135,7 +145,27 @@ function isRecord(value: unknown): value is ManagedMediaRecord {
     nonNegativeInteger(record.byteLength) &&
     (record.status === 'pending' || record.status === 'committed') &&
     (record.status === 'pending' ||
-      (typeof record.reference === 'string' && HEX_REFERENCE.test(record.reference) && isStreamState(record.trackState)))
+      (typeof record.reference === 'string' && HEX_REFERENCE.test(record.reference)))
+  );
+}
+
+function isTrackJournal(value: unknown): value is ManagedTrackJournal {
+  if (!value || typeof value !== 'object') {return false;}
+  const journal = value as Partial<ManagedTrackJournal>;
+  return (
+    journal.lifecycleVersion === 1 &&
+    typeof journal.adminStreamId === 'string' &&
+    UUID.test(journal.adminStreamId) &&
+    positiveInteger(journal.runNumber) &&
+    typeof journal.streamId === 'string' &&
+    journal.streamId.length > 0 &&
+    (journal.rendition === null || (typeof journal.rendition === 'string' && journal.rendition.length > 0)) &&
+    typeof journal.lastToken === 'string' &&
+    HEX_REFERENCE.test(journal.lastToken) &&
+    typeof journal.lastReference === 'string' &&
+    HEX_REFERENCE.test(journal.lastReference) &&
+    isStreamState(journal.state) &&
+    journal.state.streamId === journal.streamId
   );
 }
 
@@ -165,6 +195,8 @@ function sameAcceptedPayload(record: ManagedMediaRecord, input: ManagedMediaInpu
 
 /** Durable journal for media callbacks accepted from lifecycle-v1 sources. */
 export class ManagedMediaStore {
+  private readonly nextOrdinals = new Map<string, number>();
+
   constructor(
     private readonly stateDir: string,
     private readonly fileOps: ManagedMediaFileOps = nodeFileOps,
@@ -173,6 +205,7 @@ export class ManagedMediaStore {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
       this.flushDirectory(path.dirname(stateDir));
     }
+    this.loadOrdinals();
   }
 
   public accept(input: ManagedMediaInput, data: Uint8Array): ManagedMediaAcceptance {
@@ -182,20 +215,28 @@ export class ManagedMediaStore {
     const token = digest(Buffer.from(identityJson(input), 'utf8'));
     const existing = this.readRecord(token);
     if (existing) {
+      this.observeOrdinal(existing);
       this.flushDirectory(this.stateDir);
       return sameAcceptedPayload(existing, input, data) ? { kind: 'duplicate', record: existing } : { kind: 'conflict' };
     }
 
+    const runKey = this.runKey(input.adminStreamId, input.runNumber);
     const record: ManagedMediaRecord = {
       ...input,
       token,
-      ordinal: this.nextOrdinal(input.adminStreamId, input.runNumber),
+      ordinal: this.nextOrdinals.get(runKey) ?? 0,
       digest: digest(data),
       byteLength: data.byteLength,
       status: 'pending',
     };
     this.replaceDurably(this.bytesPath(token), data);
-    this.replaceDurably(this.metadataPath(token), JSON.stringify(record));
+    try {
+      this.replaceDurably(this.metadataPath(token), JSON.stringify(record));
+      this.nextOrdinals.set(runKey, record.ordinal + 1);
+    } catch (error) {
+      this.loadOrdinals();
+      throw error;
+    }
     return { kind: 'accepted', record };
   }
 
@@ -211,22 +252,31 @@ export class ManagedMediaStore {
       throw new Error('Refused to commit managed media without its placed segment history');
     }
     if (record.status === 'committed') {
-      if (record.reference !== reference || JSON.stringify(record.trackState) !== JSON.stringify(trackState)) {
+      if (record.reference !== reference) {
         throw new Error('Refused conflicting managed media history');
       }
       this.flushDirectory(this.stateDir);
       return record;
     }
 
-    const committed: ManagedMediaRecord = { ...record, status: 'committed', reference, trackState };
-    this.replaceDurably(this.metadataPath(token), JSON.stringify(committed));
-    try {
-      this.fileOps.rmSync(this.bytesPath(token));
-      this.flushDirectory(this.stateDir);
-    } catch {
-      // The durable committed record is sufficient to suppress a second upload. Raw cleanup is safe
-      // to repeat after restart and must never roll back history that already reached disk.
+    const previousJournal = this.readTrackJournal(record);
+    if (previousJournal && !isPrefix(previousJournal.state.segments, trackState.segments)) {
+      throw new Error(`Managed track ${record.streamId} does not preserve its cumulative segment history`);
     }
+    const journal: ManagedTrackJournal = {
+      lifecycleVersion: 1,
+      adminStreamId: record.adminStreamId,
+      runNumber: record.runNumber,
+      streamId: record.streamId,
+      rendition: record.rendition,
+      lastToken: record.token,
+      lastReference: reference,
+      state: trackState,
+    };
+    this.replaceDurably(this.trackPath(record), JSON.stringify(journal));
+    const committed: ManagedMediaRecord = { ...record, status: 'committed', reference };
+    this.replaceDurably(this.metadataPath(token), JSON.stringify(committed));
+    this.removeRaw(token);
     return committed;
   }
 
@@ -251,15 +301,20 @@ export class ManagedMediaStore {
   public listRun(adminStreamId: string, runNumber: number): ManagedMediaRecord[] {
     return this.fileOps
       .readdirSync(this.stateDir)
-      .filter((name) => name.endsWith('.json'))
+      .filter((name) => /^[0-9a-f]{64}\.json$/i.test(name))
       .map((name) => this.requireRecord(name.slice(0, -'.json'.length)))
       .filter((record) => record.adminStreamId === adminStreamId && record.runNumber === runNumber)
       .sort((left, right) => left.ordinal - right.ordinal);
   }
 
-  private nextOrdinal(adminStreamId: string, runNumber: number): number {
-    const records = this.listRun(adminStreamId, runNumber);
-    return records.length === 0 ? 0 : Math.max(...records.map((record) => record.ordinal)) + 1;
+  public readTrackState(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+  ): StreamState | null {
+    const journal = this.readTrackJournal({ adminStreamId, runNumber, streamId, rendition });
+    return journal?.state ?? null;
   }
 
   private requireRecord(token: string): ManagedMediaRecord {
@@ -273,9 +328,75 @@ export class ManagedMediaStore {
     if (!this.fileOps.existsSync(filePath)) {return null;}
     try {
       const value: unknown = JSON.parse(this.fileOps.readFileSync(filePath).toString('utf8'));
-      return isRecord(value) && value.token === token ? value : null;
+      if (!isRecord(value) || value.token !== token) {return null;}
+      return this.reconcileCommitted(value);
     } catch {
       return null;
+    }
+  }
+
+  private reconcileCommitted(record: ManagedMediaRecord): ManagedMediaRecord {
+    if (record.status === 'committed') {return record;}
+    const journal = this.readTrackJournal(record);
+    if (journal?.lastToken !== record.token) {return record;}
+    const placed = journal.state.segments.some(
+      (segment) => segment.index === record.sequence && segment.ref === journal.lastReference,
+    );
+    if (!placed) {return record;}
+    const committed: ManagedMediaRecord = {
+      ...record,
+      status: 'committed',
+      reference: journal.lastReference,
+    };
+    this.replaceDurably(this.metadataPath(record.token), JSON.stringify(committed));
+    this.removeRaw(committed.token);
+    return committed;
+  }
+
+  private loadOrdinals(): void {
+    this.nextOrdinals.clear();
+    for (const name of this.fileOps.readdirSync(this.stateDir)) {
+      if (!/^[0-9a-f]{64}\.json$/i.test(name)) {continue;}
+      const token = name.slice(0, -'.json'.length);
+      const record = this.readRecord(token);
+      if (!record) {throw new Error(`Managed media record ${token} is missing or unreadable`);}
+      this.observeOrdinal(record);
+    }
+  }
+
+  private observeOrdinal(record: ManagedMediaRecord): void {
+    const key = this.runKey(record.adminStreamId, record.runNumber);
+    this.nextOrdinals.set(key, Math.max(this.nextOrdinals.get(key) ?? 0, record.ordinal + 1));
+  }
+
+  private readTrackJournal(identity: {
+    adminStreamId: string;
+    runNumber: number;
+    streamId: string;
+    rendition: string | null;
+  }): ManagedTrackJournal | null {
+    const filePath = this.trackPath(identity);
+    if (!this.fileOps.existsSync(filePath)) {return null;}
+    try {
+      const value: unknown = JSON.parse(this.fileOps.readFileSync(filePath).toString('utf8'));
+      return isTrackJournal(value) &&
+        value.adminStreamId === identity.adminStreamId &&
+        value.runNumber === identity.runNumber &&
+        value.streamId === identity.streamId &&
+        value.rendition === identity.rendition
+        ? value
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private removeRaw(token: string): void {
+    try {
+      this.fileOps.rmSync(this.bytesPath(token));
+      this.flushDirectory(this.stateDir);
+    } catch {
+      // A committed record and track journal suppress a second upload. Raw cleanup is repeatable.
     }
   }
 
@@ -308,4 +429,32 @@ export class ManagedMediaStore {
   private metadataPath(token: string): string {
     return path.join(this.stateDir, `${token}.json`);
   }
+
+  private trackPath(identity: {
+    adminStreamId: string;
+    runNumber: number;
+    streamId: string;
+    rendition: string | null;
+  }): string {
+    const key = digest(
+      Buffer.from(
+        JSON.stringify({
+          adminStreamId: identity.adminStreamId,
+          runNumber: identity.runNumber,
+          streamId: identity.streamId,
+          rendition: identity.rendition,
+        }),
+        'utf8',
+      ),
+    );
+    return path.join(this.stateDir, `track-${key}.json`);
+  }
+
+  private runKey(adminStreamId: string, runNumber: number): string {
+    return `${adminStreamId}\u0000${runNumber}`;
+  }
+}
+
+function isPrefix(previous: readonly unknown[], next: readonly unknown[]): boolean {
+  return previous.length <= next.length && previous.every((value, index) => JSON.stringify(value) === JSON.stringify(next[index]));
 }

@@ -115,6 +115,13 @@ interface CreateManagedRun {
   readonly expectedRenditions: readonly ManagedExpectedRendition[];
 }
 
+interface ManagedRunIndex {
+  readonly lifecycleVersion: 1;
+  readonly adminStreamId: string;
+  readonly runNumber: number;
+  readonly checkpointReference: string;
+}
+
 function safeNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
@@ -261,6 +268,7 @@ export class ManagedCheckpointStore {
       tracks: [],
     };
     this.save(record);
+    this.saveRunIndex(record);
     return record;
   }
 
@@ -309,6 +317,7 @@ export class ManagedCheckpointStore {
       })),
     };
     this.save(record);
+    this.saveRunIndex(record);
     return record;
   }
 
@@ -317,6 +326,10 @@ export class ManagedCheckpointStore {
     this.validateTrack(record, track);
     const key = track.rendition ?? '';
     const previous = record.tracks.find((candidate) => (candidate.rendition ?? '') === key);
+    if (record.status === 'complete') {
+      if (previous && JSON.stringify(previous) === JSON.stringify(track)) {return record;}
+      throw new Error('Managed checkpoint is complete and cannot accept another track finalization');
+    }
     if (previous && !isPrefix(previous.state.segments, track.state.segments)) {
       throw new Error(`Track ${track.streamId} does not preserve its cumulative segment history`);
     }
@@ -331,6 +344,12 @@ export class ManagedCheckpointStore {
     master: ManagedImmutableMediaReference,
   ): ManagedCompletedRecording {
     const record = this.require(checkpointReference);
+    if (record.status === 'complete') {
+      if (record.completedRecording && JSON.stringify(record.completedRecording.master) === JSON.stringify(master)) {
+        return record.completedRecording;
+      }
+      throw new Error('Managed checkpoint is complete and cannot be finalized differently');
+    }
     if (!validMediaReference(master) || master.topic !== record.topic) {
       throw new Error('Managed recording master does not match its stable topic');
     }
@@ -373,10 +392,27 @@ export class ManagedCheckpointStore {
   }
 
   public findRun(adminStreamId: string, runNumber: number): ManagedCheckpointRecord | null {
+    const indexPath = this.runIndexPath(adminStreamId, runNumber);
+    if (this.fileOps.existsSync(indexPath)) {
+      const index = this.readRunIndex(indexPath);
+      if (!index || index.adminStreamId !== adminStreamId || index.runNumber !== runNumber) {
+        throw new Error(`Managed checkpoint index for ${adminStreamId} run ${runNumber} is corrupt`);
+      }
+      const record = this.read(index.checkpointReference);
+      if (!record || record.adminStreamId !== adminStreamId || record.runNumber !== runNumber) {
+        throw new Error(`Managed checkpoint ${index.checkpointReference} is missing or unreadable`);
+      }
+      return record;
+    }
     for (const name of this.fileOps.readdirSync(this.stateDir)) {
-      if (!name.endsWith('.json')) {continue;}
-      const record = this.read(name.slice(0, -'.json'.length));
-      if (record?.adminStreamId === adminStreamId && record.runNumber === runNumber) {return record;}
+      const match = /^([0-9a-f-]{36})\.json$/i.exec(name);
+      if (!match) {continue;}
+      const record = this.read(match[1]);
+      if (!record) {throw new Error(`Managed checkpoint ${match[1]} is missing or unreadable`);}
+      if (record.adminStreamId === adminStreamId && record.runNumber === runNumber) {
+        this.saveRunIndex(record);
+        return record;
+      }
     }
     return null;
   }
@@ -455,6 +491,45 @@ export class ManagedCheckpointStore {
     this.flushDirectory(this.stateDir);
   }
 
+  private saveRunIndex(record: ManagedCheckpointRecord): void {
+    const index: ManagedRunIndex = {
+      lifecycleVersion: 1,
+      adminStreamId: record.adminStreamId,
+      runNumber: record.runNumber,
+      checkpointReference: record.checkpointReference,
+    };
+    this.replaceDurably(this.runIndexPath(record.adminStreamId, record.runNumber), JSON.stringify(index));
+  }
+
+  private readRunIndex(filePath: string): ManagedRunIndex | null {
+    try {
+      const value = JSON.parse(this.fileOps.readFileSync(filePath).toString('utf8')) as Partial<ManagedRunIndex>;
+      return value.lifecycleVersion === 1 &&
+        typeof value.adminStreamId === 'string' &&
+        UUID.test(value.adminStreamId) &&
+        safePositiveInteger(value.runNumber) &&
+        typeof value.checkpointReference === 'string' &&
+        UUID.test(value.checkpointReference)
+        ? (value as ManagedRunIndex)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private replaceDurably(filePath: string, data: string): void {
+    const tmpPath = `${filePath}.tmp`;
+    const file = this.fileOps.openSync(tmpPath, 'w', 0o600);
+    try {
+      this.fileOps.writeFileSync(file, data);
+      this.fileOps.fsyncSync(file);
+    } finally {
+      this.fileOps.closeSync(file);
+    }
+    this.fileOps.renameSync(tmpPath, filePath);
+    this.flushDirectory(this.stateDir);
+  }
+
   private flushDirectory(directoryPath: string): void {
     const directory = this.fileOps.openSync(directoryPath, 'r');
     try {
@@ -466,6 +541,11 @@ export class ManagedCheckpointStore {
 
   private filePath(checkpointReference: string): string {
     return path.join(this.stateDir, `${checkpointReference}.json`);
+  }
+
+  private runIndexPath(adminStreamId: string, runNumber: number): string {
+    const key = crypto.createHash('sha256').update(`${adminStreamId}\u0000${runNumber}`).digest('hex');
+    return path.join(this.stateDir, `run-${key}.index`);
   }
 }
 
