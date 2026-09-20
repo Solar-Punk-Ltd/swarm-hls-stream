@@ -47,7 +47,9 @@ class RecordingCommands implements BoundedCommand {
 
   async run(file: string, args: readonly string[]): Promise<CommandResult> {
     this.calls.push({ file, args: [...args] });
-    if (args[0] === 'image' && args[1] === 'inspect') return { stdout: `${IMAGE_ID}\n`, stderr: '' };
+    if (args[0] === 'image' && args[1] === 'inspect') {
+      return { stdout: `${IMAGE_ID}\n`, stderr: '' };
+    }
     if (args[0] === 'network' && args[1] === 'create') {
       const id = `network-${this.nextId++}`;
       this.inspections.set(id, {
@@ -79,7 +81,9 @@ class RecordingCommands implements BoundedCommand {
     }
     if (args[1] === 'inspect') {
       const inspection = structuredClone(this.inspections.get(String(args.at(-1))));
-      if (this.wrongContainerLimits && inspection && 'nanoCpus' in inspection) inspection.nanoCpus = 0;
+      if (this.wrongContainerLimits && inspection && 'nanoCpus' in inspection) {
+        inspection.nanoCpus = 0;
+      }
       return { stdout: JSON.stringify(inspection), stderr: '' };
     }
     throw new Error(`unexpected command ${args.join(' ')}`);
@@ -88,7 +92,9 @@ class RecordingCommands implements BoundedCommand {
   private labels(args: readonly string[]): Record<string, string> {
     const labels: Record<string, string> = {};
     for (let index = 0; index < args.length; index += 1) {
-      if (args[index] !== '--label') continue;
+      if (args[index] !== '--label') {
+        continue;
+      }
       const [key, value] = String(args[index + 1]).split('=', 2);
       labels[key] = value;
     }
@@ -165,12 +171,7 @@ describe('continuation fixture Docker adapter', () => {
     const creates = commands.calls.filter(({ args }) => args[0] === 'create');
     assert.equal(creates.length, 2);
     for (const { args } of creates) {
-      assert.deepEqual(args.slice(-4), [
-        IMAGE_ID,
-        'node',
-        '-e',
-        'setInterval(() => undefined, 2147483647)',
-      ]);
+      assert.deepEqual(args.slice(-4), [IMAGE_ID, 'node', '-e', 'setInterval(() => undefined, 2147483647)']);
     }
   });
 

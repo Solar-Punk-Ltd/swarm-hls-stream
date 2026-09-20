@@ -4,9 +4,9 @@ import { promisify } from 'node:util';
 import {
   type ContainerPlan,
   type ContainerResourceLimits,
-  FixtureRefusal,
   type FixtureDocker,
   type FixturePlan,
+  FixtureRefusal,
   type FixtureResourcePlan,
   type InspectedResource,
   type ResourceKind,
@@ -16,6 +16,7 @@ const execFileAsync = promisify(execFile);
 const DOCKER_TIMEOUT_MS = 30_000;
 const DOCKER_OUTPUT_BYTES = 256 * 1024;
 const SAFE_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
+const COMPANION_IDLE_COMMAND = ['node', '-e', 'setInterval(() => undefined, 2147483647)'] as const;
 
 export interface CommandResult {
   stdout: string;
@@ -133,7 +134,9 @@ function parseInspection(kind: ResourceKind, stdout: string): InspectedResource 
 
 function outputId(stdout: string): string {
   const value = stdout.trim();
-  if (!SAFE_ID.test(value)) throw new FixtureRefusal('Docker returned an invalid resource identity');
+  if (!SAFE_ID.test(value)) {
+    throw new FixtureRefusal('Docker returned an invalid resource identity');
+  }
   return value;
 }
 
@@ -151,7 +154,9 @@ export class DockerCliFixture implements FixtureDocker {
         : [kind, 'ls', '--quiet', '--filter', `name=^${name}$`];
     const result = await this.invoke(`${kind} lookup`, args);
     const ids = result.stdout.trim() === '' ? [] : result.stdout.trim().split(/\s+/);
-    if (ids.length > 1) throw new FixtureRefusal(`Docker returned multiple ${kind} objects named ${name}`);
+    if (ids.length > 1) {
+      throw new FixtureRefusal(`Docker returned multiple ${kind} objects named ${name}`);
+    }
     return ids[0] ? this.inspect(kind, outputId(ids[0])) : null;
   }
 
@@ -176,8 +181,12 @@ export class DockerCliFixture implements FixtureDocker {
       const expectedImageId = await this.resolveImageId(resource.image);
       result = await this.invoke('container create', this.containerCreateArgs(resource));
       const created = await this.inspect(kind, outputId(result.stdout));
-      if (!created) throw new FixtureRefusal(`Docker did not retain the created ${name}`);
-      if (created.name !== name) throw new FixtureRefusal(`Docker created ${created.name} instead of ${name}`);
+      if (!created) {
+        throw new FixtureRefusal(`Docker did not retain the created ${name}`);
+      }
+      if (created.name !== name) {
+        throw new FixtureRefusal(`Docker created ${created.name} instead of ${name}`);
+      }
       if (created.imageId !== expectedImageId) {
         throw new FixtureRefusal(`Docker did not create ${name} from its planned image`);
       }
@@ -187,8 +196,12 @@ export class DockerCliFixture implements FixtureDocker {
       return created;
     }
     const created = await this.inspect(kind, outputId(result.stdout));
-    if (!created) throw new FixtureRefusal(`Docker did not retain the created ${name}`);
-    if (created.name !== name) throw new FixtureRefusal(`Docker created ${created.name} instead of ${name}`);
+    if (!created) {
+      throw new FixtureRefusal(`Docker did not retain the created ${name}`);
+    }
+    if (created.name !== name) {
+      throw new FixtureRefusal(`Docker created ${created.name} instead of ${name}`);
+    }
     return created;
   }
 
@@ -232,6 +245,7 @@ export class DockerCliFixture implements FixtureDocker {
       ...labelsArgs(resource.labels),
       ...(binding ? ['--publish', `${binding.host}:${binding.hostPort}:${binding.containerPort}`] : []),
       resource.image,
+      ...(['browser', 'media-sender'].includes(resource.role) ? COMPANION_IDLE_COMMAND : []),
     ];
   }
 
@@ -254,6 +268,8 @@ export class DockerCliFixture implements FixtureDocker {
 }
 
 function checkedId(id: string): string {
-  if (!SAFE_ID.test(id)) throw new FixtureRefusal('Docker resource identity is invalid');
+  if (!SAFE_ID.test(id)) {
+    throw new FixtureRefusal('Docker resource identity is invalid');
+  }
   return id;
 }
