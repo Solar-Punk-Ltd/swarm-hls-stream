@@ -119,6 +119,10 @@ export class NodeInteractiveProcessLauncher implements InteractiveProcessLaunche
     child.stderr.on('data', collect(stderr));
     child.stdin.on('error', () => {});
     child.stdin.end(input.stdin);
+    const closed = new Promise<void>((resolve) => {
+      child.once('error', () => resolve());
+      child.once('close', () => resolve());
+    });
     const completion = new Promise<MediaScenarioProcessResult>((resolve, reject) => {
       child.on('error', () => reject(new FixtureRefusal('media process could not start')));
       child.on('close', (code, signal) => {
@@ -135,6 +139,7 @@ export class NodeInteractiveProcessLauncher implements InteractiveProcessLaunche
         });
       });
     });
+    void completion.catch(() => undefined);
     return {
       completion,
       stopClient: async () => {
@@ -142,6 +147,7 @@ export class NodeInteractiveProcessLauncher implements InteractiveProcessLaunche
           stopped = true;
           child.kill('SIGKILL');
         }
+        await closed;
       },
     };
   }

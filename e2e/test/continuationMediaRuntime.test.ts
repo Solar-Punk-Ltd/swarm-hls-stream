@@ -60,6 +60,27 @@ describe('continuation media runtime adapters', () => {
     }
   });
 
+  it('waits for the real child to close after stopping the client', async () => {
+    const launcher = new NodeInteractiveProcessLauncher();
+    const handle = await launcher.start({
+      file: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1_000)'],
+      stdin: '',
+      timeoutMs: 5_000,
+      maxOutputBytes: 1024,
+    });
+    let settled = false;
+    void handle.completion.then(() => {
+      settled = true;
+    });
+
+    await handle.stopClient();
+
+    assert.equal(settled, true);
+    const result = await handle.completion;
+    assert.equal(result.signal, 'SIGKILL');
+  });
+
   it('routes owner auth in process memory and bounds the loopback response', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const subject = new LoopbackMediaScenarioFetch({
