@@ -88,6 +88,46 @@ function canonicalTrackKey(track: MediaFormatTrack): string {
   return JSON.stringify(track);
 }
 
+export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFingerprint {
+  if (!value || typeof value !== 'object') {return false;}
+  const fingerprint = value as Partial<MediaFormatFingerprint>;
+  if (fingerprint.version !== 1 || fingerprint.container !== 'mpegts' || !Array.isArray(fingerprint.tracks)) {
+    return false;
+  }
+  const normalized = mediaFormatFingerprintFromFfprobe({
+    streams: fingerprint.tracks.map((track) =>
+      track.kind === 'video'
+        ? {
+            codec_type: 'video',
+            codec_name: track.codec,
+            profile: track.profile,
+            level: track.level,
+            width: track.width,
+            height: track.height,
+            pix_fmt: track.pixelFormat,
+            chroma_location: track.chromaLocation,
+            bits_per_raw_sample: track.bitsPerRawSample,
+          }
+        : {
+            codec_type: 'audio',
+            codec_name: track.codec,
+            profile: track.profile,
+            sample_rate: track.sampleRate,
+            channels: track.channels,
+            channel_layout: track.channelLayout,
+          },
+    ),
+  });
+  return normalized !== null && JSON.stringify(normalized) === JSON.stringify(value);
+}
+
+export function sameMediaFormatFingerprint(
+  left: MediaFormatFingerprint,
+  right: MediaFormatFingerprint,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 /** Normalize ffprobe's loose JSON into the exact compatibility fields persisted by managed runs. */
 export function mediaFormatFingerprintFromFfprobe(value: unknown): MediaFormatFingerprint | null {
   if (!value || typeof value !== 'object' || !Array.isArray((value as { streams?: unknown }).streams)) {
