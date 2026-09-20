@@ -1,9 +1,4 @@
-import {
-  type CompletedRecording,
-  type MediaType,
-  type Rendition,
-  type Stream,
-} from '@/types/stream';
+import { type CompletedRecording, type MediaType, type Rendition, type Stream } from '@/types/stream';
 
 export interface PlaybackRoute {
   owner: string;
@@ -14,12 +9,16 @@ export interface PlaybackRoute {
 export interface PlaybackInputs extends PlaybackRoute {
   kind: 'live';
   session: number;
+  runNumber: number | undefined;
   renditions: Rendition[] | undefined;
+  /** The completed bytes that close this selected live run without remounting its player. */
+  pinnedRecording: CompletedRecording | undefined;
 }
 
 export interface ReplayPlaybackInputs extends PlaybackRoute {
   kind: 'replay';
   session: number;
+  runNumber: number;
   completedRecording: CompletedRecording;
   renditions: undefined;
 }
@@ -35,7 +34,9 @@ function copyCompletedRecording(recording: CompletedRecording): CompletedRecordi
   };
 }
 
-function hasCompletedRecording(stream: Stream | undefined): stream is Stream & { completedRecording: CompletedRecording } {
+function hasCompletedRecording(
+  stream: Stream | undefined,
+): stream is Stream & { completedRecording: CompletedRecording } {
   const recording = stream?.completedRecording;
   return (
     recording !== undefined &&
@@ -69,13 +70,21 @@ export class StreamPlaybackSelection {
   select(stream: Stream | undefined): SelectedPlayback {
     if (this.selected === null) {
       this.selected = isCurrentRun(stream) || !hasCompletedRecording(stream) ? this.live(stream) : this.replay(stream);
+    } else if (
+      this.selected.kind === 'live' &&
+      this.selected.runNumber !== undefined &&
+      hasCompletedRecording(stream) &&
+      stream.completedRecording.runNumber === this.selected.runNumber &&
+      this.selected.pinnedRecording === undefined
+    ) {
+      this.selected = { ...this.selected, pinnedRecording: copyCompletedRecording(stream.completedRecording) };
     }
 
     return this.selected;
   }
 
   watchLive(stream: Stream | undefined): SelectedPlayback {
-    if (isCurrentRun(stream) && this.selected?.kind !== 'live') {
+    if (isCurrentRun(stream) && this.selected?.runNumber !== stream.lifecycle.runNumber) {
       this.selected = this.live(stream);
     }
     return this.selected ?? this.select(stream);
@@ -93,10 +102,12 @@ export class StreamPlaybackSelection {
       ...this.route,
       kind: 'live',
       session: this.nextSession++,
+      runNumber: isCurrentRun(stream) ? stream?.lifecycle?.runNumber : undefined,
       // Catalogue objects are replaced and may also be updated in place by a caller. Copy each
       // rung, rather than retaining only the array identity, so the mounted player keeps the
       // master/rung inputs it actually started with.
       renditions: stream?.renditions?.map((rendition) => ({ ...rendition })),
+      pinnedRecording: undefined,
     };
   }
 
@@ -105,6 +116,7 @@ export class StreamPlaybackSelection {
       ...this.route,
       kind: 'replay',
       session: this.nextSession++,
+      runNumber: stream.completedRecording.runNumber,
       completedRecording: copyCompletedRecording(stream.completedRecording),
       renditions: undefined,
     };

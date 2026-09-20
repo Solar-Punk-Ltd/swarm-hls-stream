@@ -1,7 +1,7 @@
-import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import assert from 'node:assert/strict';
 import { beforeEach, describe, it, vi } from 'vitest';
 
 import { StreamPlaybackSelection } from '@/pages/StreamWatcher/StreamPlaybackSelection';
@@ -127,7 +127,11 @@ describe('StreamWatcher playback selection', () => {
   it('waits for the first catalogue lookup, then captures the ABR inputs it mounts with', () => {
     const selection = new StreamPlaybackSelection(ROUTE);
 
-    assert.equal(selection.current, null, 'the player would start without the ladder during the initial catalogue read');
+    assert.equal(
+      selection.current,
+      null,
+      'the player would start without the ladder during the initial catalogue read',
+    );
 
     const mounted = selection.select(stream([rendition('archived-rung', 7)]));
 
@@ -176,6 +180,13 @@ describe('StreamWatcher playback selection', () => {
     assert.equal(playback.completedRecording.renditions[0].reference, 'archived-rung-reference');
   });
 
+  it('keeps the completed snapshot route for audio playback', () => {
+    const selection = new StreamPlaybackSelection({ ...ROUTE, mediaType: 'audio' });
+    const audioStream = { ...managedStream('vod'), mediatype: 'audio' as const };
+
+    assert.equal(selection.select(audioStream).kind, 'replay');
+  });
+
   it('opens the live feed for a new visitor during a live continuation and switches an existing replay once', () => {
     const selection = new StreamPlaybackSelection(ROUTE);
     const managed = managedStream('live');
@@ -191,6 +202,37 @@ describe('StreamWatcher playback selection', () => {
     assert.equal(switched.kind, 'live');
     assert.equal(switched.renditions?.[0].topic, 'live-rung');
     assert.notEqual(switched.session, replaySession, 'the explicit switch must mount a new player');
+  });
+
+  it('keeps live run A selected through its completed snapshot and run B until Watch live is explicit', () => {
+    const selection = new StreamPlaybackSelection(ROUTE);
+    const liveA = {
+      ...managedStream('live'),
+      lifecycle: { version: 1 as const, revision: 4, runNumber: 4, state: 'live' as const },
+    };
+    const vodA = {
+      ...managedStream('vod'),
+      lifecycle: { version: 1 as const, revision: 5, runNumber: 4, state: 'vod' as const },
+    };
+    const liveB = {
+      ...managedStream('live'),
+      lifecycle: { version: 1 as const, revision: 6, runNumber: 5, state: 'live' as const },
+    };
+
+    const runA = selection.select(liveA);
+    const afterClose = selection.select(vodA);
+    const beforeWatchLive = selection.select(liveB);
+
+    assert.equal(runA.kind, 'live');
+    assert.equal(afterClose.session, runA.session);
+    assert.equal(beforeWatchLive.session, runA.session);
+    assert.equal(beforeWatchLive.runNumber, 4);
+    assert.equal(beforeWatchLive.pinnedRecording?.master.reference, 'master-reference');
+
+    const runB = selection.watchLive(liveB);
+    assert.equal(runB.kind, 'live');
+    assert.equal(runB.runNumber, 5);
+    assert.notEqual(runB.session, runA.session);
   });
 
   it('offers the previous combined replay while a managed continuation is live, without adding a history list', () => {

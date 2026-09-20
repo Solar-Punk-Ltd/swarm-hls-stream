@@ -5,7 +5,7 @@ import { Button, ButtonVariant } from '@/components/Button/Button';
 import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
 import { useAppContext } from '@/providers/App';
 import { ROUTES } from '@/routes';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED, type Stream } from '@/types/stream';
+import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, type Stream, STREAM_STATUS_SCHEDULED } from '@/types/stream';
 import { scheduledStartLabel } from '@/utils/scheduledStart';
 
 import { StreamPlaybackSelection } from './StreamPlaybackSelection';
@@ -42,8 +42,12 @@ function StreamWatcherPlayer({ owner, topicString, mediaType, stream, enableQoeO
     selection.current = new StreamPlaybackSelection({ owner, topicString, mediaType });
   }
   const playback = selection.current.select(stream);
-  const liveAvailable = stream?.lifecycle?.version === 1 && ['live', 'waiting'].includes(stream.lifecycle.state);
-  const replayAvailable = stream?.completedRecording !== undefined;
+  const liveAvailable =
+    stream?.lifecycle?.version === 1 &&
+    ['live', 'waiting'].includes(stream.lifecycle.state) &&
+    playback.runNumber !== stream.lifecycle.runNumber;
+  const replayAvailable =
+    stream?.completedRecording !== undefined && stream.lifecycle?.runNumber !== stream.completedRecording.runNumber;
 
   const selectLive = () => {
     selection.current?.watchLive(stream);
@@ -64,9 +68,11 @@ function StreamWatcherPlayer({ owner, topicString, mediaType, stream, enableQoeO
         mediaType={playback.mediaType}
         enableQoeOverlay={enableQoeOverlay}
         renditions={playback.renditions}
+        replay={playback.kind === 'replay' ? playback.completedRecording : undefined}
+        pinnedRecording={playback.kind === 'live' ? playback.pinnedRecording : undefined}
         level={level}
       />
-      {playback.kind === 'replay' && liveAvailable && (
+      {liveAvailable && (
         <Button variant={ButtonVariant.PRIMARY} onClick={selectLive}>
           Stream resumed · Watch live
         </Button>

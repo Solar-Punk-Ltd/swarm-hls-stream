@@ -12,14 +12,21 @@ import {
 } from '@swarm-hls-stream/shared';
 import Pqueue from 'p-queue';
 
-import { Rendition } from '@/types/stream';
+import { type CompletedManifest, type CompletedRecording, Rendition } from '@/types/stream';
 import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 import { RequestJitter } from '@/utils/requestJitter';
 
 import { FeedHealthTracker, UNSERVED_POLLS_PROBE_CEILING } from './feedState';
 import { LadderFeedPoller } from './LadderFeedPoller';
-import { absoluteBytesBase, buildMasterPlaylist, isMasterPlaylist, masterVariants, parseSwarmUri } from './playlist';
+import {
+  absoluteBytesBase,
+  buildMasterPlaylist,
+  buildSwarmUri,
+  isMasterPlaylist,
+  masterVariants,
+  parseSwarmUri,
+} from './playlist';
 import { isSlotNotWrittenYet, ManifestFetchError, probePastRefusal, shouldProbePastRefusal } from './refusedSlot';
 
 // The parser and the segment shape now live beside the tags the uploader builds with, so the two
@@ -338,6 +345,11 @@ interface RegisteredLadder {
   topics: Topic[];
 }
 
+/** A completed manifest's immutable byte address, kept distinct from every feed URI. */
+export function recordingSourceUrl(manifest: CompletedManifest): string {
+  return `swarm-replay://${encodeURIComponent(manifest.reference)}/${manifest.index}`;
+}
+
 /**
  * How many of the poller's own polls a level request waits for a rung's first playlist.
  *
@@ -384,6 +396,10 @@ export class RungNotReadyError extends Error {
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
   private ladders = new Map<string, RegisteredLadder>();
+  private recordings = new Map<string, CompletedRecording>();
+  private recordedRungs = new Map<string, CompletedManifest>();
+  private pinnedRecordings = new Map<string, CompletedRecording>();
+  private pinnedRungs = new Map<string, CompletedManifest>();
   private poller: LadderFeedPoller;
   private lastLoggedMaster = '';
 
@@ -479,6 +495,51 @@ export class ManifestFetcher {
   }
 
   /**
+   * Registers one immutable recording for a mounted replay player.
+   *
+   * Captured playlists are bytes, not feeds. Keeping their routes in a separate table makes a
+   * replay impossible to advance into the live run when the catalogue's stable topics do.
+   */
+  registerRecording(sourceUrl: string, recording: CompletedRecording): void {
+    this.recordings.set(sourceUrl, recording);
+    for (const rendition of recording.renditions) {
+      this.recordedRungs.set(recordingSourceUrl(rendition), rendition);
+    }
+  }
+
+  unregisterRecording(sourceUrl: string): void {
+    const recording = this.recordings.get(sourceUrl);
+    this.recordings.delete(sourceUrl);
+    if (!recording) {
+      return;
+    }
+    for (const rendition of recording.renditions) {
+      this.recordedRungs.delete(recordingSourceUrl(rendition));
+    }
+  }
+
+  /**
+   * Pins an already-mounted live player to the completed bytes of its selected run.
+   *
+   * The player stays mounted through a close and continuation. A later quality switch or recovery
+   * must therefore read this run's finalized rung bytes, rather than resolving the stable feed at
+   * the new run's head.
+   */
+  pinRecording(sourceUrl: string, owner: string, recording: CompletedRecording): void {
+    this.pinnedRecordings.set(sourceUrl, recording);
+    for (const rendition of recording.renditions) {
+      this.pinnedRungs.set(buildSwarmUri(owner, rendition.topic), rendition);
+    }
+  }
+
+  unpinRecording(sourceUrl: string, owner: string, recording: CompletedRecording): void {
+    this.pinnedRecordings.delete(sourceUrl);
+    for (const rendition of recording.renditions) {
+      this.pinnedRungs.delete(buildSwarmUri(owner, rendition.topic));
+    }
+  }
+
+  /**
    * Answers the top-level playlist request for `url` — the one hls.js makes once, from
    * `loadSource`.
    *
@@ -489,6 +550,22 @@ export class ManifestFetcher {
    * existed — the fallback in {@link registerLadder} covers the second.
    */
   async fetchSource(url: string): Promise<string> {
+    const recording = this.recordings.get(url);
+    if (recording) {
+      const response = await this.fetchResource(`bytes/${recording.master.reference}`);
+      return isMasterPlaylist(response.text)
+        ? rewriteRecordedMaster(response.text, recording.renditions)
+        : rewriteRecordedMedia(response.text, this.bytesBaseUrl());
+    }
+
+    const pinnedRecording = this.pinnedRecordings.get(url);
+    if (pinnedRecording) {
+      const response = await this.fetchResource(`bytes/${pinnedRecording.master.reference}`);
+      return isMasterPlaylist(response.text)
+        ? rewriteRecordedMaster(response.text, pinnedRecording.renditions)
+        : rewriteRecordedMedia(response.text, this.bytesBaseUrl());
+    }
+
     const source = parseSwarmUri(url);
     const topic = Topic.fromString(source.topic);
     const hexTopic = topic.toString();
@@ -549,6 +626,18 @@ export class ManifestFetcher {
   }
 
   async fetch(url: string): Promise<string> {
+    const recordedRung = this.recordedRungs.get(url);
+    if (recordedRung) {
+      const response = await this.fetchResource(`bytes/${recordedRung.reference}`);
+      return rewriteRecordedMedia(response.text, this.bytesBaseUrl());
+    }
+
+    const pinnedRung = this.pinnedRungs.get(url);
+    if (pinnedRung) {
+      const response = await this.fetchResource(`bytes/${pinnedRung.reference}`);
+      return rewriteRecordedMedia(response.text, this.bytesBaseUrl());
+    }
+
     const { owner, topic: topicPart } = parseSwarmUri(url);
     const topic = Topic.fromString(topicPart);
     const hexTopic = topic.toString();
@@ -1018,6 +1107,68 @@ function groupHexOf(sourceUrl: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Replace each captured master's moving feed URI with its captured rung byte address. */
+function rewriteRecordedMaster(text: string, renditions: CompletedRecording['renditions']): string {
+  const lines = text.split('\n');
+  const byTopic = new Map(renditions.map((rendition) => [rendition.topic, rendition]));
+  if (byTopic.size !== renditions.length) {
+    throw new Error('completed recording contains duplicate rung topics');
+  }
+  let expectsUri = false;
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].trim();
+    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+      expectsUri = true;
+      continue;
+    }
+    if (!expectsUri || line === '' || line.startsWith('#')) {
+      continue;
+    }
+    let topic: string;
+    try {
+      topic = parseSwarmUri(line).topic;
+    } catch {
+      throw new Error(`captured master rung is not a Swarm URI: ${line}`);
+    }
+    const rendition = byTopic.get(topic);
+    if (!rendition) {
+      throw new Error(`captured master names unknown rung topic: ${topic}`);
+    }
+    lines[index] = recordingSourceUrl(rendition);
+    byTopic.delete(topic);
+    expectsUri = false;
+  }
+
+  if (expectsUri || byTopic.size !== 0) {
+    throw new Error('captured master does not match its completed recording rungs');
+  }
+  return lines.join('\n');
+}
+
+/** Make segment bytes in a captured media playlist resolve against the viewer's selected gateway. */
+function rewriteRecordedMedia(text: string, bytesBaseUrl: string): string {
+  const lines = text.split('\n');
+  let expectsSegment = false;
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].trim();
+    if (line.startsWith('#EXTINF:')) {
+      expectsSegment = true;
+      continue;
+    }
+    if (!expectsSegment || line === '' || line.startsWith('#')) {
+      continue;
+    }
+    if (!line.startsWith('http://') && !line.startsWith('https://') && !line.startsWith('/bytes/')) {
+      lines[index] = `${bytesBaseUrl}/${line}`;
+    }
+    expectsSegment = false;
+  }
+
+  return lines.join('\n');
 }
 
 /**

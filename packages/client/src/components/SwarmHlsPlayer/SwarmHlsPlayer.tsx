@@ -3,7 +3,7 @@ import { Topic } from '@ethersphere/bee-js';
 import { ABR_BANDWIDTH_FACTOR, ABR_BANDWIDTH_UP_FACTOR } from '@swarm-hls-stream/shared';
 import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
-import { MEDIA_TYPE_VIDEO, MediaType, Rendition } from '@/types/stream';
+import { type CompletedRecording, MEDIA_TYPE_VIDEO, MediaType, Rendition } from '@/types/stream';
 
 import { FeedStateOverlay } from './overlays/feed/FeedStateOverlay';
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
@@ -11,7 +11,7 @@ import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/us
 import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './CustomManifestLoader';
 import { FEED_STATE_LIVE, FeedState } from './feedState';
 import { attachLivePlaybackRateGuard } from './livePlaybackRate';
-import { ManifestStateManager } from './ManifestManagement';
+import { ManifestStateManager, recordingSourceUrl } from './ManifestManagement';
 import { nextMediaErrorAction, NO_MEDIA_ERRORS_YET, recoverFromMediaError } from './mediaErrorRecovery';
 import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig, HLS_TUNING } from './playerConfig';
@@ -159,6 +159,16 @@ function ladderKey(renditions: Rendition[] | undefined): string {
   return renditions.map((r) => `${r.name}:${r.topic}`).join('|');
 }
 
+function recordingKey(recording: CompletedRecording | undefined): string {
+  if (!recording) {
+    return '';
+  }
+  return [
+    `${recording.master.reference}:${recording.master.index}`,
+    ...recording.renditions.map((rendition) => `${rendition.reference}:${rendition.index}`),
+  ].join('|');
+}
+
 /** The rung to aim at: tallest, and among equals the one carrying the most bits. */
 function topLevelIndex(levels: readonly { height: number; maxBitrate: number }[]): number {
   return levels.reduce((best, level, index) => {
@@ -257,6 +267,10 @@ interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
    * playlist exactly as it always has.
    */
   renditions?: Rendition[];
+  /** An immutable completed recording, loaded from captured bytes rather than feed heads. */
+  replay?: CompletedRecording;
+  /** The completed bytes that pin a still-mounted live player after its selected run closes. */
+  pinnedRecording?: CompletedRecording;
   /**
    * Rung to pin playback to, by name. Omitted, or {@link AUTO_LEVEL}, leaves the choice to ABR,
    * which is the default. Pinning is for isolating one rung — comparing it against the others, or
@@ -291,6 +305,8 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   controls = true,
   enableQoeOverlay = false,
   renditions,
+  replay,
+  pinnedRecording,
   level,
   hlsConfig,
   ...videoProps
@@ -301,12 +317,18 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsConfigKey = tuningKey(hlsConfig ?? {});
   const renditionKey = ladderKey(renditions);
+  const replayKey = recordingKey(replay);
+  const pinnedRecordingKey = recordingKey(pinnedRecording);
 
   // Read through a ref, not a dependency. The catalog is polled every few seconds and hands back
   // a fresh array each time, so depending on it directly would tear the player down and rebuild
   // it on every poll. `renditionKey` is what the effect actually reacts to.
   const renditionsRef = useRef(renditions);
   renditionsRef.current = renditions;
+  const replayRef = useRef(replay);
+  replayRef.current = replay;
+  const pinnedRecordingRef = useRef(pinnedRecording);
+  pinnedRecordingRef.current = pinnedRecording;
 
   // Deliberately not part of the effect below, which reruns on every restart. A fatal network error
   // is what causes a restart, so a subscription torn down and rebuilt with the player would be
@@ -321,19 +343,32 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   }, [topicString]);
 
   useEffect(() => {
+    const pinned = pinnedRecordingRef.current;
+    if (!pinned || replayRef.current) {
+      return;
+    }
+    const sourceUrl = buildSwarmUri(owner, topicString);
+    manifestFetcher.pinRecording(sourceUrl, owner, pinned);
+    return () => manifestFetcher.unpinRecording(sourceUrl, owner, pinned);
+  }, [owner, topicString, pinnedRecordingKey, replayKey]);
+
+  useEffect(() => {
     const video = videoRef.current;
     if (!video) {
       return;
     }
 
-    const sourceUrl = buildSwarmUri(owner, topicString);
+    const selectedReplay = replayRef.current;
+    const sourceUrl = selectedReplay ? recordingSourceUrl(selectedReplay.master) : buildSwarmUri(owner, topicString);
     const ladder = renditionsRef.current;
 
     // A ladder the catalog knows about. Only the fallback path needs this — a stream whose feed
     // holds a published master is recognised by the loader from the master itself, catalog or not.
-    const isLadder = renditionKey.length > 0 && !!ladder;
+    const isLadder = !selectedReplay && renditionKey.length > 0 && !!ladder;
 
-    if (isLadder) {
+    if (selectedReplay) {
+      manifestFetcher.registerRecording(sourceUrl, selectedReplay);
+    } else if (isLadder) {
       manifestFetcher.registerLadder(sourceUrl, () => ({
         owner,
         renditions: renditionsRef.current ?? ladder,
@@ -518,6 +553,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       // Stops every rung's walk and discards its accumulated playlist, including rungs discovered
       // from a published master that this component never saw.
       manifestFetcher.unregisterLadder(sourceUrl);
+      manifestFetcher.unregisterRecording(sourceUrl);
 
       if (hls) {
         // The source feed, on top of the rungs `unregisterLadder` has already stopped. For a
@@ -529,9 +565,11 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         // attachment of every player the page has ever mounted, and a cleanup that throws takes the
         // rest of React's cleanup with it, so this is not a guarantee to drop for tidiness.
         try {
-          const hexTopic = toHexTopic(topicString);
-          if (hexTopic) {
-            ManifestStateManager.getInstance().clear(hexTopic);
+          if (!selectedReplay) {
+            const hexTopic = toHexTopic(topicString);
+            if (hexTopic) {
+              ManifestStateManager.getInstance().clear(hexTopic);
+            }
           }
         } finally {
           hls.destroy();
@@ -545,7 +583,18 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     // re-run, and hls.js stays attached to the element React has already removed: a dead player with
     // no error. Reached by editing /watch/video/... to /watch/audio/... with the same owner and
     // topic, which is the only navigation that changes the media type and nothing else.
-  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString, mediaType, hlsConfigKey, renditionKey, level]);
+  }, [
+    autoPlay,
+    restartTrigger,
+    enableQoeOverlay,
+    owner,
+    topicString,
+    mediaType,
+    hlsConfigKey,
+    renditionKey,
+    replayKey,
+    level,
+  ]);
 
   const videoEl =
     mediaType === MEDIA_TYPE_VIDEO ? (
