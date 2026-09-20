@@ -1,11 +1,14 @@
+import { useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Button, ButtonVariant } from '@/components/Button/Button';
 import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
 import { useAppContext } from '@/providers/App';
 import { ROUTES } from '@/routes';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED } from '@/types/stream';
+import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED, type Stream } from '@/types/stream';
 import { scheduledStartLabel } from '@/utils/scheduledStart';
+
+import { StreamPlaybackSelection } from './StreamPlaybackSelection';
 
 import './StreamWatcher.scss';
 
@@ -13,6 +16,42 @@ const VALID_MEDIA_TYPES: MediaType[] = [MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO];
 
 function isMediaType(value: string): value is MediaType {
   return VALID_MEDIA_TYPES.includes(value as MediaType);
+}
+
+type PlayerProps = {
+  owner: string;
+  topicString: string;
+  mediaType: MediaType;
+  stream: Stream | undefined;
+  enableQoeOverlay: boolean;
+  level: string | undefined;
+};
+
+/**
+ * The keyed watch-page boundary owns a player's selection for its whole mounted session.
+ *
+ * `StreamWatcher` renders this only after the initial catalogue lookup. That lets the first ABR
+ * row establish the ladder, while a completed lookup with no row deliberately preserves the
+ * legacy direct URL path. Catalogue refreshes still rerender the surrounding page, but cannot
+ * replace this player's inputs. A route key in the parent is an intentional new selection.
+ */
+function StreamWatcherPlayer({ owner, topicString, mediaType, stream, enableQoeOverlay, level }: PlayerProps) {
+  const selection = useRef<StreamPlaybackSelection | null>(null);
+  if (selection.current === null) {
+    selection.current = new StreamPlaybackSelection({ owner, topicString, mediaType });
+  }
+  const playback = selection.current.select(stream);
+
+  return (
+    <SwarmHlsPlayer
+      owner={playback.owner}
+      topicString={playback.topicString}
+      mediaType={playback.mediaType}
+      enableQoeOverlay={enableQoeOverlay}
+      renditions={playback.renditions}
+      level={level}
+    />
+  );
 }
 
 export function StreamWatcher() {
@@ -62,13 +101,14 @@ export function StreamWatcher() {
         </div>
       )}
       {isStreamListLoaded && !isScheduled && (
-        <SwarmHlsPlayer
+        <StreamWatcherPlayer
+          key={`${mediatype}:${owner}:${topic}`}
           owner={owner}
           topicString={topic}
           mediaType={mediatype}
           enableQoeOverlay={enableQoeOverlay}
-          renditions={stream?.renditions}
           level={level}
+          stream={stream}
         />
       )}
       <Button variant={ButtonVariant.SECONDARY} onClick={() => handleBackButtonClick()}>
