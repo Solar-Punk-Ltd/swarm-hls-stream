@@ -78,8 +78,8 @@ export class FetchManagerProfileClient {
     this.password = credential(options.password, 'manager password');
     this.fetch = options.fetch ?? fetch;
     this.wait = options.wait ?? (async (milliseconds) => { await waitFor(milliseconds); });
-    this.pollIntervalMs = boundedInteger(options.pollIntervalMs ?? 500, 1, 10_000, 'profile poll interval');
-    this.maximumPolls = boundedInteger(options.maximumPolls ?? 120, 1, 600, 'profile poll count');
+    this.pollIntervalMs = boundedInteger(options.pollIntervalMs ?? 1_000, 1, 10_000, 'profile poll interval');
+    this.maximumPolls = boundedInteger(options.maximumPolls ?? 600, 1, 1_200, 'profile poll count');
   }
 
   async createHeldUploaderProfile(input: CreateHeldUploaderProfileInput): Promise<HeldUploaderProfile> {
