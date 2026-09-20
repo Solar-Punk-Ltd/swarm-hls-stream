@@ -292,6 +292,7 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
       // base as "present" therefore still means exactly what it meant, which is what keeps SEC-28's
       // rule — a rung is admitted only because its base authenticated — unchanged.
       const authenticatedBases = new Map<string, AdminSession | null>();
+      const legacyBaseGenerations = new Map<string, number>();
       const managedConnections = new Map<string, SourceConnectionIdentity>();
       const managedBases = new Map<string, SourceConnectionIdentity>();
       const managedRungConnections = new Map<string, ManagedRungConnection>();
@@ -313,6 +314,7 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
           { publishKeySecret, adminApi, signerOwner },
           abr,
           authenticatedBases,
+          legacyBaseGenerations,
           managedLifecycle,
           managedConnections,
           managedBases,
@@ -507,6 +509,7 @@ async function handleStreams(
   gate: SrsPublishGate,
   abr?: AbrGuard,
   authenticatedBases: Map<string, AdminSession | null> = new Map(),
+  legacyBaseGenerations: Map<string, number> = new Map(),
   managedLifecycle?: { uploaderId: string },
   managedConnections: Map<string, SourceConnectionIdentity> = new Map(),
   managedBases: Map<string, SourceConnectionIdentity> = new Map(),
@@ -600,6 +603,7 @@ async function handleStreams(
           managedConnections.delete(key as string);
           if (role.kind === 'source') {
             authenticatedBases.delete(streamId);
+            legacyBaseGenerations.delete(streamId);
           }
         } else if (isLegacy) {
           legacyConnections.delete(key as string);
@@ -637,6 +641,7 @@ async function handleStreams(
         // Its rungs must not outlive their base. Only after the key check, so a forged unpublish
         // cannot evict a live broadcaster's base and take the whole ladder down with it.
         authenticatedBases.delete(streamId);
+        legacyBaseGenerations.delete(streamId);
         logger.info(`[SRS] Ladder source unpublished: ${streamId}`);
         return;
       }
@@ -714,15 +719,23 @@ async function handleStreams(
           });
         }
       } else {
-        accepted = streamOrchestrator.startStream(
-          streamId,
-          mediatype,
-          claimant,
-          // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
-          // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the
-          // ladder is one declared stream and the rungs are what the transcoder makes of it.
-          admin,
+        const legacyGeneration = legacyBaseGenerations.get(role.baseStreamId);
+        accepted = !managedLifecycle || (
+          admin !== undefined &&
+          legacyGeneration !== undefined &&
+          streamOrchestrator.isLegacyStreamAdmissionGenerationCurrent(admin.id, legacyGeneration)
         );
+        if (accepted) {
+          accepted = streamOrchestrator.startStream(
+            streamId,
+            mediatype,
+            claimant,
+            // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
+            // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the
+            // ladder is one declared stream and the rungs are what the transcoder makes of it.
+            admin,
+          );
+        }
         if (managedLifecycle && accepted) {
           legacyRungConnections.set(key as string, streamId);
         }
@@ -736,6 +749,9 @@ async function handleStreams(
       // published under — `video/<uuid>` either way, since a source is what a rung is transcoded from
       // — and by the key that declaration carries. What differs is what happens next, and only that.
       const mediatype = resolveMediaType(payload.app);
+      const legacyAdmissionGeneration = managedLifecycle
+        ? streamOrchestrator.captureLegacyAdmissionGeneration()
+        : undefined;
       const verdict = await resolveAdminPublish(
         adminApi,
         '[SRS]',
@@ -816,9 +832,22 @@ async function handleStreams(
           managedBases.set(streamId, identity);
           if (role.kind === 'source') {
             authenticatedBases.set(streamId, verdict.session);
+            legacyBaseGenerations.delete(streamId);
           }
         }
         srsResponse(res, admitted ? SRS_ACCEPT : SRS_REJECT);
+        return;
+      }
+
+      if (
+        managedLifecycle &&
+        (legacyAdmissionGeneration === undefined ||
+          !streamOrchestrator.isLegacyAdmissionGenerationCurrent(
+            verdict.session.id,
+            legacyAdmissionGeneration,
+          ))
+      ) {
+        srsResponse(res, SRS_REJECT);
         return;
       }
 
@@ -829,6 +858,12 @@ async function handleStreams(
         // ingest id the admin has ever heard of, so this is the only point at which the broadcast
         // they belong to can be established. SRS_ACCEPT lets SRS go on to transcode it.
         authenticatedBases.set(streamId, verdict.session);
+        if (legacyAdmissionGeneration !== undefined) {
+          legacyBaseGenerations.set(
+            streamId,
+            streamOrchestrator.captureLegacyStreamAdmissionGeneration(verdict.session.id),
+          );
+        }
         logger.info(`[SRS] Ladder source authenticated: ${streamId}, declared as admin stream ${verdict.session.id}`);
         srsResponse(res, SRS_ACCEPT);
         return;

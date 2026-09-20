@@ -7,10 +7,21 @@ import { describe, it } from 'node:test';
 
 import { createSrsEngine } from '../src/engines/srs.js';
 import { AbrLadder } from '../src/libs/AbrLadder.js';
-import { AdminApiClient, ManagedClaimRequest } from '../src/libs/AdminApiClient.js';
+import {
+  AdminApiClient,
+  LegacyAdoptionOperation,
+  ManagedClaimRequest,
+} from '../src/libs/AdminApiClient.js';
+import {
+  LegacyAdoptionPendingError,
+  LegacyRecordingAdopter,
+} from '../src/libs/LegacyRecordingAdopter.js';
 import { ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
+import { ManagedMasterStore } from '../src/libs/ManagedMasterStore.js';
 import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import { ManagedClaimAttempt, ManagedClaimCompletion, ManagedRunStore } from '../src/libs/ManagedRunStore.js';
+import { buildMasterPlaylist } from '../src/libs/MasterPlaylist.js';
+import { MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { SourceConnectionIdentity } from '../src/types.js';
@@ -26,6 +37,56 @@ const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
 const ADMIN_ID = '22222222-2222-4222-8222-222222222222';
 const UPLOADER_ID = 'srs-157-90-34-105';
 const CLAIM_ID = '44444444-4444-4444-8444-444444444444';
+const ADOPTION_TOPIC = 'a'.repeat(64);
+const ADOPTION_RUNG_TOPIC = rungTopicFor(ADOPTION_TOPIC, '360p');
+const ADOPTION_SEGMENT = 'b'.repeat(64);
+const ADOPTION_FORMAT: MediaFormatFingerprint = {
+  version: 1,
+  container: 'mpegts',
+  tracks: [{
+    kind: 'video',
+    codec: 'h264',
+    profile: 'High',
+    level: 40,
+    width: 640,
+    height: 360,
+    pixelFormat: 'yuv420p',
+    chromaLocation: 'left',
+    bitsPerRawSample: 8,
+  }],
+};
+
+function adoptionOperation(): LegacyAdoptionOperation {
+  return {
+    lifecycleVersion: 1,
+    kind: 'legacy-adoption',
+    operationId: '55555555-5555-4555-8555-555555555555',
+    requestId: '66666666-6666-4666-8666-666666666666',
+    streamId: ADMIN_ID,
+    topic: ADOPTION_TOPIC,
+    mediaType: 'video',
+    uploaderId: UPLOADER_ID,
+    candidateDigest: 'c'.repeat(64),
+    revision: 9,
+    status: 'pending',
+    candidate: {
+      streamId: ADMIN_ID,
+      topic: ADOPTION_TOPIC,
+      mediaType: 'video',
+      master: { topic: ADOPTION_TOPIC, index: 12, duration: 2 },
+      renditions: [{
+        name: '360p',
+        topic: ADOPTION_RUNG_TOPIC,
+        width: 640,
+        height: 360,
+        bandwidth: 700_000,
+        avgBandwidth: 700_000,
+        index: 4,
+        duration: 2,
+      }],
+    },
+  };
+}
 
 interface Calls {
   attempts: ManagedClaimAttempt[];
@@ -145,6 +206,10 @@ async function withManagedSrs(
       calls.legacyStarts.push(streamId);
       return true;
     },
+    captureLegacyAdmissionGeneration: () => 0,
+    isLegacyAdmissionGenerationCurrent: () => true,
+    captureLegacyStreamAdmissionGeneration: () => 0,
+    isLegacyStreamAdmissionGenerationCurrent: () => true,
     provisionManagedRendition: (streamId: string) => {
       calls.managedRenditions.push(streamId);
       return true;
@@ -237,6 +302,38 @@ function rungCallback(action = 'on_publish', clientId = 'rung-client', rung = '3
     stream: `11111111-1111-4111-8111-111111111111_${rung}`,
     vhost: 'abr',
     ip: '127.0.0.1',
+  };
+}
+
+async function openManagedSrsRouter(
+  orchestrator: StreamOrchestrator,
+  adminApi: AdminApiClient,
+  ladder: AbrLadder,
+): Promise<{
+  post: (body: Record<string, unknown>) => Promise<number>;
+  close: () => void;
+}> {
+  const engine = createSrsEngine('/srv/media', {
+    webhookToken: TOKEN,
+    adminApi,
+    managedLifecycle: { uploaderId: UPLOADER_ID },
+    abr: { vhost: 'abr', ladder },
+    apiUrl: 'http://srs.test:1985',
+  });
+  const app = express();
+  app.use(express.json());
+  app.use(engine.prefix, engine.createRouter(orchestrator));
+  const { server, baseUrl } = await listenOnLoopback(app);
+  return {
+    post: async (body) => {
+      const response = await fetch(`${baseUrl}${engine.prefix}/streams?token=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return response.json() as Promise<number>;
+    },
+    close: () => server.close(),
   };
 }
 
@@ -637,6 +734,153 @@ describe('SRS managed lifecycle callbacks', () => {
       );
     } finally {
       fs.rmSync(mediaRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('invalidates an authenticated legacy source when adoption completes before its first rung', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-adoption-source-race-'));
+    const ladder = AbrLadder.parse('360p:640:360:700');
+    const operation = adoptionOperation();
+    const owner = '0'.repeat(40);
+    let assigned: readonly LegacyAdoptionOperation[] = [operation];
+    let signalRead!: () => void;
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => {signalRead = resolve;});
+    const readReleased = new Promise<void>((resolve) => {releaseRead = resolve;});
+    const adminApi = {
+      describe: () => 'http://admin.test',
+      lookupByIngestId: async () => ({
+        id: ADMIN_ID,
+        topic: ADOPTION_TOPIC,
+        owner: '0xowner',
+        mediaType: 'video' as const,
+        title: 'legacy',
+        status: 'published',
+        publishKey: 'secret',
+        lifecycleVersion: 1 as const,
+        mode: 'legacy' as const,
+      }),
+      listManagedContinuations: async () => [],
+      listLegacyAdoptions: async () => assigned,
+      reportLegacyAdoptionPreparation: async () => undefined,
+    } as unknown as AdminApiClient;
+    const recoveryStore = new RecoveryStore(path.join(root, 'recovery'));
+    const target = makeTestOrchestrator({
+      adminApi,
+      ladder,
+      managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
+      managedMasterStore: new ManagedMasterStore(path.join(root, 'masters')),
+      legacyRecordingAdopter: new LegacyRecordingAdopter(
+        {
+          owner,
+          readFeed: async (_topic, _index, rendition) => {
+            signalRead();
+            await readReleased;
+            return rendition === null
+              ? {
+                  playlist: buildMasterPlaylist(owner, operation.candidate.renditions),
+                  reference: 'd'.repeat(64),
+                }
+              : {
+                  playlist: `#EXTM3U\n#EXTINF:2,\n${ADOPTION_SEGMENT}\n#EXT-X-ENDLIST\n`,
+                  reference: 'e'.repeat(64),
+                };
+          },
+          readSegment: async () => Buffer.from('mpeg-ts'),
+        },
+        { inspect: async () => ({ kind: 'valid', fingerprint: ADOPTION_FORMAT }) },
+      ),
+    }, {}, recoveryStore);
+    const router = await openManagedSrsRouter(target, adminApi, ladder);
+
+    try {
+      assert.equal(await router.post(callback('legacy-source-a')), 0);
+      const polling = target.pollManagedContinuations(UPLOADER_ID);
+      await readStarted;
+      releaseRead();
+      await polling;
+      assigned = [];
+      await target.pollManagedContinuations(UPLOADER_ID);
+
+      assert.equal(await router.post(rungCallback('on_publish', 'delayed-rung-a')), 1);
+      assert.deepEqual(recoveryStore.listActive(), []);
+    } finally {
+      releaseRead();
+      router.close();
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a legacy lookup resolved across adoption while allowing a fresh lookup after cancellation', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-adoption-lookup-race-'));
+    const ladder = AbrLadder.parse('360p:640:360:700');
+    const operation = adoptionOperation();
+    let assigned: readonly LegacyAdoptionOperation[] = [];
+    let signalLookup!: () => void;
+    let releaseLookup!: () => void;
+    const lookupStarted = new Promise<void>((resolve) => {signalLookup = resolve;});
+    const lookupReleased = new Promise<void>((resolve) => {releaseLookup = resolve;});
+    let lookupCount = 0;
+    const draft = {
+      id: ADMIN_ID,
+      topic: ADOPTION_TOPIC,
+      owner: '0xowner',
+      mediaType: 'video' as const,
+      title: 'legacy',
+      status: 'published',
+      publishKey: 'secret',
+      lifecycleVersion: 1 as const,
+      mode: 'legacy' as const,
+    };
+    const adminApi = {
+      describe: () => 'http://admin.test',
+      lookupByIngestId: async () => {
+        lookupCount += 1;
+        if (lookupCount === 1) {
+          signalLookup();
+          await lookupReleased;
+        }
+        return draft;
+      },
+      listManagedContinuations: async () => [],
+      listLegacyAdoptions: async () => assigned,
+      reportLegacyAdoptionPreparation: async () => undefined,
+    } as unknown as AdminApiClient;
+    const target = makeTestOrchestrator({
+      adminApi,
+      ladder,
+      managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
+      managedMasterStore: new ManagedMasterStore(path.join(root, 'masters')),
+      legacyRecordingAdopter: new LegacyRecordingAdopter(
+        {
+          owner: '0'.repeat(40),
+          readFeed: async () => {
+            throw new LegacyAdoptionPendingError('inspection deliberately held');
+          },
+          readSegment: async () => Buffer.from('mpeg-ts'),
+        },
+        { inspect: async () => ({ kind: 'valid', fingerprint: ADOPTION_FORMAT }) },
+      ),
+    });
+    const router = await openManagedSrsRouter(target, adminApi, ladder);
+
+    try {
+      const stalePublish = router.post(callback('legacy-source-stale'));
+      await lookupStarted;
+      assigned = [operation];
+      await target.pollManagedContinuations(UPLOADER_ID);
+      assigned = [];
+      await target.pollManagedContinuations(UPLOADER_ID);
+      releaseLookup();
+
+      assert.equal(await stalePublish, 1);
+      assert.equal(await router.post(callback('legacy-source-fresh')), 0);
+    } finally {
+      releaseLookup();
+      router.close();
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

@@ -536,6 +536,10 @@ export class StreamOrchestrator {
   private managedCapabilityInFlight = false;
   /** Admin streams held read-only while their frozen legacy recording is being adopted. */
   private legacyAdoptionReservedStreams = new Set<string>();
+  /** Changes whenever the admin's assigned legacy-adoption set changes. */
+  private legacyAdmissionGeneration = 0;
+  /** Per-admin-stream generation so an unrelated adoption does not invalidate an authenticated source. */
+  private legacyStreamAdmissionGenerations = new Map<string, number>();
 
   constructor(
     private publishers: BeePublisherPool,
@@ -551,6 +555,32 @@ export class StreamOrchestrator {
   /** Installed by the managed SRS engine so a persisted cutoff can evict the attached publisher. */
   public registerManagedSourceDisconnector(disconnect: (identity: SourceConnectionIdentity) => void): void {
     this.managedSourceDisconnector = disconnect;
+  }
+
+  /** Snapshot used to invalidate an admin lookup or authenticated source across an adoption transition. */
+  public captureLegacyAdmissionGeneration(): number {
+    return this.legacyAdmissionGeneration;
+  }
+
+  /** True only while the lookup generation is current and this stream is not reserved for adoption. */
+  public isLegacyAdmissionGenerationCurrent(adminStreamId: string, generation: number): boolean {
+    return (
+      generation === this.legacyAdmissionGeneration &&
+      !this.legacyAdoptionReservedStreams.has(adminStreamId)
+    );
+  }
+
+  /** Generation bound to an authenticated legacy source after its lookup passes the global fence. */
+  public captureLegacyStreamAdmissionGeneration(adminStreamId: string): number {
+    return this.legacyStreamAdmissionGenerations.get(adminStreamId) ?? 0;
+  }
+
+  /** True while this exact admin stream has not entered or left adoption since source admission. */
+  public isLegacyStreamAdmissionGenerationCurrent(adminStreamId: string, generation: number): boolean {
+    return (
+      generation === this.captureLegacyStreamAdmissionGeneration(adminStreamId) &&
+      !this.legacyAdoptionReservedStreams.has(adminStreamId)
+    );
   }
 
   private readonly clock: Clock;
@@ -1393,7 +1423,21 @@ export class StreamOrchestrator {
       throw new Error('Legacy adoption polling requires the admin, adopter and checkpoint stores');
     }
     const operations = await adminApi.listLegacyAdoptions(uploaderId);
-    this.legacyAdoptionReservedStreams = new Set(operations.map((operation) => operation.streamId));
+    const reservedStreams = new Set(operations.map((operation) => operation.streamId));
+    const changedStreams = new Set([
+      ...[...reservedStreams].filter((streamId) => !this.legacyAdoptionReservedStreams.has(streamId)),
+      ...[...this.legacyAdoptionReservedStreams].filter((streamId) => !reservedStreams.has(streamId)),
+    ]);
+    if (changedStreams.size > 0) {
+      this.legacyAdmissionGeneration += 1;
+      for (const streamId of changedStreams) {
+        this.legacyStreamAdmissionGenerations.set(
+          streamId,
+          this.captureLegacyStreamAdmissionGeneration(streamId) + 1,
+        );
+      }
+    }
+    this.legacyAdoptionReservedStreams = reservedStreams;
     for (const operation of operations) {
       let preparation: LegacyAdoptionPreparation;
       try {
