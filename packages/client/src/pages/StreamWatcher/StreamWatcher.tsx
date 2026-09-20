@@ -47,7 +47,7 @@ function StreamWatcherPlayer({ owner, topicString, mediaType, stream, enableQoeO
     ['live', 'waiting'].includes(stream.lifecycle.state) &&
     playback.runNumber !== stream.lifecycle.runNumber;
   const replayAvailable =
-    stream?.completedRecording !== undefined && stream.lifecycle?.runNumber !== stream.completedRecording.runNumber;
+    stream?.completedRecording !== undefined && playback.runNumber !== stream.completedRecording.runNumber;
 
   const selectLive = () => {
     selection.current?.watchLive(stream);
@@ -77,9 +77,11 @@ function StreamWatcherPlayer({ owner, topicString, mediaType, stream, enableQoeO
           Stream resumed · Watch live
         </Button>
       )}
-      {playback.kind === 'live' && replayAvailable && (
+      {replayAvailable && (
         <Button variant={ButtonVariant.SECONDARY} onClick={selectReplay}>
-          Watch previous replay
+          {stream?.lifecycle?.state === 'live' || stream?.lifecycle?.state === 'waiting'
+            ? 'Watch previous replay'
+            : 'Watch combined replay'}
         </Button>
       )}
     </>

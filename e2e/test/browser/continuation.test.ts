@@ -42,9 +42,9 @@ type CatalogEntry = {
   };
 };
 
-function recording(): CatalogEntry['completedRecording'] {
+function recording(runNumber = 4): CatalogEntry['completedRecording'] {
   return {
-    runNumber: 4,
+    runNumber,
     master: { topic: 'master-topic', index: 18, reference: MASTER_REFERENCE, duration: 95 },
     expectedRenditions: ['720p'],
     renditions: [
@@ -252,6 +252,17 @@ test('keeps live run A mounted through closure and run B until Watch live is sel
 
     await page.getByRole('button', { name: 'Stream resumed · Watch live' }).click();
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
+    await page.evaluate(() => {
+      (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
+    });
+
+    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 5, recording(5)));
+    assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
+
+    await page.getByRole('button', { name: 'Watch combined replay' }).click();
+    await expectAttribute(player, 'data-master-reference', MASTER_REFERENCE);
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 3, destroyed: 2 });
   } finally {
     await browser?.close();
     await stopFixture(fixture.vite);
