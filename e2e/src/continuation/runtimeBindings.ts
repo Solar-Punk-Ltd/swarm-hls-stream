@@ -25,6 +25,7 @@ export interface ResolveFixtureRuntimeInput {
   plan: FixturePlan;
   topology: ContinuationTopology;
   projects: GuardProjects;
+  fixtureNetworkId: string;
   rawContainers: ReadonlyMap<TopologyServiceRole, RuntimeContainerBinding>;
   guardSlots: ReadonlyMap<ReleaseGuardRole, string>;
 }
@@ -61,6 +62,7 @@ interface GuardedContainer {
   service: string;
   requiredAlias?: string;
   requiredPorts?: readonly string[];
+  requiredEnvironment?: Readonly<Record<string, string>>;
   requiresFixtureNetwork?: true;
 }
 
@@ -80,7 +82,12 @@ const GUARDED_CONTAINERS: readonly GuardedContainer[] = [
     project: 'uploader',
     service: 'srs',
     requiredAlias: 'srs',
-    requiredPorts: ['10011/udp', '10012/tcp', '10013/tcp', '10019/tcp'],
+    requiredEnvironment: {
+      SRS_RTMP_PORT: '10012',
+      SRS_HTTP_PORT: '10013',
+      SRS_SRT_PORT: '10011',
+      SRS_HTTP_API_PORT: '10019',
+    },
     requiresFixtureNetwork: true,
   },
   {
@@ -88,7 +95,7 @@ const GUARDED_CONTAINERS: readonly GuardedContainer[] = [
     project: 'uploader',
     service: 'stream-uploader',
     requiredAlias: 'stream-uploader',
-    requiredPorts: ['10010/tcp'],
+    requiredEnvironment: { API_PORT: '10010' },
     requiresFixtureNetwork: true,
   },
   {
@@ -109,6 +116,9 @@ export async function resolveFixtureRuntime(
   if (input.topology.fixtureId !== input.plan.fixtureId || input.topology.network !== input.plan.network.name) {
     throw new FixtureRefusal('runtime topology does not belong to the fixture plan');
   }
+  if (!NETWORK_ID.test(input.fixtureNetworkId)) {
+    throw new FixtureRefusal('journaled fixture network identity is malformed');
+  }
   const guarded = new Map<TopologyServiceRole, { binding: RuntimeContainerBinding; inspection: ContainerInspection }>();
   for (const expected of GUARDED_CONTAINERS) {
     const project = checkedName(input.projects[expected.project], `${expected.project} project`);
@@ -122,7 +132,7 @@ export async function resolveFixtureRuntime(
     }
     if (expected.requiresFixtureNetwork) {
       const network = inspection.networks[input.plan.network.name];
-      if (!network || !NETWORK_ID.test(network.networkId)) {
+      if (!network || network.networkId !== input.fixtureNetworkId) {
         throw new FixtureRefusal(`${expected.role} is outside the exact fixture network`);
       }
       const requiredAlias = expected.requiredAlias === 'fixture-admin-api'
@@ -136,6 +146,9 @@ export async function resolveFixtureRuntime(
       if (!(port in inspection.exposedPorts)) {
         throw new FixtureRefusal(`${expected.role} does not expose the slot-1 ${port} port`);
       }
+    }
+    if (expected.requiredEnvironment) {
+      await requirePortEnvironment(command, inspection.id, expected.role, expected.requiredEnvironment);
     }
     guarded.set(expected.role, {
       binding: {
@@ -205,7 +218,7 @@ async function exactComposeContainer(
   service: string,
 ): Promise<string> {
   const result = await command.run('docker', [
-    'ps', '--quiet',
+    'ps', '--quiet', '--no-trunc',
     '--filter', `label=com.docker.compose.project=${project}`,
     '--filter', `label=com.docker.compose.service=${service}`,
     '--filter', 'label=com.docker.compose.oneoff=False',
@@ -217,6 +230,22 @@ async function exactComposeContainer(
     throw new FixtureRefusal(`${service} guarded runtime did not resolve to one exact container`);
   }
   return ids[0];
+}
+
+async function requirePortEnvironment(
+  command: BoundedCommand,
+  containerId: string,
+  role: TopologyServiceRole,
+  expected: Readonly<Record<string, string>>,
+): Promise<void> {
+  const names = Object.keys(expected);
+  const result = await command.run('docker', [
+    'exec', checkedName(containerId, `${role} container id`), 'printenv', ...names,
+  ]);
+  const values = result.stdout.replace(/\n$/, '').split('\n');
+  if (values.length !== names.length || names.some((name, index) => values[index] !== expected[name])) {
+    throw new FixtureRefusal(`${role} runtime does not use the slot-1 port contract`);
+  }
 }
 
 async function inspectContainer(
