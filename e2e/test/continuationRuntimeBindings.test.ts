@@ -107,6 +107,14 @@ function guardedContainers(): ContainerFixture[] {
       ports: [{ port: 9877, protocol: 'tcp' }],
     },
     {
+      id: 'admin-web-id',
+      name: 'admin-project-web-1',
+      project: 'admin-project',
+      service: 'web',
+      aliases: [],
+      ports: [{ port: 80, protocol: 'tcp' }],
+    },
+    {
       id: 'srs-id',
       name: 'profile-srs-1',
       project: 'profile',
