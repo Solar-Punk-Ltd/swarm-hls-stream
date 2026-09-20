@@ -37,6 +37,7 @@ describe('continuation admin fixture bootstrap', () => {
       },
       { streamId: `video/${TOPIC}`, publishKey: PUBLISH_KEY },
     ];
+    const statuses = [200, 201, 200, 200];
     const result = await provisionManagedFixtureStream(
       {
         fixtureId: FIXTURE_ID,
@@ -59,7 +60,7 @@ describe('continuation admin fixture bootstrap', () => {
           const body = bodies.shift();
           assert.ok(body);
           return new Response(JSON.stringify(body), {
-            status: 200,
+            status: statuses.shift(),
             headers: httpCalls.length === 1
               ? { 'content-type': 'application/json', 'set-cookie': `${COOKIE}; HttpOnly; SameSite=Lax; Path=/` }
               : { 'content-type': 'application/json' },
@@ -91,6 +92,7 @@ describe('continuation admin fixture bootstrap', () => {
       { id: STREAM_ID, topic: TOPIC, status: 'draft' },
       { stream: { id: STREAM_ID, topic: TOPIC, status: 'published' }, feed: { index: 1 } },
     ];
+    const statuses = [200, 201, 200];
 
     await assert.rejects(
       provisionManagedFixtureStream(
@@ -109,7 +111,7 @@ describe('continuation admin fixture bootstrap', () => {
             const body = bodies.shift();
             assert.ok(body);
             return new Response(JSON.stringify(body), {
-              status: 200,
+              status: statuses.shift(),
               headers: { 'content-type': 'application/json', 'set-cookie': `${COOKIE}; Path=/` },
             });
           },
