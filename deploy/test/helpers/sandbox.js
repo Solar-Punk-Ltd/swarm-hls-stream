@@ -237,8 +237,11 @@ function pathWithoutPnpm(root, hostPath) {
 const INHERITED_ENV = ['HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM'];
 
 function sandboxEnv(sandbox, env = {}) {
-  const inherited = {};
+  const inherited = { HOME: sandbox.root };
   for (const name of INHERITED_ENV) {
+    if (name === 'HOME') {
+      continue;
+    }
     if (process.env[name] !== undefined) {
       inherited[name] = process.env[name];
     }

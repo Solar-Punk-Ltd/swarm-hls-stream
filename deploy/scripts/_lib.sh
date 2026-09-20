@@ -529,7 +529,7 @@ host_from_target() {
 
 # Get unique enabled Docker targets from config (excludes "native", since those run outside compose).
 get_targets() {
-  local seen=()
+  local seen=('')
   for svc in "${ALL_SERVICES[@]}"; do
     local target
     target=$(get_target "$svc")
