@@ -19,6 +19,7 @@ import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { LadderRegistry } from './libs/LadderRegistry.js';
+import { BeeLegacyAdoptionMediaReader, LegacyRecordingAdopter } from './libs/LegacyRecordingAdopter.js';
 import { Logger } from './libs/Logger.js';
 import { ManagedCheckpointStore } from './libs/ManagedCheckpointStore.js';
 import { ManagedFormatStore } from './libs/ManagedFormatStore.js';
@@ -173,6 +174,14 @@ async function start() {
     const managedMasterStore = config.srsLifecycle
       ? new ManagedMasterStore(path.join(config.stateDir, 'managed-masters'))
       : undefined;
+    const mediaFormatInspector = config.srsLifecycle ? new MediaFormatProbe() : undefined;
+    const legacyRecordingAdopter =
+      config.srsLifecycle && mediaFormatInspector
+        ? new LegacyRecordingAdopter(
+            new BeeLegacyAdoptionMediaReader(publishers, signerOwner),
+            mediaFormatInspector,
+          )
+        : undefined;
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
     const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
@@ -238,7 +247,9 @@ async function start() {
       managedMediaStore,
       managedCheckpointStore,
       managedFormatStore,
-      mediaFormatInspector: config.srsLifecycle ? new MediaFormatProbe() : undefined,
+      mediaFormatInspector,
+      legacyRecordingAdopter,
+      managedMasterStore,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);

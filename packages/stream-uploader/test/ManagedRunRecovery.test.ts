@@ -1157,6 +1157,7 @@ describe('managed run recovery', () => {
     const recovery = makeFakeRecoveryStore({ remove: removeRecovery });
     const checkpoints: ManagedCheckpointPersistence = {
       createRun: (input) => durable.createRun(input),
+      adoptLegacy: (input) => durable.adoptLegacy(input),
       prepare: (operation) => durable.prepare(operation),
       saveTrack: () => {
         throw new Error('injected track checkpoint failure');

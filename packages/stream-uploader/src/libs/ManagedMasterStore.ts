@@ -23,6 +23,7 @@ export interface ManagedMasterIntent extends ManagedMasterBinding {
 export interface ManagedMasterPersistence {
   read(binding: ManagedMasterBinding): ManagedMasterIntent | null;
   latestCommittedIndex(group: string): number | null;
+  seedCommitted(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status'> & { readonly reference: string }): ManagedMasterIntent;
   prepare(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status' | 'reference'>): ManagedMasterIntent;
   commit(intent: ManagedMasterIntent, reference: string): ManagedMasterIntent;
 }
@@ -131,6 +132,33 @@ export class ManagedMasterStore implements ManagedMasterPersistence {
       }
     }
     return latest;
+  }
+
+  /** Seal a feed slot that predates lifecycle-v1 so later managed writes cannot rewind below it. */
+  public seedCommitted(
+    intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status'> & { readonly reference: string },
+  ): ManagedMasterIntent {
+    const existing = this.read(intent);
+    const committed: ManagedMasterIntent = { lifecycleVersion: 1, ...intent, status: 'committed' };
+    if (existing?.eventId === intent.eventId) {
+      if (
+        existing.status !== 'committed' ||
+        existing.index !== intent.index ||
+        existing.playlist !== intent.playlist ||
+        existing.reference !== intent.reference
+      ) {
+        throw new Error(`Managed master event ${intent.eventId} conflicts with its durable intent`);
+      }
+      return existing;
+    }
+    if (existing?.status === 'pending') {
+      throw new Error(`Managed master event ${existing.eventId} must settle before ${intent.eventId}`);
+    }
+    if (existing && intent.index < existing.index) {
+      throw new Error(`Managed master adoption index ${intent.index} is below its durable floor ${existing.index}`);
+    }
+    this.save(committed);
+    return committed;
   }
 
   public prepare(

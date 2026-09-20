@@ -56,6 +56,8 @@ import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from
 import { AbrLadder } from './AbrLadder.js';
 import {
   AdminApiClient,
+  LegacyAdoptionOperation,
+  LegacyAdoptionPreparation,
   ManagedContinuationPreparation,
   ManagedRunReport,
   stateWasReported,
@@ -79,6 +81,11 @@ import {
 } from './fragmentAgreement.js';
 import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
 import { LadderRegistry } from './LadderRegistry.js';
+import {
+  LegacyAdoptionPendingError,
+  LegacyAdoptionValidationError,
+  LegacyRecordingAdopter,
+} from './LegacyRecordingAdopter.js';
 import { Logger } from './Logger.js';
 import {
   ManagedCheckpointPersistence,
@@ -94,6 +101,7 @@ import {
   ManagedFormatMismatchError,
   ManagedFormatPersistence,
 } from './ManagedFormatStore.js';
+import { ManagedMasterPersistence } from './ManagedMasterStore.js';
 import {
   ManagedMediaAcceptance,
   ManagedMediaInput,
@@ -168,6 +176,10 @@ export interface StreamOrchestratorConfig {
   managedFormatStore?: ManagedFormatPersistence;
   /** Bounded actual-media inspector. Required by production lifecycle-v1 wiring. */
   mediaFormatInspector?: MediaFormatInspector;
+  /** Exact immutable legacy VOD reader used only by lifecycle-v1 adoption polling. */
+  legacyRecordingAdopter?: LegacyRecordingAdopter;
+  /** Durable master floor used when an adopted ABR recording predates managed master intents. */
+  managedMasterStore?: ManagedMasterPersistence;
   /**
    * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
    * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
@@ -522,6 +534,8 @@ export class StreamOrchestrator {
   private managedCapability?: UploaderCapabilities;
   private managedCapabilityTimer?: Timer;
   private managedCapabilityInFlight = false;
+  /** Admin streams held read-only while their frozen legacy recording is being adopted. */
+  private legacyAdoptionReservedStreams = new Set<string>();
 
   constructor(
     private publishers: BeePublisherPool,
@@ -565,6 +579,12 @@ export class StreamOrchestrator {
       this.logger.warn(
         `[StreamOrchestrator] Refused an announce for ${streamId}: this service is in admin mode, so a stream ` +
           'has to be declared through the admin API before anything may publish to it',
+      );
+      return false;
+    }
+    if (admin && this.legacyAdoptionReservedStreams.has(admin.id)) {
+      this.logger.warn(
+        `[StreamOrchestrator] Refused an announce for ${streamId}: legacy recording adoption is still in progress`,
       );
       return false;
     }
@@ -1359,6 +1379,128 @@ export class StreamOrchestrator {
         preparation,
       );
     }
+    await this.pollLegacyAdoptions(uploaderId);
+  }
+
+  private async pollLegacyAdoptions(uploaderId: string): Promise<void> {
+    const adminApi = this.config.adminApi;
+    const adopter = this.config.legacyRecordingAdopter;
+    const checkpointStore = this.config.managedCheckpointStore;
+    if (!adopter) {
+      return;
+    }
+    if (!adminApi || !checkpointStore) {
+      throw new Error('Legacy adoption polling requires the admin, adopter and checkpoint stores');
+    }
+    const operations = await adminApi.listLegacyAdoptions(uploaderId);
+    this.legacyAdoptionReservedStreams = new Set(operations.map((operation) => operation.streamId));
+    for (const operation of operations) {
+      let preparation: LegacyAdoptionPreparation;
+      try {
+        const inspection = await adopter.inspect(
+          operation,
+          this.pendingLegacyRecordingTopics(),
+          this.legacyAdoptionExpectedRenditions(operation),
+        );
+        const mediaTopics = operation.candidate.renditions.length === 0
+          ? [operation.candidate.topic]
+          : operation.candidate.renditions.map((rendition) => rendition.topic);
+        const pendingAfterInspection = this.pendingLegacyRecordingTopics()
+          .filter((topic) => mediaTopics.includes(topic));
+        if (pendingAfterInspection.length > 0) {
+          throw new LegacyAdoptionPendingError(
+            `Legacy recording gained pending writes during inspection for ${pendingAfterInspection.join(', ')}`,
+          );
+        }
+        const completedRecording = checkpointStore.adoptLegacy({
+          operationId: operation.operationId,
+          candidateDigest: operation.candidateDigest,
+          ...inspection.checkpoint,
+        });
+        if (operation.candidate.renditions.length > 0) {
+          const masterStore = this.config.managedMasterStore;
+          if (!masterStore) {
+            throw new Error('Legacy ABR adoption requires the managed master store');
+          }
+          masterStore.seedCommitted({
+            streamId: operation.streamId,
+            runNumber: 1,
+            uploaderId,
+            claimId: 'legacy-adoption',
+            group: operation.topic,
+            eventId: `legacy-adoption:${operation.candidateDigest}`,
+            index: inspection.checkpoint.master.index,
+            playlist: inspection.masterPlaylist,
+            reference: inspection.checkpoint.master.reference,
+          });
+        }
+        preparation = {
+          lifecycleVersion: 1,
+          uploaderId,
+          expectedRevision: operation.revision,
+          candidateDigest: operation.candidateDigest,
+          status: 'ready',
+          completedRecording,
+          validation: inspection.validation,
+        };
+      } catch (error) {
+        if (!(error instanceof LegacyAdoptionValidationError)) {
+          if (!(error instanceof LegacyAdoptionPendingError)) {
+            this.logger.error(
+              `[StreamOrchestrator] Legacy adoption ${operation.operationId} remains pending:`,
+              error,
+            );
+          }
+          continue;
+        }
+        preparation = {
+          lifecycleVersion: 1,
+          uploaderId,
+          expectedRevision: operation.revision,
+          candidateDigest: operation.candidateDigest,
+          status: 'failed',
+          failure: `Legacy recording validation refused: ${getErrorMessage(error)}`.slice(0, 500),
+        };
+      }
+      await adminApi.reportLegacyAdoptionPreparation(operation, preparation);
+    }
+  }
+
+  private pendingLegacyRecordingTopics(): string[] {
+    const topics = new Set(this.sharedFeedWrites.keys());
+    for (const uploader of this.activeStreams.values()) {
+      topics.add(uploader.getStreamState().streamRawTopic);
+    }
+    for (const streamId of this.recoveryStore.listActive()) {
+      const entry = this.recoveryStore.read(streamId);
+      if (entry.kind === RECOVERY_ENTRY_UNREADABLE) {
+        throw new LegacyAdoptionPendingError(
+          `Recovery entry ${streamId} is unreadable, so pending legacy writes cannot be disproved`,
+        );
+      }
+      if (entry.kind === RECOVERY_ENTRY_LOADED) {
+        topics.add(entry.state.streamRawTopic);
+      }
+    }
+    return [...topics];
+  }
+
+  private legacyAdoptionExpectedRenditions(
+    operation: LegacyAdoptionOperation,
+  ): readonly ManagedExpectedRendition[] {
+    if (operation.mediaType === MEDIA_TYPE_AUDIO || !this.config.ladder) {
+      return [];
+    }
+    return this.config.ladder.rungs()
+      .map((rung) => ({
+        name: rung.name,
+        topic: rungTopicFor(operation.topic, rung.name),
+        width: rung.width,
+        height: rung.height,
+        bandwidth: rung.configuredKbps * 1_000,
+        avgBandwidth: rung.configuredKbps * 1_000,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   private reconcileManagedEmptyPredecessor(operation: ManagedContinuationOperation): void {
@@ -4409,6 +4551,7 @@ export class StreamOrchestrator {
     this.managedCapability = undefined;
     this.managedCapabilityTimer?.cancel();
     this.managedCapabilityTimer = undefined;
+    this.legacyAdoptionReservedStreams.clear();
     for (const source of this.managedSources.values()) {
       source.timer?.cancel();
       source.heartbeat?.cancel();

@@ -41,6 +41,9 @@ class CommitCrashStore implements ManagedMasterPersistence {
   latestCommittedIndex(group: string) {
     return this.delegate.latestCommittedIndex(group);
   }
+  seedCommitted(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status'> & { readonly reference: string }) {
+    return this.delegate.seedCommitted(intent);
+  }
   prepare(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status' | 'reference'>) {
     return this.delegate.prepare(intent);
   }
@@ -104,8 +107,13 @@ describe('managed master publication recovery', () => {
   it('writes a successor above the durable predecessor when the feed head looks empty', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-master-floor-'));
     const store = new ManagedMasterStore(root);
-    const first = store.prepare({ ...BINDING, eventId: 'rendition:9', index: 12, playlist: '#EXTM3U\nA' });
-    store.commit(first, 'a'.repeat(64));
+    store.seedCommitted({
+      ...BINDING,
+      eventId: 'legacy-adoption:candidate-a',
+      index: 12,
+      playlist: '#EXTM3U\nA',
+      reference: 'a'.repeat(64),
+    });
     const successor = { ...BINDING, runNumber: 3, claimId: '55555555-5555-4555-8555-555555555555' };
     const written: bigint[] = [];
     const bee = {
