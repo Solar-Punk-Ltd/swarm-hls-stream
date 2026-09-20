@@ -223,7 +223,7 @@ function sessionCookie(response: Response): string | null {
 }
 
 function writeHeaders(): Record<string, string> {
-  return { 'content-type': 'application/json', 'x-requested-with': 'streaming-infra-manager' };
+  return { 'content-type': 'application/json', 'x-requested-with': 'web2-admin' };
 }
 
 function ownerHeaders(cookie: string, write: boolean): Record<string, string> {

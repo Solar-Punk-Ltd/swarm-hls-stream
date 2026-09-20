@@ -57,7 +57,7 @@ export class LoopbackMediaScenarioFetch implements MediaScenarioFetch {
             ? {}
             : {
                 'content-type': 'application/json',
-                'x-requested-with': 'streaming-infra-manager',
+                'x-requested-with': 'web2-admin',
               }),
         },
         ...(body === undefined ? {} : { body }),
