@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
@@ -43,6 +45,28 @@ function seedDist(sandbox, { entry = true } = {}) {
  * would be the first run to report `pnpm: command not found` from inside a build function.
  */
 describe('a deploy on a host without pnpm', () => {
+  it('keeps essential tools that share their directory with pnpm', () => {
+    const sharedBin = mkdtempSync(join(tmpdir(), 'pnpm-shared-tools-'));
+    try {
+      symlinkSync('/bin/bash', join(sharedBin, 'bash'));
+      writeFileSync(join(sharedBin, 'essential-tool'), '#!/bin/sh\necho available\n');
+      chmodSync(join(sharedBin, 'essential-tool'), 0o755);
+      writeFileSync(join(sharedBin, 'pnpm'), '#!/bin/sh\nexit 99\n');
+      chmodSync(join(sharedBin, 'pnpm'), 0o755);
+
+      const sandbox = makeSandbox({ config: ALL_REMOTE, pnpm: false, hostPath: sharedBin });
+      const output = execFileSync(
+        'bash',
+        ['-c', 'if command -v pnpm >/dev/null; then exit 2; fi\nessential-tool'],
+        { encoding: 'utf8', env: { PATH: sandbox.path } },
+      );
+
+      assert.equal(output.trim(), 'available');
+    } finally {
+      rmSync(sharedBin, { recursive: true, force: true });
+    }
+  });
+
   it('ships the dist that is there and names when it was built', async () => {
     const sandbox = makeSandbox({ config: ALL_REMOTE, pnpm: false });
     seedDist(sandbox);

@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -113,6 +114,7 @@ export function makeSandbox({
   config = ALL_LOCAL,
   envFiles = DEFAULT_ENV_FILES,
   pnpm = true,
+  hostPath = process.env.PATH ?? '',
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-clean-'));
   sandboxes.push(root);
@@ -175,7 +177,7 @@ export function makeSandbox({
     binDir,
     remoteHome,
     /** What a script in this sandbox runs with, stubs first and a real pnpm only where one is wanted. */
-    path: `${binDir}${delimiter}${pnpm ? process.env.PATH ?? '' : pathWithoutPnpm()}`,
+    path: `${binDir}${delimiter}${pnpm ? hostPath : pathWithoutPnpm(root, hostPath)}`,
     /** Path to one of the real deploy scripts, copied into this sandbox. */
     scriptPath: (name) => join(deploy, 'scripts', name),
     /** Every `docker` invocation made on this host, in order, one argv per entry. */
@@ -197,11 +199,24 @@ export function makeSandbox({
   };
 }
 
-/** Every directory carrying a real `pnpm` removed, which is what `command -v pnpm` has to miss. */
-function pathWithoutPnpm() {
-  return (process.env.PATH ?? '')
+/** Replaces a directory carrying `pnpm` with a view that contains every sibling tool except it. */
+function pathWithoutPnpm(root, hostPath) {
+  return hostPath
     .split(delimiter)
-    .filter((dir) => dir.length > 0 && !existsSync(join(dir, 'pnpm')))
+    .filter((dir) => dir.length > 0)
+    .map((dir, index) => {
+      if (!existsSync(join(dir, 'pnpm'))) {
+        return dir;
+      }
+      const withoutPnpm = join(root, 'host-path-without-pnpm', String(index));
+      mkdirSync(withoutPnpm, { recursive: true });
+      for (const entry of readdirSync(dir)) {
+        if (entry !== 'pnpm') {
+          symlinkSync(join(dir, entry), join(withoutPnpm, entry));
+        }
+      }
+      return withoutPnpm;
+    })
     .join(delimiter);
 }
 
