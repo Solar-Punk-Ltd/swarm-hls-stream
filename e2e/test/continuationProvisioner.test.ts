@@ -4,7 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFixturePlan, type FixturePlan,ResourceJournal } from '../src/continuation/fixture.js';
+import {
+  cleanupFixture,
+  createFixturePlan,
+  type FixtureDocker,
+  type FixturePlan,
+  type FixtureResourcePlan,
+  type InspectedResource,
+  ResourceJournal,
+  type ResourceKind,
+} from '../src/continuation/fixture.js';
 import type { HeldUploaderProfile } from '../src/continuation/managerProfile.js';
 import {
   GuardedApplicationProvisioner,
@@ -68,14 +77,35 @@ function targets(): ReleaseFixtureTargets {
 
 class RecordingProcess {
   readonly calls: ProcessInvocation[] = [];
+  failGuardRole: string | null = null;
 
   async run(invocation: ProcessInvocation): Promise<ProcessResult> {
     this.calls.push(structuredClone(invocation));
+    if (invocation.file.endsWith('/bin/streaming-release-guard') && invocation.args[0] === this.failGuardRole) {
+      throw new Error('synthetic guarded activation timeout');
+    }
     if (invocation.file === 'docker' && invocation.args[0] === 'ps') {
       return { stdout: 'manager-api-container\n', stderr: '' };
     }
     return { stdout: '', stderr: '' };
   }
+}
+
+class RemovalTrackingDocker implements FixtureDocker {
+  readonly removed: string[] = [];
+
+  constructor(private readonly resource: InspectedResource) {}
+
+  async findExact(): Promise<InspectedResource | null> {return this.resource;}
+  async create(
+    _kind: ResourceKind,
+    _name: string,
+    _labels: Readonly<Record<string, string>>,
+    _plan?: FixtureResourcePlan,
+  ): Promise<InspectedResource> {return this.resource;}
+  async startContainer(): Promise<void> {}
+  async inspect(): Promise<InspectedResource | null> {return this.resource;}
+  async remove(_kind: ResourceKind, id: string): Promise<void> {this.removed.push(id);}
 }
 
 class ProfileClient {
@@ -241,6 +271,41 @@ describe('GuardedApplicationProvisioner', () => {
     assert.equal(restartedProcess.calls.length, 0);
     assert.equal(profiles.calls, 1);
     assert.equal(profiles.startCalls.length, 1);
+  });
+
+  it('refuses cleanup when the first admin guard activation times out before profile creation', async () => {
+    const fixturePlan = plan();
+    const journal = new ResourceJournal(fixturePlan.outputRoot);
+    journal.initialize(fixturePlan, []);
+    const recordedPlan = fixturePlan.resources.find((resource) => resource.kind === 'volume');
+    assert.ok(recordedPlan);
+    const recorded: InspectedResource = {
+      kind: 'volume',
+      id: recordedPlan.name,
+      name: recordedPlan.name,
+      labels: { ...recordedPlan.labels },
+    };
+    journal.planResource(recordedPlan);
+    journal.recordResource(recorded);
+    const docker = new RemovalTrackingDocker(recorded);
+    const process = new RecordingProcess();
+    process.failGuardRole = 'admin';
+    const subject = new GuardedApplicationProvisioner({
+      plan: fixturePlan,
+      targets: targets(),
+      process,
+      profiles: new ProfileClient(),
+      receipts: new ReceiptVerifier(),
+      journal,
+      managerUsername: 'srs-a1b2c3d4-operator',
+      managerPassword: 'synthetic-manager-password',
+      feedPrivateKey: 'synthetic-feed-private-key',
+      postageBatchId: POSTAGE_BATCH_ID,
+    });
+
+    await assert.rejects(subject.provision(), /admin guarded activation failed/i);
+    await assert.rejects(cleanupFixture(journal, docker), /provisioning is unresolved/i);
+    assert.deepEqual(docker.removed, []);
   });
 });
 

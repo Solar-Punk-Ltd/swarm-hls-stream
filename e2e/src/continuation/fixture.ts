@@ -190,6 +190,7 @@ export interface ResourceJournalDocument {
   intents: ResourceIntent[];
   stages: StageRecord[];
   readiness?: ReadinessEvidence;
+  applicationProvisioning?: { status: 'running' | 'ready' };
   managerProfile?:
     | { status: 'creating'; name: string; portSlot: number }
     | { status: 'created' | 'ready'; name: string; portSlot: number; instanceId: string };
@@ -482,6 +483,24 @@ export class ResourceJournal {
     this.write(document);
   }
 
+  beginApplicationProvisioning(): void {
+    const document = this.read();
+    if (document.applicationProvisioning !== undefined) {
+      throw new FixtureRefusal('application provisioning is already recorded');
+    }
+    document.applicationProvisioning = { status: 'running' };
+    this.write(document);
+  }
+
+  markApplicationProvisioningReady(): void {
+    const document = this.read();
+    if (document.applicationProvisioning?.status !== 'running') {
+      throw new FixtureRefusal('application provisioning is not running');
+    }
+    document.applicationProvisioning = { status: 'ready' };
+    this.write(document);
+  }
+
   beginManagerProfile(name: string, portSlot: number): void {
     const document = this.read();
     if (document.managerProfile !== undefined) {
@@ -739,7 +758,10 @@ export class MediaFixtureRunner {
 
 export async function cleanupFixture(journal: ResourceJournal, docker: FixtureDocker): Promise<void> {
   const document = journal.read();
-  if (document.managerProfile !== undefined && document.managerProfile.status !== 'ready') {
+  if (
+    document.applicationProvisioning?.status === 'running' ||
+    (document.managerProfile !== undefined && document.managerProfile.status !== 'ready')
+  ) {
     throw new FixtureRefusal('cleanup refused while application provisioning is unresolved');
   }
   const unresolved = document.intents.filter((intent) => intent.status === 'planned');

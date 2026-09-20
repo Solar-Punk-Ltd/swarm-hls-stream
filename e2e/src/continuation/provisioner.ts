@@ -202,46 +202,44 @@ export class GuardedApplicationProvisioner {
   }
 
   async provision(): Promise<ContinuationTopology> {
-    const current = this.options.journal.read().managerProfile;
-    if (current?.status === 'creating') {
-      throw new FixtureRefusal('manager profile creation is unresolved and needs manual reconciliation');
-    }
-    if (current?.status === 'ready') {
+    const document = this.options.journal.read();
+    const current = document.managerProfile;
+    if (document.applicationProvisioning?.status === 'ready' && current?.status === 'ready') {
       return createContinuationTopology(this.options.plan, current.instanceId);
     }
-    let profile: HeldUploaderProfile;
-    if (current?.status === 'created') {
-      profile = { name: current.name, instanceId: current.instanceId, portSlot: current.portSlot };
-    } else {
-      await this.guardMutation('release guard install', {
-        file: managerCandidate(this.options.plan, 'deploy/install-release-guard.sh'),
-        args: installerArguments(this.options.plan, this.options.targets),
-        timeoutMs: 120_000,
-      });
-      await this.activate('admin', 'admin', 'default', {
-        INGEST_MANAGED_LIFECYCLE_VERSION: null,
-        INGEST_MANAGED_UPLOADER_ID: null,
-      });
-      await this.activate('manager', 'manager', 'default');
-      await this.createManagerOperator();
-
-      const name = managerUploaderProfileName(this.options.plan.fixtureId);
-      this.options.journal.beginManagerProfile(name, this.options.targets.uploader.portSlot);
-      try {
-        profile = await this.options.profiles.createHeldUploaderProfile({
-          fixtureId: this.options.plan.fixtureId,
-          expectedPortSlot: this.options.targets.uploader.portSlot,
-          beeUrl: this.options.plan.internalEndpoints.bee,
-          privateKey: this.options.feedPrivateKey,
-        });
-      } catch {
-        throw new FixtureRefusal('manager profile creation outcome is unresolved');
-      }
-      if (profile.name !== name || profile.portSlot !== this.options.targets.uploader.portSlot) {
-        throw new FixtureRefusal('manager profile result does not match its installed target');
-      }
-      this.options.journal.completeManagerProfile(profile.name, profile.portSlot, profile.instanceId);
+    if (document.applicationProvisioning !== undefined || current !== undefined) {
+      throw new FixtureRefusal('application provisioning is unresolved and needs manual reconciliation');
     }
+    this.options.journal.beginApplicationProvisioning();
+    let profile: HeldUploaderProfile;
+    await this.guardMutation('release guard install', {
+      file: managerCandidate(this.options.plan, 'deploy/install-release-guard.sh'),
+      args: installerArguments(this.options.plan, this.options.targets),
+      timeoutMs: 120_000,
+    });
+    await this.activate('admin', 'admin', 'default', {
+      INGEST_MANAGED_LIFECYCLE_VERSION: null,
+      INGEST_MANAGED_UPLOADER_ID: null,
+    });
+    await this.activate('manager', 'manager', 'default');
+    await this.createManagerOperator();
+
+    const name = managerUploaderProfileName(this.options.plan.fixtureId);
+    this.options.journal.beginManagerProfile(name, this.options.targets.uploader.portSlot);
+    try {
+      profile = await this.options.profiles.createHeldUploaderProfile({
+        fixtureId: this.options.plan.fixtureId,
+        expectedPortSlot: this.options.targets.uploader.portSlot,
+        beeUrl: this.options.plan.internalEndpoints.bee,
+        privateKey: this.options.feedPrivateKey,
+      });
+    } catch {
+      throw new FixtureRefusal('manager profile creation outcome is unresolved');
+    }
+    if (profile.name !== name || profile.portSlot !== this.options.targets.uploader.portSlot) {
+      throw new FixtureRefusal('manager profile result does not match its installed target');
+    }
+    this.options.journal.completeManagerProfile(profile.name, profile.portSlot, profile.instanceId);
 
     await this.activate(
       'admin',
@@ -280,6 +278,7 @@ export class GuardedApplicationProvisioner {
       }
     }
     this.options.journal.markManagerProfileReady(profile.instanceId);
+    this.options.journal.markApplicationProvisioningReady();
     return createContinuationTopology(this.options.plan, profile.instanceId);
   }
 
