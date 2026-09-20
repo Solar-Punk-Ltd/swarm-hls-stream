@@ -23,6 +23,7 @@ import {
   AdminApiClient,
   AdminStreamDraft,
   ManagedClaimRequest,
+  ManagedContinuationPreparation,
   ManagedRunReport,
   MAX_STATE_REPORT_ATTEMPTS,
   MIN_ADMIN_API_TOKEN_LENGTH,
@@ -335,6 +336,90 @@ describe('the admin API client, negotiating lifecycle v1', () => {
       }),
       async ({ client }) => {
         await assert.rejects(() => client.claimManagedRun(DRAFT.id, 2, request), /claimed managed run/);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  it('polls and acknowledges the exact managed continuation preparation', async () => {
+    const uploaderId = 'srs-157-90-34-105';
+    const operation = {
+      lifecycleVersion: 1 as const,
+      operationId: '11111111-1111-4111-8111-111111111111',
+      requestId: '22222222-2222-4222-8222-222222222222',
+      streamId: '33333333-3333-4333-8333-333333333333',
+      topic: 'a'.repeat(64),
+      mediaType: MEDIA_TYPE_VIDEO,
+      uploaderId,
+      previousRunNumber: 2,
+      nextRunNumber: 3,
+      revision: 11,
+      status: 'pending' as const,
+      retainedRecording: {
+        runNumber: 2,
+        checkpointReference: '44444444-4444-4444-8444-444444444444',
+        master: { topic: 'a'.repeat(64), index: 7, reference: 'b'.repeat(64), duration: 12 },
+        expectedRenditions: [],
+        renditions: [],
+      },
+    };
+    const preparation: ManagedContinuationPreparation = {
+      lifecycleVersion: 1,
+      uploaderId,
+      expectedRevision: operation.revision,
+      status: 'ready',
+      checkpointReference: '55555555-5555-4555-8555-555555555555',
+    };
+    await withAdmin(
+      (req, res) => {
+        if (req.method === 'GET') {
+          res.json({ continuations: [operation] });
+          return;
+        }
+        res.json({
+          operation: {
+            ...operation,
+            revision: operation.revision + 1,
+            status: 'ready',
+            checkpointReference: preparation.checkpointReference,
+          },
+        });
+      },
+      async ({ client, received }) => {
+        assert.deepEqual(await client.listManagedContinuations(uploaderId), [operation]);
+        await client.reportManagedContinuationPreparation(operation.streamId, operation.operationId, preparation);
+        assert.equal(received[0].url, `/api/internal/uploaders/${uploaderId}/continuations`);
+        assert.equal(
+          received[1].url,
+          `/api/internal/streams/${operation.streamId}/continuations/${operation.operationId}/preparation`,
+        );
+        assert.deepEqual(received[1].body, preparation);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  it('refuses continuation work assigned to another uploader', async () => {
+    await withAdmin(
+      always(200, {
+        continuations: [
+          {
+            lifecycleVersion: 1,
+            operationId: '11111111-1111-4111-8111-111111111111',
+            requestId: '22222222-2222-4222-8222-222222222222',
+            streamId: '33333333-3333-4333-8333-333333333333',
+            topic: 'a'.repeat(64),
+            mediaType: MEDIA_TYPE_VIDEO,
+            uploaderId: 'another-uploader',
+            previousRunNumber: 2,
+            nextRunNumber: 3,
+            revision: 11,
+            status: 'pending',
+          },
+        ],
+      }),
+      async ({ client }) => {
+        await assert.rejects(() => client.listManagedContinuations('srs-157-90-34-105'), /invalid continuation/);
       },
       { lifecycleVersion: 1 },
     );

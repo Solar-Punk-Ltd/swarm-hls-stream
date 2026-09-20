@@ -4,7 +4,10 @@ import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, Rendition } from '../typ
 import { getErrorMessage } from '../utils/common.js';
 
 import { Logger } from './Logger.js';
-import { ManagedExpectedRendition } from './ManagedCheckpointStore.js';
+import {
+  ManagedContinuationOperation,
+  ManagedExpectedRendition,
+} from './ManagedCheckpointStore.js';
 
 /**
  * The admin service this uploader answers to when `ADMIN_API_URL` is set. See the "Admin mode"
@@ -130,6 +133,22 @@ export interface ManagedClaimRequest {
   uploaderId: string;
   requestId: string;
 }
+
+export type ManagedContinuationPreparation =
+  | {
+      lifecycleVersion: 1;
+      uploaderId: string;
+      expectedRevision: number;
+      status: 'ready';
+      checkpointReference: string;
+    }
+  | {
+      lifecycleVersion: 1;
+      uploaderId: string;
+      expectedRevision: number;
+      status: 'failed';
+      failure: string;
+    };
 
 export interface ManagedClaimedRun {
   lifecycleVersion: 1;
@@ -343,6 +362,32 @@ function asExpectedRenditions(value: unknown): readonly ManagedExpectedRendition
     previousName = rendition.name;
   }
   return value as ManagedExpectedRendition[];
+}
+
+function asManagedContinuation(value: unknown, uploaderId: string): ManagedContinuationOperation | null {
+  if (!value || typeof value !== 'object') {return null;}
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.lifecycleVersion !== 1 ||
+    typeof candidate.operationId !== 'string' ||
+    !UUID.test(candidate.operationId) ||
+    typeof candidate.requestId !== 'string' ||
+    !UUID.test(candidate.requestId) ||
+    typeof candidate.streamId !== 'string' ||
+    !UUID.test(candidate.streamId) ||
+    typeof candidate.topic !== 'string' ||
+    candidate.topic.length === 0 ||
+    (candidate.mediaType !== MEDIA_TYPE_VIDEO && candidate.mediaType !== MEDIA_TYPE_AUDIO) ||
+    candidate.uploaderId !== uploaderId ||
+    !isPositiveInteger(candidate.previousRunNumber) ||
+    !isPositiveInteger(candidate.nextRunNumber) ||
+    Number(candidate.nextRunNumber) <= Number(candidate.previousRunNumber) ||
+    !isNonNegativeInteger(candidate.revision) ||
+    candidate.status !== 'pending'
+  ) {
+    return null;
+  }
+  return value as ManagedContinuationOperation;
 }
 
 function asIngestLookup(body: unknown, lifecycleVersion?: 1): AdminIngestLookup | null {
@@ -721,6 +766,71 @@ export class AdminApiClient {
       throw new Error(`Admin API answered 200 for ${url} with a body that is not the claimed managed run`);
     }
     return claimed;
+  }
+
+  /** Poll private continuation preparation work assigned to this exact uploader. */
+  public async listManagedContinuations(uploaderId: string): Promise<readonly ManagedContinuationOperation[]> {
+    if (this.lifecycleVersion !== 1) {
+      throw new Error('Managed continuation polling requires lifecycle version 1');
+    }
+    const url = `${this.baseUrl}/api/internal/uploaders/${encodeURIComponent(uploaderId)}/continuations`;
+    const response = await this.send(url, { method: 'GET' }, this.lookupTimeoutMs);
+    if (!response.ok) {
+      throw new Error(`Admin API answered ${response.status} for ${url}`);
+    }
+    const body = await this.readJson(response);
+    const continuations =
+      body && typeof body === 'object' ? (body as Record<string, unknown>).continuations : undefined;
+    if (!Array.isArray(continuations)) {
+      throw new Error(`Admin API answered 200 for ${url} without a continuation list`);
+    }
+    const parsed = continuations.map((operation) => asManagedContinuation(operation, uploaderId));
+    if (parsed.some((operation) => operation === null)) {
+      throw new Error(`Admin API answered 200 for ${url} with an invalid continuation operation`);
+    }
+    return parsed as ManagedContinuationOperation[];
+  }
+
+  /** Acknowledge the exact checkpoint preparation result. The operation remains retryable on failure. */
+  public async reportManagedContinuationPreparation(
+    streamId: string,
+    operationId: string,
+    preparation: ManagedContinuationPreparation,
+  ): Promise<void> {
+    if (this.lifecycleVersion !== 1) {
+      throw new Error('Managed continuation preparation requires lifecycle version 1');
+    }
+    const url =
+      `${this.baseUrl}/api/internal/streams/${encodeURIComponent(streamId)}` +
+      `/continuations/${encodeURIComponent(operationId)}/preparation`;
+    const response = await this.send(
+      url,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(preparation),
+      },
+      this.reportTimeoutMs,
+    );
+    if (!response.ok) {
+      throw new Error(`Admin API answered ${response.status} for ${url}`);
+    }
+    const body = await this.readJson(response);
+    const operation = body && typeof body === 'object' ? (body as Record<string, unknown>).operation : undefined;
+    if (!operation || typeof operation !== 'object') {
+      throw new Error(`Admin API answered 200 for ${url} without the prepared continuation`);
+    }
+    const prepared = operation as Record<string, unknown>;
+    if (
+      prepared.lifecycleVersion !== 1 ||
+      prepared.operationId !== operationId ||
+      prepared.streamId !== streamId ||
+      prepared.uploaderId !== preparation.uploaderId ||
+      prepared.revision !== preparation.expectedRevision + 1 ||
+      prepared.status !== preparation.status
+    ) {
+      throw new Error(`Admin API answered 200 for ${url} with another continuation result`);
+    }
   }
 
   /** Report a persisted managed event. Every retry sends the caller's exact body unchanged. */
