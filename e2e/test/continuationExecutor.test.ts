@@ -6,8 +6,8 @@ import { describe, it } from 'node:test';
 
 import {
   cleanupContinuationFixture,
-  runContinuationFixture,
   type ContinuationFixtureRunSteps,
+  runContinuationFixture,
 } from '../src/continuation/executor.js';
 import { FixtureRefusal } from '../src/continuation/fixture.js';
 import { withFixtureOperationLease } from '../src/continuation/operationLease.js';
