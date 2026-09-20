@@ -1,5 +1,12 @@
 import { useEffect, useRef } from 'react';
+
 import type { ContinuationPlayerTest } from './window';
+
+declare global {
+  interface Window {
+    __continuationPlayerTest?: ContinuationPlayerTest;
+  }
+}
 
 type Replay = {
   master: { reference: string };
