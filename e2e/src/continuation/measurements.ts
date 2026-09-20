@@ -10,9 +10,13 @@ import type { TopologyServiceRole } from './topology.js';
 
 const SAFE_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
 const FIXTURE_ID = /^srs-continuation-20260920-[a-z0-9]{8,16}$/;
+const SERVICE_METRIC_MAX_BYTES = 256 * 1024;
 const EXPECTED_ROLES: readonly TopologyServiceRole[] = [
   'blockchain', 'bee-queen', 'bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4',
   'postgres', 'admin-api', 'admin-web', 'srs', 'uploader', 'viewer', 'browser', 'media-sender',
+];
+const ROLES_WITHOUT_SERVICE_METRICS: readonly TopologyServiceRole[] = [
+  'blockchain', 'postgres', 'admin-api', 'admin-web', 'viewer', 'browser', 'media-sender',
 ];
 
 const HTTP_TEXT_SCRIPT = `
@@ -49,16 +53,16 @@ export async function captureContinuationMeasurements(
   const uploader = containers.get('uploader')!;
   const serviceMetrics: Record<string, string> = {};
   const metricEndpoints = new Map<string, string>([
-    ['bee-queen', `http://${input.fixtureId}-bee-queen:1634/metrics`],
-    ['bee-worker-1', `http://${input.fixtureId}-bee-worker-1:1636/metrics`],
-    ['bee-worker-2', `http://${input.fixtureId}-bee-worker-2:1638/metrics`],
-    ['bee-worker-3', `http://${input.fixtureId}-bee-worker-3:1640/metrics`],
-    ['bee-worker-4', `http://${input.fixtureId}-bee-worker-4:1642/metrics`],
+    ['bee-queen', `http://${input.fixtureId}-bee-queen:1633/metrics`],
+    ['bee-worker-1', `http://${input.fixtureId}-bee-worker-1:1635/metrics`],
+    ['bee-worker-2', `http://${input.fixtureId}-bee-worker-2:1637/metrics`],
+    ['bee-worker-3', `http://${input.fixtureId}-bee-worker-3:1639/metrics`],
+    ['bee-worker-4', `http://${input.fixtureId}-bee-worker-4:1641/metrics`],
     ['srs', 'http://srs:10019/api/v1/summaries'],
   ]);
   for (const [name, url] of metricEndpoints) {
     const result = await command.run('docker', [
-      'exec', input.probeContainerId, 'node', '-e', HTTP_TEXT_SCRIPT, url, String(2 * 1024 * 1024),
+      'exec', input.probeContainerId, 'node', '-e', HTTP_TEXT_SCRIPT, url, String(SERVICE_METRIC_MAX_BYTES),
     ]);
     serviceMetrics[name] = result.stdout;
   }
@@ -94,6 +98,7 @@ export async function captureContinuationMeasurements(
     phase: input.phase,
     capturedAt: new Date().toISOString(),
     serviceMetrics,
+    rolesWithoutServiceMetrics: ROLES_WITHOUT_SERVICE_METRICS,
     exactContainerStats: stats,
     exactContainerLimits: limits,
     coTenancy,
