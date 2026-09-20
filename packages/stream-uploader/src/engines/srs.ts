@@ -695,6 +695,17 @@ async function handleStreams(
           claimant,
           admin,
         );
+        if (
+          accepted &&
+          !streamOrchestrator.bindManagedRenditionConnection(streamId, role.baseStreamId, managedBase, {
+            serverId: payload.server_id as string,
+            serviceId: payload.service_id as string,
+            clientId: payload.client_id as string,
+          })
+        ) {
+          streamOrchestrator.failManagedSource(role.baseStreamId, managedBase);
+          accepted = false;
+        }
         if (accepted) {
           managedRungConnections.set(key as string, {
             streamId,
@@ -969,6 +980,22 @@ function handleHls(
       if (role.kind === 'source') {
         authenticatedBases.set(streamId, recovered.admin);
       }
+    }
+    const recoveredRungSource =
+      managedLifecycle && key && role.kind === 'rung' && !managedRungConnections.has(key)
+        ? streamOrchestrator.recoverManagedRenditionConnection(streamId, role.baseStreamId, {
+            serverId: payload.server_id as string,
+            serviceId: payload.service_id as string,
+            clientId: payload.client_id as string,
+          })
+        : null;
+    if (key && role.kind === 'rung' && recoveredRungSource) {
+      managedRungConnections.set(key, {
+        streamId,
+        baseStreamId: role.baseStreamId,
+        source: recoveredRungSource,
+      });
+      managedBases.set(role.baseStreamId, recoveredRungSource);
     }
     const managedRung = managedLifecycle && key ? managedRungConnections.get(key) : undefined;
     const legacyRung = managedLifecycle && key ? legacyRungConnections.get(key) : undefined;

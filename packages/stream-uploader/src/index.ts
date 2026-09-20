@@ -291,7 +291,9 @@ async function start() {
 
         await streamCatalog.init();
         streamOrchestrator.restoreManagedRuns();
-        return streamOrchestrator.recoverStreams();
+        const managed = streamOrchestrator.recoverManagedMedia();
+        const legacy = await streamOrchestrator.recoverStreams();
+        return [...new Set([...managed, ...legacy])];
       },
       {
         url: coordinatorUrl,

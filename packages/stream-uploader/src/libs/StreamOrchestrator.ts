@@ -740,6 +740,7 @@ export class StreamOrchestrator {
       deadlineRemainingMs: reconnectMs,
       lastProgressPts: null,
       source: null,
+      rungConnections: [],
       pendingReports: [],
     };
     try {
@@ -824,6 +825,7 @@ export class StreamOrchestrator {
       deadlineRemainingMs: reconnectMs,
       lastProgressPts: null,
       source: null,
+      rungConnections: [],
       claimRequestId: crypto.randomUUID(),
       pendingReports: [],
     };
@@ -976,6 +978,73 @@ export class StreamOrchestrator {
     }
   }
 
+  /**
+   * Rebuild managed uploaders from the durable managed-media journal before legacy recovery runs.
+   * A callback can be acknowledged before its first Bee upload, so RecoveryStore is not an
+   * authoritative inventory for managed tracks.
+   */
+  public recoverManagedMedia(): string[] {
+    const store = this.config.managedMediaStore;
+    if (!store) {
+      return [];
+    }
+
+    const recovered: string[] = [];
+    for (const [baseStreamId, state] of this.managedSources) {
+      let streamIds: string[];
+      try {
+        streamIds = [
+          ...new Set([
+            ...store
+              .listRun(state.record.adminStreamId, state.record.runNumber)
+              .map((record) => record.streamId),
+            ...store
+              .listTrackStates(state.record.adminStreamId, state.record.runNumber)
+              .map((journal) => journal.streamId),
+          ]),
+        ];
+      } catch (error) {
+        this.logger.error(`[StreamOrchestrator] Refused unreadable managed media for ${baseStreamId}:`, error);
+        continue;
+      }
+
+      for (const streamId of streamIds) {
+        if (this.activeStreams.has(streamId)) {
+          continue;
+        }
+        const match = this.config.ladder?.match(streamId) ?? null;
+        if (streamId !== baseStreamId && match?.baseStreamId !== baseStreamId) {
+          this.logger.error(
+            `[StreamOrchestrator] Refused managed media track ${streamId}: it is not part of ${baseStreamId}`,
+          );
+          continue;
+        }
+        if (match && !state.record.expectedRenditions.some((rendition) => rendition.name === match.rung.name)) {
+          this.logger.error(
+            `[StreamOrchestrator] Refused managed media track ${streamId}: its rung was not frozen for this run`,
+          );
+          continue;
+        }
+
+        this.spawnUploader(
+          streamId,
+          state.record.mediaType,
+          ANONYMOUS_CLAIMANT,
+          { id: state.record.adminStreamId, topic: state.record.topic },
+        );
+        const result = this.enqueuePendingManagedTrack(state, streamId);
+        if (!result.accepted) {
+          this.logger.error(
+            `[StreamOrchestrator] Refused pending managed media for ${streamId}: ${result.reason}`,
+          );
+          continue;
+        }
+        recovered.push(streamId);
+      }
+    }
+    return recovered;
+  }
+
   /** Rebind a surviving SRS callback only to the exact source identity persisted before the crash. */
   public recoverManagedSourceConnection(
     streamId: string,
@@ -1001,6 +1070,68 @@ export class StreamOrchestrator {
       identity,
       admin: { id: state.record.adminStreamId, topic: state.record.topic },
     };
+  }
+
+  /** Persist one rung callback lineage before SRS is told that its publish was admitted. */
+  public bindManagedRenditionConnection(
+    streamId: string,
+    baseStreamId: string,
+    source: SourceConnectionIdentity,
+    connection: Omit<SourceConnectionIdentity, 'generation'>,
+  ): boolean {
+    const state = this.managedSources.get(baseStreamId);
+    if (
+      !state ||
+      state.closed ||
+      !state.current ||
+      !sameSource(state.current, source) ||
+      this.streamBases.get(streamId) !== baseStreamId ||
+      (state.deadline !== undefined && this.clock.now() >= state.deadline)
+    ) {
+      return false;
+    }
+    const record: ManagedRunRecord = {
+      ...state.record,
+      rungConnections: [
+        ...state.record.rungConnections.filter((candidate) => candidate.streamId !== streamId),
+        { streamId, connection, source },
+      ],
+    };
+    try {
+      this.config.managedRunStore?.save(record);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed rung binding ${streamId}:`, error);
+      return false;
+    }
+    state.record = record;
+    return true;
+  }
+
+  /** Recover one rung only when its callback and persisted base generation both still match. */
+  public recoverManagedRenditionConnection(
+    streamId: string,
+    baseStreamId: string,
+    observed: Omit<SourceConnectionIdentity, 'generation'>,
+  ): SourceConnectionIdentity | null {
+    const state = this.managedSources.get(baseStreamId);
+    if (!state || state.closed || !state.current) {
+      return null;
+    }
+    if (state.deadline !== undefined && this.clock.now() >= state.deadline) {
+      this.closeManagedSourceAtDeadline(baseStreamId, state);
+      return null;
+    }
+    const binding = state.record.rungConnections.find((candidate) => candidate.streamId === streamId);
+    if (
+      !binding ||
+      !sameSource(binding.source, state.current) ||
+      binding.connection.serverId !== observed.serverId ||
+      binding.connection.serviceId !== observed.serviceId ||
+      binding.connection.clientId !== observed.clientId
+    ) {
+      return null;
+    }
+    return binding.source;
   }
 
   /**
@@ -2775,6 +2906,16 @@ export class StreamOrchestrator {
       fragmentSeconds: this.config.fragmentSeconds,
     };
     const base = state.ladder ? baseStreamId(streamId, state.ladder.rung.name) : null;
+    const managedStreamId = base ?? streamId;
+    const managedState = this.managedSources.get(managedStreamId);
+    if (managedState) {
+      if (this.activeStreams.has(streamId)) {
+        return streamId;
+      }
+      throw new Error(
+        `Refused legacy recovery for managed track ${streamId} without its managed-media journal`,
+      );
+    }
 
     if (state.ladder && base !== null) {
       // Written back to disk rather than only read into memory. The recovery entry and the group
@@ -2798,8 +2939,6 @@ export class StreamOrchestrator {
     // its siblings are still publishing.
     const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
 
-    const managedStreamId = base ?? streamId;
-    const managedState = this.managedSources.get(managedStreamId);
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,

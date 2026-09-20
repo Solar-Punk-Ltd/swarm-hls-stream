@@ -55,6 +55,7 @@ function record(overrides: Partial<ManagedRunRecord> = {}): ManagedRunRecord {
       clientId: 'client-a',
       generation: 1,
     },
+    rungConnections: [],
     pendingReports: [],
     ...overrides,
   };

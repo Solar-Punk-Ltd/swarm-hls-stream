@@ -9,7 +9,9 @@ import { createSrsEngine } from '../src/engines/srs.js';
 import { AbrLadder } from '../src/libs/AbrLadder.js';
 import { AdminApiClient, ManagedClaimRequest } from '../src/libs/AdminApiClient.js';
 import { ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
+import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import { ManagedClaimAttempt, ManagedClaimCompletion, ManagedRunStore } from '../src/libs/ManagedRunStore.js';
+import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { SourceConnectionIdentity } from '../src/types.js';
 import { rungTopicFor } from '../src/utils/rungTopic.js';
@@ -147,6 +149,8 @@ async function withManagedSrs(
       calls.managedRenditions.push(streamId);
       return true;
     },
+    bindManagedRenditionConnection: () => true,
+    recoverManagedRenditionConnection: () => null,
     handleManagedRenditionSegment: (
       streamId: string,
       _baseStreamId: string,
@@ -322,23 +326,33 @@ describe('SRS managed lifecycle callbacks', () => {
     fs.mkdirSync(path.join(mediaRoot, 'video'), { recursive: true });
     const runStore = new ManagedRunStore(path.join(root, 'runs'));
     const checkpointStore = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'managed-media'));
     const ladder = AbrLadder.parse('360p:640:360:700');
     const wallStart = 1_000_000;
     const firstClock = new FakeClock();
+    let reference = 0;
+    const uploads = {
+      uploadData: async () => ({ reference: { toHex: () => String(++reference).padStart(64, '0') } }),
+    };
     const source: SourceConnectionIdentity = {
       serverId: 'server-a',
       serviceId: 'service-a',
       clientId: 'source-a',
       generation: 1,
     };
-    const first = makeTestOrchestrator({
-      clock: firstClock,
-      wallClock: () => wallStart + firstClock.now(),
-      managedSourceReconnectMs: 60_000,
-      managedRunStore: runStore,
-      managedCheckpointStore: checkpointStore,
-      ladder,
-    });
+    const first = makeTestOrchestrator(
+      {
+        clock: firstClock,
+        wallClock: () => wallStart + firstClock.now(),
+        managedSourceReconnectMs: 60_000,
+        managedRunStore: runStore,
+        managedMediaStore: mediaStore,
+        managedCheckpointStore: checkpointStore,
+        ladder,
+      },
+      uploads,
+      new RecoveryStore(path.join(root, 'recovery')),
+    );
     assert.equal(
       first.prepareManagedRun({
         lifecycleVersion: 1,
@@ -377,17 +391,59 @@ describe('SRS managed lifecycle callbacks', () => {
     assert.deepEqual(first.handleManagedSourceProgress(STREAM_ID, source, 0.1, videoSegment(4, 0)), {
       accepted: true,
     });
+    assert.equal(
+      first.provisionManagedRendition(
+        `${STREAM_ID}_360p`,
+        STREAM_ID,
+        source,
+        'video',
+        { address: '127.0.0.1', isAuthenticated: true },
+        { id: ADMIN_ID, topic: 'a'.repeat(64) },
+      ),
+      true,
+    );
+    assert.equal(
+      first.bindManagedRenditionConnection(`${STREAM_ID}_360p`, STREAM_ID, source, {
+        serverId: 'server-a',
+        serviceId: 'service-a',
+        clientId: 'rung-a',
+      }),
+      true,
+    );
+    assert.deepEqual(
+      first.handleManagedRenditionSegment(
+        `${STREAM_ID}_360p`,
+        STREAM_ID,
+        source,
+        0,
+        0.1,
+        videoSegment(4, 0),
+      ),
+      { accepted: true },
+    );
+    const firstRungUploader = (
+      first as unknown as { activeStreams: Map<string, { segmentQueue: { onIdle(): Promise<void> } }> }
+    ).activeStreams.get(`${STREAM_ID}_360p`);
+    assert.ok(firstRungUploader);
+    await firstRungUploader.segmentQueue.onIdle();
 
     const secondClock = new FakeClock();
-    const second = makeTestOrchestrator({
-      clock: secondClock,
-      wallClock: () => wallStart + 1_000 + secondClock.now(),
-      managedSourceReconnectMs: 60_000,
-      managedRunStore: new ManagedRunStore(path.join(root, 'runs')),
-      managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
-      ladder,
-    });
+    const second = makeTestOrchestrator(
+      {
+        clock: secondClock,
+        wallClock: () => wallStart + 1_000 + secondClock.now(),
+        managedSourceReconnectMs: 60_000,
+        managedRunStore: new ManagedRunStore(path.join(root, 'runs')),
+        managedMediaStore: new ManagedMediaStore(path.join(root, 'managed-media')),
+        managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
+        ladder,
+      },
+      uploads,
+      new RecoveryStore(path.join(root, 'recovery')),
+    );
     second.restoreManagedRuns();
+    assert.deepEqual(second.recoverManagedMedia(), [`${STREAM_ID}_360p`]);
+    assert.deepEqual(await second.recoverStreams(), [`${STREAM_ID}_360p`]);
     const engine = createSrsEngine(mediaRoot, {
       webhookToken: TOKEN,
       adminApi: { describe: () => 'http://admin.test' } as AdminApiClient,
@@ -428,6 +484,36 @@ describe('SRS managed lifecycle callbacks', () => {
       fs.writeFileSync(resumedPath, videoSegment(4, 4 * FRAME_TICKS));
       assert.equal(await postHls('source-a', 'resumed.ts', 1), 0);
       assert.equal(fs.existsSync(resumedPath), false);
+
+      const forgedRungPath = path.join(mediaRoot, 'video', 'forged-rung.ts');
+      fs.writeFileSync(forgedRungPath, videoSegment(4, 4 * FRAME_TICKS));
+      const forgedRungResponse = await fetch(`${baseUrl}${engine.prefix}/hls?token=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...rungCallback('on_hls', 'rung-forged'),
+          file: './objs/nginx/html/video/forged-rung.ts',
+          seq_no: 1,
+          duration: 0.1,
+        }),
+      });
+      assert.equal(await forgedRungResponse.json(), 0);
+      assert.equal(fs.existsSync(forgedRungPath), true);
+
+      const resumedRungPath = path.join(mediaRoot, 'video', 'resumed-rung.ts');
+      fs.writeFileSync(resumedRungPath, videoSegment(4, 4 * FRAME_TICKS));
+      const response = await fetch(`${baseUrl}${engine.prefix}/hls?token=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...rungCallback('on_hls', 'rung-a'),
+          file: './objs/nginx/html/video/resumed-rung.ts',
+          seq_no: 1,
+          duration: 0.1,
+        }),
+      });
+      assert.equal(await response.json(), 0);
+      assert.equal(fs.existsSync(resumedRungPath), false);
 
       await secondClock.advance(60_000);
       const expiredPath = path.join(mediaRoot, 'video', 'expired.ts');

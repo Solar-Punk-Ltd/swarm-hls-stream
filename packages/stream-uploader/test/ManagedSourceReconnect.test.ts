@@ -591,6 +591,7 @@ describe('managed SRS source reconnect foundation', () => {
       assert.equal(storeA.listPending(ADMIN_SESSION.id, 2).length, 1);
 
       assert.equal(processB.restoreManagedRun(STREAM_ID), MANAGED_RUN_LOADED);
+      assert.equal(processB.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
       assert.equal(provision(processB, SOURCE_B), true);
       assert.deepEqual(media(processB, SOURCE_B, 0, 4 * FRAME_TICKS), { accepted: true });
       const uploaderB = activeUploader(processB);

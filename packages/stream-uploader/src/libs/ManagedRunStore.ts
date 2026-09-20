@@ -11,6 +11,12 @@ export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
 
 export type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed';
 
+export interface ManagedRungConnectionRecord {
+  readonly streamId: string;
+  readonly connection: Omit<SourceConnectionIdentity, 'generation'>;
+  readonly source: SourceConnectionIdentity;
+}
+
 /** Admission state that must outlive normal media-recovery cleanup. */
 export interface ManagedRunRecord {
   readonly lifecycleVersion: 1;
@@ -32,6 +38,7 @@ export interface ManagedRunRecord {
   readonly deadlineRemainingMs: number;
   readonly lastProgressPts: number | null;
   readonly source: SourceConnectionIdentity | null;
+  readonly rungConnections: readonly ManagedRungConnectionRecord[];
   readonly pendingReports: readonly ManagedRunReportRecord[];
 }
 
@@ -58,6 +65,7 @@ export type ManagedRunClaim = Omit<
   | 'deadlineRemainingMs'
   | 'lastProgressPts'
   | 'source'
+  | 'rungConnections'
   | 'claimRequestId'
   | 'checkpointReference'
   | 'pendingReports'
@@ -147,6 +155,30 @@ function isSource(value: unknown): value is SourceConnectionIdentity {
   );
 }
 
+function isConnection(value: unknown): value is Omit<SourceConnectionIdentity, 'generation'> {
+  if (!value || typeof value !== 'object') {return false;}
+  const connection = value as Partial<SourceConnectionIdentity>;
+  return (
+    typeof connection.serverId === 'string' &&
+    connection.serverId.length > 0 &&
+    typeof connection.serviceId === 'string' &&
+    connection.serviceId.length > 0 &&
+    typeof connection.clientId === 'string' &&
+    connection.clientId.length > 0
+  );
+}
+
+function isRungConnection(value: unknown): value is ManagedRungConnectionRecord {
+  if (!value || typeof value !== 'object') {return false;}
+  const connection = value as Partial<ManagedRungConnectionRecord>;
+  return (
+    typeof connection.streamId === 'string' &&
+    connection.streamId.length > 0 &&
+    isConnection(connection.connection) &&
+    isSource(connection.source)
+  );
+}
+
 function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
   if (!value || typeof value !== 'object') {return false;}
   const record = value as Partial<ManagedRunRecord>;
@@ -180,6 +212,9 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     (record.lastProgressPts === null ||
       (isNonNegativeInteger(record.lastProgressPts) && record.lastProgressPts < PTS_MODULUS)) &&
     (record.source === null || isSource(record.source)) &&
+    Array.isArray(record.rungConnections) &&
+    record.rungConnections.every(isRungConnection) &&
+    new Set(record.rungConnections.map((connection) => connection.streamId)).size === record.rungConnections.length &&
     Array.isArray(record.pendingReports) &&
     record.pendingReports.every((report) =>
       isManagedRunReport(report) &&
