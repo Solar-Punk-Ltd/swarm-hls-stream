@@ -140,6 +140,7 @@ export class ManagedRunStore {
   ) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
+      this.flushDirectory(path.dirname(stateDir));
     }
   }
 
@@ -159,7 +160,11 @@ export class ManagedRunStore {
     }
 
     this.fileOps.renameSync(tmpPath, filePath);
-    const directory = this.fileOps.openSync(this.stateDir, 'r');
+    this.flushDirectory(this.stateDir);
+  }
+
+  private flushDirectory(directoryPath: string): void {
+    const directory = this.fileOps.openSync(directoryPath, 'r');
     try {
       this.fileOps.fsyncSync(directory);
     } finally {

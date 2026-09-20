@@ -111,6 +111,17 @@ describe('ManagedRunStore durability', () => {
     ]);
   });
 
+  it('flushes the parent before a newly created store can acknowledge a save', () => {
+    const parent = tempRoot();
+    const stateDir = path.join(parent, 'managed-runs');
+    const calls: string[] = [];
+    const ops = faultingOps('directory-flush', calls);
+
+    assert.throws(() => new ManagedRunStore(stateDir, ops), /directory flush failure/);
+    assert.deepEqual(calls.slice(-3), [`open:${path.basename(parent)}`, 'flush-directory', `close:${path.basename(parent)}`]);
+    assert.equal(calls.includes('write'), false, 'a run could be saved before its store directory was durable');
+  });
+
   for (const fault of ['write', 'file-flush'] as const) {
     it(`keeps the previous durable run when the next ${fault} fails`, () => {
       const root = tempRoot();
