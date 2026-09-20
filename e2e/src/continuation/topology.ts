@@ -189,6 +189,8 @@ export interface SubmitReleaseGuardReceiptsStep extends BootstrapStepBase {
   kind: 'submit-release-guard-receipts';
   endpointTemplate: string;
   authenticatedBy: 'adminInternalApiToken';
+  source: 'guard-persisted-receipts';
+  mode: 'retry-and-verify';
   slots: readonly ReleaseGuardSlot[];
 }
 
@@ -247,7 +249,12 @@ export interface ContinuationTopology {
 }
 
 export interface ReadinessProbeTransport {
-  /** Returns parsed bounded data. Implementations must stop reading at maxResponseBytes. */
+  /**
+   * Returns normalized evidence derived from the real bounded probe named by the spec.
+   * Raw health endpoints do not all expose this common identity shape. The executor owns
+   * that translation and must stop reading at maxResponseBytes. This module does not
+   * implement the transport or treat fabricated identity fields as runtime evidence.
+   */
   probe(probe: ReadinessProbe): Promise<unknown>;
 }
 
@@ -718,13 +725,6 @@ export function createContinuationTopology(plan: FixturePlan): ContinuationTopol
   const fixtureNetwork = { name: plan.network.name, fixtureId: plan.fixtureId };
   const guardedActivations: readonly GuardedActivation[] = [
     {
-      role: 'manager',
-      slot: { role: 'manager', id: 'default' },
-      candidateRole: 'manager',
-      services: ['api', 'web'],
-      serviceBindings: [],
-    },
-    {
       role: 'admin',
       slot: { role: 'admin', id: 'default' },
       candidateRole: 'admin',
@@ -738,6 +738,21 @@ export function createContinuationTopology(plan: FixturePlan): ContinuationTopol
       startsEnrollmentDisabled: true,
     },
     {
+      role: 'manager',
+      slot: { role: 'manager', id: 'default' },
+      candidateRole: 'manager',
+      services: ['api', 'web'],
+      serviceBindings: [],
+    },
+    {
+      role: 'viewer',
+      slot: { role: 'viewer', id: 'default' },
+      candidateRole: 'stack',
+      services: ['client'],
+      serviceBindings: [{ adapterService: 'client', topologyRole: 'viewer' }],
+      fixtureNetwork,
+    },
+    {
       role: 'uploader',
       slot: { role: 'uploader', id: FIXTURE_UPLOADER_ID },
       candidateRole: 'stack',
@@ -746,14 +761,6 @@ export function createContinuationTopology(plan: FixturePlan): ContinuationTopol
         { adapterService: 'srs', topologyRole: 'srs' },
         { adapterService: 'stream-uploader', topologyRole: 'uploader' },
       ],
-      fixtureNetwork,
-    },
-    {
-      role: 'viewer',
-      slot: { role: 'viewer', id: 'default' },
-      candidateRole: 'stack',
-      services: ['client'],
-      serviceBindings: [{ adapterService: 'client', topologyRole: 'viewer' }],
       fixtureNetwork,
     },
   ];
@@ -812,36 +819,38 @@ export function createContinuationTopology(plan: FixturePlan): ContinuationTopol
       after: ['advance-private-chain'],
     },
     {
-      id: 'activate-manager',
-      kind: 'activate-guarded-release',
-      activationRole: 'manager',
-      after: ['provision-postage'],
-    },
-    {
       id: 'activate-admin',
       kind: 'activate-guarded-release',
       activationRole: 'admin',
-      after: ['activate-manager'],
+      after: ['provision-postage'],
     },
     {
-      id: 'activate-uploader',
+      id: 'activate-manager',
       kind: 'activate-guarded-release',
-      activationRole: 'uploader',
+      activationRole: 'manager',
       after: ['activate-admin'],
     },
     {
       id: 'activate-viewer',
       kind: 'activate-guarded-release',
       activationRole: 'viewer',
-      after: ['activate-uploader'],
+      after: ['activate-manager'],
+    },
+    {
+      id: 'activate-uploader',
+      kind: 'activate-guarded-release',
+      activationRole: 'uploader',
+      after: ['activate-viewer'],
     },
     {
       id: 'submit-release-guard-receipts',
       kind: 'submit-release-guard-receipts',
       endpointTemplate: `${plan.internalEndpoints.admin}/api/internal/release-guard/receipts/:role/:id`,
       authenticatedBy: 'adminInternalApiToken',
+      source: 'guard-persisted-receipts',
+      mode: 'retry-and-verify',
       slots: guardedActivations.map((activation) => activation.slot),
-      after: ['activate-viewer'],
+      after: ['activate-uploader'],
     },
     {
       id: 'start-test-controls',

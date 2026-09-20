@@ -217,10 +217,10 @@ describe('continuation fixture topology', () => {
         ['form-peer-mesh', 'form-bee-peer-mesh'],
         ['advance-private-chain', 'advance-anvil-chain'],
         ['provision-postage', 'provision-postage'],
-        ['activate-manager', 'activate-guarded-release'],
         ['activate-admin', 'activate-guarded-release'],
-        ['activate-uploader', 'activate-guarded-release'],
+        ['activate-manager', 'activate-guarded-release'],
         ['activate-viewer', 'activate-guarded-release'],
+        ['activate-uploader', 'activate-guarded-release'],
         ['submit-release-guard-receipts', 'submit-release-guard-receipts'],
         ['start-test-controls', 'start-services'],
       ],
@@ -239,13 +239,6 @@ describe('continuation fixture topology', () => {
     ]);
     assert.deepEqual(topology.guardedActivations, [
       {
-        role: 'manager',
-        slot: { role: 'manager', id: 'default' },
-        candidateRole: 'manager',
-        services: ['api', 'web'],
-        serviceBindings: [],
-      },
-      {
         role: 'admin',
         slot: { role: 'admin', id: 'default' },
         candidateRole: 'admin',
@@ -259,6 +252,21 @@ describe('continuation fixture topology', () => {
         startsEnrollmentDisabled: true,
       },
       {
+        role: 'manager',
+        slot: { role: 'manager', id: 'default' },
+        candidateRole: 'manager',
+        services: ['api', 'web'],
+        serviceBindings: [],
+      },
+      {
+        role: 'viewer',
+        slot: { role: 'viewer', id: 'default' },
+        candidateRole: 'stack',
+        services: ['client'],
+        serviceBindings: [{ adapterService: 'client', topologyRole: 'viewer' }],
+        fixtureNetwork: { name: plan.network.name, fixtureId: FIXTURE_ID },
+      },
+      {
         role: 'uploader',
         slot: { role: 'uploader', id: 'fixture-srs-uploader' },
         candidateRole: 'stack',
@@ -269,15 +277,21 @@ describe('continuation fixture topology', () => {
         ],
         fixtureNetwork: { name: plan.network.name, fixtureId: FIXTURE_ID },
       },
-      {
-        role: 'viewer',
-        slot: { role: 'viewer', id: 'default' },
-        candidateRole: 'stack',
-        services: ['client'],
-        serviceBindings: [{ adapterService: 'client', topologyRole: 'viewer' }],
-        fixtureNetwork: { name: plan.network.name, fixtureId: FIXTURE_ID },
-      },
     ]);
+    assert.deepEqual(
+      topology.bootstrap
+        .filter((step) => step.kind === 'activate-guarded-release')
+        .map((step) => [step.id, step.after]),
+      [
+        ['activate-admin', ['provision-postage']],
+        ['activate-manager', ['activate-admin']],
+        ['activate-viewer', ['activate-manager']],
+        ['activate-uploader', ['activate-viewer']],
+      ],
+    );
+    const receiptSubmission = topology.bootstrap.find((step) => step.kind === 'submit-release-guard-receipts');
+    assert.equal(receiptSubmission?.source, 'guard-persisted-receipts');
+    assert.equal(receiptSubmission?.mode, 'retry-and-verify');
     assert.equal(service(correctedPlan(), 'media-sender').startAfterReadiness, true);
   });
 
