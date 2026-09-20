@@ -7,6 +7,7 @@ import {
   type InteractiveProcessInput,
   type InteractiveProcessLauncher,
   LoopbackMediaScenarioFetch,
+  NodeInteractiveProcessLauncher,
 } from '../src/continuation/mediaRuntime.js';
 import type { MediaScenarioProcessInvocation } from '../src/continuation/mediaScenario.js';
 
@@ -35,6 +36,30 @@ class RecordingCommand implements BoundedCommand {
 }
 
 describe('continuation media runtime adapters', () => {
+  it('retains an early child failure until wait without an unhandled rejection', async () => {
+    const launcher = new NodeInteractiveProcessLauncher();
+    const unhandled: unknown[] = [];
+    const recordUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', recordUnhandled);
+    try {
+      const handle = await launcher.start({
+        file: process.execPath,
+        args: ['-e', "process.stdout.write('overflow'); setInterval(() => {}, 1_000)"],
+        stdin: '',
+        timeoutMs: 5_000,
+        maxOutputBytes: 1,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      assert.deepEqual(unhandled, []);
+      await assert.rejects(handle.completion, /output byte bound/);
+      await handle.stopClient();
+    } finally {
+      process.off('unhandledRejection', recordUnhandled);
+    }
+  });
+
   it('routes owner auth in process memory and bounds the loopback response', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const subject = new LoopbackMediaScenarioFetch({
