@@ -42,12 +42,13 @@ if ! jq -e --arg phase "$phase" --arg role "$role" '
   (.treeDigest | type == "string" and test("^[0-9a-f]{64}$")) and
   .temporaryProject == ("release-" + (.treeDigest[0:20])) and
   (.slot | type == "object" and (keys | sort) == ["id", "role"] and .role == $role and (.id | type == "string")) and
-  (.arguments | type == "object" and (keys | sort) == ["portSlot", "profile", "services", "target"] and
-    (.profile | type == "string") and (.portSlot | type == "number") and .target == "local" and
-    (.services | type == "array" and length >= 1 and all(.[]; type == "string"))) and
+  (.arguments | type == "object" and keys == ["target"] and
+    (.target | type == "object" and (keys | sort) == ["portSlot", "profile", "services", "target"] and
+      (.profile | type == "string") and (.portSlot | type == "number") and .target == "local" and
+      (.services | type == "array" and length >= 1 and all(.[]; type == "string")))) and
   (.images | type == "array") and
   (if ($phase == "transition" or $phase == "verify") then
-    .activeArtifactPath == null and ((.images | length) == (.arguments.services | length)) and
+    .activeArtifactPath == null and ((.images | length) == (.arguments.target.services | length)) and
     all(.images[]; type == "object" and (keys | sort) == ["imageId", "service"] and
       (.service | type == "string") and (.imageId | type == "string" and test("^sha256:[0-9a-f]{64}$")))
   else .activeArtifactPath == null and (.images | length == 0) end)
@@ -57,9 +58,9 @@ fi
 
 plan_root="$(jq -r '.candidateRoot' "$plan")"
 [ "$plan_root" = "$candidate_root" ] || refuse "$role release candidate root does not match its plan"
-profile="$(jq -r '.arguments.profile' "$plan")"
-port_slot="$(jq -r '.arguments.portSlot' "$plan")"
-target="$(jq -r '.arguments.target' "$plan")"
+profile="$(jq -r '.arguments.target.profile' "$plan")"
+port_slot="$(jq -r '.arguments.target.portSlot' "$plan")"
+target="$(jq -r '.arguments.target.target' "$plan")"
 slot_id="$(jq -r '.slot.id' "$plan")"
 temporary_project="$(jq -r '.temporaryProject' "$plan")"
 tree_digest="$(jq -r '.treeDigest' "$plan")"
@@ -72,7 +73,7 @@ tree_digest="$(jq -r '.treeDigest' "$plan")"
 services=()
 while IFS= read -r service; do
   services+=("$service")
-done < <(jq -r '.arguments.services[]' "$plan")
+done < <(jq -r '.arguments.target.services[]' "$plan")
 
 seen=" "
 for service in "${services[@]}"; do

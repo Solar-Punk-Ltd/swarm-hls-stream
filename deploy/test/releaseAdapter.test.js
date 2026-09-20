@@ -96,11 +96,13 @@ function fixture(role, services, overrides = {}) {
   writeFileSync(join(root, 'deploy', 'scripts', 'assert-started.sh'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$ADAPTER_GATE_JOURNAL"\n');
   chmodSync(join(root, 'deploy', 'scripts', 'assert-started.sh'), 0o755);
   const argumentsValue = {
-    profile: 'release-a',
-    portSlot: 7,
-    target: 'local',
-    services,
-    ...overrides.arguments,
+    target: {
+      profile: 'release-a',
+      portSlot: 7,
+      target: 'local',
+      services,
+      ...overrides.target,
+    },
   };
   return {
     root,
