@@ -72,6 +72,13 @@ export interface ContainerPlan extends ResourcePlanBase {
   kind: 'container';
   image: string;
   phase: 'infrastructure' | 'media-sender';
+  limits: ContainerResourceLimits;
+}
+
+export interface ContainerResourceLimits {
+  cpus: number;
+  memoryBytes: number;
+  pidsLimit: number;
 }
 
 export type FixtureResourcePlan = NetworkPlan | VolumePlan | ContainerPlan;
@@ -106,6 +113,9 @@ export interface InspectedResource {
   id: string;
   name: string;
   labels: Record<string, string>;
+  imageId?: string;
+  internal?: boolean;
+  limits?: ContainerResourceLimits;
 }
 
 export interface FixtureDocker {
@@ -204,6 +214,7 @@ function container(
   image: string,
   phase: ContainerPlan['phase'] = 'infrastructure',
 ): ContainerPlan {
+  const intensive = role === 'blockchain' || role === 'browser' || role === 'media-sender';
   return {
     kind: 'container',
     name: resourceName(fixtureId, role),
@@ -211,6 +222,11 @@ function container(
     labels: fixtureLabels(fixtureId),
     image,
     phase,
+    limits: {
+      cpus: intensive ? 2 : 1,
+      memoryBytes: intensive ? 2 * 1024 * 1024 * 1024 : 1024 * 1024 * 1024,
+      pidsLimit: 256,
+    },
   };
 }
 
@@ -340,6 +356,19 @@ export function validateFixturePlan(plan: FixturePlan): void {
     if (resource.kind === 'container') {
       if (!IMAGE_ID_RE.test(resource.image) && !BEE_IMAGE_RE.test(resource.image)) {
         throw new FixtureRefusal(`container ${resource.name} does not use an immutable image`);
+      }
+      if (
+        !Number.isFinite(resource.limits.cpus) ||
+        resource.limits.cpus <= 0 ||
+        resource.limits.cpus > 4 ||
+        !Number.isSafeInteger(resource.limits.memoryBytes) ||
+        resource.limits.memoryBytes < 64 * 1024 * 1024 ||
+        resource.limits.memoryBytes > 4 * 1024 * 1024 * 1024 ||
+        !Number.isSafeInteger(resource.limits.pidsLimit) ||
+        resource.limits.pidsLimit < 32 ||
+        resource.limits.pidsLimit > 1024
+      ) {
+        throw new FixtureRefusal(`container ${resource.name} has invalid resource limits`);
       }
     }
   }
@@ -484,6 +513,26 @@ function stage(
 }
 
 function readinessRefusal(plan: FixturePlan, evidence: ReadinessEvidence): string | null {
+  const componentKeys = ['admin', 'bee', 'blockchain', 'srs', 'uploader', 'viewer'];
+  if (
+    !Number.isSafeInteger(evidence.chainId) ||
+    typeof evidence.chainOwner !== 'string' ||
+    Object.keys(evidence.components).sort().join(',') !== componentKeys.join(',') ||
+    Object.values(evidence.components).some((ready) => typeof ready !== 'boolean') ||
+    !Number.isSafeInteger(evidence.storage.stamp.capacityBytes) ||
+    evidence.storage.stamp.capacityBytes < 0 ||
+    !Number.isSafeInteger(evidence.storage.stamp.ttlSeconds) ||
+    evidence.storage.stamp.ttlSeconds < 0 ||
+    typeof evidence.storage.stamp.usable !== 'boolean' ||
+    typeof evidence.storage.controlRoundTrip !== 'boolean' ||
+    typeof evidence.callbacksReachUploader !== 'boolean' ||
+    typeof evidence.openingFormatVerified !== 'boolean' ||
+    typeof evidence.browserDecodedMedia !== 'boolean' ||
+    typeof evidence.falseCodecControlRefused !== 'boolean' ||
+    typeof evidence.capacityAvailable !== 'boolean'
+  ) {
+    return 'readiness evidence is malformed';
+  }
   if (evidence.chainId !== plan.expectedChainId || evidence.chainOwner !== plan.fixtureId) {
     return 'private chain endpoint or identity does not belong to this fixture';
   }
@@ -596,6 +645,22 @@ export class MediaFixtureRunner {
         }
         if (created.kind !== resource.kind || created.name !== resource.name || !created.id) {
           throw new FixtureRefusal(`Docker returned the wrong identity for ${resource.name}`);
+        }
+        if (created.labels[FIXTURE_LABEL] !== plan.fixtureId || created.labels[MANAGED_LABEL] !== 'true') {
+          throw new FixtureRefusal(`Docker did not apply the fixture labels for ${resource.name}`);
+        }
+        if (resource.kind === 'network' && created.internal !== true) {
+          throw new FixtureRefusal('Docker did not create an internal fixture network');
+        }
+        if (
+          resource.kind === 'container' &&
+          (!created.imageId ||
+            !IMAGE_ID_RE.test(created.imageId) ||
+            created.limits?.cpus !== resource.limits.cpus ||
+            created.limits.memoryBytes !== resource.limits.memoryBytes ||
+            created.limits.pidsLimit !== resource.limits.pidsLimit)
+        ) {
+          throw new FixtureRefusal(`Docker did not apply the resource limits for ${resource.name}`);
         }
         try {
           journal.recordResource(created);

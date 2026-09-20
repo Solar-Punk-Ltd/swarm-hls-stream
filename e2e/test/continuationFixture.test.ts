@@ -121,9 +121,17 @@ class FakeDocker implements FixtureDocker {
     kind: InspectedResource['kind'],
     name: string,
     labels: Readonly<Record<string, string>>,
+    plan?: FixturePlan['resources'][number],
   ): Promise<InspectedResource> {
     const id = kind === 'volume' ? name : `${kind}-${this.nextId++}`;
-    const resource = { kind, id, name, labels: { ...labels } };
+    const resource = {
+      kind,
+      id,
+      name,
+      labels: { ...labels },
+      ...(plan?.kind === 'network' ? { internal: plan.internal } : {}),
+      ...(plan?.kind === 'container' ? { imageId: IMAGE_ID, limits: { ...plan.limits } } : {}),
+    };
     this.resources.set(id, resource);
     this.created.push(name);
     if (this.loseCreateReplyFor.has(name)) {
@@ -178,6 +186,9 @@ describe('the isolated continuation fixture plan', () => {
       assert.equal(resource.labels[FIXTURE_LABEL], FIXTURE_ID);
       if (resource.kind === 'container') {
         assert.match(resource.image, /@sha256:|^sha256:/);
+        assert.ok(resource.limits.cpus > 0);
+        assert.ok(resource.limits.memoryBytes >= 64 * 1024 * 1024);
+        assert.ok(resource.limits.pidsLimit >= 32);
       }
     }
     for (const binding of fixturePlan.publishedPorts) {
@@ -302,12 +313,33 @@ describe('the isolated continuation fixture plan', () => {
     assert.ok(journal.stages.every((stage) => 'stdout' in stage && 'stderr' in stage));
   });
 
+  it('refuses malformed numeric and component readiness evidence', async () => {
+    const fixturePlan = plan();
+    const http = new FakeHttp();
+    http.evidence.storage.stamp.capacityBytes = Number.NaN;
+    delete (http.evidence.components as Partial<ReadinessEvidence['components']>).viewer;
+    const fixture = runner(fixturePlan, new FakeDocker(), http);
+
+    await assert.rejects(fixture.runner.up(), /readiness evidence is malformed/i);
+
+    const sender = new ResourceJournal(fixturePlan.outputRoot)
+      .read()
+      .resources.find((resource) => resource.name.endsWith('-media-sender'));
+    assert.ok(sender);
+    assert.equal(fixture.docker.started.includes(sender.id), false);
+  });
+
   it('removes only journaled IDs after every surviving object proves its label', async () => {
     const fixturePlan = plan();
     const fixture = runner(fixturePlan);
     await fixture.runner.up();
     const journal = new ResourceJournal(fixturePlan.outputRoot);
     const recorded = journal.read().resources;
+    assert.equal(recorded.find((resource) => resource.kind === 'network')?.internal, true);
+    for (const resource of recorded.filter((entry) => entry.kind === 'container')) {
+      assert.match(resource.imageId ?? '', /^sha256:[0-9a-f]{64}$/);
+      assert.ok(resource.limits);
+    }
 
     await cleanupFixture(journal, fixture.docker);
 
