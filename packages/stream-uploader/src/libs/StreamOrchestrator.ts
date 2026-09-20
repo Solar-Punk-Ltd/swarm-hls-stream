@@ -1375,7 +1375,14 @@ export class StreamOrchestrator {
   public markManagedSourceUnpublished(streamId: string, identity: SourceConnectionIdentity): boolean {
     const state = this.managedSources.get(streamId);
     const reconnectMs = this.config.managedSourceReconnectMs;
-    if (!state?.current || state.closed || reconnectMs === undefined || !sameSource(state.current, identity)) {
+    if (!state || state.closed || reconnectMs === undefined) {
+      return false;
+    }
+    if (!state.current && state.candidate && sameSource(state.candidate.identity, identity)) {
+      state.candidate = undefined;
+      return true;
+    }
+    if (!state.current || !sameSource(state.current, identity)) {
       return false;
     }
 

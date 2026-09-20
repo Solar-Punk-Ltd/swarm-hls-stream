@@ -171,6 +171,22 @@ describe('managed SRS source reconnect foundation', () => {
     await orchestrator.cleanup();
   });
 
+  it('releases a disconnected provisional source without resetting the original acquisition budget', async () => {
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_VIDEO, undefined, {}, runs);
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    await clock.advance(10_000);
+    assert.equal(orchestrator.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    assert.equal(provision(orchestrator, SOURCE_B), true);
+    assert.equal(runs.current(STREAM_ID)?.deadlineWallMs, 1_000_000 + RECONNECT_MS);
+    assert.deepEqual(media(orchestrator, SOURCE_B, 0), { accepted: true });
+    assert.equal(runs.current(STREAM_ID)?.deadlineWallMs, 1_000_000 + 10_000 + RECONNECT_MS);
+
+    await orchestrator.cleanup();
+  });
+
   it('keeps one uploader and its history when B returns with media inside A\'s grace window', async () => {
     const clock = new FakeClock();
     const published: { state?: string }[] = [];
