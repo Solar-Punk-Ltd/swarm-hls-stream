@@ -38,6 +38,7 @@ export interface ManagedFormatRecord {
   readonly source: SourceConnectionIdentity;
   readonly baseline?: MediaFormatFingerprint;
   readonly fingerprint?: MediaFormatFingerprint;
+  readonly inspectionRefused?: true;
   readonly openingParts: readonly ManagedOpeningPart[];
   readonly openingBytes: string;
 }
@@ -50,6 +51,7 @@ export type ManagedOpeningResult =
 
 export interface ManagedFormatPersistence {
   stage(input: ManagedFormatInput, data: Buffer): ManagedOpeningResult;
+  recordIncomplete(input: ManagedFormatInput): void;
   commit(
     input: ManagedFormatInput,
     fingerprint: MediaFormatFingerprint,
@@ -116,6 +118,7 @@ function validRecord(value: unknown): value is ManagedFormatRecord {
     !validSource(record.source) ||
     (record.baseline !== undefined && !isMediaFormatFingerprint(record.baseline)) ||
     (record.fingerprint !== undefined && !isMediaFormatFingerprint(record.fingerprint)) ||
+    (record.inspectionRefused !== undefined && record.inspectionRefused !== true) ||
     !Array.isArray(record.openingParts) ||
     typeof record.openingBytes !== 'string'
   ) {
@@ -180,13 +183,19 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
     const digest = createHash('sha256').update(data).digest('hex');
     const existing = record.openingParts.find((part) => part.sequence === input.sequence);
     if (existing) {
-      return existing.digest === digest && existing.inputByteLength === data.length
-        ? { kind: 'ready', bytes: Buffer.from(record.openingBytes, 'base64') }
-        : { kind: 'conflict' };
+      if (existing.digest !== digest || existing.inputByteLength !== data.length) {
+        return { kind: 'conflict' };
+      }
+      return record.inspectionRefused
+        ? { kind: 'limit' }
+        : { kind: 'ready', bytes: Buffer.from(record.openingBytes, 'base64') };
+    }
+    if (record.inspectionRefused) {
+      return { kind: 'limit' };
     }
     const previous = Buffer.from(record.openingBytes, 'base64');
     if (previous.length >= this.maxOpeningBytes) {
-      return { kind: 'limit' };
+      return { kind: 'ready', bytes: previous };
     }
     const retained = data.subarray(0, this.maxOpeningBytes - previous.length);
     const bytes = Buffer.concat([previous, retained]);
@@ -200,6 +209,17 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
     };
     this.save(updated);
     return { kind: 'ready', bytes };
+  }
+
+  public recordIncomplete(input: ManagedFormatInput): void {
+    const record = this.read(input);
+    if (!record || !sameTrack(record, input) || !sameSource(record.source, input.source)) {
+      throw new Error(`Managed format source ${input.streamId} changed before inspection completed`);
+    }
+    if (Buffer.from(record.openingBytes, 'base64').length < this.maxOpeningBytes) {
+      return;
+    }
+    this.save({ ...record, inspectionRefused: true });
   }
 
   public commit(
@@ -222,6 +242,7 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
       ...record,
       baseline,
       fingerprint,
+      inspectionRefused: undefined,
       openingParts: [],
       openingBytes: '',
     };

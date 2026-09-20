@@ -98,10 +98,10 @@ class DeferredInspector implements MediaFormatInspector {
   }
 }
 
-function create(inspector: MediaFormatInspector, clock = new FakeClock()) {
+function create(inspector: MediaFormatInspector, clock = new FakeClock(), maxOpeningBytes?: number) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-format-validation-'));
   roots.push(root);
-  const formatStore = new ManagedFormatStore(path.join(root, 'formats'));
+  const formatStore = new ManagedFormatStore(path.join(root, 'formats'), maxOpeningBytes);
   const orchestrator = makeTestOrchestrator({
     clock,
     wallClock: () => 1_000_000 + clock.now(),
@@ -218,6 +218,24 @@ describe('managed actual opening format validation', () => {
       })?.baseline,
       FORMAT,
     );
+    await orchestrator.cleanup();
+  });
+
+  it('retries a full retained opening after the bounded probe pool was busy', async () => {
+    let calls = 0;
+    const inspector: MediaFormatInspector = {
+      inspect: async () => (++calls === 1 ? { kind: 'busy' } : { kind: 'valid', fingerprint: FORMAT }),
+    };
+    const opening = videoSegment(4, 0);
+    const { orchestrator } = create(inspector, new FakeClock(), opening.length);
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+
+    assert.deepEqual(await media(orchestrator, SOURCE_A, 0), {
+      accepted: false,
+      reason: 'unverified_source_media',
+    });
+    assert.deepEqual(await media(orchestrator, SOURCE_A, 1), { accepted: true });
+    assert.equal(calls, 2);
     await orchestrator.cleanup();
   });
 

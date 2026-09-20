@@ -8,6 +8,7 @@ import {
   isMediaFormatFingerprint,
   mediaFormatFingerprintFromFfprobe,
   MediaFormatProbe,
+  sameMediaFormatFingerprint,
 } from '../src/libs/MediaFormatProbe.js';
 
 const temporaryDirectories: string[] = [];
@@ -160,6 +161,58 @@ describe('MediaFormatProbe', () => {
       version: 1,
     };
     assert.equal(isMediaFormatFingerprint(reordered), true);
+    const normalized = mediaFormatFingerprintFromFfprobe({
+      streams: [
+        {
+          codec_type: 'video',
+          codec_name: 'h264',
+          profile: 'High',
+          level: 40,
+          width: 1280,
+          height: 720,
+          pix_fmt: 'yuv420p',
+          chroma_location: 'left',
+          bits_per_raw_sample: 8,
+        },
+        {
+          codec_type: 'audio',
+          codec_name: 'aac',
+          profile: 'LC',
+          sample_rate: 48_000,
+          channels: 2,
+          channel_layout: 'stereo',
+        },
+      ],
+    });
+    assert.ok(normalized);
+    assert.equal(
+      sameMediaFormatFingerprint(normalized, {
+        ...normalized,
+        tracks: [...normalized.tracks].reverse().map((track) =>
+          track.kind === 'audio'
+            ? {
+                channelLayout: track.channelLayout,
+                channels: track.channels,
+                sampleRate: track.sampleRate,
+                profile: track.profile,
+                codec: track.codec,
+                kind: track.kind,
+              }
+            : {
+                bitsPerRawSample: track.bitsPerRawSample,
+                chromaLocation: track.chromaLocation,
+                pixelFormat: track.pixelFormat,
+                height: track.height,
+                width: track.width,
+                level: track.level,
+                profile: track.profile,
+                codec: track.codec,
+                kind: track.kind,
+              },
+        ),
+      }),
+      true,
+    );
     assert.equal(isMediaFormatFingerprint({ ...reordered, tracks: [null] }), false);
     assert.equal(
       isMediaFormatFingerprint({

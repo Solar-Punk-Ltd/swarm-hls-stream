@@ -92,6 +92,33 @@ function canonicalTrackKey(track: MediaFormatTrack): string {
   return JSON.stringify(track);
 }
 
+function normalizeFingerprint(fingerprint: MediaFormatFingerprint): MediaFormatFingerprint | null {
+  return mediaFormatFingerprintFromFfprobe({
+    streams: fingerprint.tracks.map((track) =>
+      track.kind === 'video'
+        ? {
+            codec_type: 'video',
+            codec_name: track.codec,
+            profile: track.profile,
+            level: track.level,
+            width: track.width,
+            height: track.height,
+            pix_fmt: track.pixelFormat,
+            chroma_location: track.chromaLocation,
+            bits_per_raw_sample: track.bitsPerRawSample,
+          }
+        : {
+            codec_type: 'audio',
+            codec_name: track.codec,
+            profile: track.profile,
+            sample_rate: track.sampleRate,
+            channels: track.channels,
+            channel_layout: track.channelLayout,
+          },
+    ),
+  });
+}
+
 function hasExactKeys(value: object, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -129,30 +156,7 @@ export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFi
           : false;
     if (!exact) {return false;}
   }
-  const normalized = mediaFormatFingerprintFromFfprobe({
-    streams: fingerprint.tracks.map((track) =>
-      track.kind === 'video'
-        ? {
-            codec_type: 'video',
-            codec_name: track.codec,
-            profile: track.profile,
-            level: track.level,
-            width: track.width,
-            height: track.height,
-            pix_fmt: track.pixelFormat,
-            chroma_location: track.chromaLocation,
-            bits_per_raw_sample: track.bitsPerRawSample,
-          }
-        : {
-            codec_type: 'audio',
-            codec_name: track.codec,
-            profile: track.profile,
-            sample_rate: track.sampleRate,
-            channels: track.channels,
-            channel_layout: track.channelLayout,
-          },
-    ),
-  });
+  const normalized = normalizeFingerprint(fingerprint as MediaFormatFingerprint);
   return normalized !== null;
 }
 
@@ -160,7 +164,13 @@ export function sameMediaFormatFingerprint(
   left: MediaFormatFingerprint,
   right: MediaFormatFingerprint,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const normalizedLeft = normalizeFingerprint(left);
+  const normalizedRight = normalizeFingerprint(right);
+  return (
+    normalizedLeft !== null &&
+    normalizedRight !== null &&
+    JSON.stringify(normalizedLeft) === JSON.stringify(normalizedRight)
+  );
 }
 
 /** Normalize ffprobe's loose JSON into the exact compatibility fields persisted by managed runs. */

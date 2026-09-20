@@ -1857,6 +1857,15 @@ export class StreamOrchestrator {
     const promise = inspector
       .inspect(staged.bytes)
       .then((result): RejectReason | null => {
+        if (result.kind === 'incomplete') {
+          try {
+            store.recordIncomplete(input);
+          } catch (error) {
+            this.logger.error(`[StreamOrchestrator] Failed to persist incomplete managed format ${streamId}:`, error);
+            return REJECT_DURABILITY_FAILED;
+          }
+          return REJECT_UNVERIFIED_SOURCE_MEDIA;
+        }
         if (result.kind !== 'valid') {
           return REJECT_UNVERIFIED_SOURCE_MEDIA;
         }

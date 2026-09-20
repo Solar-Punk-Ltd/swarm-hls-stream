@@ -82,7 +82,12 @@ describe('ManagedFormatStore', () => {
       kind: 'ready',
       bytes: Buffer.from('abcdefgh'),
     });
-    assert.deepEqual(store.stage({ ...INPUT, sequence: 7 }, Buffer.from('j')), { kind: 'limit' });
+    assert.deepEqual(store.stage({ ...INPUT, sequence: 7 }, Buffer.from('j')), {
+      kind: 'ready',
+      bytes: Buffer.from('abcdefgh'),
+    });
+    store.recordIncomplete({ ...INPUT, sequence: 7 });
+    assert.deepEqual(store.stage({ ...INPUT, sequence: 8 }, Buffer.from('k')), { kind: 'limit' });
     assert.deepEqual(store.stage(INPUT, Buffer.from('changed')), { kind: 'conflict' });
   });
 
