@@ -505,6 +505,22 @@ describe('managed run recovery', () => {
     }
   });
 
+  it('reserves every listed managed run before legacy recovery can accept its callbacks', () => {
+    const store: ManagedRunPersistence = {
+      save: () => undefined,
+      read: () => ({ kind: MANAGED_RUN_UNREADABLE }),
+      list: () => [STREAM_ID],
+    };
+    const target = orchestrator(new FakeClock(), () => WALL_START, store);
+
+    target.restoreManagedRuns();
+
+    assert.deepEqual(
+      target.handleSegment(STREAM_ID, 0, 0.1, videoSegment(4, 0)),
+      { accepted: false, reason: 'stale_source' },
+    );
+  });
+
   it('expires a recovered run immediately after wall-clock rollback', () => {
     const firstClock = new FakeClock();
     const store = new MemoryManagedRuns();

@@ -337,6 +337,8 @@ export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
   /** Managed SRS source ownership. Existing engine paths never create an entry here. */
   private managedSources = new Map<string, ManagedSourceState>();
+  /** Durable managed ids, including unreadable entries that must never fall through to legacy ingest. */
+  private managedStreamIds = new Set<string>();
   /** Source generation whose first accepted fragment reset each managed ABR rung's ingress state. */
   private managedRenditionGenerations = new Map<string, number>();
   /** Media tokens already handed to an uploader queue in this process. */
@@ -702,11 +704,15 @@ export class StreamOrchestrator {
       }
       this.managedSources.set(attempt.streamId, {
         record,
-        current: record.state === 'live' ? (record.source ?? undefined) : undefined,
+        current:
+          record.state === 'claimed' || record.state === 'live'
+            ? (record.source ?? undefined)
+            : undefined,
         mediatype: record.mediaType,
         lastProgressPts: record.lastProgressPts ?? undefined,
         deadline: this.clock.now() + remainingManagedDeadline(record, this.wallClock()),
       });
+      this.managedStreamIds.add(attempt.streamId);
       return {
         requestId: record.claimRequestId,
         expectedRevision: record.revision,
@@ -743,6 +749,7 @@ export class StreamOrchestrator {
       return null;
     }
     this.managedSources.set(attempt.streamId, { record, mediatype: attempt.mediaType });
+    this.managedStreamIds.add(attempt.streamId);
     return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
   }
 
@@ -799,7 +806,7 @@ export class StreamOrchestrator {
   public prepareManagedRun(claim: ManagedRunClaim): boolean {
     const reconnectMs = this.config.managedSourceReconnectMs;
     const store = this.config.managedRunStore;
-    if (reconnectMs === undefined || !store || this.managedSources.has(claim.streamId)) {
+    if (reconnectMs === undefined || !store || this.managedStreamIds.has(claim.streamId)) {
       return false;
     }
 
@@ -829,6 +836,7 @@ export class StreamOrchestrator {
 
     const state: ManagedSourceState = { record, mediatype: claim.mediaType, deadline: this.clock.now() + reconnectMs };
     this.managedSources.set(claim.streamId, state);
+    this.managedStreamIds.add(claim.streamId);
     this.armManagedSourceDeadline(claim.streamId, state);
     return true;
   }
@@ -924,13 +932,17 @@ export class StreamOrchestrator {
     }
 
     const record = entry.record;
+    this.managedStreamIds.add(streamId);
     if (!this.hasManagedCheckpoint(record)) {
       return 'unreadable';
     }
     const remaining = remainingManagedDeadline(record, this.wallClock());
     const state: ManagedSourceState = {
       record,
-      current: record.state === 'live' ? (record.source ?? undefined) : undefined,
+      current:
+        record.state === 'claimed' || record.state === 'live'
+          ? (record.source ?? undefined)
+          : undefined,
       mediatype: record.mediaType,
       lastProgressPts: record.lastProgressPts ?? undefined,
       deadline: this.clock.now() + remaining,
@@ -950,6 +962,45 @@ export class StreamOrchestrator {
     }
     void this.flushManagedReports(streamId, state);
     return entry.kind;
+  }
+
+  /** Restore every durable managed admission before legacy media recovery or callback routing starts. */
+  public restoreManagedRuns(): void {
+    const store = this.config.managedRunStore;
+    if (!store) {
+      return;
+    }
+    for (const streamId of store.list()) {
+      this.managedStreamIds.add(streamId);
+      this.restoreManagedRun(streamId);
+    }
+  }
+
+  /** Rebind a surviving SRS callback only to the exact source identity persisted before the crash. */
+  public recoverManagedSourceConnection(
+    streamId: string,
+    observed: Omit<SourceConnectionIdentity, 'generation'>,
+  ): { identity: SourceConnectionIdentity; admin: AdminSession } | null {
+    const state = this.managedSources.get(streamId);
+    if (!state || state.closed || !state.current) {
+      return null;
+    }
+    if (state.deadline !== undefined && this.clock.now() >= state.deadline) {
+      this.closeManagedSourceAtDeadline(streamId, state);
+      return null;
+    }
+    const identity = state.current;
+    if (
+      identity.serverId !== observed.serverId ||
+      identity.serviceId !== observed.serviceId ||
+      identity.clientId !== observed.clientId
+    ) {
+      return null;
+    }
+    return {
+      identity,
+      admin: { id: state.record.adminStreamId, topic: state.record.topic },
+    };
   }
 
   /**
@@ -2130,7 +2181,7 @@ export class StreamOrchestrator {
     discontinuity = false,
   ): SegmentResult {
     const managedStreamId = this.streamBases.get(streamId) ?? streamId;
-    if (this.managedSources.has(managedStreamId)) {
+    if (this.managedStreamIds.has(managedStreamId)) {
       return { accepted: false, reason: REJECT_STALE_SOURCE };
     }
     return this.enqueueSegment(streamId, segmentIndex, duration, data, discontinuity);

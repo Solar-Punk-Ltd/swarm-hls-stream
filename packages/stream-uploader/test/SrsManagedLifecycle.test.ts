@@ -8,11 +8,16 @@ import { describe, it } from 'node:test';
 import { createSrsEngine } from '../src/engines/srs.js';
 import { AbrLadder } from '../src/libs/AbrLadder.js';
 import { AdminApiClient, ManagedClaimRequest } from '../src/libs/AdminApiClient.js';
-import { ManagedClaimAttempt, ManagedClaimCompletion } from '../src/libs/ManagedRunStore.js';
+import { ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
+import { ManagedClaimAttempt, ManagedClaimCompletion, ManagedRunStore } from '../src/libs/ManagedRunStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { SourceConnectionIdentity } from '../src/types.js';
+import { rungTopicFor } from '../src/utils/rungTopic.js';
 
+import { FakeClock } from './helpers/fakeClock.js';
+import { makeTestOrchestrator } from './helpers/fakes.js';
 import { listenOnLoopback } from './helpers/loopbackServer.js';
+import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 
 const TOKEN = 'srs-webhook-token-0123456789abcdef';
 const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
@@ -133,6 +138,7 @@ async function withManagedSrs(
       calls.unpublished.push(identity);
       return true;
     },
+    recoverManagedSourceConnection: () => null,
     startStream: (streamId: string) => {
       calls.legacyStarts.push(streamId);
       return true;
@@ -307,6 +313,130 @@ describe('SRS managed lifecycle callbacks', () => {
       );
     } finally {
       fs.rmSync(mediaRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rebinds only the persisted acquired source after a fresh router starts without on_publish', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-managed-router-recovery-'));
+    const mediaRoot = path.join(root, 'media');
+    fs.mkdirSync(path.join(mediaRoot, 'video'), { recursive: true });
+    const runStore = new ManagedRunStore(path.join(root, 'runs'));
+    const checkpointStore = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const ladder = AbrLadder.parse('360p:640:360:700');
+    const wallStart = 1_000_000;
+    const firstClock = new FakeClock();
+    const source: SourceConnectionIdentity = {
+      serverId: 'server-a',
+      serviceId: 'service-a',
+      clientId: 'source-a',
+      generation: 1,
+    };
+    const first = makeTestOrchestrator({
+      clock: firstClock,
+      wallClock: () => wallStart + firstClock.now(),
+      managedSourceReconnectMs: 60_000,
+      managedRunStore: runStore,
+      managedCheckpointStore: checkpointStore,
+      ladder,
+    });
+    assert.equal(
+      first.prepareManagedRun({
+        lifecycleVersion: 1,
+        streamId: STREAM_ID,
+        adminStreamId: ADMIN_ID,
+        topic: 'a'.repeat(64),
+        mediaType: 'video',
+        revision: 8,
+        runNumber: 2,
+        uploaderId: UPLOADER_ID,
+        claimId: CLAIM_ID,
+        eventSequence: 1,
+        expectedRenditions: [
+          {
+            name: '360p',
+            topic: rungTopicFor('a'.repeat(64), '360p'),
+            width: 640,
+            height: 360,
+            bandwidth: 700_000,
+            avgBandwidth: 700_000,
+          },
+        ],
+      }),
+      true,
+    );
+    assert.equal(
+      first.provisionManagedSource(
+        STREAM_ID,
+        'video',
+        source,
+        { address: '198.51.100.7', isAuthenticated: true },
+        { id: ADMIN_ID, topic: 'a'.repeat(64) },
+      ),
+      true,
+    );
+    assert.deepEqual(first.handleManagedSourceProgress(STREAM_ID, source, 0.1, videoSegment(4, 0)), {
+      accepted: true,
+    });
+
+    const secondClock = new FakeClock();
+    const second = makeTestOrchestrator({
+      clock: secondClock,
+      wallClock: () => wallStart + 1_000 + secondClock.now(),
+      managedSourceReconnectMs: 60_000,
+      managedRunStore: new ManagedRunStore(path.join(root, 'runs')),
+      managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
+      ladder,
+    });
+    second.restoreManagedRuns();
+    const engine = createSrsEngine(mediaRoot, {
+      webhookToken: TOKEN,
+      adminApi: { describe: () => 'http://admin.test' } as AdminApiClient,
+      managedLifecycle: { uploaderId: UPLOADER_ID },
+      abr: { vhost: 'abr', ladder },
+      apiUrl: 'http://srs.test:1985',
+      fetcher: async () =>
+        new Response(JSON.stringify({ code: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(second));
+    const { server, baseUrl } = await listenOnLoopback(app);
+    const postHls = async (clientId: string, file: string, sequence: number): Promise<number> => {
+      const response = await fetch(`${baseUrl}${engine.prefix}/hls?token=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...callback(clientId, 'on_hls'),
+          file: `./objs/nginx/html/video/${file}`,
+          seq_no: sequence,
+          duration: 0.1,
+        }),
+      });
+      return response.json() as Promise<number>;
+    };
+
+    try {
+      const forgedPath = path.join(mediaRoot, 'video', 'forged.ts');
+      fs.writeFileSync(forgedPath, videoSegment(4, 4 * FRAME_TICKS));
+      assert.equal(await postHls('source-forged', 'forged.ts', 1), 0);
+      assert.equal(fs.existsSync(forgedPath), true);
+
+      const resumedPath = path.join(mediaRoot, 'video', 'resumed.ts');
+      fs.writeFileSync(resumedPath, videoSegment(4, 4 * FRAME_TICKS));
+      assert.equal(await postHls('source-a', 'resumed.ts', 1), 0);
+      assert.equal(fs.existsSync(resumedPath), false);
+
+      await secondClock.advance(60_000);
+      const expiredPath = path.join(mediaRoot, 'video', 'expired.ts');
+      fs.writeFileSync(expiredPath, videoSegment(4, 8 * FRAME_TICKS));
+      assert.equal(await postHls('source-a', 'expired.ts', 2), 0);
+      assert.equal(fs.existsSync(expiredPath), true);
+    } finally {
+      server.close();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

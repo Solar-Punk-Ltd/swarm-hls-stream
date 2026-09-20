@@ -335,6 +335,7 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
           managedBases,
           managedRungConnections,
           legacyRungConnections,
+          authenticatedBases,
         );
       });
 
@@ -583,7 +584,15 @@ async function handleStreams(
 
       if (managedLifecycle) {
         const key = connectionKey(payload);
-        const identity = key ? managedConnections.get(key) : undefined;
+        const recovered =
+          key && !managedConnections.has(key)
+            ? streamOrchestrator.recoverManagedSourceConnection(streamId, {
+                serverId: payload.server_id as string,
+                serviceId: payload.service_id as string,
+                clientId: payload.client_id as string,
+              })
+            : null;
+        const identity = key ? managedConnections.get(key) ?? recovered?.identity : undefined;
         const isLegacy = key ? legacyConnections.has(key) : false;
         srsResponse(res, SRS_ACCEPT);
         if (identity) {
@@ -924,6 +933,7 @@ function handleHls(
   managedBases: Map<string, SourceConnectionIdentity> = new Map(),
   managedRungConnections: Map<string, ManagedRungConnection> = new Map(),
   legacyRungConnections: Map<string, string> = new Map(),
+  authenticatedBases: Map<string, AdminSession | null> = new Map(),
 ): void {
   try {
     const payload = req.body as SrsHlsPayload;
@@ -941,6 +951,25 @@ function handleHls(
     const role = classifyLadderStream(payload, streamId, abr);
 
     const key = connectionKey(payload);
+    const recovered =
+      managedLifecycle &&
+      key &&
+      role.kind !== 'rung' &&
+      role.kind !== 'stray' &&
+      !managedConnections.has(key)
+        ? streamOrchestrator.recoverManagedSourceConnection(streamId, {
+            serverId: payload.server_id as string,
+            serviceId: payload.service_id as string,
+            clientId: payload.client_id as string,
+          })
+        : null;
+    if (key && recovered) {
+      managedConnections.set(key, recovered.identity);
+      managedBases.set(streamId, recovered.identity);
+      if (role.kind === 'source') {
+        authenticatedBases.set(streamId, recovered.admin);
+      }
+    }
     const managedRung = managedLifecycle && key ? managedRungConnections.get(key) : undefined;
     const legacyRung = managedLifecycle && key ? legacyRungConnections.get(key) : undefined;
     if (managedLifecycle && role.kind === 'rung') {

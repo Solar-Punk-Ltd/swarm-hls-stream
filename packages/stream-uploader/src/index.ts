@@ -290,6 +290,7 @@ async function start() {
         );
 
         await streamCatalog.init();
+        streamOrchestrator.restoreManagedRuns();
         return streamOrchestrator.recoverStreams();
       },
       {
