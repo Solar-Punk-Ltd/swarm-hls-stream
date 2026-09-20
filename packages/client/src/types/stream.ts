@@ -16,6 +16,41 @@ import type { MediaType, Rendition } from '@swarm-hls-stream/shared';
 /** Known values are `StreamStatus`. Future publisher values remain valid and are treated as not-live. */
 export type StreamState = string;
 
+export type LifecycleState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+
+/** Public managed-run state. Its absence preserves legacy and OME catalogue entries. */
+export interface StreamLifecycle {
+  version: 1;
+  revision: number;
+  runNumber: number;
+  state: LifecycleState;
+}
+
+/** One immutable playlist entry captured when a recording finishes. */
+export interface CompletedManifest {
+  topic: string;
+  index: number;
+  reference: string;
+  duration: number;
+}
+
+/** The immutable rendition record a replay uses instead of resolving a live feed head. */
+export interface CompletedRendition extends CompletedManifest {
+  name: string;
+  width?: number;
+  height?: number;
+  bandwidth?: number;
+  avgBandwidth?: number;
+}
+
+/** Public replay snapshot. It deliberately contains no uploader, claim or checkpoint data. */
+export interface CompletedRecording {
+  runNumber: number;
+  master: CompletedManifest;
+  expectedRenditions: string[];
+  renditions: CompletedRendition[];
+}
+
 export interface Stream {
   owner: string;
   /**
@@ -43,6 +78,8 @@ export interface Stream {
   thumbnail?: string;
   description?: string;
   tags?: string[];
+  lifecycle?: StreamLifecycle;
+  completedRecording?: CompletedRecording;
   /**
    * When an announced broadcast is meant to begin. Only the admin layer writes it, and it is
    * explicitly `null` on an entry that has no time fixed yet, which is why null is in the type.

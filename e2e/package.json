@@ -34,6 +34,7 @@
     "//test:e2e:ladder-restored": "The whole post-restore step in one command: the gates, then the ladder suite, then the master suite. The first says the four rungs publish again and the second says a viewer joining now is offered all four, and they are different facts. Two broadcasts, one per suite, since each starts its own publisher. This is what a drain sitting ends with, after deploy/scripts/drain-stage.sh restore.",
     "test:e2e:ladder-restored": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/service/abr-ladder.test.ts' 'suites/service/master-offers-every-rung.test.ts'",
     "test:e2e:smoke": "TSX_DISABLE_CACHE=1 tsx --test 'suites/smoke/*.test.ts'",
+    "test:browser:continuation": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 test/browser-continuation.test.ts",
     "bench:latency": "tsx bench/latency.ts",
     "bench:longrun": "tsx bench/longrun.ts",
     "bench:recipe": "tsx bench/recipeReliability.ts",

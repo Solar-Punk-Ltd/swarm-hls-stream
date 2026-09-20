@@ -55,8 +55,42 @@ function stream(renditions?: Rendition[]): Stream {
   };
 }
 
-function renderWatchPage(): void {
-  renderToStaticMarkup(
+function completedRecording() {
+  return {
+    runNumber: 4,
+    master: {
+      topic: 'stable-master-topic',
+      index: 18,
+      reference: 'master-reference',
+      duration: 95,
+    },
+    expectedRenditions: ['720p'],
+    renditions: [
+      {
+        name: '720p',
+        topic: 'archived-rung',
+        index: 7,
+        reference: 'archived-rung-reference',
+        duration: 95,
+        width: 1280,
+        height: 720,
+        bandwidth: 2_000_000,
+        avgBandwidth: 1_800_000,
+      },
+    ],
+  };
+}
+
+function managedStream(state: 'live' | 'waiting' | 'vod'): Stream {
+  return {
+    ...stream([rendition('live-rung', 12)]),
+    lifecycle: { version: 1, revision: 9, runNumber: 5, state },
+    completedRecording: completedRecording(),
+  } as Stream;
+}
+
+function renderWatchPage(): string {
+  return renderToStaticMarkup(
     createElement(
       MemoryRouter,
       { initialEntries: ['/watch/video/0xviewer/stable-master-topic'] },
@@ -97,10 +131,8 @@ describe('StreamWatcher playback selection', () => {
 
     const mounted = selection.select(stream([rendition('archived-rung', 7)]));
 
-    assert.deepEqual(mounted, {
-      ...ROUTE,
-      renditions: [rendition('archived-rung', 7)],
-    });
+    assert.equal(mounted.kind, 'live');
+    assert.deepEqual(mounted.renditions, [rendition('archived-rung', 7)]);
   });
 
   it('keeps the mounted replay inputs when a later catalogue poll changes metadata and every rung', () => {
@@ -121,7 +153,8 @@ describe('StreamWatcher playback selection', () => {
   it('uses the route for legacy direct playback when the completed lookup has no catalogue row', () => {
     const selection = new StreamPlaybackSelection(ROUTE);
 
-    assert.deepEqual(selection.select(undefined), { ...ROUTE, renditions: undefined });
+    assert.equal(selection.select(undefined).kind, 'live');
+    assert.equal(selection.current?.renditions, undefined);
   });
 
   it('starts a new selection when navigation creates a new watch-page boundary', () => {
@@ -131,5 +164,42 @@ describe('StreamWatcher playback selection', () => {
 
     assert.equal(nextRoute.select(stream([rendition('new-rung', 2)])).topicString, 'another-master-topic');
     assert.equal(nextRoute.current?.renditions?.[0].topic, 'new-rung');
+  });
+
+  it('opens a completed snapshot for a new visitor when the managed stream is not live', () => {
+    const selection = new StreamPlaybackSelection(ROUTE);
+
+    const playback = selection.select(managedStream('vod'));
+
+    assert.equal(playback.kind, 'replay');
+    assert.equal(playback.completedRecording.master.reference, 'master-reference');
+    assert.equal(playback.completedRecording.renditions[0].reference, 'archived-rung-reference');
+  });
+
+  it('opens the live feed for a new visitor during a live continuation and switches an existing replay once', () => {
+    const selection = new StreamPlaybackSelection(ROUTE);
+    const managed = managedStream('live');
+
+    const initiallyLive = selection.select(managed);
+    assert.equal(initiallyLive.kind, 'live');
+
+    const replay = new StreamPlaybackSelection(ROUTE);
+    replay.select(managedStream('vod'));
+    const replaySession = replay.current!.session;
+    const switched = replay.watchLive(managed);
+
+    assert.equal(switched.kind, 'live');
+    assert.equal(switched.renditions?.[0].topic, 'live-rung');
+    assert.notEqual(switched.session, replaySession, 'the explicit switch must mount a new player');
+  });
+
+  it('offers the previous combined replay while a managed continuation is live, without adding a history list', () => {
+    watchPage.isStreamListLoaded = true;
+    watchPage.streamList = [managedStream('live')];
+
+    const html = renderWatchPage();
+
+    assert.match(html, /Watch previous replay/);
+    assert.doesNotMatch(html, /history/i);
   });
 });

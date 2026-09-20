@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Button, ButtonVariant } from '@/components/Button/Button';
@@ -37,20 +37,46 @@ type PlayerProps = {
  */
 function StreamWatcherPlayer({ owner, topicString, mediaType, stream, enableQoeOverlay, level }: PlayerProps) {
   const selection = useRef<StreamPlaybackSelection | null>(null);
+  const [, redraw] = useState(0);
   if (selection.current === null) {
     selection.current = new StreamPlaybackSelection({ owner, topicString, mediaType });
   }
   const playback = selection.current.select(stream);
+  const liveAvailable = stream?.lifecycle?.version === 1 && ['live', 'waiting'].includes(stream.lifecycle.state);
+  const replayAvailable = stream?.completedRecording !== undefined;
+
+  const selectLive = () => {
+    selection.current?.watchLive(stream);
+    redraw((revision) => revision + 1);
+  };
+
+  const selectReplay = () => {
+    selection.current?.watchReplay(stream);
+    redraw((revision) => revision + 1);
+  };
 
   return (
-    <SwarmHlsPlayer
-      owner={playback.owner}
-      topicString={playback.topicString}
-      mediaType={playback.mediaType}
-      enableQoeOverlay={enableQoeOverlay}
-      renditions={playback.renditions}
-      level={level}
-    />
+    <>
+      <SwarmHlsPlayer
+        key={playback.session}
+        owner={playback.owner}
+        topicString={playback.topicString}
+        mediaType={playback.mediaType}
+        enableQoeOverlay={enableQoeOverlay}
+        renditions={playback.renditions}
+        level={level}
+      />
+      {playback.kind === 'replay' && liveAvailable && (
+        <Button variant={ButtonVariant.PRIMARY} onClick={selectLive}>
+          Stream resumed · Watch live
+        </Button>
+      )}
+      {playback.kind === 'live' && replayAvailable && (
+        <Button variant={ButtonVariant.SECONDARY} onClick={selectReplay}>
+          Watch previous replay
+        </Button>
+      )}
+    </>
   );
 }
 

@@ -43,6 +43,32 @@ const validRendition = {
   avgBandwidth: 700_000,
 };
 
+const validCompletedRecording = {
+  runNumber: 4,
+  master: {
+    topic: 'archived-master-topic',
+    index: 11,
+    reference: 'archived-master-reference',
+    duration: 95,
+  },
+  expectedRenditions: ['720p'],
+  renditions: [
+    {
+      name: '720p',
+      topic: 'archived-rung-topic',
+      index: 7,
+      reference: 'archived-rung-reference',
+      duration: 95,
+      width: 1280,
+      height: 720,
+      bandwidth: 2_000_000,
+      avgBandwidth: 1_800_000,
+    },
+  ],
+};
+
+const validLifecycle = { version: 1, revision: 9, runNumber: 4, state: 'vod' };
+
 const malformedRenditions: Array<[name: string, renditions: unknown]> = [
   ['a non-array ladder', {}],
   ['a null rung', [null]],
@@ -84,6 +110,37 @@ describe('the catalog a poll leaves on screen', () => {
 
     assert.equal(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: true }), null);
     assert.deepEqual(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: false }), []);
+  });
+
+  it.each([
+    [
+      'a managed snapshot without a master reference',
+      validLifecycle,
+      { ...validCompletedRecording, master: { ...validCompletedRecording.master, reference: '' } },
+    ],
+    [
+      'a managed snapshot missing an expected rung',
+      validLifecycle,
+      { ...validCompletedRecording, expectedRenditions: ['720p', '1080p'] },
+    ],
+    ['an unsupported lifecycle version', { ...validLifecycle, version: 2 }, validCompletedRecording],
+  ])('rejects the whole catalog when it contains %s', (_name, lifecycle, completedRecording) => {
+    const malformed = [
+      {
+        ...streamAt(300),
+        lifecycle,
+        completedRecording,
+      },
+    ];
+
+    assert.equal(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: true }), null);
+    assert.deepEqual(nextStreamList({ held: [], fetched: malformed, isSameGateway: false }), []);
+  });
+
+  it('keeps a legacy row whose optional continuation fields are absent', () => {
+    const legacyAudio = { ...streamAt(300), mediatype: 'audio' as const };
+
+    assert.deepEqual(nextStreamList({ held: [], fetched: [legacyAudio], isSameGateway: false }), [legacyAudio]);
   });
 
   it('keeps compatible optional and unknown fields on entries that pass validation', () => {

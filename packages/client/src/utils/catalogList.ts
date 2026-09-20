@@ -1,5 +1,7 @@
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, Rendition, Stream } from '@/types/stream';
 
+const LIFECYCLE_STATES = new Set(['ready', 'claimed', 'live', 'waiting', 'closed', 'vod']);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -29,6 +31,71 @@ function isRendition(value: unknown): value is Rendition {
   );
 }
 
+function isCompletedManifest(value: unknown): value is { topic: string; index: number; reference: string; duration: number } {
+  return (
+    isRecord(value) &&
+    typeof value.topic === 'string' &&
+    value.topic.length > 0 &&
+    isFiniteNumber(value.index) &&
+    typeof value.reference === 'string' &&
+    value.reference.length > 0 &&
+    isFiniteNumber(value.duration)
+  );
+}
+
+function isCompletedRendition(value: unknown): value is { name: string } {
+  return (
+    isCompletedManifest(value) &&
+    typeof value.name === 'string' &&
+    value.name.length > 0 &&
+    isOptionalFiniteNumber(value.width) &&
+    isOptionalFiniteNumber(value.height) &&
+    isOptionalFiniteNumber(value.bandwidth) &&
+    isOptionalFiniteNumber(value.avgBandwidth)
+  );
+}
+
+function isLifecycle(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    isFiniteNumber(value.revision) &&
+    isFiniteNumber(value.runNumber) &&
+    typeof value.state === 'string' &&
+    LIFECYCLE_STATES.has(value.state)
+  );
+}
+
+function isCompletedRecording(value: unknown): boolean {
+  if (!isRecord(value) || !isFiniteNumber(value.runNumber) || !isCompletedManifest(value.master)) {
+    return false;
+  }
+
+  if (
+    !Array.isArray(value.expectedRenditions) ||
+    !value.expectedRenditions.every((name) => typeof name === 'string' && name.length > 0) ||
+    !Array.isArray(value.renditions) ||
+    !value.renditions.every(isCompletedRendition)
+  ) {
+    return false;
+  }
+
+  const expected = new Set(value.expectedRenditions);
+  const actual = new Set(value.renditions.map((rendition) => rendition.name));
+  return expected.size === value.expectedRenditions.length && actual.size === value.renditions.length && [...expected].every((name) => actual.has(name));
+}
+
+/**
+ * Managed fields have to stand or fall as supplied. A malformed capture must not quietly turn into
+ * a legacy row, because that would make a completed replay follow the current feed head instead.
+ */
+function hasValidManagedContinuation(value: Record<string, unknown>): boolean {
+  return (
+    (value.lifecycle === undefined || isLifecycle(value.lifecycle)) &&
+    (value.completedRecording === undefined || isCompletedRecording(value.completedRecording))
+  );
+}
+
 function isStream(value: unknown): value is Stream {
   if (!isRecord(value)) {
     return false;
@@ -55,7 +122,8 @@ function isStream(value: unknown): value is Stream {
     isOptionalFiniteNumber(value.index) &&
     (value.thumbnail === undefined || typeof value.thumbnail === 'string') &&
     hasUsableScheduledStart &&
-    hasUsableRenditions
+    hasUsableRenditions &&
+    hasValidManagedContinuation(value)
   );
 }
 
