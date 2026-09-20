@@ -12,6 +12,7 @@ import {
 } from '../src/libs/AdminApiClient.js';
 import { AdminLadderRegistry } from '../src/libs/AdminLadderRegistry.js';
 import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
+import { LadderLiveness, RUNG_DEATH_LAG_SEGMENTS } from '../src/libs/LadderLiveness.js';
 import { LadderIdentity } from '../src/libs/LadderRegistry.js';
 import { ManagedMasterStore } from '../src/libs/ManagedMasterStore.js';
 import { ManagedRenditionStore } from '../src/libs/ManagedRenditionStore.js';
@@ -90,6 +91,7 @@ interface Harness {
 function makeHarness(
   root: string,
   answer: (request: ManagedRenditionReport, call: number) => ManagedRenditionReportResponse | Promise<ManagedRenditionReportResponse>,
+  failMasterWrite: () => boolean = () => false,
 ): Harness {
   const reports: ManagedRenditionReport[] = [];
   const urls: string[] = [];
@@ -108,6 +110,9 @@ function makeHarness(
     }),
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, payload: unknown, options: { index: FeedIndex }) => {
+        if (failMasterWrite()) {
+          throw Object.assign(new Error('master write refused'), { status: 400 });
+        }
         masters.push(`${options.index.toBigInt()}:${String(payload)}`);
         return { reference: { toHex: () => 'a'.repeat(64) } };
       },
@@ -203,5 +208,40 @@ describe('managed AdminLadderRegistry', () => {
     assert.equal(harness.masters.length, 1);
     assert.match(harness.masters[0], new RegExp(expected[0].topic));
     assert.match(harness.masters[0], new RegExp(expected[1].topic));
+  });
+
+  it('settles a pending managed master before retrying the same revision with a changed live shape', async () => {
+    const root = makeRoot();
+    let failMasterWrite = true;
+    const harness = makeHarness(
+      root,
+      (report) => response(report, 2, CLAIM_A, 4, expected),
+      () => failMasterWrite,
+    );
+    const tracker = new LadderLiveness();
+    tracker.recordDelivered('360p');
+    tracker.recordDelivered('720p');
+    const managedKey = `${GROUP}\u00002`;
+    (
+      harness.registry as unknown as {
+        liveness: Map<string, LadderLiveness>;
+      }
+    ).liveness.set(managedKey, tracker);
+
+    await assert.rejects(
+      harness.registry.upsertRendition(identity(2, CLAIM_A), expected[0]),
+      /master write refused/,
+    );
+    failMasterWrite = false;
+    for (let delivered = 0; delivered < RUNG_DEATH_LAG_SEGMENTS; delivered++) {
+      tracker.recordDelivered('360p');
+    }
+
+    const published = await harness.registry.upsertRendition(identity(2, CLAIM_A), expected[0]);
+
+    assert.equal(published.masterIndex, 1);
+    assert.equal(harness.masters.length, 2);
+    assert.match(harness.masters[0], new RegExp(expected[1].topic));
+    assert.doesNotMatch(harness.masters[1], new RegExp(expected[1].topic));
   });
 });

@@ -226,17 +226,18 @@ export class AdminLadderRegistry implements LadderRegistry {
       const key = this.managedGroupKey(identity.group, binding.runNumber);
       this.merged.set(key, report.renditions);
       const advertised = advertisableRenditions(report.renditions, this.livenessOf(key));
+      const advertisedShape = ladderShape(advertised.map((item) => item.name));
       const masterBinding: ManagedMasterBinding = { ...binding, group: identity.group };
       this.managedMasterContexts.set(key, { binding: masterBinding, renditionRevision: report.renditionRevision });
       const published = await this.masterWriter.publishManaged(
         identity.group,
         advertised,
-        `rendition:${report.renditionRevision}`,
+        `rendition:${report.renditionRevision}:shape:${advertisedShape}`,
         masterBinding,
         this.managedMasterStore,
       );
       if (published) {
-        this.rewrites.recordAdvertised(key, ladderShape(advertised.map((item) => item.name)));
+        this.rewrites.recordAdvertised(key, advertisedShape);
       }
       return {
         masterIndex: published?.index ?? null,
