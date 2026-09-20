@@ -5,9 +5,11 @@ import { getErrorMessage } from '../utils/common.js';
 
 import { Logger } from './Logger.js';
 import {
+  ManagedCompletedRecording,
   ManagedContinuationOperation,
   ManagedExpectedRendition,
 } from './ManagedCheckpointStore.js';
+import { isMediaFormatFingerprint, MediaFormatFingerprint } from './MediaFormatProbe.js';
 
 /**
  * The admin service this uploader answers to when `ADMIN_API_URL` is set. See the "Admin mode"
@@ -148,6 +150,65 @@ export type ManagedContinuationPreparation =
       expectedRevision: number;
       status: 'failed';
       failure: string;
+    };
+
+export interface LegacyRecordingCandidate {
+  readonly streamId: string;
+  readonly topic: string;
+  readonly mediaType: MediaType;
+  readonly master: {
+    readonly topic: string;
+    readonly index: number;
+    readonly duration: number;
+  };
+  readonly renditions: readonly (ManagedExpectedRendition & {
+    readonly index: number;
+    readonly duration: number;
+  })[];
+}
+
+export interface LegacyAdoptionValidation {
+  readonly version: 1;
+  readonly mediaReadable: true;
+  readonly pendingWrites: 0;
+  readonly tracks: readonly {
+    readonly topic: string;
+    readonly formatFingerprint: MediaFormatFingerprint;
+  }[];
+}
+
+export interface LegacyAdoptionOperation {
+  readonly lifecycleVersion: 1;
+  readonly kind: 'legacy-adoption';
+  readonly operationId: string;
+  readonly requestId: string;
+  readonly streamId: string;
+  readonly topic: string;
+  readonly mediaType: MediaType;
+  readonly uploaderId: string;
+  readonly candidateDigest: string;
+  readonly revision: number;
+  readonly status: 'pending';
+  readonly candidate: LegacyRecordingCandidate;
+}
+
+export type LegacyAdoptionPreparation =
+  | {
+      readonly lifecycleVersion: 1;
+      readonly uploaderId: string;
+      readonly expectedRevision: number;
+      readonly candidateDigest: string;
+      readonly status: 'ready';
+      readonly completedRecording: ManagedCompletedRecording;
+      readonly validation: LegacyAdoptionValidation;
+    }
+  | {
+      readonly lifecycleVersion: 1;
+      readonly uploaderId: string;
+      readonly expectedRevision: number;
+      readonly candidateDigest: string;
+      readonly status: 'failed';
+      readonly failure: string;
     };
 
 export interface ManagedClaimedRun {
@@ -446,6 +507,134 @@ function asManagedContinuation(value: unknown, uploaderId: string): ManagedConti
     return null;
   }
   return value as ManagedContinuationOperation;
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function asLegacyRecordingCandidate(value: unknown): LegacyRecordingCandidate | null {
+  if (!value || typeof value !== 'object') {return null;}
+  const candidate = value as Record<string, unknown>;
+  const master = candidate.master;
+  if (
+    typeof candidate.streamId !== 'string' ||
+    !UUID.test(candidate.streamId) ||
+    typeof candidate.topic !== 'string' ||
+    !UUID.test(candidate.topic) ||
+    (candidate.mediaType !== MEDIA_TYPE_VIDEO && candidate.mediaType !== MEDIA_TYPE_AUDIO) ||
+    !master ||
+    typeof master !== 'object' ||
+    (master as Record<string, unknown>).topic !== candidate.topic ||
+    !isNonNegativeInteger((master as Record<string, unknown>).index) ||
+    !isFiniteNonNegative((master as Record<string, unknown>).duration) ||
+    !Array.isArray(candidate.renditions)
+  ) {
+    return null;
+  }
+  const names = new Set<string>();
+  const topics = new Set<string>();
+  let previousName: string | undefined;
+  for (const raw of candidate.renditions) {
+    if (!raw || typeof raw !== 'object') {return null;}
+    const rendition = raw as Record<string, unknown>;
+    if (
+      typeof rendition.name !== 'string' ||
+      rendition.name.length === 0 ||
+      names.has(rendition.name) ||
+      (previousName !== undefined && previousName >= rendition.name) ||
+      typeof rendition.topic !== 'string' ||
+      !UUID.test(rendition.topic) ||
+      topics.has(rendition.topic) ||
+      !isNonNegativeInteger(rendition.index) ||
+      !isFiniteNonNegative(rendition.duration) ||
+      !isPositiveInteger(rendition.width) ||
+      !isPositiveInteger(rendition.height) ||
+      !isPositiveInteger(rendition.bandwidth) ||
+      !isPositiveInteger(rendition.avgBandwidth)
+    ) {
+      return null;
+    }
+    names.add(rendition.name);
+    topics.add(rendition.topic);
+    previousName = rendition.name;
+  }
+  return candidate as unknown as LegacyRecordingCandidate;
+}
+
+function legacyCandidateDigest(candidate: LegacyRecordingCandidate): string {
+  const normalized = {
+    ...candidate,
+    renditions: [...candidate.renditions].sort((left, right) =>
+      left.name === right.name
+        ? compareCodeUnits(left.topic, right.topic)
+        : compareCodeUnits(left.name, right.name),
+    ),
+  };
+  return createHash('sha256').update(canonicalJson(normalized)).digest('hex');
+}
+
+function asLegacyAdoption(value: unknown, uploaderId: string): LegacyAdoptionOperation | null {
+  if (!value || typeof value !== 'object') {return null;}
+  const candidate = value as Record<string, unknown>;
+  const recording = asLegacyRecordingCandidate(candidate.candidate);
+  if (
+    candidate.lifecycleVersion !== 1 ||
+    candidate.kind !== 'legacy-adoption' ||
+    typeof candidate.operationId !== 'string' ||
+    !UUID.test(candidate.operationId) ||
+    typeof candidate.requestId !== 'string' ||
+    !UUID.test(candidate.requestId) ||
+    typeof candidate.streamId !== 'string' ||
+    !UUID.test(candidate.streamId) ||
+    typeof candidate.topic !== 'string' ||
+    !UUID.test(candidate.topic) ||
+    (candidate.mediaType !== MEDIA_TYPE_VIDEO && candidate.mediaType !== MEDIA_TYPE_AUDIO) ||
+    candidate.uploaderId !== uploaderId ||
+    typeof candidate.candidateDigest !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(candidate.candidateDigest) ||
+    !isNonNegativeInteger(candidate.revision) ||
+    candidate.status !== 'pending' ||
+    !recording ||
+    recording.streamId !== candidate.streamId ||
+    recording.topic !== candidate.topic ||
+    recording.mediaType !== candidate.mediaType ||
+    legacyCandidateDigest(recording) !== candidate.candidateDigest
+  ) {
+    return null;
+  }
+  return value as LegacyAdoptionOperation;
+}
+
+function validLegacyValidation(value: unknown): value is LegacyAdoptionValidation {
+  if (!value || typeof value !== 'object') {return false;}
+  const validation = value as Record<string, unknown>;
+  if (
+    validation.version !== 1 ||
+    validation.mediaReadable !== true ||
+    validation.pendingWrites !== 0 ||
+    !Array.isArray(validation.tracks)
+  ) {
+    return false;
+  }
+  let previousTopic: string | undefined;
+  const topics = new Set<string>();
+  for (const raw of validation.tracks) {
+    if (!raw || typeof raw !== 'object') {return false;}
+    const track = raw as Record<string, unknown>;
+    if (
+      typeof track.topic !== 'string' ||
+      !UUID.test(track.topic) ||
+      topics.has(track.topic) ||
+      (previousTopic !== undefined && previousTopic >= track.topic) ||
+      !isMediaFormatFingerprint(track.formatFingerprint)
+    ) {
+      return false;
+    }
+    topics.add(track.topic);
+    previousTopic = track.topic;
+  }
+  return true;
 }
 
 function asIngestLookup(body: unknown, lifecycleVersion?: 1): AdminIngestLookup | null {
@@ -1001,6 +1190,86 @@ export class AdminApiClient {
       prepared.status !== preparation.status
     ) {
       throw new Error(`Admin API answered 200 for ${url} with another continuation result`);
+    }
+  }
+
+  /** Poll frozen legacy recordings assigned to this exact uploader for managed adoption. */
+  public async listLegacyAdoptions(uploaderId: string): Promise<readonly LegacyAdoptionOperation[]> {
+    if (this.lifecycleVersion !== 1) {
+      throw new Error('Legacy adoption polling requires lifecycle version 1');
+    }
+    const url = `${this.baseUrl}/api/internal/uploaders/${encodeURIComponent(uploaderId)}/legacy-adoptions`;
+    const response = await this.send(url, { method: 'GET' }, this.lookupTimeoutMs);
+    if (!response.ok) {
+      throw new Error(`Admin API answered ${response.status} for ${url}`);
+    }
+    const body = await this.readJson(response);
+    const values = body && typeof body === 'object' ? (body as Record<string, unknown>).legacyAdoptions : undefined;
+    if (!Array.isArray(values)) {
+      throw new Error(`Admin API answered 200 for ${url} without a legacy adoption list`);
+    }
+    const operations = values.map((operation) => asLegacyAdoption(operation, uploaderId));
+    if (operations.some((operation) => operation === null)) {
+      throw new Error(`Admin API answered 200 for ${url} with an invalid legacy adoption operation`);
+    }
+    return operations as LegacyAdoptionOperation[];
+  }
+
+  /** Acknowledge one exact legacy candidate proof after its checkpoint is durably sealed. */
+  public async reportLegacyAdoptionPreparation(
+    operation: LegacyAdoptionOperation,
+    preparation: LegacyAdoptionPreparation,
+  ): Promise<void> {
+    if (this.lifecycleVersion !== 1) {
+      throw new Error('Legacy adoption preparation requires lifecycle version 1');
+    }
+    if (
+      preparation.uploaderId !== operation.uploaderId ||
+      preparation.expectedRevision !== operation.revision ||
+      preparation.candidateDigest !== operation.candidateDigest ||
+      (preparation.status === 'ready' && !validLegacyValidation(preparation.validation))
+    ) {
+      throw new Error('Legacy adoption preparation does not match its assigned operation');
+    }
+    const url =
+      `${this.baseUrl}/api/internal/streams/${encodeURIComponent(operation.streamId)}` +
+      `/legacy-adoptions/${encodeURIComponent(operation.operationId)}/preparation`;
+    const response = await this.send(
+      url,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(preparation),
+      },
+      this.reportTimeoutMs,
+    );
+    if (!response.ok) {
+      throw new Error(`Admin API answered ${response.status} for ${url}`);
+    }
+    const body = await this.readJson(response);
+    const value = body && typeof body === 'object' ? (body as Record<string, unknown>).operation : undefined;
+    if (!value || typeof value !== 'object') {
+      throw new Error(`Admin API answered 200 for ${url} without the legacy adoption result`);
+    }
+    const result = value as Record<string, unknown>;
+    const expectedStatus = preparation.status === 'ready' ? 'committed' : 'failed';
+    const matchesOutcome =
+      preparation.status === 'ready'
+        ? canonicalJson(result.completedRecording) === canonicalJson(preparation.completedRecording) &&
+          canonicalJson(result.validation) === canonicalJson(preparation.validation)
+        : result.failure === preparation.failure;
+    if (
+      result.lifecycleVersion !== 1 ||
+      result.kind !== 'legacy-adoption' ||
+      result.operationId !== operation.operationId ||
+      result.streamId !== operation.streamId ||
+      result.uploaderId !== operation.uploaderId ||
+      result.candidateDigest !== operation.candidateDigest ||
+      result.revision !== operation.revision + 1 ||
+      result.status !== expectedStatus ||
+      !matchesOutcome
+    ) {
+      throw new Error(`Admin API answered 200 for ${url} with another legacy adoption result`);
     }
   }
 

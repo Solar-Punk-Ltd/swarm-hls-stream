@@ -22,6 +22,8 @@ import {
   ADMIN_STATE_VOD,
   AdminApiClient,
   AdminStreamDraft,
+  LegacyAdoptionOperation,
+  LegacyAdoptionPreparation,
   ManagedClaimRequest,
   ManagedContinuationPreparation,
   ManagedRenditionReport,
@@ -68,6 +70,13 @@ const vodReconciliationFixture = JSON.parse(
 const managedRenditionDigestFixture = JSON.parse(
   fs.readFileSync(new URL('./fixtures/managed-rendition-digest-v1.json', import.meta.url), 'utf8'),
 ) as { report: ManagedRenditionReport; sha256HexParts: string[] };
+const legacyAdoptionFixture = JSON.parse(
+  fs.readFileSync(new URL('./fixtures/legacy-adoption-v1.json', import.meta.url), 'utf8'),
+) as {
+  candidate: LegacyAdoptionOperation['candidate'];
+  validation: Extract<LegacyAdoptionPreparation, { status: 'ready' }>['validation'];
+  sha256HexParts: string[];
+};
 
 interface Received {
   method: string;
@@ -541,6 +550,84 @@ describe('the admin API client, negotiating lifecycle v1', () => {
       },
       async ({ client }) => {
         assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_ALREADY_SETTLED);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+});
+
+describe('the admin API client, preparing legacy adoption', () => {
+  const uploaderId = 'srs-157-90-34-105';
+  const candidateDigest = legacyAdoptionFixture.sha256HexParts.join('');
+  const operation: LegacyAdoptionOperation = {
+    lifecycleVersion: 1,
+    kind: 'legacy-adoption',
+    operationId: '55555555-5555-4555-8555-555555555555',
+    requestId: '66666666-6666-4666-8666-666666666666',
+    streamId: legacyAdoptionFixture.candidate.streamId,
+    topic: legacyAdoptionFixture.candidate.topic,
+    mediaType: legacyAdoptionFixture.candidate.mediaType,
+    uploaderId,
+    candidateDigest,
+    revision: 1,
+    status: 'pending',
+    candidate: legacyAdoptionFixture.candidate,
+  };
+  const preparation: LegacyAdoptionPreparation = {
+    lifecycleVersion: 1,
+    uploaderId,
+    expectedRevision: 1,
+    candidateDigest,
+    status: 'ready',
+    completedRecording: {
+      runNumber: 1,
+      checkpointReference: '77777777-7777-4777-8777-777777777777',
+      master: { ...legacyAdoptionFixture.candidate.master, reference: 'a'.repeat(64) },
+      expectedRenditions: legacyAdoptionFixture.candidate.renditions.map(({ name }) => name),
+      renditions: legacyAdoptionFixture.candidate.renditions.map((rendition, index) => ({
+        ...rendition,
+        reference: String(index + 1).repeat(64),
+      })),
+    },
+    validation: legacyAdoptionFixture.validation,
+  };
+
+  it('polls and acknowledges the exact frozen candidate proof', async () => {
+    await withAdmin(
+      (req, res) => {
+        if (req.method === 'GET') {
+          res.json({ legacyAdoptions: [operation] });
+          return;
+        }
+        res.json({
+          operation: {
+            ...operation,
+            revision: 2,
+            status: 'committed',
+            completedRecording: preparation.completedRecording,
+            validation: preparation.validation,
+          },
+        });
+      },
+      async ({ client, received }) => {
+        assert.deepEqual(await client.listLegacyAdoptions(uploaderId), [operation]);
+        await client.reportLegacyAdoptionPreparation(operation, preparation);
+        assert.equal(received[0].url, `/api/internal/uploaders/${uploaderId}/legacy-adoptions`);
+        assert.equal(
+          received[1].url,
+          `/api/internal/streams/${operation.streamId}/legacy-adoptions/${operation.operationId}/preparation`,
+        );
+        assert.deepEqual(received[1].body, preparation);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  it('refuses adoption work whose candidate digest does not match its exact candidate', async () => {
+    await withAdmin(
+      always(200, { legacyAdoptions: [{ ...operation, candidateDigest: 'f'.repeat(64) }] }),
+      async ({ client }) => {
+        await assert.rejects(() => client.listLegacyAdoptions(uploaderId), /invalid legacy adoption/);
       },
       { lifecycleVersion: 1 },
     );
