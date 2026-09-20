@@ -31,7 +31,9 @@ function isRendition(value: unknown): value is Rendition {
   );
 }
 
-function isCompletedManifest(value: unknown): value is { topic: string; index: number; reference: string; duration: number } {
+function isCompletedManifest(
+  value: unknown,
+): value is Record<string, unknown> & { topic: string; index: number; reference: string; duration: number } {
   return (
     isRecord(value) &&
     typeof value.topic === 'string' &&
@@ -43,7 +45,7 @@ function isCompletedManifest(value: unknown): value is { topic: string; index: n
   );
 }
 
-function isCompletedRendition(value: unknown): value is { name: string } {
+function isCompletedRendition(value: unknown): value is Record<string, unknown> & { name: string } {
   return (
     isCompletedManifest(value) &&
     typeof value.name === 'string' &&
@@ -82,7 +84,11 @@ function isCompletedRecording(value: unknown): boolean {
 
   const expected = new Set(value.expectedRenditions);
   const actual = new Set(value.renditions.map((rendition) => rendition.name));
-  return expected.size === value.expectedRenditions.length && actual.size === value.renditions.length && [...expected].every((name) => actual.has(name));
+  return (
+    expected.size === value.expectedRenditions.length &&
+    actual.size === value.renditions.length &&
+    [...expected].every((name) => actual.has(name))
+  );
 }
 
 /**
