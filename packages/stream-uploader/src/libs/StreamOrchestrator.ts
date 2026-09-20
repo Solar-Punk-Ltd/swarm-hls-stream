@@ -876,13 +876,26 @@ export class StreamOrchestrator {
       return null;
     }
     try {
-      return store.createRun({
+      const checkpoint = store.createRun({
         adminStreamId: run.adminStreamId,
         runNumber: run.runNumber,
         topic: run.topic,
         mediaType: run.mediaType,
         expectedRenditions: run.expectedRenditions,
       });
+      if (checkpoint.tracks.length > 0 && !this.config.managedMediaStore) {
+        throw new Error('Managed continuation tracks require the durable media store');
+      }
+      for (const track of checkpoint.tracks) {
+        this.config.managedMediaStore?.restoreTrack(
+          checkpoint.adminStreamId,
+          checkpoint.runNumber,
+          track.streamId,
+          track.rendition,
+          track.state,
+        );
+      }
+      return checkpoint;
     } catch (error) {
       this.logger.error(`[StreamOrchestrator] Failed to persist managed checkpoint ${run.adminStreamId}:`, error);
       return null;

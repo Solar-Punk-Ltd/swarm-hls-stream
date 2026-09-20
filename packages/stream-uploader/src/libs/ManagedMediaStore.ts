@@ -51,6 +51,13 @@ export interface ManagedMediaPersistence {
     rendition: string | null,
     state: StreamState,
   ): void;
+  restoreTrack(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+    state: StreamState,
+  ): void;
   find(input: ManagedMediaInput, data: Uint8Array): ManagedMediaExisting;
   accept(input: ManagedMediaInput, data: Uint8Array): ManagedMediaAcceptance;
   commitUploaded(token: string, reference: string, trackState: StreamState): ManagedMediaRecord;
@@ -221,6 +228,23 @@ function sameAcceptedPayload(record: ManagedMediaRecord, input: ManagedMediaInpu
   );
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) {return value.map(canonicalValue);}
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, canonicalValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalValue(left)) === JSON.stringify(canonicalValue(right));
+}
+
 /** Durable journal for media callbacks accepted from lifecycle-v1 sources. */
 export class ManagedMediaStore implements ManagedMediaPersistence {
   private readonly nextOrdinals = new Map<string, number>();
@@ -258,6 +282,45 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
     const filePath = this.trackPath(identity);
     const existing = this.readTrackJournal(identity);
     if (existing) {
+      this.flushDirectory(this.stateDir);
+      return;
+    }
+    if (this.fileOps.existsSync(filePath)) {
+      throw new Error(`Managed track journal for ${streamId} is unreadable`);
+    }
+    const journal: ManagedTrackJournal = {
+      lifecycleVersion: 1,
+      ...identity,
+      state,
+    };
+    this.replaceDurably(filePath, JSON.stringify(journal));
+  }
+
+  /** Seed a new managed run from its already verified cumulative checkpoint. */
+  public restoreTrack(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+    state: StreamState,
+  ): void {
+    const identity = { adminStreamId, runNumber, streamId, rendition };
+    if (
+      !UUID.test(adminStreamId) ||
+      !positiveInteger(runNumber) ||
+      streamId.length === 0 ||
+      (rendition !== null && rendition.length === 0) ||
+      !isStreamState(state) ||
+      state.streamId !== streamId
+    ) {
+      throw new Error(`Refused invalid managed track restore for ${streamId}`);
+    }
+    const filePath = this.trackPath(identity);
+    const existing = this.readTrackJournal(identity);
+    if (existing) {
+      if (!sameValue(existing.state, state)) {
+        throw new Error(`Managed track ${streamId} is already restored with different history`);
+      }
       this.flushDirectory(this.stateDir);
       return;
     }

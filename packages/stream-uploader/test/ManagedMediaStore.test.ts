@@ -103,6 +103,27 @@ describe('ManagedMediaStore durability', () => {
     assert.equal(fs.readFileSync(path.join(root, journal), 'utf8'), '{corrupt');
   });
 
+  it('restores cumulative track history idempotently and refuses a different history', () => {
+    const root = tempRoot();
+    const store = new ManagedMediaStore(root);
+    const retained = state();
+
+    store.restoreTrack(ADMIN_STREAM_ID, 3, STREAM_ID, '360p', retained);
+    new ManagedMediaStore(root).restoreTrack(
+      ADMIN_STREAM_ID,
+      3,
+      STREAM_ID,
+      '360p',
+      JSON.parse(JSON.stringify(retained)) as StreamState,
+    );
+
+    assert.deepEqual(new ManagedMediaStore(root).readTrackState(ADMIN_STREAM_ID, 3, STREAM_ID, '360p'), retained);
+    assert.throws(
+      () => store.restoreTrack(ADMIN_STREAM_ID, 3, STREAM_ID, '360p', state('c'.repeat(64))),
+      /different history/,
+    );
+  });
+
   it('persists accepted bytes and identity before acknowledging the callback', () => {
     const root = tempRoot();
     const accepted = new ManagedMediaStore(root).accept(input(), Buffer.from('segment-a'));
