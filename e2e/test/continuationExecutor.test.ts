@@ -68,8 +68,8 @@ describe('callable continuation fixture executor', () => {
       'start-sender',
       'media',
       'measure-after',
-      'evidence',
       'settle',
+      'evidence',
     ]);
     assert.equal(existsSync(`${root}.operation.lock`), false);
   });
@@ -82,6 +82,24 @@ describe('callable continuation fixture executor', () => {
       /owned fixture processes remain unresolved/,
     );
 
+    assert.equal(existsSync(`${root}.operation.lock`), true);
+  });
+
+  it('captures the after snapshot and reaps owned processes when media fails', async () => {
+    const root = outputRoot();
+    const events: string[] = [];
+    const runSteps = steps(events);
+    runSteps.runMediaScenario = async () => {
+      events.push('media');
+      throw new Error('synthetic media failure');
+    };
+
+    await assert.rejects(
+      runContinuationFixture({ fixtureId: FIXTURE_ID, outputRoot: root }, runSteps),
+      /synthetic media failure/,
+    );
+
+    assert.deepEqual(events.slice(-4), ['start-sender', 'media', 'measure-after', 'settle']);
     assert.equal(existsSync(`${root}.operation.lock`), true);
   });
 
