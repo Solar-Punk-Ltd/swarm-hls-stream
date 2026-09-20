@@ -148,6 +148,32 @@ describe('continuation fixture Docker adapter', () => {
     }
   });
 
+  it('keeps the journal-owned browser and media sender available for bounded exec probes', async () => {
+    const fixturePlan = plan();
+    const commands = new RecordingCommands();
+    const docker = new DockerCliFixture(fixturePlan, commands);
+    const companions = fixturePlan.resources.filter(
+      (resource) => resource.kind === 'container' && ['browser', 'media-sender'].includes(resource.role),
+    );
+
+    for (const companion of companions) {
+      if (companion.kind === 'container') {
+        await docker.create('container', companion.name, companion.labels, companion);
+      }
+    }
+
+    const creates = commands.calls.filter(({ args }) => args[0] === 'create');
+    assert.equal(creates.length, 2);
+    for (const { args } of creates) {
+      assert.deepEqual(args.slice(-4), [
+        IMAGE_ID,
+        'node',
+        '-e',
+        'setInterval(() => undefined, 2147483647)',
+      ]);
+    }
+  });
+
   it('withholds arbitrary Docker output from bounded command failures', async () => {
     const sentinel = 'development-private-key-sentinel';
     const commands: BoundedCommand = {
