@@ -35,7 +35,7 @@ export interface FixtureReadinessControlInput {
   postageBatchId: string;
   viewerMediaBaseUrl: string;
   srs: { host: string; rtmpPort: number };
-  readinessStreamId: string;
+  readinessStreamTopic: string;
   requiredDiskBytes: number;
   controlTimeoutMs?: number;
 }
@@ -155,7 +155,7 @@ export class FixtureReadinessControlExecutor implements ReadinessControlExecutor
       {
         host: this.input.srs.host,
         port: this.input.srs.rtmpPort,
-        streamId: this.input.readinessStreamId,
+        streamTopic: this.input.readinessStreamTopic,
         invalidKey: INVALID_PUBLISH_KEY,
       },
       maxResponseBytes,
@@ -389,7 +389,7 @@ function validateInput(input: FixtureReadinessControlInput): void {
     input.topology.fixtureId !== input.fixtureId ||
     input.topology.network === '' ||
     !POSTAGE_BATCH_ID.test(input.postageBatchId) ||
-    !STREAM_ID.test(input.readinessStreamId) ||
+    !STREAM_ID.test(input.readinessStreamTopic) ||
     !/^[A-Za-z0-9_.-]{1,200}$/.test(input.srs.host) ||
     !Number.isSafeInteger(input.srs.rtmpPort) ||
     input.srs.rtmpPort < 1 ||
@@ -608,7 +608,7 @@ const metric = async () => {
 };
 (async () => {
   const before = await metric();
-  const target = 'rtmp://' + input.host + ':' + input.port + '/live/' + input.streamId + '?key=' + input.invalidKey;
+  const target = 'rtmp://' + input.host + ':' + input.port + '/video/' + input.streamTopic + '?key=' + input.invalidKey;
   spawnSync('/usr/bin/ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=32x32:r=2',
     '-t', '0.5', '-an', '-c:v', 'libx264', '-f', 'flv', target,

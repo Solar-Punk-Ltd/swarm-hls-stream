@@ -153,7 +153,7 @@ function input(): FixtureReadinessControlInput {
     postageBatchId: BATCH_ID,
     viewerMediaBaseUrl: 'http://client',
     srs: { host: 'srs', rtmpPort: 10_012 },
-    readinessStreamId: STREAM_ID,
+    readinessStreamTopic: STREAM_ID,
     requiredDiskBytes: 1_000_000_000,
     controlTimeoutMs: 30_000,
   };
@@ -328,7 +328,8 @@ describe('FixtureReadinessControlExecutor', () => {
     const inputs = command.calls
       .filter(({ args }) => args[0] === 'exec' && args[2] === 'node')
       .map(({ args }) => controlInput(args));
-    assert.ok(inputs.some((value) => value.streamId === STREAM_ID && value.invalidKey === 'readiness-invalid'));
+    assert.ok(inputs.some((value) => value.streamTopic === STREAM_ID && value.invalidKey === 'readiness-invalid'));
+    assert.match(serialized, /\/video\//);
     assert.ok(inputs.some((value) => value.mediaUrl === `http://client/bee/bytes/${REFERENCE}`));
   });
 
