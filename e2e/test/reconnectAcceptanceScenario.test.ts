@@ -177,7 +177,7 @@ function successfulFetch(
 }
 
 describe('runReconnectAcceptanceScenario', () => {
-  it('proves same-run reconnect, cutoff refusal, and admission only after Continue', async () => {
+  it('observes same-run reconnect, cutoff termination, unchanged closure, and admission after Continue', async () => {
     const fetch = successfulFetch();
     const spawn = new QueuedSpawn([processResult(0), processResult(0), processResult(1), processResult(0)]);
     let now = 10_000;
