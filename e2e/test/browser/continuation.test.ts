@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { chromium, type Browser, type Locator } from 'playwright-core';
 
-const E2E_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const E2E_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const REPOSITORY_ROOT = dirname(E2E_ROOT);
 const FIXTURE_ROOT = join(E2E_ROOT, 'test/fixtures/browser-continuation');
-const VITE = join(E2E_ROOT, 'node_modules/.bin/vite');
-const CHROME_PATH = process.env.BROWSER_CHROME_PATH ?? '/opt/google/chrome/chrome';
+const VITE = join(REPOSITORY_ROOT, 'packages/client/node_modules/.bin/vite');
+const CHROME_PATH = process.env.CHROME_BIN ?? process.env.BROWSER_CHROME_PATH ?? '/opt/google/chrome/chrome';
+const DIAGNOSTIC_LIMIT = 8_000;
+const MASTER_REFERENCE = 'a'.repeat(32) + 'b'.repeat(32);
+const RUNG_REFERENCE = 'c'.repeat(32) + 'd'.repeat(32);
 
 type CatalogEntry = {
   owner: string;
@@ -42,14 +45,14 @@ type CatalogEntry = {
 function recording(): CatalogEntry['completedRecording'] {
   return {
     runNumber: 4,
-    master: { topic: 'master-topic', index: 18, reference: 'master-reference-a', duration: 95 },
+    master: { topic: 'master-topic', index: 18, reference: MASTER_REFERENCE, duration: 95 },
     expectedRenditions: ['720p'],
     renditions: [
       {
         name: '720p',
         topic: 'archived-rung',
         index: 7,
-        reference: 'archived-rung-reference-a',
+        reference: RUNG_REFERENCE,
         duration: 95,
         width: 1280,
         height: 720,
@@ -97,9 +100,55 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function waitForFixture(url: string): Promise<void> {
+function appendDiagnostic(current: string, chunk: Buffer): string {
+  return `${current}${chunk}`.slice(-DIAGNOSTIC_LIMIT);
+}
+
+function startFixture(port: number): {
+  vite: ChildProcessWithoutNullStreams;
+  diagnostics: () => string;
+  failedToSpawn: () => boolean;
+} {
+  let stdout = '';
+  let stderr = '';
+  let spawnError: Error | null = null;
+  const vite = spawn(VITE, ['--config', join(FIXTURE_ROOT, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)], {
+    cwd: REPOSITORY_ROOT,
+    stdio: 'pipe',
+  });
+  vite.stdout.on('data', (chunk: Buffer) => {
+    stdout = appendDiagnostic(stdout, chunk);
+  });
+  vite.stderr.on('data', (chunk: Buffer) => {
+    stderr = appendDiagnostic(stderr, chunk);
+  });
+  vite.on('error', (error) => {
+    spawnError = error;
+  });
+  return {
+    vite,
+    failedToSpawn: () => spawnError !== null,
+    diagnostics: () =>
+      [
+        `vite exit status: ${vite.exitCode ?? 'running'}`,
+        spawnError ? `vite spawn error: ${spawnError.message}` : '',
+        stdout ? `vite stdout:\n${stdout}` : '',
+        stderr ? `vite stderr:\n${stderr}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+  };
+}
+
+async function waitForFixture(
+  url: string,
+  fixture: { vite: ChildProcessWithoutNullStreams; diagnostics: () => string; failedToSpawn: () => boolean },
+): Promise<void> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
+    if (fixture.vite.exitCode !== null || fixture.failedToSpawn()) {
+      throw new Error(`fixture stopped before it started at ${url}\n${fixture.diagnostics()}`);
+    }
     try {
       if ((await fetch(url)).ok) return;
     } catch {
@@ -107,41 +156,50 @@ async function waitForFixture(url: string): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`fixture did not start at ${url}`);
+  throw new Error(`fixture did not start at ${url}\n${fixture.diagnostics()}`);
 }
 
 async function stopFixture(vite: ChildProcessWithoutNullStreams): Promise<void> {
   if (vite.exitCode !== null) return;
   vite.kill('SIGTERM');
-  await once(vite, 'exit');
+  await Promise.race([once(vite, 'exit'), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+  if (vite.exitCode === null) {
+    vite.kill('SIGKILL');
+    await once(vite, 'exit');
+  }
 }
 
 test('keeps a mounted replay through a catalogue refresh and remounts once only after Watch live', async () => {
   const port = await freePort();
   const fixtureUrl = `http://127.0.0.1:${port}`;
-  const vite = spawn(VITE, ['--config', join(FIXTURE_ROOT, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: REPOSITORY_ROOT,
-    stdio: 'pipe',
-  });
+  const fixture = startFixture(port);
   let browser: Browser | undefined;
 
   try {
-    await waitForFixture(fixtureUrl);
-    browser = await chromium.launch({ executablePath: CHROME_PATH, headless: true });
+    await waitForFixture(fixtureUrl, fixture);
+    try {
+      browser = await chromium.launch({
+        executablePath: CHROME_PATH,
+        headless: true,
+        args: process.getuid?.() === 0 ? ['--no-sandbox'] : [],
+      });
+    } catch (error) {
+      throw new Error(`could not launch Chromium at ${CHROME_PATH}: ${(error as Error).message}\n${fixture.diagnostics()}`);
+    }
     const page = await browser.newPage();
     await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
     await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod'));
     const player = page.getByTestId('continuation-player');
     await player.waitFor();
-    await expectAttribute(player, 'data-master-reference', 'master-reference-a');
-    await expectAttribute(player, 'data-rendition-reference', 'archived-rung-reference-a');
+    await expectAttribute(player, 'data-master-reference', MASTER_REFERENCE);
+    await expectAttribute(player, 'data-rendition-reference', RUNG_REFERENCE);
     await page.evaluate(() => {
       (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
     });
 
     await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('live'));
-    await expectAttribute(player, 'data-master-reference', 'master-reference-a');
-    await expectAttribute(player, 'data-rendition-reference', 'archived-rung-reference-a');
+    await expectAttribute(player, 'data-master-reference', MASTER_REFERENCE);
+    await expectAttribute(player, 'data-rendition-reference', RUNG_REFERENCE);
     await expectAttribute(player, 'data-rendition-topic', '');
     assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 1, destroyed: 0 });
@@ -152,7 +210,7 @@ test('keeps a mounted replay through a catalogue refresh and remounts once only 
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
   } finally {
     await browser?.close();
-    await stopFixture(vite);
+    await stopFixture(fixture.vite);
   }
 });
 
