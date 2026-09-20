@@ -172,7 +172,7 @@ if has_service bee-uploader; then
   if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
     export BEE_URL="http://localhost:${BEE_UPLOADER_API_PORT:-1633}"
   else
-    export BEE_URL="http://bee-uploader:1633"
+    export BEE_URL="http://bee-uploader:${BEE_UPLOADER_API_PORT:-1633}"
   fi
 elif [ "$role" = "uploader" ]; then
   [ "${LOCAL_BEE_UPLOADER:-}" = "false" ] || refuse "external uploader Bee requires LOCAL_BEE_UPLOADER=false"
@@ -196,7 +196,7 @@ if has_service client; then
       export CLIENT_BEE_GATEWAY_PORT="${BEE_GATEWAY_API_PORT:-1733}"
     else
       export CLIENT_BEE_GATEWAY_HOST=bee-gateway
-      export CLIENT_BEE_GATEWAY_PORT=1733
+      export CLIENT_BEE_GATEWAY_PORT="${BEE_GATEWAY_API_PORT:-1733}"
     fi
   else
     [ -n "${CLIENT_BEE_GATEWAY_HOST:-}" ] && [ "${CLIENT_BEE_GATEWAY_HOST}" != "bee-gateway" ] || refuse "external viewer gateway is not configured"

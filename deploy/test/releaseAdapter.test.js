@@ -226,6 +226,7 @@ describe('guarded uploader release adapter', () => {
     assert.match(calls, / config --images srs/);
     assert.doesNotMatch(calls, / images -q/);
     assert.doesNotMatch(calls, / up /, 'build created a temporary container to discover an image');
+    assert.match(calls, /effective BEE_URL=http:\/\/bee-uploader:10075/);
     assert.deepEqual(JSON.parse(readFileSync(result.output, 'utf8')).images, [
       { service: 'bee-uploader', imageId: IMAGE_IDS['bee-uploader'] },
       { service: 'srs', imageId: IMAGE_IDS.srs },
@@ -330,6 +331,8 @@ describe('guarded viewer release adapter', () => {
   it('accepts the bounded local gateway pair and rejects every other shape', async () => {
     const accepted = fixture('viewer', ['bee-gateway', 'client']);
     assert.equal((await run(accepted, 'viewer-release-adapter.sh', 'preflight')).exitCode, 0);
+    assert.equal((await run(accepted, 'viewer-release-adapter.sh', 'build')).exitCode, 0);
+    assert.match(readFileSync(accepted.journal, 'utf8'), /effective .*CLIENT_BEE_GATEWAY_HOST=bee-gateway CLIENT_BEE_GATEWAY_PORT=10077/);
 
     const rejected = fixture('viewer', ['client', 'srs']);
     const result = await run(rejected, 'viewer-release-adapter.sh', 'transition');
@@ -361,6 +364,7 @@ function dockerStub(journal) {
   return `const fs = require('node:fs');
 const argv = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(journal)}, argv.join(' ') + '\\n');
+fs.appendFileSync(${JSON.stringify(journal)}, 'effective BEE_URL=' + (process.env.BEE_URL || '') + ' CLIENT_BEE_GATEWAY_HOST=' + (process.env.CLIENT_BEE_GATEWAY_HOST || '') + ' CLIENT_BEE_GATEWAY_PORT=' + (process.env.CLIENT_BEE_GATEWAY_PORT || '') + '\\n');
 const ids = ${JSON.stringify(IMAGE_IDS)};
 const references = ${JSON.stringify(IMAGE_REFERENCES)};
 function serviceFrom(value) {
