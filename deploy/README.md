@@ -174,6 +174,28 @@ deploy.sh --host=user@server                        # ignore config.json targets
 
 > Always run with bash: `bash ./deploy/scripts/deploy.sh ...` or `./deploy/scripts/deploy.sh ...`. Invoking it via `sh` (POSIX) breaks bash-only features used in the script.
 
+#### Guarded and legacy release entry
+
+`deploy.sh` remains the supported entry for a stack whose lifecycle feature is off. It takes an
+owner-bound release lease before the existing deployment work starts. A successful deployment
+releases that exact lease. A failed or ambiguously interrupted deployment keeps the lease so another
+process cannot move the same installation over work whose outcome is unknown. Recovery must resolve
+that deployment and finish its exact owner token through the installed release guard. Do not remove
+the guard state or lock files by hand.
+
+Once a protected uploader or viewer profile has activated managed releases, raw `deploy.sh` refuses
+that profile before building images or moving services. The deployment manager invokes the installed
+`streaming-release-guard uploader` or `streaming-release-guard viewer` command for those releases.
+An unrelated legacy profile can still use `deploy.sh`. It receives its own profile-scoped lease from
+the installed guard and cannot select any protected manager, admin, uploader, or viewer profile.
+
+The isolated continuation fixture is narrower than an ordinary deployment. Its uploader target is
+exactly `srs` plus `stream-uploader`, and its viewer target is exactly `client`. Both attach only to
+the guard-bound internal fixture network. The uploader publishes no host ports. The viewer publishes
+only its derived client port on `127.0.0.1`. The adapter labels and verifies the selected containers
+and the uploader's `srs-media` and `uploader-state` volumes before a verification receipt can be
+accepted.
+
 #### Profiles
 
 A profile is a deployment instance: same topology (from `config.json`), separate identity. Each profile gets its own:
