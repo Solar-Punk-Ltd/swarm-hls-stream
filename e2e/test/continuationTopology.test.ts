@@ -1,13 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import {
-  createFixturePlan,
-  FIXTURE_LABEL,
-  type FixturePlan,
-  FixtureRefusal,
-  type VolumePlan,
-} from '../src/continuation/fixture.js';
+import { createFixturePlan, type FixturePlan, FixtureRefusal } from '../src/continuation/fixture.js';
 import {
   createContinuationTopology,
   inspectContinuationReadiness,
@@ -21,7 +15,7 @@ const IMAGE_ID = `sha256:${'b'.repeat(64)}`;
 const BATCH_HASH = `sha256:${'c'.repeat(64)}`;
 
 function correctedPlan(): FixturePlan {
-  const plan = createFixturePlan({
+  return createFixturePlan({
     fixtureId: FIXTURE_ID,
     outputRoot: `/tmp/${FIXTURE_ID}`,
     candidates: [
@@ -44,24 +38,6 @@ function correctedPlan(): FixturePlan {
     minimumStorageTtlSeconds: 900,
     expectedChainId: 1337,
   });
-  const labels = { [FIXTURE_LABEL]: FIXTURE_ID, 'org.solarpunk.srs-continuation.managed': 'true' };
-  const media: VolumePlan = {
-    kind: 'volume',
-    role: 'srs-media',
-    name: `${FIXTURE_ID}-srs-media`,
-    labels,
-  };
-  return {
-    ...plan,
-    resources: [...plan.resources, media],
-    publishedPorts: plan.publishedPorts.map((port) =>
-      port.role === 'admin' ? { ...port, containerPort: 9877 } : port,
-    ),
-    internalEndpoints: {
-      ...plan.internalEndpoints,
-      admin: `http://${FIXTURE_ID}-admin-api:9877`,
-    },
-  };
 }
 
 function service(plan: FixturePlan, role: string) {
@@ -296,29 +272,15 @@ describe('continuation fixture topology', () => {
   });
 
   it('refuses the stale admin port and missing shared media volume', () => {
-    const stale = createFixturePlan({
-      fixtureId: FIXTURE_ID,
-      outputRoot: `/tmp/${FIXTURE_ID}`,
-      candidates: [
-        { role: 'stack', root: '/candidates/stack', commit: COMMIT },
-        { role: 'admin', root: '/candidates/admin', commit: COMMIT },
-        { role: 'manager', root: '/candidates/manager', commit: COMMIT },
-      ],
-      candidateImages: {
-        postgres: IMAGE_ID,
-        srs: IMAGE_ID,
-        uploader: IMAGE_ID,
-        adminApi: IMAGE_ID,
-        adminWeb: IMAGE_ID,
-        viewer: IMAGE_ID,
-        mediaSender: IMAGE_ID,
-        browser: IMAGE_ID,
-      },
-      loopbackPorts: { rpc: 18_545, admin: 18_080, viewer: 18_081 },
-      minimumStorageBytes: 1_000_000,
-      minimumStorageTtlSeconds: 900,
-      expectedChainId: 1337,
-    });
+    const current = correctedPlan();
+    const stale = {
+      ...current,
+      internalEndpoints: { ...current.internalEndpoints, admin: `http://${FIXTURE_ID}-admin-api:3000` },
+      publishedPorts: current.publishedPorts.map((port) =>
+        port.role === 'admin' ? { ...port, containerPort: 3000 } : port,
+      ),
+      resources: current.resources.filter((resource) => resource.role !== 'srs-media'),
+    };
 
     assert.throws(() => createContinuationTopology(stale), /admin.*9877/i);
     const fixedPort = {
