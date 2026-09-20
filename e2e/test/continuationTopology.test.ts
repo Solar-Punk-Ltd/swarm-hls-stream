@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { createFixturePlan, type FixturePlan, FixtureRefusal } from '../src/continuation/fixture.js';
 import {
+  createContinuationBootstrap,
   createContinuationTopology,
   inspectContinuationReadiness,
   type ReadinessProbe,
@@ -181,10 +182,11 @@ describe('continuation fixture topology', () => {
 
   it('orders chain restore, Bee bootstrapping, storage, and application startup', () => {
     const plan = correctedPlan();
+    const initial = createContinuationBootstrap(plan);
     const topology = createContinuationTopology(plan, UPLOADER_ID);
 
     assert.deepEqual(
-      topology.bootstrap.map((step) => [step.id, step.kind]),
+      initial.bootstrap.map((step) => [step.id, step.kind]),
       [
         ['start-blockchain', 'start-services'],
         ['load-chain-state', 'load-anvil-state'],
@@ -194,15 +196,22 @@ describe('continuation fixture topology', () => {
         ['form-peer-mesh', 'form-bee-peer-mesh'],
         ['advance-private-chain', 'advance-anvil-chain'],
         ['provision-postage', 'provision-postage'],
-        ['activate-admin', 'activate-guarded-release'],
+        ['activate-admin-bootstrap', 'activate-guarded-release'],
         ['activate-manager', 'activate-guarded-release'],
+        ['create-manager-profile', 'create-manager-profile'],
+      ],
+    );
+    assert.deepEqual(
+      topology.bootstrap.map((step) => [step.id, step.kind]),
+      [
+        ['activate-admin-managed', 'activate-guarded-release'],
         ['activate-viewer', 'activate-guarded-release'],
         ['activate-uploader', 'activate-guarded-release'],
         ['submit-release-guard-receipts', 'submit-release-guard-receipts'],
         ['start-test-controls', 'start-services'],
       ],
     );
-    const directStarts = topology.bootstrap
+    const directStarts = [...initial.bootstrap, ...topology.bootstrap]
       .filter((step) => step.kind === 'start-services')
       .flatMap((step) => step.services);
     assert.deepEqual(directStarts, [
@@ -213,6 +222,30 @@ describe('continuation fixture topology', () => {
       'bee-worker-3',
       'bee-worker-4',
       'browser',
+    ]);
+    assert.deepEqual(initial.guardedActivations, [
+      {
+        role: 'admin',
+        slot: { role: 'admin', id: 'default' },
+        candidateRole: 'admin',
+        services: ['admin-api', 'admin-web'],
+        serviceBindings: [
+          { adapterService: 'postgres', topologyRole: 'postgres' },
+          { adapterService: 'api', topologyRole: 'admin-api' },
+          { adapterService: 'web', topologyRole: 'admin-web' },
+        ],
+        fixtureNetwork: { name: plan.network.name, fixtureId: FIXTURE_ID },
+        startsEnrollmentDisabled: true,
+        runtime: { managedLifecycleVersion: null, uploaderId: null },
+        expectedReceiptGeneration: 1,
+      },
+      {
+        role: 'manager',
+        slot: { role: 'manager', id: 'default' },
+        candidateRole: 'manager',
+        services: ['api', 'web'],
+        serviceBindings: [],
+      },
     ]);
     assert.deepEqual(topology.guardedActivations, [
       {
@@ -226,14 +259,8 @@ describe('continuation fixture topology', () => {
           { adapterService: 'web', topologyRole: 'admin-web' },
         ],
         fixtureNetwork: { name: plan.network.name, fixtureId: FIXTURE_ID },
-        startsEnrollmentDisabled: true,
-      },
-      {
-        role: 'manager',
-        slot: { role: 'manager', id: 'default' },
-        candidateRole: 'manager',
-        services: ['api', 'web'],
-        serviceBindings: [],
+        runtime: { managedLifecycleVersion: 1, uploaderId: UPLOADER_ID },
+        expectedReceiptGeneration: 2,
       },
       {
         role: 'viewer',
@@ -256,19 +283,45 @@ describe('continuation fixture topology', () => {
       },
     ]);
     assert.deepEqual(
+      initial.bootstrap
+        .filter((step) => step.kind === 'activate-guarded-release')
+        .map((step) => [step.id, step.after]),
+      [
+        ['activate-admin-bootstrap', ['provision-postage']],
+        ['activate-manager', ['activate-admin-bootstrap']],
+      ],
+    );
+    assert.deepEqual(
       topology.bootstrap
         .filter((step) => step.kind === 'activate-guarded-release')
         .map((step) => [step.id, step.after]),
       [
-        ['activate-admin', ['provision-postage']],
-        ['activate-manager', ['activate-admin']],
-        ['activate-viewer', ['activate-manager']],
+        ['activate-admin-managed', []],
+        ['activate-viewer', ['activate-admin-managed']],
         ['activate-uploader', ['activate-viewer']],
       ],
     );
+    const createProfile = initial.bootstrap.find((step) => step.kind === 'create-manager-profile');
+    assert.deepEqual(createProfile, {
+      id: 'create-manager-profile',
+      kind: 'create-manager-profile',
+      profileName: 'srs-a1b2c3d4-uploader',
+      expectedPortSlot: 1,
+      beeUrl: 'http://bee-queen:1633',
+      authenticatedBy: 'manager-session',
+      privateKeyInput: 'feedPrivateKey',
+      output: 'manager.uploaderInstanceId',
+      after: ['activate-manager'],
+    });
     const receiptSubmission = topology.bootstrap.find((step) => step.kind === 'submit-release-guard-receipts');
     assert.equal(receiptSubmission?.source, 'guard-persisted-receipts');
     assert.equal(receiptSubmission?.mode, 'retry-and-verify');
+    assert.deepEqual(receiptSubmission?.slots, [
+      { role: 'manager', id: 'default' },
+      { role: 'admin', id: 'default' },
+      { role: 'viewer', id: 'default' },
+      { role: 'uploader', id: UPLOADER_ID },
+    ]);
     assert.equal(service(correctedPlan(), 'media-sender').startAfterReadiness, true);
   });
 
