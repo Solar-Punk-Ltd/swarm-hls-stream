@@ -283,8 +283,8 @@ describe('managed SRS source reconnect foundation', () => {
 
   it('finalizes once when the confirmed source reaches its reconnect deadline', async () => {
     const clock = new FakeClock();
-    const published: { state?: string }[] = [];
-    const orchestrator = makeManagedOrchestrator(clock, published);
+    const runs = new MemoryManagedRuns();
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_VIDEO, undefined, {}, runs);
 
     assert.equal(provision(orchestrator, SOURCE_A), true);
     assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
@@ -300,7 +300,9 @@ describe('managed SRS source reconnect foundation', () => {
     await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
 
     assert.equal(notifyStop.mock.callCount(), 1, 'the deadline finalized the source more than once');
-    assert.equal(published.filter((entry) => entry.state === STREAM_STATUS_VOD).length, 1);
+    assert.equal(runs.current(STREAM_ID)?.state, 'vod');
+    assert.equal(runs.current(STREAM_ID)?.pendingReports.filter(({ state }) => state === 'vod').length, 1);
+    assert.equal(checkpointsByRunStore.get(runs)?.findRun(ADMIN_SESSION.id, 2)?.status, 'complete');
     assert.equal(provision(orchestrator, SOURCE_B), false, 'a closed managed run admitted a new source');
     await orchestrator.cleanup();
   });
