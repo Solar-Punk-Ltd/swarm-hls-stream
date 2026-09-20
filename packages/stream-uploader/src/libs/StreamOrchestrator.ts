@@ -54,7 +54,12 @@ import { rungTopicFor } from '../utils/rungTopic.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { AbrLadder } from './AbrLadder.js';
-import { AdminApiClient, ManagedRunReport, stateWasReported } from './AdminApiClient.js';
+import {
+  AdminApiClient,
+  ManagedContinuationPreparation,
+  ManagedRunReport,
+  stateWasReported,
+} from './AdminApiClient.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { BroadcastDating, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
@@ -127,6 +132,7 @@ const FIRST_BROADCAST_SEQUENCE = 0;
  */
 const DEFAULT_STOP_OUTCOME_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const MANAGED_HEARTBEAT_MS = 10_000;
+const MANAGED_CONTINUATION_POLL_MS = 10_000;
 
 export interface StreamOrchestratorConfig {
   streamKey: string;
@@ -468,6 +474,9 @@ export class StreamOrchestrator {
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
   private managedSourceDisconnector?: (identity: SourceConnectionIdentity) => void;
+  private managedContinuationUploaderId?: string;
+  private managedContinuationTimer?: Timer;
+  private managedContinuationInFlight = false;
 
   constructor(
     private publishers: BeePublisherPool,
@@ -991,6 +1000,76 @@ export class StreamOrchestrator {
     for (const streamId of store.list()) {
       this.managedStreamIds.add(streamId);
       this.restoreManagedRun(streamId);
+    }
+  }
+
+  /** Prepare every private continuation assigned by the admin before it opens the next run. */
+  public async pollManagedContinuations(uploaderId: string): Promise<void> {
+    const adminApi = this.config.adminApi;
+    const store = this.config.managedCheckpointStore;
+    if (!adminApi || !store) {
+      throw new Error('Managed continuation polling requires the admin and checkpoint stores');
+    }
+    const operations = await adminApi.listManagedContinuations(uploaderId);
+    for (const operation of operations) {
+      let preparation: ManagedContinuationPreparation;
+      try {
+        const checkpoint = store.prepare(operation);
+        preparation = {
+          lifecycleVersion: 1,
+          uploaderId,
+          expectedRevision: operation.revision,
+          status: 'ready',
+          checkpointReference: checkpoint.checkpointReference,
+        };
+      } catch (error) {
+        preparation = {
+          lifecycleVersion: 1,
+          uploaderId,
+          expectedRevision: operation.revision,
+          status: 'failed',
+          failure: `Checkpoint preparation refused: ${getErrorMessage(error)}`.slice(0, 500),
+        };
+      }
+      await adminApi.reportManagedContinuationPreparation(
+        operation.streamId,
+        operation.operationId,
+        preparation,
+      );
+    }
+  }
+
+  /** Poll immediately and then every heartbeat interval without overlapping an outstanding request. */
+  public startManagedContinuationPolling(uploaderId: string): void {
+    if (this.managedContinuationUploaderId !== undefined) {
+      return;
+    }
+    this.managedContinuationUploaderId = uploaderId;
+    void this.runManagedContinuationPoll();
+  }
+
+  private async runManagedContinuationPoll(): Promise<void> {
+    const uploaderId = this.managedContinuationUploaderId;
+    if (!uploaderId || this.managedContinuationInFlight) {
+      return;
+    }
+    this.managedContinuationInFlight = true;
+    try {
+      await this.pollManagedContinuations(uploaderId);
+    } catch (error) {
+      this.logger.error('[StreamOrchestrator] Managed continuation poll failed:', error);
+    } finally {
+      this.managedContinuationInFlight = false;
+      if (this.managedContinuationUploaderId === uploaderId) {
+        this.managedContinuationTimer = this.clock.setTimer(
+          () => {
+            this.managedContinuationTimer = undefined;
+            void this.runManagedContinuationPoll();
+          },
+          MANAGED_CONTINUATION_POLL_MS,
+          { unref: true },
+        );
+      }
     }
   }
 
@@ -3568,6 +3647,9 @@ export class StreamOrchestrator {
   }
 
   public async cleanup(): Promise<void> {
+    this.managedContinuationUploaderId = undefined;
+    this.managedContinuationTimer?.cancel();
+    this.managedContinuationTimer = undefined;
     for (const source of this.managedSources.values()) {
       source.timer?.cancel();
       source.heartbeat?.cancel();

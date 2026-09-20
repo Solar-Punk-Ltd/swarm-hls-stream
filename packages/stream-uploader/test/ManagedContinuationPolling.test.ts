@@ -1,0 +1,154 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, it } from 'node:test';
+
+import {
+  AdminApiClient,
+  ManagedContinuationPreparation,
+} from '../src/libs/AdminApiClient.js';
+import {
+  ManagedCheckpointStore,
+  ManagedContinuationOperation,
+} from '../src/libs/ManagedCheckpointStore.js';
+
+import { makeTestOrchestrator } from './helpers/fakes.js';
+
+const STREAM_ID = '22222222-2222-4222-8222-222222222222';
+const UPLOADER_ID = 'srs-157-90-34-105';
+const TOPIC = 'a'.repeat(64);
+
+function streamState() {
+  return {
+    streamId: 'video/demo',
+    streamRawTopic: TOPIC,
+    mediatype: 'video' as const,
+    socIndex: 2,
+    segments: [{ index: 0, duration: 2, ref: 'b'.repeat(64), discontinuity: false }],
+    hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+    isFirstSegmentReady: true,
+    isFirstManifestReady: true,
+    pendingDiscontinuity: false,
+    liveManifestStale: false,
+    updatedAt: 1,
+  };
+}
+
+describe('managed continuation polling', () => {
+  it('prepares a durable cumulative checkpoint before acknowledging the operation', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-continuation-poll-'));
+    const checkpoints = new ManagedCheckpointStore(root, undefined, (() => {
+      const ids = [
+        '11111111-1111-4111-8111-111111111111',
+        '33333333-3333-4333-8333-333333333333',
+      ];
+      return () => ids.shift()!;
+    })());
+    const first = checkpoints.createRun({
+      adminStreamId: STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video',
+      expectedRenditions: [],
+    });
+    checkpoints.saveTrack(first.checkpointReference, {
+      streamId: 'video/demo',
+      rendition: null,
+      state: streamState(),
+      manifest: { topic: TOPIC, index: 2, reference: 'c'.repeat(64), duration: 2 },
+    });
+    const recording = checkpoints.complete(first.checkpointReference, {
+      topic: TOPIC,
+      index: 2,
+      reference: 'c'.repeat(64),
+      duration: 2,
+    });
+    const operation: ManagedContinuationOperation = {
+      lifecycleVersion: 1,
+      operationId: '44444444-4444-4444-8444-444444444444',
+      requestId: '55555555-5555-4555-8555-555555555555',
+      streamId: STREAM_ID,
+      topic: TOPIC,
+      mediaType: 'video',
+      uploaderId: UPLOADER_ID,
+      previousRunNumber: 1,
+      nextRunNumber: 2,
+      revision: 10,
+      status: 'pending',
+      retainedRecording: recording,
+    };
+    const attempted: ManagedContinuationPreparation[] = [];
+    const adminApi = {
+      listManagedContinuations: async () => [operation],
+      reportManagedContinuationPreparation: async (
+        _streamId: string,
+        _operationId: string,
+        preparation: ManagedContinuationPreparation,
+      ) => {
+        assert.equal(checkpoints.findRun(STREAM_ID, 2)?.checkpointReference, preparation.status === 'ready'
+          ? preparation.checkpointReference
+          : undefined);
+        attempted.push(structuredClone(preparation));
+        if (attempted.length === 1) {
+          throw new Error('injected lost preparation response');
+        }
+      },
+    } as AdminApiClient;
+    const target = makeTestOrchestrator({ adminApi, managedCheckpointStore: checkpoints });
+
+    try {
+      await assert.rejects(() => target.pollManagedContinuations(UPLOADER_ID), /lost preparation response/);
+      await target.pollManagedContinuations(UPLOADER_ID);
+      const expected = {
+          lifecycleVersion: 1,
+          uploaderId: UPLOADER_ID,
+          expectedRevision: 10,
+          status: 'ready',
+          checkpointReference: '33333333-3333-4333-8333-333333333333',
+        } as const;
+      assert.deepEqual(attempted, [expected, expected]);
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a bounded failure when the predecessor cannot be proven', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-continuation-poll-'));
+    const checkpoints = new ManagedCheckpointStore(root);
+    const operation: ManagedContinuationOperation = {
+      lifecycleVersion: 1,
+      operationId: '44444444-4444-4444-8444-444444444444',
+      requestId: '55555555-5555-4555-8555-555555555555',
+      streamId: STREAM_ID,
+      topic: TOPIC,
+      mediaType: 'video',
+      uploaderId: UPLOADER_ID,
+      previousRunNumber: 1,
+      nextRunNumber: 2,
+      revision: 10,
+      status: 'pending',
+    };
+    const reported: ManagedContinuationPreparation[] = [];
+    const adminApi = {
+      listManagedContinuations: async () => [operation],
+      reportManagedContinuationPreparation: async (
+        _streamId: string,
+        _operationId: string,
+        preparation: ManagedContinuationPreparation,
+      ) => reported.push(preparation),
+    } as AdminApiClient;
+    const target = makeTestOrchestrator({ adminApi, managedCheckpointStore: checkpoints });
+
+    try {
+      await target.pollManagedContinuations(UPLOADER_ID);
+      assert.equal(reported[0]?.status, 'failed');
+      assert.ok(reported[0]?.status === 'failed' && reported[0].failure.length <= 500);
+      assert.equal(checkpoints.findRun(STREAM_ID, 2), null);
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

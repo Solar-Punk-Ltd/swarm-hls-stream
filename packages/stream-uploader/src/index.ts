@@ -306,6 +306,9 @@ async function start() {
 
     // Only now, so nothing reaches an orchestrator whose catalog has never been read.
     nodeWait = null;
+    if (config.srsLifecycle) {
+      streamOrchestrator.startManagedContinuationPolling(config.srsLifecycle.uploaderId);
+    }
 
     // An engine that pulls segments itself must re-attach its fetch loop to recovered streams.
     // Otherwise the recovered stream produces no segments and is finalized as VOD at the timeout.
