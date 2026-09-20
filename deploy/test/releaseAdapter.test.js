@@ -26,10 +26,7 @@ const FIXTURE_NETWORK = Object.freeze({
   fixtureId: FIXTURE_ID,
 });
 const FIXTURE_NETWORK_ID = '9'.repeat(64);
-const FIXTURE_VOLUME_NAMES = Object.freeze([
-  'release-a_srs-media',
-  'release-a_uploader-state',
-]);
+const FIXTURE_VOLUME_NAMES = Object.freeze(['release-a_srs-media', 'release-a_uploader-state']);
 const IMAGE_IDS = Object.freeze({
   'stream-uploader': `sha256:${'a'.repeat(64)}`,
   srs: `sha256:${'b'.repeat(64)}`,
@@ -61,12 +58,7 @@ function fixture(role, services, overrides = {}) {
   const work = realpathSync(workPath);
   mkdirSync(join(root, 'deploy', 'scripts'), { recursive: true });
   mkdirSync(join(root, 'engines', 'srs'), { recursive: true });
-  for (const name of [
-    '_lib.sh',
-    'assert-started.sh',
-    'release-adapter.sh',
-    'viewer-release-adapter.sh',
-  ]) {
+  for (const name of ['_lib.sh', 'assert-started.sh', 'release-adapter.sh', 'viewer-release-adapter.sh']) {
     cpSync(join(REPO_ROOT, 'deploy', 'scripts', name), join(root, 'deploy', 'scripts', name));
   }
   for (const name of [
@@ -79,36 +71,51 @@ function fixture(role, services, overrides = {}) {
   }
   writeFileSync(join(root, 'engines', 'srs', '.env.release-a'), 'SRS_HTTP_PORT=8080\n');
   writeFileSync(join(root, 'engines', 'srs', 'custom.conf'), 'synthetic\n');
-  writeFileSync(join(root, '.env.release-a'), [
-    'STAMP=synthetic-stamp',
-    'STREAM_KEY=synthetic-stream-key',
-    'API_AUTH_TOKEN=synthetic-api-token-value-1234567890',
-    'ADMIN_API_URL=http://admin.internal',
-    'ADMIN_API_TOKEN=SENTINEL_ADMIN_TOKEN_MUST_NOT_APPEAR',
-    'SRS_LIFECYCLE_VERSION=1',
-    'SRS_UPLOADER_ID=srs-uploader-a',
-    'ENGINE=srs',
-    `LOCAL_BEE_UPLOADER=${services.includes('bee-uploader') ? 'true' : 'false'}`,
-    'BEE_URL=http://external-bee.internal:1633',
-    `SRS_CONF_FILE=${join(root, 'engines', 'srs', 'custom.conf')}`,
-    'CLIENT_BEE_GATEWAY_HOST=external-gateway.internal',
-    'CLIENT_BEE_GATEWAY_PORT=1733',
-    '',
-  ].join('\n'));
+  writeFileSync(
+    join(root, '.env.release-a'),
+    [
+      'STAMP=synthetic-stamp',
+      'STREAM_KEY=synthetic-stream-key',
+      'API_AUTH_TOKEN=synthetic-api-token-value-1234567890',
+      'ADMIN_API_URL=http://admin.internal',
+      'ADMIN_API_TOKEN=SENTINEL_ADMIN_TOKEN_MUST_NOT_APPEAR',
+      'SRS_LIFECYCLE_VERSION=1',
+      'SRS_UPLOADER_ID=srs-uploader-a',
+      'ENGINE=srs',
+      `LOCAL_BEE_UPLOADER=${services.includes('bee-uploader') ? 'true' : 'false'}`,
+      'BEE_URL=http://external-bee.internal:1633',
+      `SRS_CONF_FILE=${join(root, 'engines', 'srs', 'custom.conf')}`,
+      'CLIENT_BEE_GATEWAY_HOST=external-gateway.internal',
+      'CLIENT_BEE_GATEWAY_PORT=1733',
+      '',
+    ].join('\n'),
+  );
   const known = [
-    'srs', 'stream-uploader', 'bee-uploader', 'bee-gateway',
-    'bee-uploader-480p', 'bee-uploader-720p', 'bee-uploader-1080p', 'client',
+    'srs',
+    'stream-uploader',
+    'bee-uploader',
+    'bee-gateway',
+    'bee-uploader-480p',
+    'bee-uploader-720p',
+    'bee-uploader-1080p',
+    'client',
   ];
-  writeFileSync(join(root, 'deploy', 'config.json'), JSON.stringify({
-    services: Object.fromEntries(known.map((service) => [service, services.includes(service) ? 'localhost' : false])),
-  }));
+  writeFileSync(
+    join(root, 'deploy', 'config.json'),
+    JSON.stringify({
+      services: Object.fromEntries(known.map((service) => [service, services.includes(service) ? 'localhost' : false])),
+    }),
+  );
   const bin = join(root, 'bin');
   mkdirSync(bin);
   const journal = join(root, 'docker.log');
   writeFileSync(journal, '');
   writeNodeStub(join(bin, 'docker'), dockerStub(journal));
   writeFileSync(join(root, 'gate.log'), '');
-  writeFileSync(join(root, 'deploy', 'scripts', 'assert-started.sh'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$ADAPTER_GATE_JOURNAL"\n');
+  writeFileSync(
+    join(root, 'deploy', 'scripts', 'assert-started.sh'),
+    '#!/bin/bash\nprintf "%s\\n" "$*" >> "$ADAPTER_GATE_JOURNAL"\n',
+  );
   chmodSync(join(root, 'deploy', 'scripts', 'assert-started.sh'), 0o755);
   const argumentsValue = {
     target: {
@@ -119,6 +126,7 @@ function fixture(role, services, overrides = {}) {
       ...overrides.target,
     },
     ...(overrides.fixtureNetwork ? { fixtureNetwork: overrides.fixtureNetwork } : {}),
+    ...(overrides.operation ? { operation: overrides.operation } : {}),
   };
   return {
     root,
@@ -139,9 +147,15 @@ function fixture(role, services, overrides = {}) {
 }
 
 function planFor(f, phase, changes = {}) {
-  const images = phase === 'transition' || phase === 'verify'
-    ? f.services.slice().sort().map((service) => ({ service, imageId: IMAGE_IDS[service] }))
-    : [];
+  const operation = f.argumentsValue.operation;
+  const imageServices = operation?.kind === 'prepare' ? operation.mutatingServices : f.services;
+  const images =
+    phase === 'transition' || phase === 'verify' || phase === 'validate'
+      ? imageServices
+          .slice()
+          .sort()
+          .map((service) => ({ service, imageId: IMAGE_IDS[service] }))
+      : [];
   return {
     schemaVersion: 1,
     phase,
@@ -151,16 +165,17 @@ function planFor(f, phase, changes = {}) {
     slot: { role: f.role, id: f.role === 'uploader' ? 'srs-uploader-a' : 'default' },
     images,
     activeArtifactPath: null,
-    arguments: f.argumentsValue.fixtureNetwork && phase !== 'preflight'
-      ? {
-        ...f.argumentsValue,
-        fixtureNetwork: {
-          ...f.argumentsValue.fixtureNetwork,
-          networkId: FIXTURE_NETWORK_ID,
-        },
-        ...(f.role === 'uploader' ? { fixtureVolumeNames: FIXTURE_VOLUME_NAMES } : {}),
-      }
-      : f.argumentsValue,
+    arguments:
+      f.argumentsValue.fixtureNetwork && phase !== 'preflight'
+        ? {
+            ...f.argumentsValue,
+            fixtureNetwork: {
+              ...f.argumentsValue.fixtureNetwork,
+              networkId: FIXTURE_NETWORK_ID,
+            },
+            ...(f.role === 'uploader' ? { fixtureVolumeNames: FIXTURE_VOLUME_NAMES } : {}),
+          }
+        : f.argumentsValue,
     ...changes,
   };
 }
@@ -182,6 +197,121 @@ async function run(f, script, phase, changes = {}) {
 }
 
 describe('guarded uploader release adapter', () => {
+  it('prepares only the reserved non-uploader services while lifecycle reporting is disabled', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader', 'bee-uploader'], {
+      operation: { kind: 'prepare', mutatingServices: ['bee-uploader', 'srs'] },
+    });
+    const envPath = join(f.root, '.env.release-a');
+    writeFileSync(
+      envPath,
+      readFileSync(envPath, 'utf8')
+        .replace('SRS_LIFECYCLE_VERSION=1', 'SRS_LIFECYCLE_VERSION=')
+        .replace('STAMP=synthetic-stamp\n', ''),
+    );
+
+    const preflight = await run(f, 'release-adapter.sh', 'preflight');
+    assert.equal(preflight.exitCode, 0, `${preflight.stdout}${preflight.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(preflight.output, 'utf8')), {
+      schemaVersion: 1,
+      preparationReady: true,
+    });
+
+    const fixturePreparation = fixture('uploader', ['srs', 'stream-uploader'], {
+      operation: { kind: 'prepare', mutatingServices: ['srs'] },
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    const fixtureEnvPath = join(fixturePreparation.root, '.env.release-a');
+    writeFileSync(
+      fixtureEnvPath,
+      readFileSync(fixtureEnvPath, 'utf8').replace('SRS_LIFECYCLE_VERSION=1', 'SRS_LIFECYCLE_VERSION='),
+    );
+    const fixturePreflight = await run(fixturePreparation, 'release-adapter.sh', 'preflight');
+    assert.equal(fixturePreflight.exitCode, 0, `${fixturePreflight.stdout}${fixturePreflight.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(fixturePreflight.output, 'utf8')), {
+      schemaVersion: 1,
+      preparationReady: true,
+      fixtureNetworkId: FIXTURE_NETWORK_ID,
+      fixtureVolumeNames: FIXTURE_VOLUME_NAMES,
+    });
+
+    const built = await run(f, 'release-adapter.sh', 'build');
+    assert.equal(built.exitCode, 0, `${built.stdout}${built.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(built.output, 'utf8')).images, [
+      { service: 'bee-uploader', imageId: IMAGE_IDS['bee-uploader'] },
+      { service: 'srs', imageId: IMAGE_IDS.srs },
+    ]);
+
+    const transitioned = await run(f, 'release-adapter.sh', 'transition');
+    assert.equal(transitioned.exitCode, 0, `${transitioned.stdout}${transitioned.stderr}`);
+    const calls = readFileSync(f.journal, 'utf8').split('\n');
+    const up = calls.find((call) => call.includes(' up -d '));
+    assert.match(up ?? '', /bee-uploader srs$/);
+    assert.equal(readFileSync(f.gate, 'utf8').trim(), 'release-a bee-uploader srs');
+
+    const verified = await run(f, 'release-adapter.sh', 'verify');
+    assert.equal(verified.exitCode, 0, `${verified.stdout}${verified.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(verified.output, 'utf8')).images, [
+      { service: 'bee-uploader', imageId: IMAGE_IDS['bee-uploader'] },
+      { service: 'srs', imageId: IMAGE_IDS.srs },
+    ]);
+  });
+
+  it('validates the whole managed target before updating only the reserved uploader subset', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      operation: { kind: 'update', mutatingServices: ['stream-uploader'] },
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+
+    const built = await run(f, 'release-adapter.sh', 'build');
+    assert.equal(built.exitCode, 0, `${built.stdout}${built.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(built.output, 'utf8')).images, [
+      { service: 'srs', imageId: IMAGE_IDS.srs },
+      { service: 'stream-uploader', imageId: IMAGE_IDS['stream-uploader'] },
+    ]);
+
+    f.env.DOCKER_STUB_WRONG_IMAGE = 'srs';
+    const validated = await run(f, 'release-adapter.sh', 'validate');
+    assert.equal(validated.exitCode, 0, `${validated.stdout}${validated.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(validated.output, 'utf8')).images, [
+      { service: 'srs', imageId: `sha256:${'f'.repeat(64)}` },
+      { service: 'stream-uploader', imageId: IMAGE_IDS['stream-uploader'] },
+    ]);
+    assert.equal(
+      readFileSync(f.journal, 'utf8')
+        .split('\n')
+        .some((call) => call.includes(' up -d ')),
+      false,
+    );
+    delete f.env.DOCKER_STUB_WRONG_IMAGE;
+
+    const transitioned = await run(f, 'release-adapter.sh', 'transition');
+    assert.equal(transitioned.exitCode, 0, `${transitioned.stdout}${transitioned.stderr}`);
+    const calls = readFileSync(f.journal, 'utf8').split('\n');
+    const up = calls.find((call) => call.includes(' up -d '));
+    assert.match(up ?? '', /stream-uploader$/);
+    assert.doesNotMatch(up ?? '', / up -d .* srs( |$)/);
+    assert.equal(readFileSync(f.gate, 'utf8').trim(), 'release-a stream-uploader');
+
+    const verified = await run(f, 'release-adapter.sh', 'verify');
+    assert.equal(verified.exitCode, 0, `${verified.stdout}${verified.stderr}`);
+    assert.equal(JSON.parse(readFileSync(verified.output, 'utf8')).images.length, 2);
+  });
+
+  it('refuses invalid preparation and update mutation sets before Docker moves anything', async () => {
+    for (const operation of [
+      { kind: 'prepare', mutatingServices: ['srs', 'stream-uploader'] },
+      { kind: 'update', mutatingServices: ['srs'] },
+      { kind: 'update', mutatingServices: ['stream-uploader', 'srs'] },
+      { kind: 'update', mutatingServices: ['stream-uploader', 'unknown'] },
+      { kind: 'prepare', mutatingServices: [''] },
+    ]) {
+      const f = fixture('uploader', ['srs', 'stream-uploader'], { operation });
+      const result = await run(f, 'release-adapter.sh', 'transition');
+      assert.notEqual(result.exitCode, 0);
+      assert.equal(readFileSync(f.journal, 'utf8'), '');
+    }
+  });
+
   it('binds an internal labeled fixture network during preflight', async () => {
     const f = fixture('uploader', ['srs', 'stream-uploader'], {
       fixtureNetwork: FIXTURE_NETWORK,
@@ -298,13 +428,19 @@ describe('guarded uploader release adapter', () => {
       uploaderId: 'srs-uploader-a',
       adminApiConfigured: true,
     });
-    assert.doesNotMatch(`${result.stdout}${result.stderr}${readFileSync(result.output, 'utf8')}`, /SENTINEL_ADMIN_TOKEN/);
+    assert.doesNotMatch(
+      `${result.stdout}${result.stderr}${readFileSync(result.output, 'utf8')}`,
+      /SENTINEL_ADMIN_TOKEN/,
+    );
   });
 
   it('refuses a mismatched uploader identity without printing secret values', async () => {
     const f = fixture('uploader', ['srs', 'stream-uploader']);
     const envPath = join(f.root, '.env.release-a');
-    writeFileSync(envPath, readFileSync(envPath, 'utf8').replace('SRS_UPLOADER_ID=srs-uploader-a', 'SRS_UPLOADER_ID=other-uploader'));
+    writeFileSync(
+      envPath,
+      readFileSync(envPath, 'utf8').replace('SRS_UPLOADER_ID=srs-uploader-a', 'SRS_UPLOADER_ID=other-uploader'),
+    );
     const result = await run(f, 'release-adapter.sh', 'preflight');
 
     assert.notEqual(result.exitCode, 0);
@@ -366,7 +502,10 @@ describe('guarded uploader release adapter', () => {
     assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
     const calls = readFileSync(f.journal, 'utf8');
     assert.match(calls, / up -d --no-build --pull never srs stream-uploader/);
-    assert.equal(calls.split('\n').some((call) => /(^| )(build|pull)( |$)/.test(call)), false);
+    assert.equal(
+      calls.split('\n').some((call) => /(^| )(build|pull)( |$)/.test(call)),
+      false,
+    );
     assert.equal(readFileSync(f.gate, 'utf8').trim(), 'release-a srs stream-uploader');
     const overridePath = join(f.work, 'release-image-override.yml');
     const override = readFileSync(overridePath, 'utf8');
@@ -482,7 +621,10 @@ describe('guarded viewer release adapter', () => {
     const accepted = fixture('viewer', ['bee-gateway', 'client']);
     assert.equal((await run(accepted, 'viewer-release-adapter.sh', 'preflight')).exitCode, 0);
     assert.equal((await run(accepted, 'viewer-release-adapter.sh', 'build')).exitCode, 0);
-    assert.match(readFileSync(accepted.journal, 'utf8'), /effective .*CLIENT_BEE_GATEWAY_HOST=bee-gateway CLIENT_BEE_GATEWAY_PORT=10077/);
+    assert.match(
+      readFileSync(accepted.journal, 'utf8'),
+      /effective .*CLIENT_BEE_GATEWAY_HOST=bee-gateway CLIENT_BEE_GATEWAY_PORT=10077/,
+    );
 
     const rejected = fixture('viewer', ['client', 'srs']);
     const result = await run(rejected, 'viewer-release-adapter.sh', 'transition');
@@ -514,7 +656,9 @@ function dockerStub(journal) {
   return `const fs = require('node:fs');
 const argv = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(journal)}, argv.join(' ') + '\\n');
-fs.appendFileSync(${JSON.stringify(journal)}, 'effective BEE_URL=' + (process.env.BEE_URL || '') + ' CLIENT_BEE_GATEWAY_HOST=' + (process.env.CLIENT_BEE_GATEWAY_HOST || '') + ' CLIENT_BEE_GATEWAY_PORT=' + (process.env.CLIENT_BEE_GATEWAY_PORT || '') + '\\n');
+fs.appendFileSync(${JSON.stringify(
+    journal,
+  )}, 'effective BEE_URL=' + (process.env.BEE_URL || '') + ' CLIENT_BEE_GATEWAY_HOST=' + (process.env.CLIENT_BEE_GATEWAY_HOST || '') + ' CLIENT_BEE_GATEWAY_PORT=' + (process.env.CLIENT_BEE_GATEWAY_PORT || '') + '\\n');
 const ids = ${JSON.stringify(IMAGE_IDS)};
 const references = ${JSON.stringify(IMAGE_REFERENCES)};
 const fixtureId = process.env.DOCKER_STUB_FIXTURE_LABEL || ${JSON.stringify(FIXTURE_ID)};

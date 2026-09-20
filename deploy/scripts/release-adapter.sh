@@ -14,7 +14,7 @@ esac
 
 phase="${1:-}"
 case "$phase" in
-  preflight|build|verify)
+  preflight|build|validate|verify)
     [ "$#" -eq 5 ] && [ "$2" = "--plan" ] && [ "$4" = "--output" ] || refuse "$role release adapter arguments are invalid"
     ;;
   transition)
@@ -43,16 +43,16 @@ if ! jq -e --arg phase "$phase" --arg role "$role" '
   .temporaryProject == ("release-" + (.treeDigest[0:20])) and
   (.slot | type == "object" and (keys | sort) == ["id", "role"] and .role == $role and (.id | type == "string")) and
   (.arguments | type == "object" and
-    (if has("fixtureNetwork") then
-      (if $phase == "preflight" or $role == "viewer" then
-        (keys | sort) == ["fixtureNetwork", "target"]
-      else
-        (keys | sort) == ["fixtureNetwork", "fixtureVolumeNames", "target"]
-      end)
-    else (keys | sort) == ["target"] end) and
     (.target | type == "object" and (keys | sort) == ["portSlot", "profile", "services", "target"] and
       (.profile | type == "string") and (.portSlot | type == "number") and .target == "local" and
       (.services | type == "array" and length >= 1 and all(.[]; type == "string"))) and
+    (if has("operation") then
+      $role == "uploader" and
+      (.operation | type == "object" and (keys | sort) == ["kind", "mutatingServices"] and
+        (.kind == "prepare" or .kind == "update") and
+        (.mutatingServices | type == "array" and length >= 1 and
+          all(.[]; type == "string") and . == (sort | unique)))
+    else $phase != "validate" end) and
     (if has("fixtureNetwork") then
       (.fixtureNetwork | type == "object" and
         (if $phase == "preflight" then
@@ -68,11 +68,18 @@ if ! jq -e --arg phase "$phase" --arg role "$role" '
           (.target.profile + "_srs-media"),
           (.target.profile + "_uploader-state")
         ]
-      else true end)
-    else true end)) and
+      else (has("fixtureVolumeNames") | not) end)
+    else (has("fixtureVolumeNames") | not) end) and
+    ((keys | sort) == ((["target"] +
+      (if has("fixtureNetwork") then ["fixtureNetwork"] else [] end) +
+      (if has("fixtureVolumeNames") then ["fixtureVolumeNames"] else [] end) +
+      (if has("operation") then ["operation"] else [] end)) | sort))) and
   (.images | type == "array") and
-  (if ($phase == "transition" or $phase == "verify") then
-    .activeArtifactPath == null and ((.images | length) == (.arguments.target.services | length)) and
+  (if ($phase == "transition" or $phase == "validate" or $phase == "verify") then
+    .activeArtifactPath == null and
+    (if .arguments.operation.kind == "prepare" then
+      $phase != "validate" and ((.images | length) == (.arguments.operation.mutatingServices | length))
+    else ((.images | length) == (.arguments.target.services | length)) end) and
     all(.images[]; type == "object" and (keys | sort) == ["imageId", "service"] and
       (.service | type == "string") and (.imageId | type == "string" and test("^sha256:[0-9a-f]{64}$")))
   else .activeArtifactPath == null and (.images | length == 0) end)
@@ -91,6 +98,7 @@ tree_digest="$(jq -r '.treeDigest' "$plan")"
 fixture_id="$(jq -r '.arguments.fixtureNetwork.fixtureId // empty' "$plan")"
 fixture_network_name="$(jq -r '.arguments.fixtureNetwork.name // empty' "$plan")"
 fixture_network_id="$(jq -r '.arguments.fixtureNetwork.networkId // empty' "$plan")"
+operation_kind="$(jq -r '.arguments.operation.kind // empty' "$plan")"
 [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || refuse "$role release profile is invalid"
 [[ "$port_slot" =~ ^[0-9]+$ ]] && [ "$port_slot" -ge 1 ] && [ "$port_slot" -le 99 ] || refuse "$role release port slot is invalid"
 [ "$target" = "local" ] || refuse "$role release target must be local"
@@ -126,6 +134,27 @@ has_service() {
   done
   return 1
 }
+
+mutating_services=()
+while IFS= read -r service; do
+  mutating_services+=("$service")
+done < <(jq -r '.arguments.operation.mutatingServices[]?' "$plan")
+if [ -n "$operation_kind" ]; then
+  for service in "${mutating_services[@]}"; do
+    has_service "$service" || refuse "uploader release mutation service is outside its installed target"
+  done
+  if [ "$operation_kind" = "prepare" ]; then
+    for service in "${mutating_services[@]}"; do
+      [ "$service" != "stream-uploader" ] || refuse "uploader preparation cannot move stream-uploader"
+    done
+  else
+    mutates_uploader=false
+    for service in "${mutating_services[@]}"; do
+      [ "$service" != "stream-uploader" ] || mutates_uploader=true
+    done
+    [ "$mutates_uploader" = true ] || refuse "uploader update must move stream-uploader"
+  fi
+fi
 
 if [ "$role" = "uploader" ]; then
   [[ "$slot_id" =~ ^[A-Za-z0-9_.:-]{1,200}$ ]] || refuse "uploader release slot id is invalid"
@@ -248,15 +277,29 @@ while IFS= read -r service; do
   sorted_services+=("$service")
 done < <(printf '%s\n' "${services[@]}" | LC_ALL=C sort)
 
-if [ "$phase" = "transition" ] || [ "$phase" = "verify" ]; then
+sorted_mutating_services=()
+if [ -n "$operation_kind" ]; then
+  while IFS= read -r service; do
+    sorted_mutating_services+=("$service")
+  done < <(printf '%s\n' "${mutating_services[@]}" | LC_ALL=C sort)
+fi
+
+action_services=("${sorted_services[@]}")
+[ -z "$operation_kind" ] || action_services=("${sorted_mutating_services[@]}")
+verification_services=("${sorted_services[@]}")
+[ "$operation_kind" != "prepare" ] || verification_services=("${sorted_mutating_services[@]}")
+
+if [ "$phase" = "transition" ] || [ "$phase" = "validate" ] || [ "$phase" = "verify" ]; then
+  expected_image_services=("${sorted_services[@]}")
+  [ "$operation_kind" != "prepare" ] || expected_image_services=("${sorted_mutating_services[@]}")
   index=0
   while IFS=$'\t' read -r service image_id; do
-    [ "$index" -lt "${#sorted_services[@]}" ] || refuse "$role release image set is invalid"
-    [ "$service" = "${sorted_services[$index]}" ] || refuse "$role release image set does not match its services"
+    [ "$index" -lt "${#expected_image_services[@]}" ] || refuse "$role release image set is invalid"
+    [ "$service" = "${expected_image_services[$index]}" ] || refuse "$role release image set does not match its services"
     [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse "$role release image id is invalid"
     index=$((index + 1))
   done < <(jq -r '.images[] | [.service, .imageId] | @tsv' "$plan")
-  [ "$index" -eq "${#sorted_services[@]}" ] || refuse "$role release image set is incomplete"
+  [ "$index" -eq "${#expected_image_services[@]}" ] || refuse "$role release image set is incomplete"
 fi
 
 if [ -n "$output" ]; then
@@ -338,12 +381,16 @@ fi
 
 if [ "$role" = "uploader" ]; then
   [ "${ENGINE:-srs}" = "srs" ] || refuse "managed uploader release requires ENGINE=srs"
-  [ "${SRS_LIFECYCLE_VERSION:-}" = "1" ] || refuse "effective uploader configuration is incompatible: SRS_LIFECYCLE_VERSION"
-  [ "${SRS_UPLOADER_ID:-}" = "$slot_id" ] || refuse "effective uploader configuration is incompatible: SRS_UPLOADER_ID"
-  [ -n "${ADMIN_API_URL:-}" ] || refuse "effective uploader configuration is incompatible: ADMIN_API_URL"
-  admin_api_token="${ADMIN_API_TOKEN:-}"
-  [ "${#admin_api_token}" -ge 32 ] || refuse "effective uploader configuration is incompatible: ADMIN_API_TOKEN"
-  [ -n "${STAMP:-}" ] || [ -n "${BEE_PUBLISHERS:-}" ] || refuse "managed uploader has no configured postage batch"
+  if [ "$operation_kind" = "prepare" ]; then
+    [ -z "${SRS_LIFECYCLE_VERSION:-}" ] || refuse "uploader preparation requires SRS_LIFECYCLE_VERSION to be disabled"
+  else
+    [ "${SRS_LIFECYCLE_VERSION:-}" = "1" ] || refuse "effective uploader configuration is incompatible: SRS_LIFECYCLE_VERSION"
+    [ "${SRS_UPLOADER_ID:-}" = "$slot_id" ] || refuse "effective uploader configuration is incompatible: SRS_UPLOADER_ID"
+    [ -n "${ADMIN_API_URL:-}" ] || refuse "effective uploader configuration is incompatible: ADMIN_API_URL"
+    admin_api_token="${ADMIN_API_TOKEN:-}"
+    [ "${#admin_api_token}" -ge 32 ] || refuse "effective uploader configuration is incompatible: ADMIN_API_TOKEN"
+    [ -n "${STAMP:-}" ] || [ -n "${BEE_PUBLISHERS:-}" ] || refuse "managed uploader has no configured postage batch"
+  fi
 fi
 
 if [ -n "$fixture_id" ]; then
@@ -374,7 +421,11 @@ write_preflight() {
   local temporary="${output}.tmp.$$"
   umask 077
   if [ "$role" = "uploader" ]; then
-    if [ -n "$fixture_id" ]; then
+    if [ "$operation_kind" = "prepare" ] && [ -n "$fixture_id" ]; then
+      printf '{"schemaVersion":1,"preparationReady":true,"fixtureNetworkId":"%s","fixtureVolumeNames":["%s_srs-media","%s_uploader-state"]}\n' "$fixture_network_id" "$profile" "$profile" > "$temporary"
+    elif [ "$operation_kind" = "prepare" ]; then
+      printf '%s\n' '{"schemaVersion":1,"preparationReady":true}' > "$temporary"
+    elif [ -n "$fixture_id" ]; then
       printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true,"fixtureNetworkId":"%s","fixtureVolumeNames":["%s_srs-media","%s_uploader-state"]}\n' "$slot_id" "$fixture_network_id" "$profile" "$profile" > "$temporary"
     else
       printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true}\n' "$slot_id" > "$temporary"
@@ -412,9 +463,11 @@ case "$phase" in
     write_preflight
     ;;
   build)
+    build_services=("${sorted_services[@]}")
+    [ "$operation_kind" != "prepare" ] || build_services=("${sorted_mutating_services[@]}")
     built=()
     external=()
-    for service in "${sorted_services[@]}"; do
+    for service in "${build_services[@]}"; do
       case "$service" in
         stream-uploader|client) built+=("$service") ;;
         *) external+=("$service") ;;
@@ -424,7 +477,7 @@ case "$phase" in
     [ "${#external[@]}" -eq 0 ] || compose_for "$temporary_project" pull "${external[@]}"
     result_services=()
     result_images=()
-    for service in "${sorted_services[@]}"; do
+    for service in "${build_services[@]}"; do
       if [ "$service" = "stream-uploader" ] || [ "$service" = "client" ]; then
         image_id="$(docker image inspect --format '{{.Id}}' "${temporary_project}-${service}")"
       else
@@ -440,13 +493,27 @@ case "$phase" in
     done
     write_images
     ;;
+  validate)
+    result_services=()
+    result_images=()
+    for service in "${sorted_services[@]}"; do
+      container="$(compose_for "$profile" ps -q "$service")"
+      [[ "$container" =~ ^[A-Za-z0-9_.:-]+$ ]] || refuse "$role release could not identify one container per service"
+      [ "$(docker inspect --format '{{.State.Status}}' "$container")" = "running" ] || refuse "$role release service is not running"
+      image_id="$(docker inspect --format '{{.Image}}' "$container")"
+      [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse "$role release running image id is invalid"
+      result_services+=("$service")
+      result_images+=("$image_id")
+    done
+    write_images
+    ;;
   transition)
     override="$(dirname "$plan")/release-image-override.yml"
     reset_override="$(dirname "$plan")/release-fixture-port-reset.yml"
     temporary="${override}.tmp.$$"
     umask 077
     printf 'services:\n' > "$temporary"
-    for service in "${sorted_services[@]}"; do
+    for service in "${action_services[@]}"; do
       image_id="$(image_from_plan "$service")"
       printf '  %s:\n    image: %s\n    pull_policy: never\n' "$service" "$image_id" >> "$temporary"
       if [ -n "$fixture_id" ]; then
@@ -470,15 +537,15 @@ case "$phase" in
     if [ -n "$fixture_id" ]; then
       temporary="${reset_override}.tmp.$$"
       printf 'services:\n' > "$temporary"
-      for service in "${sorted_services[@]}"; do
+      for service in "${action_services[@]}"; do
         printf '  %s:\n    ports: !reset []\n' "$service" >> "$temporary"
       done
       mv "$temporary" "$reset_override"
-      compose_for "$profile" -f "$reset_override" -f "$override" up -d --no-build --pull never "${services[@]}"
+      compose_for "$profile" -f "$reset_override" -f "$override" up -d --no-build --pull never "${action_services[@]}"
     else
-      compose_for "$profile" -f "$override" up -d --no-build --pull never "${services[@]}"
+      compose_for "$profile" -f "$override" up -d --no-build --pull never "${action_services[@]}"
     fi
-    "$script_dir/assert-started.sh" "$profile" "${services[@]}"
+    "$script_dir/assert-started.sh" "$profile" "${action_services[@]}"
     ;;
   verify)
     override="$(dirname "$plan")/release-image-override.yml"
@@ -489,7 +556,7 @@ case "$phase" in
     fi
     result_services=()
     result_images=()
-    for service in "${sorted_services[@]}"; do
+    for service in "${verification_services[@]}"; do
       if [ -n "$fixture_id" ]; then
         container="$(compose_for "$profile" -f "$reset_override" -f "$override" ps -q "$service")"
       else
