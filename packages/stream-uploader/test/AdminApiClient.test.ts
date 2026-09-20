@@ -14,6 +14,7 @@
 
 import express from 'express';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
@@ -48,6 +49,17 @@ const DRAFT: AdminStreamDraft = {
   title: 'A declared broadcast',
   status: 'draft',
   publishKey: 'declared-publish-key',
+};
+
+const digestFixture = JSON.parse(
+  fs.readFileSync(new URL('./fixtures/managed-report-digest-v1.json', import.meta.url), 'utf8'),
+) as { report: ManagedRunReport; sha256HexParts: string[] };
+const vodReconciliationFixture = JSON.parse(
+  fs.readFileSync(new URL('./fixtures/managed-vod-reconciliation-v1.json', import.meta.url), 'utf8'),
+) as {
+  report: ManagedRunReport;
+  reconciledCompletedRecording: unknown;
+  sha256HexParts: string[];
 };
 
 interface Received {
@@ -263,6 +275,7 @@ describe('the admin API client, negotiating lifecycle v1', () => {
     };
     const claimed = {
       lifecycleVersion: 1 as const,
+      streamId: DRAFT.id,
       revision: 8,
       runNumber: 2,
       uploaderId: request.uploaderId,
@@ -275,6 +288,31 @@ describe('the admin API client, negotiating lifecycle v1', () => {
       assert.equal(received[0].url, `/api/internal/streams/${DRAFT.id}/runs/2/claims`);
       assert.deepEqual(received[0].body, request);
     }, { lifecycleVersion: 1 });
+  });
+
+  it('refuses a claim response bound to another stream', async () => {
+    const request: ManagedClaimRequest = {
+      lifecycleVersion: 1,
+      expectedRevision: 7,
+      uploaderId: 'srs-157-90-34-105',
+      requestId: '33333333-3333-4333-8333-333333333333',
+    };
+    await withAdmin(
+      always(200, {
+        lifecycleVersion: 1,
+        streamId: 'another-stream',
+        revision: 8,
+        runNumber: 2,
+        uploaderId: request.uploaderId,
+        claimId: '44444444-4444-4444-8444-444444444444',
+        state: 'claimed',
+        permission: 'claimed',
+      }),
+      async ({ client }) => {
+        await assert.rejects(() => client.claimManagedRun(DRAFT.id, 2, request), /claimed managed run/);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   it('retries a managed report with the exact same sequence and observed time', async () => {
@@ -295,6 +333,96 @@ describe('the admin API client, negotiating lifecycle v1', () => {
         assert.equal(received.length, 2);
         assert.deepEqual(received[0].body, report);
         assert.deepEqual(received[1].body, report);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  for (const conflict of ['event_conflict', 'assignment_mismatch'] as const) {
+    it(`does not settle a managed VOD report on ${conflict}`, async () => {
+      const report: ManagedRunReport = {
+        lifecycleVersion: 1,
+        runNumber: 2,
+        uploaderId: 'srs-157-90-34-105',
+        claimId: '44444444-4444-4444-8444-444444444444',
+        eventSequence: 4,
+        observedAt: '2026-09-20T10:11:05.000Z',
+        state: 'vod',
+        completedRecording: { runNumber: 2, checkpointReference: 'checkpoint-a' },
+      };
+      await withAdmin(
+        (req, res) => {
+          if (req.method === 'POST') {
+            res.status(409).json({ error: conflict });
+          } else {
+            res.status(409).json({ error: conflict });
+          }
+        },
+        async ({ client, received }) => {
+          assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_FAILED);
+          assert.deepEqual(received.map((request) => request.method), ['POST', 'GET']);
+        },
+        { lifecycleVersion: 1 },
+      );
+    });
+  }
+
+  it('settles a conflict only when the run read proves the exact event', async () => {
+    const report = digestFixture.report;
+    await withAdmin(
+      (req, res) => {
+        if (req.method === 'POST') {
+          res.status(409).json({ error: 'event_conflict' });
+          return;
+        }
+        res.json({
+          lifecycleVersion: 1,
+          streamId: DRAFT.id,
+          runNumber: 2,
+          revision: 10,
+          uploaderId: report.uploaderId,
+          claimId: report.claimId,
+          state: 'waiting',
+          permission: 'claimed',
+          lastAcceptedEvent: {
+            sequence: report.eventSequence,
+            digest: digestFixture.sha256HexParts.join(''),
+          },
+        });
+      },
+      async ({ client }) => {
+        assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_ALREADY_SETTLED);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  it('reconciles a VOD report when admin returns the same rendition set in name order', async () => {
+    const { report, reconciledCompletedRecording, sha256HexParts } = vodReconciliationFixture;
+    await withAdmin(
+      (req, res) => {
+        if (req.method === 'POST') {
+          res.status(409).json({ error: 'event_conflict' });
+          return;
+        }
+        res.json({
+          lifecycleVersion: 1,
+          streamId: DRAFT.id,
+          runNumber: 2,
+          revision: 10,
+          uploaderId: report.uploaderId,
+          claimId: report.claimId,
+          state: 'vod',
+          permission: 'closed',
+          lastAcceptedEvent: {
+            sequence: report.eventSequence,
+            digest: sha256HexParts.join(''),
+          },
+          completedRecording: reconciledCompletedRecording,
+        });
+      },
+      async ({ client }) => {
+        assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_ALREADY_SETTLED);
       },
       { lifecycleVersion: 1 },
     );

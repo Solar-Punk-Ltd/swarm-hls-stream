@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, Rendition } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
@@ -129,13 +131,37 @@ export interface ManagedClaimRequest {
 
 export interface ManagedClaimedRun {
   lifecycleVersion: 1;
+  streamId: string;
   revision: number;
   runNumber: number;
   uploaderId: string;
   claimId: string;
+  state: 'claimed';
+  permission: 'claimed';
+}
+
+interface ManagedRunView {
+  lifecycleVersion: 1;
+  streamId: string;
+  runNumber: number;
+  revision: number;
+  uploaderId: string;
+  claimId: string;
   state: ManagedLifecycleState;
   permission: ManagedRunPermission;
+  lastAcceptedEvent: { sequence: number; digest: string };
+  completedRecording?: unknown;
 }
+
+const MANAGED_CONFLICTS = new Set([
+  'stale_event',
+  'event_conflict',
+  'request_conflict',
+  'revision_conflict',
+  'assignment_mismatch',
+  'stale_run',
+  'closed',
+]);
 
 interface ManagedReportBase {
   lifecycleVersion: 1;
@@ -325,26 +351,125 @@ function asIngestLookup(body: unknown, lifecycleVersion?: 1): AdminIngestLookup 
   return body as AdminIngestLookup;
 }
 
-function asClaimedRun(body: unknown, expectedRun: number, expectedUploader: string): ManagedClaimedRun | null {
+function asClaimedRun(
+  body: unknown,
+  expectedStream: string,
+  expectedRun: number,
+  expectedUploader: string,
+): ManagedClaimedRun | null {
   if (!body || typeof body !== 'object') {
     return null;
   }
   const candidate = body as Record<string, unknown>;
   if (
     candidate.lifecycleVersion !== 1 ||
+    candidate.streamId !== expectedStream ||
     !isNonNegativeInteger(candidate.revision) ||
     candidate.runNumber !== expectedRun ||
     candidate.uploaderId !== expectedUploader ||
     typeof candidate.claimId !== 'string' ||
     !UUID.test(candidate.claimId) ||
-    typeof candidate.state !== 'string' ||
-    !MANAGED_STATES.has(candidate.state as ManagedLifecycleState) ||
-    typeof candidate.permission !== 'string' ||
-    !MANAGED_PERMISSIONS.has(candidate.permission as ManagedRunPermission)
+    candidate.state !== 'claimed' ||
+    candidate.permission !== 'claimed'
   ) {
     return null;
   }
   return body as ManagedClaimedRun;
+}
+
+function asManagedRunView(
+  body: unknown,
+  expectedStream: string,
+  expectedRun: number,
+  expectedUploader: string,
+  expectedClaim: string,
+): ManagedRunView | null {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const candidate = body as Record<string, unknown>;
+  if (
+    candidate.lifecycleVersion !== 1 ||
+    candidate.streamId !== expectedStream ||
+    candidate.runNumber !== expectedRun ||
+    !isNonNegativeInteger(candidate.revision) ||
+    candidate.uploaderId !== expectedUploader ||
+    candidate.claimId !== expectedClaim ||
+    typeof candidate.state !== 'string' ||
+    !MANAGED_STATES.has(candidate.state as ManagedLifecycleState) ||
+    typeof candidate.permission !== 'string' ||
+    !MANAGED_PERMISSIONS.has(candidate.permission as ManagedRunPermission) ||
+    !candidate.lastAcceptedEvent ||
+    typeof candidate.lastAcceptedEvent !== 'object' ||
+    !isPositiveInteger((candidate.lastAcceptedEvent as Record<string, unknown>).sequence) ||
+    typeof (candidate.lastAcceptedEvent as Record<string, unknown>).digest !== 'string' ||
+    !/^[0-9a-f]{64}$/.test((candidate.lastAcceptedEvent as Record<string, unknown>).digest as string)
+  ) {
+    return null;
+  }
+  return body as ManagedRunView;
+}
+
+function runViewProvesReport(view: ManagedRunView, report: ManagedRunReport): boolean {
+  return (
+    view.lastAcceptedEvent.sequence === report.eventSequence &&
+    view.lastAcceptedEvent.digest === managedReportDigest(report) &&
+    (report.state !== 'vod' ||
+      canonicalCompletedRecording(view.completedRecording) === canonicalCompletedRecording(report.completedRecording))
+  );
+}
+
+function canonicalCompletedRecording(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return canonicalJson(value);
+  }
+  const snapshot = value as Record<string, unknown>;
+  if (
+    !Array.isArray(snapshot.expectedRenditions) ||
+    !snapshot.expectedRenditions.every((name) => typeof name === 'string') ||
+    !Array.isArray(snapshot.renditions) ||
+    !snapshot.renditions.every(isNamedRenditionReference)
+  ) {
+    return canonicalJson(value);
+  }
+  return canonicalJson({
+    ...snapshot,
+    expectedRenditions: [...snapshot.expectedRenditions].sort(compareCodeUnits),
+    renditions: [...snapshot.renditions].sort((left, right) =>
+      compareCodeUnits(`${left.name}\u0000${left.topic}`, `${right.name}\u0000${right.topic}`),
+    ),
+  });
+}
+
+function isNamedRenditionReference(value: unknown): value is { name: string; topic: string } & Record<string, unknown> {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as Record<string, unknown>).name === 'string' &&
+    typeof (value as Record<string, unknown>).topic === 'string'
+  );
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function managedReportDigest(report: ManagedRunReport): string {
+  const transmitted = JSON.parse(JSON.stringify(report)) as unknown;
+  return createHash('sha256').update(canonicalJson(transmitted)).digest('hex');
 }
 
 /**
@@ -557,7 +682,7 @@ export class AdminApiClient {
     if (!response.ok) {
       throw new Error(`Admin API answered ${response.status} for ${url}`);
     }
-    const claimed = asClaimedRun(await this.readJson(response), runNumber, request.uploaderId);
+    const claimed = asClaimedRun(await this.readJson(response), id, runNumber, request.uploaderId);
     if (!claimed) {
       throw new Error(`Admin API answered 200 for ${url} with a body that is not the claimed managed run`);
     }
@@ -574,7 +699,7 @@ export class AdminApiClient {
     const body = JSON.stringify(report);
 
     for (let attempt = 1; attempt <= MAX_STATE_REPORT_ATTEMPTS; attempt++) {
-      const outcome = await this.attemptReport(url, body, report, attempt);
+      const outcome = await this.attemptManagedReport(id, runNumber, url, body, report, attempt);
       if (outcome !== null) {
         return outcome;
       }
@@ -584,6 +709,76 @@ export class AdminApiClient {
       }
     }
     return STATE_REPORT_FAILED;
+  }
+
+  private async attemptManagedReport(
+    id: string,
+    runNumber: number,
+    url: string,
+    body: string,
+    report: ManagedRunReport,
+    attempt: number,
+  ): Promise<StateReportOutcome | null> {
+    try {
+      const response = await this.send(
+        url,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body },
+        this.reportTimeoutMs,
+      );
+      if (response.ok) {
+        return STATE_REPORT_ACCEPTED;
+      }
+      if (response.status === 409) {
+        const conflictBody = await this.readJson(response);
+        const conflict =
+          conflictBody && typeof conflictBody === 'object' && typeof (conflictBody as Record<string, unknown>).error === 'string'
+            ? ((conflictBody as Record<string, unknown>).error as string)
+            : null;
+        if (!conflict || !MANAGED_CONFLICTS.has(conflict)) {
+          this.logger.error(`[Admin] Managed report of ${report.state} answered an unknown conflict for ${url}`);
+          return STATE_REPORT_FAILED;
+        }
+        const reconciled = await this.readManagedRun(id, runNumber, report);
+        if (reconciled) {
+          return STATE_REPORT_ALREADY_SETTLED;
+        }
+        this.logger.error(
+          `[Admin] Managed report of ${report.state} conflicted as ${conflict} for ${url}, and the run read did not ` +
+            'prove that exact event was accepted',
+        );
+        return STATE_REPORT_FAILED;
+      }
+      if (!isRetryableReportStatus(response.status)) {
+        this.logger.error(`[Admin] Managed report of ${report.state} refused with ${response.status} for ${url}`);
+        return STATE_REPORT_FAILED;
+      }
+      this.logger.warn(
+        `[Admin] Managed report of ${report.state} answered ${response.status} for ${url}, attempt ${attempt}`,
+      );
+      return null;
+    } catch (error) {
+      this.logger.warn(
+        `[Admin] Managed report of ${report.state} to ${url} did not complete on attempt ${attempt}: ${getErrorMessage(
+          error,
+        )}`,
+      );
+      return null;
+    }
+  }
+
+  private async readManagedRun(id: string, runNumber: number, report: ManagedRunReport): Promise<boolean> {
+    const query = new URLSearchParams({ uploaderId: report.uploaderId, claimId: report.claimId });
+    const url = `${this.baseUrl}/api/internal/streams/${encodeURIComponent(id)}/runs/${runNumber}?${query}`;
+    try {
+      const response = await this.send(url, { method: 'GET' }, this.lookupTimeoutMs);
+      if (!response.ok) {
+        return false;
+      }
+      const view = asManagedRunView(await this.readJson(response), id, runNumber, report.uploaderId, report.claimId);
+      return view !== null && runViewProvesReport(view, report);
+    } catch {
+      return false;
+    }
   }
 
   /**
