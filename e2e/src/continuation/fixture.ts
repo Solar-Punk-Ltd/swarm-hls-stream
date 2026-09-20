@@ -263,16 +263,9 @@ export function createFixturePlan(input: CreateFixturePlanInput): FixturePlan {
     container(input.fixtureId, 'browser', input.candidateImages.browser),
     container(input.fixtureId, 'media-sender', input.candidateImages.mediaSender, 'media-sender'),
   ];
-  const volumes = [
-    'blockchain-data',
-    'bee-queen-data',
-    'bee-worker-1-data',
-    'bee-worker-2-data',
-    'bee-worker-3-data',
-    'bee-worker-4-data',
-    'postgres-data',
-    'uploader-data',
-  ].map((role) => volume(input.fixtureId, role));
+  const volumes = ['blockchain-data', 'postgres-data', 'srs-media', 'uploader-data'].map((role) =>
+    volume(input.fixtureId, role),
+  );
   const publishedPorts: PublishedPort[] = [
     {
       role: 'blockchain',
@@ -284,7 +277,7 @@ export function createFixturePlan(input: CreateFixturePlanInput): FixturePlan {
       role: 'admin',
       host: '127.0.0.1',
       hostPort: input.loopbackPorts.admin,
-      containerPort: 3000,
+      containerPort: 9_877,
     },
     {
       role: 'viewer',
@@ -296,7 +289,7 @@ export function createFixturePlan(input: CreateFixturePlanInput): FixturePlan {
   const internalEndpoints = {
     rpc: `http://${resourceName(input.fixtureId, 'blockchain')}:8545`,
     bee: `http://${resourceName(input.fixtureId, 'bee-queen')}:1633`,
-    admin: `http://${resourceName(input.fixtureId, 'admin-api')}:3000`,
+    admin: `http://${resourceName(input.fixtureId, 'admin-api')}:9877`,
     srs: `http://${resourceName(input.fixtureId, 'srs')}:1985`,
     uploader: `http://${resourceName(input.fixtureId, 'uploader')}:3000`,
     viewer: `http://${resourceName(input.fixtureId, 'viewer')}:80`,

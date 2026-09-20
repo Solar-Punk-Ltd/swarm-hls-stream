@@ -197,6 +197,23 @@ describe('the isolated continuation fixture plan', () => {
     }
   });
 
+  it('uses the admin API contract and preserves the pinned Bee image state', () => {
+    const fixturePlan = plan();
+    const adminBinding = fixturePlan.publishedPorts.find((binding) => binding.role === 'admin');
+    const volumeRoles = fixturePlan.resources
+      .filter((resource) => resource.kind === 'volume')
+      .map((resource) => resource.role);
+
+    assert.equal(adminBinding?.containerPort, 9_877);
+    assert.equal(fixturePlan.internalEndpoints.admin, `http://${FIXTURE_ID}-admin-api:9877`);
+    assert.ok(volumeRoles.includes('srs-media'));
+    assert.ok(volumeRoles.includes('uploader-data'));
+    assert.equal(
+      volumeRoles.some((role) => role.startsWith('bee-')),
+      false,
+    );
+  });
+
   it('refuses a colliding resource before creating any object or journal', async () => {
     const fixturePlan = plan();
     const docker = new FakeDocker();
@@ -267,7 +284,9 @@ describe('the isolated continuation fixture plan', () => {
   it('refuses a different runtime image before starting any container', async () => {
     const fixturePlan = structuredClone(plan());
     for (const resource of fixturePlan.resources) {
-      if (resource.kind === 'container') resource.image = IMAGE_ID;
+      if (resource.kind === 'container') {
+        resource.image = IMAGE_ID;
+      }
     }
     const docker = new FakeDocker();
     docker.containerImageId = `sha256:${'c'.repeat(64)}`;
