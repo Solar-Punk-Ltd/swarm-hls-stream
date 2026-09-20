@@ -307,6 +307,7 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
           managedLifecycle,
           managedConnections,
           managedBases,
+          authenticatedBases,
         );
       });
 
@@ -518,6 +519,10 @@ async function handleStreams(
       }
 
       if (role.kind === 'rung') {
+        if (managedLifecycle && managedBases.has(role.baseStreamId)) {
+          srsResponse(res, SRS_ACCEPT);
+          return;
+        }
         // No key to parse, so the acknowledgement is safe to send first. The base-authenticated
         // requirement is dropped on the stop side on purpose: a source that has already unpublished
         // has cleared its base, and a rung has to be able to stop cleanly rather than linger until the
@@ -538,9 +543,6 @@ async function handleStreams(
         if (identity) {
           streamOrchestrator.markManagedSourceUnpublished(streamId, identity);
           managedConnections.delete(key as string);
-          if (managedBases.get(streamId) === identity) {
-            managedBases.delete(streamId);
-          }
           if (role.kind === 'source') {
             authenticatedBases.delete(streamId);
           }
@@ -618,20 +620,29 @@ async function handleStreams(
       }
 
       logger.info(`[SRS] Rung published: ${streamId}`);
-      const accepted = streamOrchestrator.startStream(
-        streamId,
-        resolveMediaType(payload.app),
-        {
-          address: publisherAddress(payload),
-          isAuthenticated: true,
-        },
-        // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
-        // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the ladder
-        // is one declared stream and the rungs are what the transcoder makes of it. The session the
-        // source resolved is therefore the only thing that can tell this rung which broadcast it
-        // belongs to, and `reasonToRefuseRung` has already refused a rung that has none.
-        authenticatedBases.get(role.baseStreamId) ?? undefined,
-      );
+      const mediatype = resolveMediaType(payload.app);
+      const claimant = { address: publisherAddress(payload), isAuthenticated: true };
+      const admin = authenticatedBases.get(role.baseStreamId) ?? undefined;
+      const managedBase = managedLifecycle ? managedBases.get(role.baseStreamId) : undefined;
+      const accepted =
+        managedBase && admin
+          ? streamOrchestrator.provisionManagedRendition(
+              streamId,
+              role.baseStreamId,
+              managedBase,
+              mediatype,
+              claimant,
+              admin,
+            )
+          : streamOrchestrator.startStream(
+              streamId,
+              mediatype,
+              claimant,
+              // ⛔ The base's declaration, not a lookup of this rung's own. A rung's ingest id is
+              // `video/<uuid>_720p`, which the admin has declared nothing under and never will: the
+              // ladder is one declared stream and the rungs are what the transcoder makes of it.
+              admin,
+            );
       srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
       return;
     }
@@ -848,6 +859,7 @@ function handleHls(
   managedLifecycle?: { uploaderId: string },
   managedConnections: Map<string, SourceConnectionIdentity> = new Map(),
   managedBases: Map<string, SourceConnectionIdentity> = new Map(),
+  authenticatedBases: Map<string, AdminSession | null> = new Map(),
 ): void {
   try {
     const payload = req.body as SrsHlsPayload;
@@ -884,9 +896,20 @@ function handleHls(
     const key = connectionKey(payload);
     const managedIdentity = managedLifecycle && key ? managedConnections.get(key) : undefined;
     const managedRungSource = managedLifecycle && role.kind === 'rung' ? managedBases.get(role.baseStreamId) : undefined;
+    const managedRungAdmin = role.kind === 'rung' ? (authenticatedBases.get(role.baseStreamId) ?? undefined) : undefined;
     if (!managedIdentity && !isPublishable(payload, streamId, abr)) {
       srsResponse(res, SRS_ACCEPT);
       return;
+    }
+    if (managedRungSource && managedRungAdmin && role.kind === 'rung') {
+      streamOrchestrator.provisionManagedRendition(
+        streamId,
+        role.baseStreamId,
+        managedRungSource,
+        resolveMediaType(payload.app),
+        { address: '127.0.0.1', isAuthenticated: true },
+        managedRungAdmin,
+      );
     }
     const result = managedIdentity
       ? role.kind === 'source'

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
 
+import { AbrLadder } from '../src/libs/AbrLadder.js';
 import {
   AdminApiClient,
   ManagedRunReport,
@@ -26,6 +27,7 @@ import { FakeUploads, makeTestOrchestrator, rejectImmediately } from './helpers/
 import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 
 const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
+const RUNG_ID = `${STREAM_ID}_360p`;
 const RECONNECT_MS = 60_000;
 const WALL_START = 1_000_000;
 const CLAIM: ManagedRunClaim = {
@@ -80,8 +82,8 @@ interface OrchestratorInternals {
   activeStreams: Map<string, StreamUploader>;
 }
 
-function activeUploader(orchestrator: StreamOrchestrator): StreamUploader | undefined {
-  return (orchestrator as unknown as OrchestratorInternals).activeStreams.get(STREAM_ID);
+function activeUploader(orchestrator: StreamOrchestrator, streamId = STREAM_ID): StreamUploader | undefined {
+  return (orchestrator as unknown as OrchestratorInternals).activeStreams.get(streamId);
 }
 
 function orchestrator(
@@ -452,6 +454,61 @@ describe('managed run recovery', () => {
     releaseB({ reference: { toHex: () => 'manifest-b' } });
     await settleReports();
     assert.equal(sent.findLast((report) => report.state === 'live')?.state, 'live');
+  });
+
+  it('keeps managed ABR rung uploaders through reconnect grace and finalizes them at cutoff', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const target = makeTestOrchestrator({
+      clock,
+      wallClock: () => WALL_START + clock.now(),
+      managedSourceReconnectMs: RECONNECT_MS,
+      managedRunStore: store,
+      ladder: AbrLadder.parse('360p:640:360:700'),
+    });
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(
+      target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),
+      { accepted: true },
+    );
+    assert.equal(
+      target.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_A, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
+      true,
+    );
+    assert.deepEqual(
+      target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
+      { accepted: true },
+    );
+    const uploader = activeUploader(target, RUNG_ID);
+    assert.ok(uploader);
+    const notifyStop = mock.method(uploader, 'notifyStop');
+
+    assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    await clock.advance(30_000);
+    await settleReports();
+    assert.equal(notifyStop.mock.callCount(), 0, 'the generic rung reaper finalized inside reconnect grace');
+    assert.equal(provision(target, SOURCE_B), true);
+    assert.deepEqual(
+      target.handleManagedSourceProgress(STREAM_ID, SOURCE_B, 0.1, videoSegment(4, 4 * FRAME_TICKS)),
+      { accepted: true },
+    );
+    assert.equal(
+      target.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_B, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
+      true,
+    );
+    assert.equal(activeUploader(target, RUNG_ID), uploader);
+    assert.deepEqual(
+      target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_B, 0, 0.1, videoSegment(4, 4 * FRAME_TICKS)),
+      { accepted: true },
+    );
+    assert.equal(notifyStop.mock.callCount(), 0);
+
+    await clock.advance(RECONNECT_MS);
+    await settleReports();
+
+    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(notifyStop.mock.callCount(), 1);
   });
 
   it('heartbeats without extending the source media deadline', async () => {

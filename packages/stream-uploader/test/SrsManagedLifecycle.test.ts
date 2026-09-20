@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { createSrsEngine } from '../src/engines/srs.js';
+import { AbrLadder } from '../src/libs/AbrLadder.js';
 import { AdminApiClient, ManagedClaimRequest } from '../src/libs/AdminApiClient.js';
 import { ManagedClaimAttempt, ManagedClaimCompletion } from '../src/libs/ManagedRunStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
@@ -22,7 +23,9 @@ interface Calls {
   completed: ManagedClaimCompletion[];
   provisioned: SourceConnectionIdentity[];
   unpublished: SourceConnectionIdentity[];
+  managedRenditions: string[];
   legacyStarts: string[];
+  stops: string[];
   disconnect?: (identity: SourceConnectionIdentity) => void;
   deletes: string[];
 }
@@ -30,6 +33,7 @@ interface Calls {
 async function withManagedSrs(
   provision: (identity: SourceConnectionIdentity) => boolean,
   drive: (post: (body: Record<string, unknown>) => Promise<number>, calls: Calls) => Promise<void>,
+  options: { abr?: boolean } = {},
 ): Promise<void> {
   const calls: Calls = {
     attempts: [],
@@ -37,7 +41,9 @@ async function withManagedSrs(
     completed: [],
     provisioned: [],
     unpublished: [],
+    managedRenditions: [],
     legacyStarts: [],
+    stops: [],
     deletes: [],
   };
   const admin = {
@@ -103,6 +109,13 @@ async function withManagedSrs(
       calls.legacyStarts.push(streamId);
       return true;
     },
+    provisionManagedRendition: (streamId: string) => {
+      calls.managedRenditions.push(streamId);
+      return true;
+    },
+    stopStream: async (streamId: string) => {
+      calls.stops.push(streamId);
+    },
     recordAuthRejection: () => undefined,
     registerManagedSourceDisconnector: (disconnect: (identity: SourceConnectionIdentity) => void) => {
       calls.disconnect = disconnect;
@@ -112,6 +125,7 @@ async function withManagedSrs(
     webhookToken: TOKEN,
     adminApi: admin,
     managedLifecycle: { uploaderId: UPLOADER_ID },
+    abr: options.abr ? { vhost: 'abr', ladder: AbrLadder.parse('360p:640:360:700') } : undefined,
     apiUrl: 'http://srs.test:1985',
     fetcher: async (input, init) => {
       calls.deletes.push(`${init?.method} ${String(input)}`);
@@ -148,6 +162,15 @@ function callback(clientId: string, action = 'on_publish'): Record<string, unkno
     server_id: 'server-a',
     service_id: 'service-a',
     client_id: clientId,
+  };
+}
+
+function rungCallback(action = 'on_publish'): Record<string, unknown> {
+  return {
+    ...callback('rung-client', action),
+    stream: '11111111-1111-4111-8111-111111111111_360p',
+    vhost: 'abr',
+    ip: '127.0.0.1',
   };
 }
 
@@ -196,5 +219,21 @@ describe('SRS managed lifecycle callbacks', () => {
       await new Promise((resolve) => setImmediate(resolve));
       assert.deepEqual(calls.deletes, ['DELETE http://srs.test:1985/api/v1/clients/client-a']);
     });
+  });
+
+  it('keeps managed ABR rungs alive when their source enters reconnect grace', async () => {
+    await withManagedSrs(
+      () => true,
+      async (post, calls) => {
+        assert.equal(await post(callback('client-a')), 0);
+        assert.equal(await post(rungCallback()), 0);
+        assert.deepEqual(calls.managedRenditions, [`${STREAM_ID}_360p`]);
+
+        assert.equal(await post(callback('client-a', 'on_unpublish')), 0);
+        assert.equal(await post(rungCallback('on_unpublish')), 0);
+        assert.deepEqual(calls.stops, []);
+      },
+      { abr: true },
+    );
   });
 });

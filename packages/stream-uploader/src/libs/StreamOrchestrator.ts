@@ -317,6 +317,8 @@ export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
   /** Managed SRS source ownership. Existing engine paths never create an entry here. */
   private managedSources = new Map<string, ManagedSourceState>();
+  /** Source generation whose first accepted fragment reset each managed ABR rung's ingress state. */
+  private managedRenditionGenerations = new Map<string, number>();
   /**
    * The drain running for a stream id, with the session it is draining. The uploader is what makes the
    * entry answerable: a reconnect registers a replacement under the same id while the outgoing drain is
@@ -935,6 +937,18 @@ export class StreamOrchestrator {
     ) {
       return { accepted: false, reason: REJECT_STALE_SOURCE };
     }
+    const uploader = this.activeStreams.get(streamId);
+    if (!uploader) {
+      return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+    if (this.managedRenditionGenerations.get(streamId) !== identity.generation) {
+      this.processedSegments.set(streamId, this.newDuplicateFilter());
+      this.lastAccountedIndex.delete(streamId);
+      this.streamActivityAt.set(streamId, this.clock.now());
+      this.streamIngestAt.set(streamId, this.clock.now());
+      uploader.markDiscontinuity();
+      this.managedRenditionGenerations.set(streamId, identity.generation);
+    }
     return this.enqueueSegment(
       streamId,
       segmentIndex,
@@ -943,6 +957,30 @@ export class StreamOrchestrator {
       discontinuity,
       identity.generation,
     );
+  }
+
+  /** Admit a managed transcode without replacing the uploader retained for reconnect grace. */
+  public provisionManagedRendition(
+    streamId: string,
+    baseStreamId: string,
+    identity: SourceConnectionIdentity,
+    mediatype: MediaType,
+    claimant: StreamClaimant,
+    admin: AdminSession,
+  ): boolean {
+    const state = this.managedSources.get(baseStreamId);
+    if (!state || state.closed || (state.deadline !== undefined && this.clock.now() >= state.deadline)) {
+      return false;
+    }
+    const matchesCurrent = state.current && sameSource(state.current, identity);
+    const matchesCandidate = state.candidate && sameSource(state.candidate.identity, identity);
+    if (!matchesCurrent && !matchesCandidate) {
+      return false;
+    }
+    if (this.activeStreams.has(streamId) || !matchesCurrent) {
+      return true;
+    }
+    return this.startStream(streamId, mediatype, claimant, admin);
   }
 
   /** Verify an ABR base source without publishing its untranscoded HLS fragment. */
@@ -1243,6 +1281,9 @@ export class StreamOrchestrator {
     if (attached) {
       this.managedSourceDisconnector?.(attached);
     }
+    for (const renditionId of this.managedRenditionsOf(streamId)) {
+      void this.stopStream(renditionId, true);
+    }
     if (this.activeStreams.has(streamId)) {
       void this.stopStream(streamId, true);
     }
@@ -1415,6 +1456,7 @@ export class StreamOrchestrator {
   private retireSession(streamId: string): void {
     this.activeStreams.delete(streamId);
     this.processedSegments.delete(streamId);
+    this.managedRenditionGenerations.delete(streamId);
     // OBS-19's hazard, one map along. The engine's counter is a fact about the session producing it,
     // and the id can be handed straight to another engine: kept, the first segment of the next
     // broadcast on this id would read as a gap the distance between two unrelated counters.
@@ -1562,7 +1604,7 @@ export class StreamOrchestrator {
     const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
 
     const managedStreamId = match?.baseStreamId ?? streamId;
-    const managedSource = this.managedSources.get(managedStreamId)?.current;
+    const managedState = this.managedSources.get(managedStreamId);
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
@@ -1578,7 +1620,7 @@ export class StreamOrchestrator {
       dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
-      managedLifecycle: managedSource
+      managedLifecycle: managedState
         ? { onLivePublished: (sourceGeneration) => this.markManagedManifestPublished(managedStreamId, sourceGeneration) }
         : undefined,
       predecessorDrained,
@@ -1599,7 +1641,9 @@ export class StreamOrchestrator {
     if (mediatype === MEDIA_TYPE_VIDEO) {
       this.withheldOpeningSeconds.set(streamId, 0);
     }
-    this.armStallReaper(streamId);
+    if (!managedState) {
+      this.armStallReaper(streamId);
+    }
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
 
@@ -2078,6 +2122,9 @@ export class StreamOrchestrator {
           return;
         }
         preserveManagedSource = true;
+        for (const renditionId of this.managedRenditionsOf(streamId)) {
+          await this.stopStream(renditionId, true);
+        }
       }
     }
     if (!preserveManagedSource) {
@@ -2255,7 +2302,7 @@ export class StreamOrchestrator {
     const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
 
     const managedStreamId = base ?? streamId;
-    const managedSource = this.managedSources.get(managedStreamId)?.current;
+    const managedState = this.managedSources.get(managedStreamId);
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
@@ -2291,7 +2338,7 @@ export class StreamOrchestrator {
       // this is the only surviving record of which declaration it belongs to. Absent on an entry
       // written before admin mode, and on every entry written outside it.
       admin: this.adminReportingFor(state.adminStreamId),
-      managedLifecycle: managedSource
+      managedLifecycle: managedState
         ? { onLivePublished: (sourceGeneration) => this.markManagedManifestPublished(managedStreamId, sourceGeneration) }
         : undefined,
     });
@@ -2329,7 +2376,9 @@ export class StreamOrchestrator {
       this.withheldOpeningSeconds.set(streamId, 0);
     }
 
-    this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
+    if (!managedState) {
+      this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
+    }
 
     this.logger.info(
       `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
@@ -2960,6 +3009,12 @@ export class StreamOrchestrator {
    * dating retires on exactly that reasoning and at exactly that moment, so nothing here grows for
    * the life of the process either.
    */
+  private managedRenditionsOf(baseStreamId: string): string[] {
+    return [...this.streamBases]
+      .filter(([streamId, base]) => base === baseStreamId && this.activeStreams.has(streamId))
+      .map(([streamId]) => streamId);
+  }
+
   private releaseLadder(streamId: string): void {
     const base = this.streamBases.get(streamId);
     this.streamBases.delete(streamId);
