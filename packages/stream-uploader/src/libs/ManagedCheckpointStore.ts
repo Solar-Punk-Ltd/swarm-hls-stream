@@ -335,8 +335,8 @@ export class ManagedCheckpointStore {
   ) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
-      this.flushDirectory(path.dirname(stateDir));
     }
+    this.flushDirectory(path.dirname(stateDir));
   }
 
   public createRun(input: CreateManagedRun): ManagedCheckpointRecord {
@@ -555,6 +555,7 @@ export class ManagedCheckpointStore {
   }
 
   public findRun(adminStreamId: string, runNumber: number): ManagedCheckpointRecord | null {
+    this.flushDirectory(this.stateDir);
     const indexPath = this.runIndexPath(adminStreamId, runNumber);
     if (this.fileOps.existsSync(indexPath)) {
       const index = this.readRunIndex(indexPath);

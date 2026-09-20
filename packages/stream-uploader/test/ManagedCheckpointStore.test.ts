@@ -427,6 +427,35 @@ describe('ManagedCheckpointStore', () => {
     );
   });
 
+  it('retries the directory flush before reusing a visible run index', () => {
+    const root = tempRoot();
+    const fault = directoryFlushFault(root);
+    const input = {
+      adminStreamId: ADMIN_STREAM_ID,
+      runNumber: 1,
+      topic: TOPIC,
+      mediaType: 'video' as const,
+      expectedRenditions: [],
+    };
+    const store = new ManagedCheckpointStore(root, fault.ops, () => CHECKPOINT_IDS[0]);
+
+    assert.throws(() => store.createRun(input), /injected directory flush failure/);
+    assert.throws(() => store.createRun(input), /injected directory flush failure/);
+    fault.clear();
+    assert.equal(store.createRun(input).checkpointReference, CHECKPOINT_IDS[0]);
+  });
+
+  it('retries publication of a newly created checkpoint directory in its parent', () => {
+    const parent = tempRoot();
+    const stateDir = path.join(parent, 'checkpoints');
+    const fault = parentDirectoryFlushFault(parent);
+
+    assert.throws(() => new ManagedCheckpointStore(stateDir, fault.ops), /injected parent flush failure/);
+    assert.throws(() => new ManagedCheckpointStore(stateDir, fault.ops), /injected parent flush failure/);
+    fault.clear();
+    assert.doesNotThrow(() => new ManagedCheckpointStore(stateDir, fault.ops));
+  });
+
   it('keeps a completed checkpoint immutable under delayed finalization callbacks', () => {
     const root = tempRoot();
     const store = new ManagedCheckpointStore(root, undefined, () => CHECKPOINT_IDS[0]);
@@ -651,5 +680,69 @@ function faultingOps(fault: 'checkpoint' | 'index'): ManagedCheckpointFileOps {
       fs.closeSync(fd);
     },
     renameSync: (from, to) => fs.renameSync(from, to),
+  };
+}
+
+function directoryFlushFault(stateDir: string): { ops: ManagedCheckpointFileOps; clear(): void } {
+  const opened = new Map<number, string>();
+  let indexRenamed = false;
+  let enabled = true;
+  return {
+    ops: {
+      mkdirSync: (target, options) => fs.mkdirSync(target, options),
+      existsSync: (target) => fs.existsSync(target),
+      readdirSync: (target) => fs.readdirSync(target),
+      readFileSync: (target) => fs.readFileSync(target),
+      openSync: (target, flags, mode) => {
+        const fd = fs.openSync(target, flags, mode);
+        opened.set(fd, target);
+        return fd;
+      },
+      writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+      fsyncSync: (fd) => {
+        if (enabled && indexRenamed && opened.get(fd) === stateDir) {
+          throw new Error('injected directory flush failure');
+        }
+        fs.fsyncSync(fd);
+      },
+      closeSync: (fd) => {
+        opened.delete(fd);
+        fs.closeSync(fd);
+      },
+      renameSync: (from, to) => {
+        fs.renameSync(from, to);
+        if (to.endsWith('.index')) {indexRenamed = true;}
+      },
+    },
+    clear: () => {enabled = false;},
+  };
+}
+
+function parentDirectoryFlushFault(parent: string): { ops: ManagedCheckpointFileOps; clear(): void } {
+  const opened = new Map<number, string>();
+  let enabled = true;
+  return {
+    ops: {
+      mkdirSync: (target, options) => fs.mkdirSync(target, options),
+      existsSync: (target) => fs.existsSync(target),
+      readdirSync: (target) => fs.readdirSync(target),
+      readFileSync: (target) => fs.readFileSync(target),
+      openSync: (target, flags, mode) => {
+        const fd = fs.openSync(target, flags, mode);
+        opened.set(fd, target);
+        return fd;
+      },
+      writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
+      fsyncSync: (fd) => {
+        if (enabled && opened.get(fd) === parent) {throw new Error('injected parent flush failure');}
+        fs.fsyncSync(fd);
+      },
+      closeSync: (fd) => {
+        opened.delete(fd);
+        fs.closeSync(fd);
+      },
+      renameSync: (from, to) => fs.renameSync(from, to),
+    },
+    clear: () => {enabled = false;},
   };
 }
