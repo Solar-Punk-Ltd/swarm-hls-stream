@@ -330,6 +330,20 @@ describe('SpawnBoundedProcess', () => {
     assert.equal(result.stdout, String(Buffer.byteLength(input)));
   });
 
+  it('accepts a caller-bounded private output above the default capture limit', async () => {
+    const subject = new SpawnBoundedProcess();
+    const bytes = 1024 * 1024 + 1;
+
+    const result = await subject.run({
+      file: process.execPath,
+      args: ['-e', `process.stdout.write('x'.repeat(${bytes}))`],
+      timeoutMs: 2_000,
+      maxOutputBytes: 2 * 1024 * 1024,
+    });
+
+    assert.equal(Buffer.byteLength(result.stdout), bytes);
+  });
+
   it('routes process-only stdin and environment without putting either value in argv', async () => {
     const subject = new SpawnBoundedProcess();
     const result = await subject.run({
