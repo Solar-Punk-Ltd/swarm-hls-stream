@@ -9,7 +9,7 @@ import { chromium, type Browser, type Locator } from 'playwright-core';
 
 const E2E_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const REPOSITORY_ROOT = dirname(E2E_ROOT);
-const FIXTURE_ROOT = join(E2E_ROOT, 'test/fixtures/browser-continuation');
+const FIXTURE_ROOT = join(REPOSITORY_ROOT, 'packages/client/test/fixtures/browser-continuation');
 const VITE = join(REPOSITORY_ROOT, 'packages/client/node_modules/.bin/vite');
 const CHROME_PATH = process.env.CHROME_BIN ?? process.env.BROWSER_CHROME_PATH ?? '/opt/google/chrome/chrome';
 const DIAGNOSTIC_LIMIT = 8_000;

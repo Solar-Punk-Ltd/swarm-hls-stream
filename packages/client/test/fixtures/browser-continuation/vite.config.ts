@@ -4,8 +4,7 @@ import react from '@vitejs/plugin-react-swc';
 import { defineConfig } from 'vite';
 
 const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));
-const repositoryRoot = path.resolve(fixtureDirectory, '../../../..');
-const clientSource = path.join(repositoryRoot, 'packages/client/src');
+const clientSource = path.resolve(fixtureDirectory, '../../../src');
 
 export default defineConfig({
   root: fixtureDirectory,

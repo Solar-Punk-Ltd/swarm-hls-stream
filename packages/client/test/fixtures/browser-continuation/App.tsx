@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
-import type { Stream } from '../../../../../packages/client/src/types/stream';
+import type { Stream } from '../../../src/types/stream';
 
 type AppState = {
   isStreamListLoaded: boolean;
