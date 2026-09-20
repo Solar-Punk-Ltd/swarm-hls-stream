@@ -49,7 +49,7 @@ export class SpawnBoundedProcess implements BoundedProcess {
     const maxOutputBytes = boundedProcessInteger(
       invocation.maxOutputBytes ?? 256 * 1024,
       1,
-      1024 * 1024,
+      16 * 1024 * 1024,
       'process output bound',
     );
     if (
