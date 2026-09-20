@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   ManagedStateLock,
@@ -47,21 +48,19 @@ describe('ManagedStateLock', () => {
   }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-state-lock-'));
     const lockPath = path.join(root, '.stream-uploader.lock');
+    let holder: ReturnType<typeof spawn> | undefined;
     try {
       const first = ManagedStateLock.acquire(root);
       assert.equal(spawnSync('flock', ['-n', '-E', '73', lockPath, 'true']).status, 73);
       first.release();
       assert.equal(spawnSync('flock', ['-n', '-E', '73', lockPath, 'true']).status, 0);
 
-      const holder = spawn('flock', [lockPath, process.execPath, '-e', 'setInterval(() => {}, 1000)'], {
-        stdio: 'ignore',
-      });
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (spawnSync('flock', ['-n', '-E', '73', lockPath, 'true']).status === 73) {
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      holder = spawn(
+        process.execPath,
+        [...process.execArgv, fileURLToPath(new URL('./fixtures/managed-state-lock-holder.ts', import.meta.url)), root],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      await once(holder.stdout!, 'data');
       assert.equal(spawnSync('flock', ['-n', '-E', '73', lockPath, 'true']).status, 73);
       holder.kill('SIGKILL');
       await once(holder, 'exit');
@@ -69,6 +68,10 @@ describe('ManagedStateLock', () => {
       const restarted = ManagedStateLock.acquire(root);
       restarted.release();
     } finally {
+      if (holder && holder.exitCode === null && holder.signalCode === null) {
+        holder.kill('SIGKILL');
+        await once(holder, 'exit');
+      }
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
