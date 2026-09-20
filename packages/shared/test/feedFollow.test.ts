@@ -1,11 +1,15 @@
-import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import { Bee, FeedIndex, PrivateKey, Reference, Span, Topic } from '@ethersphere/bee-js';
+import { Binary } from 'cafe-utility';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import http from 'node:http';
 import { describe, it } from 'node:test';
 
 import {
   extractFeedIndex,
   type FeedRequest,
   feedSlotPath,
+  feedSlotReference,
   makeFeedIdentifier,
   nextFeedRequest,
 } from '../src/feedFollow.js';
@@ -14,6 +18,7 @@ type SlotRequest = Extract<FeedRequest, { kind: 'slot' }>;
 
 const OWNER = '1f8f0d5d0d2e0b1a3c4d5e6f708192a3b4c5d6e7';
 const TOPIC = Topic.fromString('swarm-hls-feed-follow-vector');
+const TEST_KEY = '0'.repeat(63) + '1';
 
 /** One poll by a follower that has read up to `known`, which is how the player and the bench call it. */
 function requestAfter(known: FeedIndex | null): FeedRequest {
@@ -125,6 +130,74 @@ describe('feedSlotPath', () => {
     const request = nextFeedRequest(OWNER, TOPIC, FeedIndex.fromBigInt(41n));
 
     assert.equal(request.path, feedSlotPath(OWNER, TOPIC, FeedIndex.fromBigInt(42n)));
+  });
+});
+
+function contentAddress(span: Span, payload: Uint8Array): Reference {
+  const padded = new Uint8Array(4096);
+  padded.set(payload);
+  const root = Binary.log2Reduce(Binary.partition(padded, 32), (left, right) =>
+    Binary.keccak256(Binary.concatBytes(left, right)),
+  );
+  return new Reference(Binary.keccak256(Binary.concatBytes(span.toUint8Array(), root)));
+}
+
+async function assertSdkReadsSlotPayload(payload: Uint8Array): Promise<void> {
+  const signer = new PrivateKey(TEST_KEY);
+  const owner = signer.publicKey().address();
+  const index = FeedIndex.fromBigInt(42n);
+  const reference = feedSlotReference(owner.toHex(), TOPIC, index);
+  const span = Span.fromBigInt(BigInt(payload.length));
+  const wrapped = payload.length > 4096;
+  const storedPayload = wrapped ? Binary.keccak256(payload) : payload;
+  const address = contentAddress(span, storedPayload);
+  const identifier = makeFeedIdentifier(TOPIC, index);
+  const signature = signer.sign(Binary.concatBytes(identifier.toUint8Array(), address.toUint8Array()));
+  const soc = Binary.concatBytes(
+    identifier.toUint8Array(),
+    signature.toUint8Array(),
+    span.toUint8Array(),
+    storedPayload,
+  );
+  const requests: string[] = [];
+  const server = http.createServer((request, response) => {
+    requests.push(request.url ?? '');
+    if (request.url === `/chunks/${reference.toHex()}`) {
+      response.writeHead(200, { 'content-type': 'application/octet-stream' });
+      response.end(soc);
+      return;
+    }
+    if (wrapped && request.url === `/bytes/${address.toHex()}`) {
+      response.writeHead(200, { 'content-type': 'application/octet-stream' });
+      response.end(payload);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const addressInfo = server.address();
+    assert(addressInfo && typeof addressInfo !== 'string');
+    const bee = new Bee(`http://127.0.0.1:${addressInfo.port}`);
+    const result = await bee.makeFeedReader(TOPIC, owner).downloadPayload({ index });
+    assert.deepEqual(result.payload.toUint8Array(), payload);
+    assert.equal(requests[0], `/chunks/${reference.toHex()}`);
+    assert.equal(requests.length, wrapped ? 2 : 1);
+  } finally {
+    server.close();
+    await once(server, 'close');
+  }
+}
+
+describe('feedSlotReference', () => {
+  it('addresses and decodes the inline payload format used by bee-js uploadPayload', async () => {
+    await assertSdkReadsSlotPayload(new TextEncoder().encode('#EXTM3U\n#EXT-X-VERSION:3\n'));
+  });
+
+  it('addresses and decodes the wrapped payload format used above 4096 bytes', async () => {
+    await assertSdkReadsSlotPayload(new TextEncoder().encode(`#EXTM3U\n${'#EXT-X-STREAM-INF:BANDWIDTH=1\n'.repeat(150)}`));
   });
 });
 

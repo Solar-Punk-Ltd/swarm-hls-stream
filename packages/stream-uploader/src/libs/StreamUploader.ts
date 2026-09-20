@@ -2,6 +2,7 @@ import { Bee, BeeResponseError, PrivateKey, Topic } from '@ethersphere/bee-js';
 import {
   addingStreamToList,
   engineSkippedSegments,
+  feedSlotReference,
   finalizeResumed,
   ladderFinalized,
   manifestUploaded,
@@ -1136,7 +1137,7 @@ export class StreamUploader {
       const update = await this.readWithinWindow(() => feedReader.downloadPayload({ index: head.feedIndex }));
 
       const reference = question.includeReference
-        ? (await this.readWithinWindow(() => feedReader.downloadReference({ index: head.feedIndex }))).reference.toHex()
+        ? feedSlotReference(owner.toHex(), Topic.fromString(this.streamRawTopic), head.feedIndex).toHex()
         : undefined;
 
       return { index: Number(head.feedIndex.toBigInt()), manifest: update.payload.toUtf8(), reference };

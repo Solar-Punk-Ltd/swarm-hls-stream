@@ -1,4 +1,5 @@
 import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { feedSlotReference } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import { Rendition } from '../types.js';
@@ -154,7 +155,7 @@ export class MasterFeedWriter {
       if (update.payload.toUtf8() !== intent.playlist) {
         throw new Error(`Managed master index ${intent.index} already contains another playlist`);
       }
-      const reference = (await reader.downloadReference({ index })).reference.toHex();
+      const reference = feedSlotReference(this.owner, topic, index).toHex();
       const committed = store.commit(intent, reference);
       this.indices.set(intent.group, index);
       return { topic: intent.group, index: intent.index, reference: committed.reference! };

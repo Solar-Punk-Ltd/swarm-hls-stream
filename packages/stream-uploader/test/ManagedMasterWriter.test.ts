@@ -1,4 +1,5 @@
-import { BeeResponseError, PrivateKey } from '@ethersphere/bee-js';
+import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { feedSlotReference } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -53,7 +54,12 @@ describe('managed master publication recovery', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-master-writer-'));
     let payload: string | undefined;
     let uploads = 0;
-    const reference = 'a'.repeat(64);
+    const signer = new PrivateKey(TEST_KEY);
+    const reference = feedSlotReference(
+      signer.publicKey().address().toHex(),
+      Topic.fromString(BINDING.group),
+      FeedIndex.fromBigInt(0n),
+    ).toHex();
     const bee = {
       makeFeedReader: () => ({
         downloadPayload: async () => {
@@ -62,7 +68,6 @@ describe('managed master publication recovery', () => {
           }
           return { payload: { toUtf8: () => payload } };
         },
-        downloadReference: async () => ({ reference: { toHex: () => reference } }),
       }),
       makeFeedWriter: () => ({
         uploadPayload: async (_stamp: string, next: unknown) => {
@@ -78,14 +83,14 @@ describe('managed master publication recovery', () => {
 
     try {
       const store = new ManagedMasterStore(root);
-      const first = new MasterFeedWriter(publishers, new PrivateKey(TEST_KEY));
+      const first = new MasterFeedWriter(publishers, signer);
       await assert.rejects(
         () => first.publishManaged(BINDING.group, RENDITIONS, 'rendition:4', BINDING, new CommitCrashStore(store)),
         /crashed after Bee acknowledgement/,
       );
       assert.equal(uploads, 1);
 
-      const restarted = new MasterFeedWriter(publishers, new PrivateKey(TEST_KEY));
+      const restarted = new MasterFeedWriter(publishers, signer);
       assert.deepEqual(
         await restarted.publishManaged(BINDING.group, RENDITIONS, 'rendition:4', BINDING, new ManagedMasterStore(root)),
         { topic: BINDING.group, index: 0, reference },

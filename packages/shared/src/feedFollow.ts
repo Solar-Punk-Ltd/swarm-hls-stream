@@ -13,7 +13,7 @@
  * The paths are relative, because the player and the bench each hold their own gateway base URL.
  */
 
-import { FeedIndex, Identifier, Topic } from '@ethersphere/bee-js';
+import { EthAddress, FeedIndex, Identifier, Reference, Topic } from '@ethersphere/bee-js';
 import { Binary } from 'cafe-utility';
 
 /**
@@ -24,6 +24,13 @@ import { Binary } from 'cafe-utility';
  */
 export function makeFeedIdentifier(topic: Topic, index: FeedIndex): Identifier {
   return new Identifier(Binary.keccak256(Binary.concatBytes(topic.toUint8Array(), index.toUint8Array())));
+}
+
+/** The immutable SOC reference written for one exact feed owner, topic and index. */
+export function feedSlotReference(owner: string, topic: Topic, index: FeedIndex): Reference {
+  const identifier = makeFeedIdentifier(topic, index);
+  const address = new EthAddress(owner);
+  return new Reference(Binary.keccak256(Binary.concatBytes(identifier.toUint8Array(), address.toUint8Array())));
 }
 
 /**
