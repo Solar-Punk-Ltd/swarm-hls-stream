@@ -340,6 +340,33 @@ describe('continuation media runtime adapters', () => {
     ]);
   });
 
+  it('refuses an overlapping invocation while the sender is owned', async () => {
+    const launcher = new ControlledLauncher();
+    const firstHandle = new ControlledHandle();
+    launcher.enqueue(firstHandle);
+    launcher.enqueue(new ControlledHandle());
+    const subject = new DockerMediaScenarioSpawn({
+      senderContainerId: 'sender-container-id',
+      secrets: new Map(),
+      launcher,
+      command: new ControlledCommand(),
+    });
+    const invocation: MediaScenarioProcessInvocation = {
+      purpose: 'decode-video',
+      file: '/usr/bin/ffmpeg',
+      args: ['-version'],
+      timeoutMs: 10_000,
+      maxOutputBytes: 4096,
+    };
+    const first = await subject.spawn(invocation);
+
+    await assert.rejects(subject.spawn(invocation), /already owns an active invocation/i);
+
+    assert.equal(launcher.inputs.length, 1);
+    firstHandle.completionResult.resolve(mediaProcessResult());
+    await first.wait();
+  });
+
   it('retains a failed encoder until remote stop and restart complete', async () => {
     const launcher = new ControlledLauncher();
     const firstHandle = new ControlledHandle();
@@ -395,7 +422,7 @@ describe('continuation media runtime adapters', () => {
     const first = await subject.spawn(invocation);
     firstHandle.completionResult.resolve(mediaProcessResult());
     await first.wait();
-    const second = await subject.spawn(invocation);
+    const second = await subject.spawn({ ...invocation, purpose: 'decode-audio' });
 
     await first.stop();
 
