@@ -20,6 +20,12 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const TREE_DIGEST = '1'.repeat(64);
+const FIXTURE_ID = 'srs-continuation-20260920-abc12345';
+const FIXTURE_NETWORK = Object.freeze({
+  name: `${FIXTURE_ID}-network`,
+  fixtureId: FIXTURE_ID,
+});
+const FIXTURE_NETWORK_ID = '9'.repeat(64);
 const IMAGE_IDS = Object.freeze({
   'stream-uploader': `sha256:${'a'.repeat(64)}`,
   srs: `sha256:${'b'.repeat(64)}`,
@@ -108,6 +114,7 @@ function fixture(role, services, overrides = {}) {
       services,
       ...overrides.target,
     },
+    ...(overrides.fixtureNetwork ? { fixtureNetwork: overrides.fixtureNetwork } : {}),
   };
   return {
     root,
@@ -140,7 +147,15 @@ function planFor(f, phase, changes = {}) {
     slot: { role: f.role, id: f.role === 'uploader' ? 'srs-uploader-a' : 'default' },
     images,
     activeArtifactPath: null,
-    arguments: f.argumentsValue,
+    arguments: f.argumentsValue.fixtureNetwork && phase !== 'preflight'
+      ? {
+        ...f.argumentsValue,
+        fixtureNetwork: {
+          ...f.argumentsValue.fixtureNetwork,
+          networkId: FIXTURE_NETWORK_ID,
+        },
+      }
+      : f.argumentsValue,
     ...changes,
   };
 }
@@ -162,6 +177,70 @@ async function run(f, script, phase, changes = {}) {
 }
 
 describe('guarded uploader release adapter', () => {
+  it('binds an internal labeled fixture network during preflight', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    const result = await run(f, 'release-adapter.sh', 'preflight');
+
+    assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(result.output, 'utf8')), {
+      schemaVersion: 1,
+      lifecycleVersion: 1,
+      uploaderId: 'srs-uploader-a',
+      adminApiConfigured: true,
+      fixtureNetworkId: FIXTURE_NETWORK_ID,
+    });
+    assert.match(readFileSync(f.journal, 'utf8'), new RegExp(`network inspect .*${FIXTURE_NETWORK.name}`));
+  });
+
+  it('refuses a fixture network that is public or carries the wrong owner label', async () => {
+    const publicNetwork = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+      env: { DOCKER_STUB_NETWORK_INTERNAL: 'false' },
+    });
+    const publicResult = await run(publicNetwork, 'release-adapter.sh', 'preflight');
+    assert.notEqual(publicResult.exitCode, 0);
+    assert.match(publicResult.stderr, /fixture network/);
+
+    const wrongOwner = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+      env: { DOCKER_STUB_FIXTURE_LABEL: 'srs-continuation-20260920-wrong999' },
+    });
+    const wrongOwnerResult = await run(wrongOwner, 'release-adapter.sh', 'preflight');
+    assert.notEqual(wrongOwnerResult.exitCode, 0);
+    assert.match(wrongOwnerResult.stderr, /fixture network/);
+  });
+
+  it('removes every uploader port and binds selected services to the fixture network', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    const result = await run(f, 'release-adapter.sh', 'transition');
+
+    assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
+    const reset = readFileSync(join(f.work, 'release-fixture-port-reset.yml'), 'utf8');
+    const override = readFileSync(join(f.work, 'release-image-override.yml'), 'utf8');
+    assert.match(reset, /srs:\n {4}ports: !reset \[\]/);
+    assert.match(reset, /stream-uploader:\n {4}ports: !reset \[\]/);
+    assert.match(override, new RegExp(`name: ${FIXTURE_NETWORK.name}`));
+    assert.match(override, new RegExp(`org\\.solarpunk\\.srs-continuation\\.fixture: "${FIXTURE_ID}"`));
+    assert.match(override, /org\.solarpunk\.srs-continuation\.managed: "true"/);
+    assert.doesNotMatch(override, /127\.0\.0\.1:/);
+  });
+
+  it('refuses receipt when a selected container is not on the bound fixture network id', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      fixtureNetwork: FIXTURE_NETWORK,
+      env: { DOCKER_STUB_CONTAINER_NETWORK_ID: '8'.repeat(64) },
+    });
+    assert.equal((await run(f, 'release-adapter.sh', 'transition')).exitCode, 0);
+    const result = await run(f, 'release-adapter.sh', 'verify');
+
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /fixture network/);
+  });
+
   it('reports only the bounded effective managed configuration', async () => {
     const f = fixture('uploader', ['srs', 'stream-uploader']);
     const result = await run(f, 'release-adapter.sh', 'preflight');
@@ -311,6 +390,26 @@ describe('guarded uploader release adapter', () => {
 });
 
 describe('guarded viewer release adapter', () => {
+  it('publishes only the derived loopback client port on a fixture network', async () => {
+    const f = fixture('viewer', ['client'], { fixtureNetwork: FIXTURE_NETWORK });
+    const preflight = await run(f, 'viewer-release-adapter.sh', 'preflight');
+    assert.equal(preflight.exitCode, 0, `${preflight.stdout}${preflight.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(preflight.output, 'utf8')), {
+      schemaVersion: 1,
+      fixtureNetworkId: FIXTURE_NETWORK_ID,
+    });
+
+    const transition = await run(f, 'viewer-release-adapter.sh', 'transition');
+    assert.equal(transition.exitCode, 0, `${transition.stdout}${transition.stderr}`);
+    const reset = readFileSync(join(f.work, 'release-fixture-port-reset.yml'), 'utf8');
+    const override = readFileSync(join(f.work, 'release-image-override.yml'), 'utf8');
+    assert.match(reset, /client:\n {4}ports: !reset \[\]/);
+    assert.match(override, /127\.0\.0\.1:10074:80/);
+
+    const verified = await run(f, 'viewer-release-adapter.sh', 'verify');
+    assert.equal(verified.exitCode, 0, `${verified.stdout}${verified.stderr}`);
+  });
+
   it('accepts a client that preserves its configured external gateway', async () => {
     const f = fixture('viewer', ['client']);
     const result = await run(f, 'viewer-release-adapter.sh', 'preflight');
@@ -367,6 +466,8 @@ fs.appendFileSync(${JSON.stringify(journal)}, argv.join(' ') + '\\n');
 fs.appendFileSync(${JSON.stringify(journal)}, 'effective BEE_URL=' + (process.env.BEE_URL || '') + ' CLIENT_BEE_GATEWAY_HOST=' + (process.env.CLIENT_BEE_GATEWAY_HOST || '') + ' CLIENT_BEE_GATEWAY_PORT=' + (process.env.CLIENT_BEE_GATEWAY_PORT || '') + '\\n');
 const ids = ${JSON.stringify(IMAGE_IDS)};
 const references = ${JSON.stringify(IMAGE_REFERENCES)};
+const fixtureId = process.env.DOCKER_STUB_FIXTURE_LABEL || ${JSON.stringify(FIXTURE_ID)};
+const fixtureNetworkId = process.env.DOCKER_STUB_NETWORK_ID || ${JSON.stringify(FIXTURE_NETWORK_ID)};
 function serviceFrom(value) {
   for (const [service, reference] of Object.entries(references)) if (value === reference) return service;
   for (const service of Object.keys(ids)) if (value === service || value.endsWith('-' + service) || value === 'c-' + service) return service;
@@ -374,6 +475,17 @@ function serviceFrom(value) {
 }
 if (argv[0] === 'image' && argv[1] === 'inspect') {
   console.log(ids[serviceFrom(argv.at(-1))] || '');
+  process.exit(0);
+}
+if (argv[0] === 'network' && argv[1] === 'inspect') {
+  console.log(JSON.stringify([{
+    Id: fixtureNetworkId,
+    Internal: (process.env.DOCKER_STUB_NETWORK_INTERNAL || 'true') === 'true',
+    Labels: {
+      'org.solarpunk.srs-continuation.fixture': fixtureId,
+      'org.solarpunk.srs-continuation.managed': process.env.DOCKER_STUB_MANAGED_LABEL || 'true',
+    },
+  }]));
   process.exit(0);
 }
 if (argv[0] === 'compose') {
@@ -388,6 +500,7 @@ if (argv[0] === 'inspect') {
   if (format.includes('.State.Status')) console.log('running');
   else if (format.includes('.State.Health')) console.log(process.env.DOCKER_STUB_NO_HEALTH === service ? '' : process.env.DOCKER_STUB_UNHEALTHY === service ? 'unhealthy' : 'healthy');
   else if (format.includes('.Image')) console.log(process.env.DOCKER_STUB_WRONG_IMAGE === service ? 'sha256:' + 'f'.repeat(64) : ids[service]);
+  else if (format.includes('.NetworkSettings.Networks')) console.log(process.env.DOCKER_STUB_CONTAINER_NETWORK_ID || fixtureNetworkId);
   process.exit(0);
 }
 process.exit(0);

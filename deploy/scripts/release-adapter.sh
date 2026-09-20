@@ -42,10 +42,22 @@ if ! jq -e --arg phase "$phase" --arg role "$role" '
   (.treeDigest | type == "string" and test("^[0-9a-f]{64}$")) and
   .temporaryProject == ("release-" + (.treeDigest[0:20])) and
   (.slot | type == "object" and (keys | sort) == ["id", "role"] and .role == $role and (.id | type == "string")) and
-  (.arguments | type == "object" and keys == ["target"] and
+  (.arguments | type == "object" and
+    ((keys | sort) == ["target"] or (keys | sort) == ["fixtureNetwork", "target"]) and
     (.target | type == "object" and (keys | sort) == ["portSlot", "profile", "services", "target"] and
       (.profile | type == "string") and (.portSlot | type == "number") and .target == "local" and
-      (.services | type == "array" and length >= 1 and all(.[]; type == "string")))) and
+      (.services | type == "array" and length >= 1 and all(.[]; type == "string"))) and
+    (if has("fixtureNetwork") then
+      (.fixtureNetwork | type == "object" and
+        (if $phase == "preflight" then
+          (keys | sort) == ["fixtureId", "name"]
+        else
+          (keys | sort) == ["fixtureId", "name", "networkId"] and
+          (.networkId | type == "string" and test("^[0-9a-f]{64}$"))
+        end) and
+        (.fixtureId | type == "string" and test("^srs-continuation-20260920-[a-z0-9]{8,16}$")) and
+        .name == (.fixtureId + "-network"))
+    else true end)) and
   (.images | type == "array") and
   (if ($phase == "transition" or $phase == "verify") then
     .activeArtifactPath == null and ((.images | length) == (.arguments.target.services | length)) and
@@ -64,11 +76,21 @@ target="$(jq -r '.arguments.target.target' "$plan")"
 slot_id="$(jq -r '.slot.id' "$plan")"
 temporary_project="$(jq -r '.temporaryProject' "$plan")"
 tree_digest="$(jq -r '.treeDigest' "$plan")"
+fixture_id="$(jq -r '.arguments.fixtureNetwork.fixtureId // empty' "$plan")"
+fixture_network_name="$(jq -r '.arguments.fixtureNetwork.name // empty' "$plan")"
+fixture_network_id="$(jq -r '.arguments.fixtureNetwork.networkId // empty' "$plan")"
 [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || refuse "$role release profile is invalid"
 [[ "$port_slot" =~ ^[0-9]+$ ]] && [ "$port_slot" -ge 1 ] && [ "$port_slot" -le 99 ] || refuse "$role release port slot is invalid"
 [ "$target" = "local" ] || refuse "$role release target must be local"
 [[ "$temporary_project" =~ ^release-[0-9a-f]{20}$ ]] || refuse "$role release temporary project is invalid"
 [[ "$tree_digest" =~ ^[0-9a-f]{64}$ ]] || refuse "$role release tree digest is invalid"
+if [ -n "$fixture_id" ]; then
+  [[ "$fixture_id" =~ ^srs-continuation-20260920-[a-z0-9]{8,16}$ ]] || refuse "$role release fixture network is invalid"
+  [ "$fixture_network_name" = "${fixture_id}-network" ] || refuse "$role release fixture network is invalid"
+  if [ "$phase" != "preflight" ]; then
+    [[ "$fixture_network_id" =~ ^[0-9a-f]{64}$ ]] || refuse "$role release fixture network is invalid"
+  fi
+fi
 
 services=()
 while IFS= read -r service; do
@@ -113,6 +135,30 @@ else
     refuse "viewer release service set is unsupported"
   fi
 fi
+
+inspect_fixture_network() {
+  local details actual_id expected_id="${1:-}"
+  if ! details="$(docker network inspect "$fixture_network_name")"; then
+    refuse "$role release fixture network is unavailable"
+  fi
+  [ "${#details}" -le 65536 ] || refuse "$role release fixture network is invalid"
+  if ! jq -e --arg fixture "$fixture_id" '
+    type == "array" and length == 1 and
+    (.[0] | type == "object" and
+      (.Id | type == "string" and test("^[0-9a-f]{64}$")) and
+      .Internal == true and
+      (.Labels | type == "object") and
+      .Labels["org.solarpunk.srs-continuation.fixture"] == $fixture and
+      .Labels["org.solarpunk.srs-continuation.managed"] == "true")
+  ' <<< "$details" >/dev/null 2>&1; then
+    refuse "$role release fixture network is invalid"
+  fi
+  actual_id="$(jq -r '.[0].Id' <<< "$details")"
+  if [ -n "$expected_id" ] && [ "$actual_id" != "$expected_id" ]; then
+    refuse "$role release fixture network identity changed"
+  fi
+  fixture_network_id="$actual_id"
+}
 
 sorted_services=()
 while IFS= read -r service; do
@@ -166,6 +212,9 @@ case "${COMPOSE_NETWORK:-}" in
   ''|bridge|host) ;;
   *) refuse "$role release compose network is invalid" ;;
 esac
+if [ -n "$fixture_id" ] && [ "${COMPOSE_NETWORK:-bridge}" = "host" ]; then
+  refuse "$role release fixture network requires bridge networking"
+fi
 
 if has_service bee-uploader; then
   [ "${LOCAL_BEE_UPLOADER:-}" = "true" ] || refuse "local bee-uploader service requires LOCAL_BEE_UPLOADER=true"
@@ -214,6 +263,13 @@ if [ "$role" = "uploader" ]; then
   [ -n "${STAMP:-}" ] || [ -n "${BEE_PUBLISHERS:-}" ] || refuse "managed uploader has no configured postage batch"
 fi
 
+if [ -n "$fixture_id" ]; then
+  case "$phase" in
+    preflight) inspect_fixture_network ;;
+    transition|verify) inspect_fixture_network "$fixture_network_id" ;;
+  esac
+fi
+
 compose_files=(-f "$deploy_dir/docker-compose.yml")
 [ "${COMPOSE_NETWORK:-}" = "host" ] && compose_files+=(-f "$deploy_dir/docker-compose.host.yml")
 if [ -n "${BEE_UPLOADER_NAT_ADDR:-}" ] || [ -n "${BEE_GATEWAY_NAT_ADDR:-}" ]; then
@@ -235,9 +291,17 @@ write_preflight() {
   local temporary="${output}.tmp.$$"
   umask 077
   if [ "$role" = "uploader" ]; then
-    printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true}\n' "$slot_id" > "$temporary"
+    if [ -n "$fixture_id" ]; then
+      printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true,"fixtureNetworkId":"%s"}\n' "$slot_id" "$fixture_network_id" > "$temporary"
+    else
+      printf '{"schemaVersion":1,"lifecycleVersion":1,"uploaderId":"%s","adminApiConfigured":true}\n' "$slot_id" > "$temporary"
+    fi
   else
-    printf '%s\n' '{"schemaVersion":1}' > "$temporary"
+    if [ -n "$fixture_id" ]; then
+      printf '{"schemaVersion":1,"fixtureNetworkId":"%s"}\n' "$fixture_network_id" > "$temporary"
+    else
+      printf '%s\n' '{"schemaVersion":1}' > "$temporary"
+    fi
   fi
   mv "$temporary" "$output"
 }
@@ -295,30 +359,63 @@ case "$phase" in
     ;;
   transition)
     override="$(dirname "$plan")/release-image-override.yml"
+    reset_override="$(dirname "$plan")/release-fixture-port-reset.yml"
     temporary="${override}.tmp.$$"
     umask 077
     printf 'services:\n' > "$temporary"
     for service in "${sorted_services[@]}"; do
       image_id="$(image_from_plan "$service")"
       printf '  %s:\n    image: %s\n    pull_policy: never\n' "$service" "$image_id" >> "$temporary"
+      if [ -n "$fixture_id" ]; then
+        printf '    labels:\n      org.solarpunk.srs-continuation.fixture: "%s"\n      org.solarpunk.srs-continuation.managed: "true"\n' "$fixture_id" >> "$temporary"
+        printf '    networks:\n      - default\n' >> "$temporary"
+        if [ "$role" = "viewer" ] && [ "$service" = "client" ]; then
+          printf '    ports:\n      - "127.0.0.1:%s:80"\n' "$CLIENT_PORT" >> "$temporary"
+        fi
+      fi
     done
+    if [ -n "$fixture_id" ]; then
+      printf 'networks:\n  default:\n    external: true\n    name: %s\n' "$fixture_network_name" >> "$temporary"
+    fi
     mv "$temporary" "$override"
-    compose_for "$profile" -f "$override" up -d --no-build --pull never "${services[@]}"
+    if [ -n "$fixture_id" ]; then
+      temporary="${reset_override}.tmp.$$"
+      printf 'services:\n' > "$temporary"
+      for service in "${sorted_services[@]}"; do
+        printf '  %s:\n    ports: !reset []\n' "$service" >> "$temporary"
+      done
+      mv "$temporary" "$reset_override"
+      compose_for "$profile" -f "$reset_override" -f "$override" up -d --no-build --pull never "${services[@]}"
+    else
+      compose_for "$profile" -f "$override" up -d --no-build --pull never "${services[@]}"
+    fi
     "$script_dir/assert-started.sh" "$profile" "${services[@]}"
     ;;
   verify)
     override="$(dirname "$plan")/release-image-override.yml"
     [ -f "$override" ] && [ ! -L "$override" ] || refuse "$role release image override is missing"
+    reset_override="$(dirname "$plan")/release-fixture-port-reset.yml"
+    if [ -n "$fixture_id" ]; then
+      [ -f "$reset_override" ] && [ ! -L "$reset_override" ] || refuse "$role release fixture port reset is missing"
+    fi
     result_services=()
     result_images=()
     for service in "${sorted_services[@]}"; do
-      container="$(compose_for "$profile" -f "$override" ps -q "$service")"
+      if [ -n "$fixture_id" ]; then
+        container="$(compose_for "$profile" -f "$reset_override" -f "$override" ps -q "$service")"
+      else
+        container="$(compose_for "$profile" -f "$override" ps -q "$service")"
+      fi
       [[ "$container" =~ ^[A-Za-z0-9_.:-]+$ ]] || refuse "$role release could not identify one container per service"
       [ "$(docker inspect --format '{{.State.Status}}' "$container")" = "running" ] || refuse "$role release service is not running"
       health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container")"
       [ -z "$health" ] || [ "$health" = "healthy" ] || refuse "$role release service is not healthy"
       image_id="$(docker inspect --format '{{.Image}}' "$container")"
       [ "$image_id" = "$(image_from_plan "$service")" ] || refuse "$role release running image does not match the guarded build"
+      if [ -n "$fixture_id" ]; then
+        container_network_id="$(docker inspect --format "{{with index .NetworkSettings.Networks \"$fixture_network_name\"}}{{.NetworkID}}{{end}}" "$container")"
+        [ "$container_network_id" = "$fixture_network_id" ] || refuse "$role release service is not on the bound fixture network"
+      fi
       result_services+=("$service")
       result_images+=("$image_id")
     done
