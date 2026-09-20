@@ -24,6 +24,8 @@ import {
   AdminStreamDraft,
   ManagedClaimRequest,
   ManagedContinuationPreparation,
+  ManagedRenditionReport,
+  managedRenditionReportDigest,
   ManagedRunReport,
   MAX_STATE_REPORT_ATTEMPTS,
   MIN_ADMIN_API_TOKEN_LENGTH,
@@ -62,6 +64,9 @@ const vodReconciliationFixture = JSON.parse(
   reconciledCompletedRecording: unknown;
   sha256HexParts: string[];
 };
+const managedRenditionDigestFixture = JSON.parse(
+  fs.readFileSync(new URL('./fixtures/managed-rendition-digest-v1.json', import.meta.url), 'utf8'),
+) as { report: ManagedRenditionReport; sha256HexParts: string[] };
 
 interface Received {
   method: string;
@@ -778,6 +783,65 @@ describe('the admin API client, reporting one rung of a ladder', () => {
       });
     });
   }
+});
+
+describe('the admin API client, reporting a managed run rendition', () => {
+  const REPORT = managedRenditionDigestFixture.report;
+  const RESPONSE = {
+    lifecycleVersion: 1 as const,
+    streamId: ADMIN_STREAM_ID,
+    runNumber: 2,
+    revision: 9,
+    uploaderId: REPORT.uploaderId,
+    claimId: REPORT.claimId,
+    renditionRevision: 4,
+    renditions: [REPORT.rendition],
+    ladder: { finished: true, flippedToFinished: true, duration: 61 },
+  };
+
+  it('matches the shared canonical digest vector', () => {
+    assert.equal(
+      managedRenditionReportDigest(REPORT),
+      managedRenditionDigestFixture.sha256HexParts.join(''),
+    );
+  });
+
+  it('posts the exact persisted event to the run-scoped rung route', async () => {
+    await withAdmin(always(200, RESPONSE), async ({ client, received }) => {
+      assert.deepEqual(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), RESPONSE);
+      assert.equal(
+        received[0].url,
+        `/api/internal/streams/${ADMIN_STREAM_ID}/runs/2/renditions/${REPORT.rendition.name}`,
+      );
+      assert.deepEqual(received[0].body, REPORT);
+    }, { lifecycleVersion: 1 });
+  });
+
+  it('retries the identical event body after a transient failure', async () => {
+    await withAdmin(
+      (_req, res, call) => call === 1 ? res.status(503).json({ error: 'unavailable' }) : res.status(200).json(RESPONSE),
+      async ({ client, received, sleeps }) => {
+        assert.deepEqual(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), RESPONSE);
+        assert.deepEqual(received.map(({ body }) => body), [REPORT, REPORT]);
+        assert.deepEqual(sleeps, [STATE_REPORT_BACKOFF_MS[0]]);
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  it('refuses a successful response bound to another run', async () => {
+    await withAdmin(always(200, { ...RESPONSE, runNumber: 3 }), async ({ client }) => {
+      assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
+    }, { lifecycleVersion: 1 });
+  });
+
+  it('does not treat a managed conflict as a successful rendition event', async () => {
+    await withAdmin(always(409, { error: 'event_conflict' }), async ({ client, received, sleeps }) => {
+      assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
+      assert.equal(received.length, 1);
+      assert.deepEqual(sleeps, []);
+    }, { lifecycleVersion: 1 });
+  });
 });
 
 /**

@@ -162,6 +162,34 @@ export interface ManagedClaimedRun {
   permission: 'claimed';
 }
 
+export interface ManagedRenditionReport {
+  lifecycleVersion: 1;
+  uploaderId: string;
+  claimId: string;
+  renditionSequence: number;
+  observedAt: string;
+  rendition: ManagedExpectedRendition & {
+    index?: number;
+    duration?: number;
+  };
+}
+
+export interface ManagedRenditionReportResponse {
+  lifecycleVersion: 1;
+  streamId: string;
+  runNumber: number;
+  revision: number;
+  uploaderId: string;
+  claimId: string;
+  renditionRevision: number;
+  renditions: Rendition[];
+  ladder: {
+    finished: boolean;
+    flippedToFinished: boolean;
+    duration: number | null;
+  };
+}
+
 interface ManagedRunView {
   lifecycleVersion: 1;
   streamId: string;
@@ -551,6 +579,11 @@ function managedReportDigest(report: ManagedRunReport): string {
   return createHash('sha256').update(canonicalJson(transmitted)).digest('hex');
 }
 
+export function managedRenditionReportDigest(report: ManagedRenditionReport): string {
+  const transmitted = JSON.parse(JSON.stringify(report)) as unknown;
+  return createHash('sha256').update(canonicalJson(transmitted)).digest('hex');
+}
+
 /**
  * Whether one entry of a merged ladder really is a rendition.
  *
@@ -636,6 +669,47 @@ function asRenditionReport(body: unknown): RenditionReportResponse | null {
       duration: state.duration as number | null,
     },
   };
+}
+
+function asManagedRenditionReport(
+  body: unknown,
+  streamId: string,
+  runNumber: number,
+  report: ManagedRenditionReport,
+): ManagedRenditionReportResponse | null {
+  if (typeof body !== 'object' || body === null) {
+    return null;
+  }
+  const candidate = body as Record<string, unknown>;
+  if (
+    candidate.lifecycleVersion !== 1 ||
+    candidate.streamId !== streamId ||
+    candidate.runNumber !== runNumber ||
+    candidate.uploaderId !== report.uploaderId ||
+    candidate.claimId !== report.claimId ||
+    !Number.isSafeInteger(candidate.revision) ||
+    (candidate.revision as number) < 0 ||
+    !Number.isSafeInteger(candidate.renditionRevision) ||
+    (candidate.renditionRevision as number) < 0 ||
+    !Array.isArray(candidate.renditions) ||
+    !candidate.renditions.every(isRendition)
+  ) {
+    return null;
+  }
+  const ladder = candidate.ladder;
+  if (typeof ladder !== 'object' || ladder === null) {
+    return null;
+  }
+  const state = ladder as Record<string, unknown>;
+  if (
+    typeof state.finished !== 'boolean' ||
+    typeof state.flippedToFinished !== 'boolean' ||
+    (state.duration !== null && (typeof state.duration !== 'number' || !Number.isFinite(state.duration))) ||
+    (state.finished ? state.duration === null || !candidate.renditions.every((item) => item.index !== undefined) : state.duration !== null)
+  ) {
+    return null;
+  }
+  return candidate as unknown as ManagedRenditionReportResponse;
 }
 
 export class AdminApiClient {
@@ -853,6 +927,53 @@ export class AdminApiClient {
       }
     }
     return STATE_REPORT_FAILED;
+  }
+
+  /** Report one exact run-scoped rendition event. Retries preserve the caller's sequence and observedAt. */
+  public async reportManagedRendition(
+    id: string,
+    runNumber: number,
+    report: ManagedRenditionReport,
+  ): Promise<ManagedRenditionReportResponse | null> {
+    const url =
+      `${this.baseUrl}/api/internal/streams/${encodeURIComponent(id)}/runs/${runNumber}/renditions/` +
+      encodeURIComponent(report.rendition.name);
+    const body = JSON.stringify(report);
+
+    for (let attempt = 1; attempt <= MAX_STATE_REPORT_ATTEMPTS; attempt++) {
+      try {
+        const response = await this.send(
+          url,
+          { method: 'POST', headers: { 'content-type': 'application/json' }, body },
+          this.reportTimeoutMs,
+        );
+        if (response.ok) {
+          const outcome = asManagedRenditionReport(await this.readJson(response), id, runNumber, report);
+          if (outcome === null) {
+            this.logger.error(`[Admin] Managed rendition ${report.rendition.name} answered 200 with another run`);
+          }
+          return outcome;
+        }
+        if (!isRetryableReportStatus(response.status)) {
+          this.logger.error(
+            `[Admin] Managed rendition ${report.rendition.name} refused with ${response.status} for ${url}`,
+          );
+          return null;
+        }
+        this.logger.warn(
+          `[Admin] Managed rendition ${report.rendition.name} answered ${response.status} for ${url}, attempt ${attempt}`,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `[Admin] Managed rendition ${report.rendition.name} did not complete on attempt ${attempt}: ${getErrorMessage(error)}`,
+        );
+      }
+      const wait = STATE_REPORT_BACKOFF_MS[attempt - 1];
+      if (wait !== undefined) {
+        await this.sleep(wait);
+      }
+    }
+    return null;
   }
 
   private async attemptManagedReport(
