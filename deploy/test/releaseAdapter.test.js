@@ -27,6 +27,11 @@ const IMAGE_IDS = Object.freeze({
   'bee-gateway': `sha256:${'d'.repeat(64)}`,
   'bee-uploader': `sha256:${'e'.repeat(64)}`,
 });
+const IMAGE_REFERENCES = Object.freeze({
+  srs: 'ossrs/srs:6',
+  'bee-uploader': 'ethersphere/bee:2.8.2',
+  'bee-gateway': 'ethersphere/bee:2.8.2',
+});
 const roots = [];
 
 after(() => {
@@ -217,6 +222,10 @@ describe('guarded uploader release adapter', () => {
     const calls = readFileSync(f.journal, 'utf8');
     assert.match(calls, new RegExp(`--project-name release-${TREE_DIGEST.slice(0, 20)} .* build stream-uploader`));
     assert.match(calls, / pull .*srs.*bee-uploader| pull .*bee-uploader.*srs/);
+    assert.match(calls, / config --images bee-uploader/);
+    assert.match(calls, / config --images srs/);
+    assert.doesNotMatch(calls, / images -q/);
+    assert.doesNotMatch(calls, / up /, 'build created a temporary container to discover an image');
     assert.deepEqual(JSON.parse(readFileSync(result.output, 'utf8')).images, [
       { service: 'bee-uploader', imageId: IMAGE_IDS['bee-uploader'] },
       { service: 'srs', imageId: IMAGE_IDS.srs },
@@ -353,7 +362,9 @@ function dockerStub(journal) {
 const argv = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(journal)}, argv.join(' ') + '\\n');
 const ids = ${JSON.stringify(IMAGE_IDS)};
+const references = ${JSON.stringify(IMAGE_REFERENCES)};
 function serviceFrom(value) {
+  for (const [service, reference] of Object.entries(references)) if (value === reference) return service;
   for (const service of Object.keys(ids)) if (value === service || value.endsWith('-' + service) || value === 'c-' + service) return service;
   return '';
 }
@@ -362,9 +373,9 @@ if (argv[0] === 'image' && argv[1] === 'inspect') {
   process.exit(0);
 }
 if (argv[0] === 'compose') {
-  const command = ['build', 'pull', 'up', 'ps', 'images'].find((value) => argv.includes(value));
+  const command = ['build', 'pull', 'up', 'ps', 'images', 'config'].find((value) => argv.includes(value));
   if (command === 'ps') console.log('c-' + argv.at(-1));
-  if (command === 'images') console.log(ids[serviceFrom(argv.at(-1))] || '');
+  if (command === 'config') console.log(references[serviceFrom(argv.at(-1))] || '');
   process.exit(0);
 }
 if (argv[0] === 'inspect') {

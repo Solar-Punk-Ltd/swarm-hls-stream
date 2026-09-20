@@ -281,7 +281,11 @@ case "$phase" in
       if [ "$service" = "stream-uploader" ] || [ "$service" = "client" ]; then
         image_id="$(docker image inspect --format '{{.Id}}' "${temporary_project}-${service}")"
       else
-        image_id="$(compose_for "$temporary_project" images -q "$service")"
+        image_reference="$(compose_for "$temporary_project" config --images "$service")"
+        if [ "${#image_reference}" -gt 512 ] || ! [[ "$image_reference" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]]; then
+          refuse "$role release external image reference is invalid"
+        fi
+        image_id="$(docker image inspect --format '{{.Id}}' "$image_reference")"
       fi
       [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse "$role release built image id is invalid"
       result_services+=("$service")
