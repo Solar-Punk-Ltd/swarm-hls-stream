@@ -21,6 +21,8 @@ import {
   ADMIN_STATE_VOD,
   AdminApiClient,
   AdminStreamDraft,
+  ManagedClaimRequest,
+  ManagedRunReport,
   MAX_STATE_REPORT_ATTEMPTS,
   MIN_ADMIN_API_TOKEN_LENGTH,
   STATE_REPORT_ACCEPTED,
@@ -52,6 +54,7 @@ interface Received {
   method: string;
   url: string;
   authorization: string | undefined;
+  lifecycleVersion: string | undefined;
   body: unknown;
 }
 
@@ -69,7 +72,12 @@ interface Harness {
 async function withAdmin(
   handle: Handler,
   drive: (harness: Harness) => Promise<void>,
-  options: { lookupTimeoutMs?: number; reportTimeoutMs?: number; baseUrlSuffix?: string } = {},
+  options: {
+    lookupTimeoutMs?: number;
+    reportTimeoutMs?: number;
+    baseUrlSuffix?: string;
+    lifecycleVersion?: 1;
+  } = {},
 ): Promise<void> {
   const received: Received[] = [];
   const sleeps: number[] = [];
@@ -81,6 +89,7 @@ async function withAdmin(
       method: req.method,
       url: req.originalUrl,
       authorization: req.get('authorization'),
+      lifecycleVersion: req.get('x-stream-lifecycle-version'),
       body: req.method === 'POST' ? req.body : undefined,
     });
     handle(req, res, received.length);
@@ -96,6 +105,7 @@ async function withAdmin(
       sleep: async (ms) => {
         sleeps.push(ms);
       },
+      lifecycleVersion: options.lifecycleVersion,
     });
     await drive({ client, received, sleeps });
   } finally {
@@ -196,6 +206,97 @@ describe('the admin API client, looking a draft up by ingest id', () => {
         await assert.rejects(() => client.lookupByIngestId(STREAM_ID));
       },
       { lookupTimeoutMs: 100 },
+    );
+  });
+});
+
+describe('the admin API client, negotiating lifecycle v1', () => {
+  const managed = {
+    ...DRAFT,
+    lifecycleVersion: 1 as const,
+    mode: 'managed' as const,
+    lifecycle: {
+      revision: 7,
+      runNumber: 2,
+      state: 'ready' as const,
+      permission: 'open' as const,
+      uploaderId: 'srs-157-90-34-105',
+    },
+  };
+
+  it('sends the version header and accepts the managed envelope', async () => {
+    await withAdmin(
+      always(200, managed),
+      async ({ client, received }) => {
+        assert.deepEqual(await client.lookupByIngestId(STREAM_ID), managed);
+        assert.equal(received[0].lifecycleVersion, '1');
+      },
+      { lifecycleVersion: 1 },
+    );
+  });
+
+  it('accepts an explicit negotiated legacy row', async () => {
+    const legacy = { ...DRAFT, lifecycleVersion: 1 as const, mode: 'legacy' as const };
+    await withAdmin(always(200, legacy), async ({ client }) => {
+      assert.deepEqual(await client.lookupByIngestId(STREAM_ID), legacy);
+    }, { lifecycleVersion: 1 });
+  });
+
+  for (const [name, body] of [
+    ['missing envelope', DRAFT],
+    ['unsupported version', { ...managed, lifecycleVersion: 2 }],
+    ['malformed managed lifecycle', { ...managed, lifecycle: { ...managed.lifecycle, runNumber: 0 } }],
+  ] as const) {
+    it(`refuses a ${name}`, async () => {
+      await withAdmin(always(200, body), async ({ client }) => {
+        await assert.rejects(() => client.lookupByIngestId(STREAM_ID), /lifecycle/);
+      }, { lifecycleVersion: 1 });
+    });
+  }
+
+  it('claims the exact run and validates the returned binding', async () => {
+    const request: ManagedClaimRequest = {
+      lifecycleVersion: 1,
+      expectedRevision: 7,
+      uploaderId: 'srs-157-90-34-105',
+      requestId: '33333333-3333-4333-8333-333333333333',
+    };
+    const claimed = {
+      lifecycleVersion: 1 as const,
+      revision: 8,
+      runNumber: 2,
+      uploaderId: request.uploaderId,
+      claimId: '44444444-4444-4444-8444-444444444444',
+      state: 'claimed' as const,
+      permission: 'claimed' as const,
+    };
+    await withAdmin(always(200, claimed), async ({ client, received }) => {
+      assert.deepEqual(await client.claimManagedRun(DRAFT.id, 2, request), claimed);
+      assert.equal(received[0].url, `/api/internal/streams/${DRAFT.id}/runs/2/claims`);
+      assert.deepEqual(received[0].body, request);
+    }, { lifecycleVersion: 1 });
+  });
+
+  it('retries a managed report with the exact same sequence and observed time', async () => {
+    const report: ManagedRunReport = {
+      lifecycleVersion: 1,
+      runNumber: 2,
+      uploaderId: 'srs-157-90-34-105',
+      claimId: '44444444-4444-4444-8444-444444444444',
+      eventSequence: 3,
+      observedAt: '2026-09-20T10:11:00.000Z',
+      state: 'closed',
+      reason: 'reconnect_timeout',
+    };
+    await withAdmin(
+      (_req, res, call) => res.status(call === 1 ? 503 : 200).json({}),
+      async ({ client, received }) => {
+        assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_ACCEPTED);
+        assert.equal(received.length, 2);
+        assert.deepEqual(received[0].body, report);
+        assert.deepEqual(received[1].body, report);
+      },
+      { lifecycleVersion: 1 },
     );
   });
 });

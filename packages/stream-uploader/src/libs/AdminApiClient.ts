@@ -102,6 +102,60 @@ export interface AdminStreamDraft {
   publishKey: string;
 }
 
+export type ManagedLifecycleState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+export type ManagedRunPermission = 'open' | 'claimed' | 'closed';
+
+export type AdminIngestLookup =
+  | AdminStreamDraft
+  | (AdminStreamDraft & { lifecycleVersion: 1; mode: 'legacy' })
+  | (AdminStreamDraft & {
+      lifecycleVersion: 1;
+      mode: 'managed';
+      lifecycle: {
+        revision: number;
+        runNumber: number;
+        state: ManagedLifecycleState;
+        permission: ManagedRunPermission;
+        uploaderId: string;
+      };
+    });
+
+export interface ManagedClaimRequest {
+  lifecycleVersion: 1;
+  expectedRevision: number;
+  uploaderId: string;
+  requestId: string;
+}
+
+export interface ManagedClaimedRun {
+  lifecycleVersion: 1;
+  revision: number;
+  runNumber: number;
+  uploaderId: string;
+  claimId: string;
+  state: ManagedLifecycleState;
+  permission: ManagedRunPermission;
+}
+
+interface ManagedReportBase {
+  lifecycleVersion: 1;
+  runNumber: number;
+  uploaderId: string;
+  claimId: string;
+  eventSequence: number;
+  observedAt: string;
+}
+
+export type ManagedRunReport =
+  | (ManagedReportBase & { state: 'live' })
+  | (ManagedReportBase & { state: 'waiting'; reconnectDeadline: string })
+  | (ManagedReportBase & {
+      state: 'closed';
+      reason: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
+      emptyOutcome?: { checkpointReference: string; acceptedMediaCount: 0 };
+    })
+  | (ManagedReportBase & { state: 'vod'; completedRecording: unknown });
+
 /**
  * What became of a state report.
  *
@@ -175,6 +229,8 @@ interface AdminApiClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Injected the way the OME puller's is, so a network path can be driven without a socket. */
   fetcher?: typeof globalThis.fetch;
+  /** Negotiates lifecycle-v1 lookup envelopes. Absent preserves the legacy wire contract. */
+  lifecycleVersion?: 1;
 }
 
 /**
@@ -218,6 +274,77 @@ function asDraft(body: unknown): AdminStreamDraft | null {
     return null;
   }
   return candidate as unknown as AdminStreamDraft;
+}
+
+const MANAGED_STATES = new Set<ManagedLifecycleState>(['ready', 'claimed', 'live', 'waiting', 'closed', 'vod']);
+const MANAGED_PERMISSIONS = new Set<ManagedRunPermission>(['open', 'claimed', 'closed']);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function asIngestLookup(body: unknown, lifecycleVersion?: 1): AdminIngestLookup | null {
+  const draft = asDraft(body);
+  if (!draft) {
+    return null;
+  }
+  if (lifecycleVersion === undefined) {
+    return draft;
+  }
+
+  const candidate = body as Record<string, unknown>;
+  if (candidate.lifecycleVersion !== 1 || (candidate.mode !== 'legacy' && candidate.mode !== 'managed')) {
+    return null;
+  }
+  if (candidate.mode === 'legacy') {
+    return body as AdminStreamDraft & { lifecycleVersion: 1; mode: 'legacy' };
+  }
+
+  const lifecycle = candidate.lifecycle;
+  if (!lifecycle || typeof lifecycle !== 'object') {
+    return null;
+  }
+  const managed = lifecycle as Record<string, unknown>;
+  if (
+    !isNonNegativeInteger(managed.revision) ||
+    !isPositiveInteger(managed.runNumber) ||
+    typeof managed.state !== 'string' ||
+    !MANAGED_STATES.has(managed.state as ManagedLifecycleState) ||
+    typeof managed.permission !== 'string' ||
+    !MANAGED_PERMISSIONS.has(managed.permission as ManagedRunPermission) ||
+    typeof managed.uploaderId !== 'string' ||
+    managed.uploaderId.length === 0
+  ) {
+    return null;
+  }
+  return body as AdminIngestLookup;
+}
+
+function asClaimedRun(body: unknown, expectedRun: number, expectedUploader: string): ManagedClaimedRun | null {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const candidate = body as Record<string, unknown>;
+  if (
+    candidate.lifecycleVersion !== 1 ||
+    !isNonNegativeInteger(candidate.revision) ||
+    candidate.runNumber !== expectedRun ||
+    candidate.uploaderId !== expectedUploader ||
+    typeof candidate.claimId !== 'string' ||
+    !UUID.test(candidate.claimId) ||
+    typeof candidate.state !== 'string' ||
+    !MANAGED_STATES.has(candidate.state as ManagedLifecycleState) ||
+    typeof candidate.permission !== 'string' ||
+    !MANAGED_PERMISSIONS.has(candidate.permission as ManagedRunPermission)
+  ) {
+    return null;
+  }
+  return body as ManagedClaimedRun;
 }
 
 /**
@@ -315,6 +442,7 @@ export class AdminApiClient {
   private readonly reportTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly fetcher: typeof globalThis.fetch;
+  private readonly lifecycleVersion?: 1;
 
   constructor(options: AdminApiClientOptions) {
     assertUsableAdminApiToken(options.token);
@@ -327,6 +455,7 @@ export class AdminApiClient {
     this.reportTimeoutMs = options.reportTimeoutMs ?? DEFAULT_REPORT_TIMEOUT_MS;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.fetcher = options.fetcher ?? globalThis.fetch;
+    this.lifecycleVersion = options.lifecycleVersion;
   }
 
   /** Where this client is pointed, for the one boot line that says which mode the service is in. */
@@ -383,7 +512,7 @@ export class AdminApiClient {
    *
    * @param streamId the engine's own `app/stream`, which is the key the admin filed the draft under.
    */
-  public async lookupByIngestId(streamId: string): Promise<AdminStreamDraft | null> {
+  public async lookupByIngestId(streamId: string): Promise<AdminIngestLookup | null> {
     // Encoded per segment even though `isUsableStreamId` has already restricted these to
     // `[A-Za-z0-9._-]`, where encoding is a no-op. The screening lives in the engines and this is a
     // url; a caller added later that skips it must not be able to write a path of its own.
@@ -393,7 +522,14 @@ export class AdminApiClient {
       .join('/');
     const url = `${this.baseUrl}/api/internal/streams/by-ingest/${path}`;
 
-    const response = await this.send(url, { method: 'GET' }, this.lookupTimeoutMs);
+    const response = await this.send(
+      url,
+      {
+        method: 'GET',
+        headers: this.lifecycleVersion === 1 ? { 'X-Stream-Lifecycle-Version': '1' } : undefined,
+      },
+      this.lookupTimeoutMs,
+    );
 
     if (response.status === 404) {
       return null;
@@ -402,11 +538,52 @@ export class AdminApiClient {
       throw new Error(`Admin API answered ${response.status} for ${url}`);
     }
 
-    const draft = asDraft(await this.readJson(response));
+    const draft = asIngestLookup(await this.readJson(response), this.lifecycleVersion);
     if (draft === null) {
-      throw new Error(`Admin API answered 200 for ${url} with a body that is not a stream`);
+      const expected = this.lifecycleVersion === 1 ? 'a lifecycle-v1 stream envelope' : 'a stream';
+      throw new Error(`Admin API answered 200 for ${url} with a body that is not ${expected}`);
     }
     return draft;
+  }
+
+  /** Atomically claim the exact run returned by a negotiated managed lookup. */
+  public async claimManagedRun(id: string, runNumber: number, request: ManagedClaimRequest): Promise<ManagedClaimedRun> {
+    const url = `${this.baseUrl}/api/internal/streams/${encodeURIComponent(id)}/runs/${runNumber}/claims`;
+    const response = await this.send(
+      url,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) },
+      this.lookupTimeoutMs,
+    );
+    if (!response.ok) {
+      throw new Error(`Admin API answered ${response.status} for ${url}`);
+    }
+    const claimed = asClaimedRun(await this.readJson(response), runNumber, request.uploaderId);
+    if (!claimed) {
+      throw new Error(`Admin API answered 200 for ${url} with a body that is not the claimed managed run`);
+    }
+    return claimed;
+  }
+
+  /** Report a persisted managed event. Every retry sends the caller's exact body unchanged. */
+  public async reportManagedRun(
+    id: string,
+    runNumber: number,
+    report: ManagedRunReport,
+  ): Promise<StateReportOutcome> {
+    const url = `${this.baseUrl}/api/internal/streams/${encodeURIComponent(id)}/runs/${runNumber}/reports`;
+    const body = JSON.stringify(report);
+
+    for (let attempt = 1; attempt <= MAX_STATE_REPORT_ATTEMPTS; attempt++) {
+      const outcome = await this.attemptReport(url, body, report, attempt);
+      if (outcome !== null) {
+        return outcome;
+      }
+      const wait = STATE_REPORT_BACKOFF_MS[attempt - 1];
+      if (wait !== undefined) {
+        await this.sleep(wait);
+      }
+    }
+    return STATE_REPORT_FAILED;
   }
 
   /**
@@ -536,7 +713,7 @@ export class AdminApiClient {
   private async attemptReport(
     url: string,
     body: string,
-    report: AdminStateReport,
+    report: { state: string },
     attempt: number,
   ): Promise<StateReportOutcome | null> {
     try {
