@@ -694,7 +694,7 @@ export class StreamOrchestrator {
     const loaded = this.managedSources.get(attempt.streamId);
     if (loaded) {
       const record = loaded.record;
-      if (
+      const requiresSuccessor =
         record.adminStreamId !== attempt.adminStreamId ||
         record.runNumber !== attempt.runNumber ||
         record.uploaderId !== attempt.uploaderId ||
@@ -702,9 +702,10 @@ export class StreamOrchestrator {
         record.mediaType !== attempt.mediaType ||
         !this.sameManagedExpectedRenditions(record.expectedRenditions, attempt.expectedRenditions) ||
         !this.hasManagedCheckpoint(record) ||
-        (record.state === 'closed' || record.state === 'vod')
-      ) {
-        return null;
+        record.state === 'closed' ||
+        record.state === 'vod';
+      if (requiresSuccessor) {
+        return this.beginPreparedManagedSuccessor(attempt, record, loaded);
       }
       return {
         requestId: record.claimRequestId,
@@ -716,7 +717,7 @@ export class StreamOrchestrator {
     const existing = store.read(attempt.streamId);
     if (existing.kind === MANAGED_RUN_LOADED) {
       const record = existing.record;
-      if (
+      const requiresSuccessor =
         record.adminStreamId !== attempt.adminStreamId ||
         record.runNumber !== attempt.runNumber ||
         record.uploaderId !== attempt.uploaderId ||
@@ -724,9 +725,10 @@ export class StreamOrchestrator {
         record.mediaType !== attempt.mediaType ||
         !this.sameManagedExpectedRenditions(record.expectedRenditions, attempt.expectedRenditions) ||
         !this.hasManagedCheckpoint(record) ||
-        (record.state === 'closed' || record.state === 'vod')
-      ) {
-        return null;
+        record.state === 'closed' ||
+        record.state === 'vod';
+      if (requiresSuccessor) {
+        return this.beginPreparedManagedSuccessor(attempt, record);
       }
       this.managedSources.set(attempt.streamId, {
         record,
@@ -778,6 +780,111 @@ export class StreamOrchestrator {
     this.managedSources.set(attempt.streamId, { record, mediatype: attempt.mediaType });
     this.managedStreamIds.add(attempt.streamId);
     return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
+  }
+
+  private beginPreparedManagedSuccessor(
+    attempt: ManagedClaimAttempt,
+    predecessor: ManagedRunRecord,
+    predecessorState?: ManagedSourceState,
+  ): ManagedClaimDecision | null {
+    const store = this.config.managedRunStore;
+    const checkpointStore = this.config.managedCheckpointStore;
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    if (
+      !store ||
+      !checkpointStore ||
+      reconnectMs === undefined ||
+      predecessor.adminStreamId !== attempt.adminStreamId ||
+      predecessor.uploaderId !== attempt.uploaderId ||
+      predecessor.topic !== attempt.topic ||
+      predecessor.mediaType !== attempt.mediaType ||
+      attempt.runNumber !== predecessor.runNumber + 1 ||
+      predecessor.pendingReports.length !== 0 ||
+      predecessorState?.reportInFlight ||
+      this.hasManagedRunWriters(attempt.streamId, predecessor.expectedRenditions)
+    ) {
+      return null;
+    }
+
+    let checkpoint: ManagedCheckpointRecord;
+    try {
+      const predecessorCheckpoint = checkpointStore.findRun(predecessor.adminStreamId, predecessor.runNumber);
+      const predecessorSealed =
+        (predecessor.state === 'vod' && predecessorCheckpoint?.status === 'complete') ||
+        (predecessor.state === 'closed' && predecessorCheckpoint?.status === 'empty');
+      const prepared = checkpointStore.findRun(attempt.adminStreamId, attempt.runNumber);
+      if (
+        !predecessorSealed ||
+        predecessorCheckpoint?.checkpointReference !== predecessor.checkpointReference ||
+        prepared?.status !== 'prepared' ||
+        prepared.adminStreamId !== attempt.adminStreamId ||
+        prepared.runNumber !== attempt.runNumber ||
+        prepared.operationId === undefined ||
+        prepared.previousCheckpointReference !== predecessor.checkpointReference ||
+        prepared.topic !== attempt.topic ||
+        prepared.mediaType !== attempt.mediaType ||
+        !this.sameManagedExpectedRenditions(prepared.expectedRenditions, attempt.expectedRenditions) ||
+        !this.expectedRenditionsMatchConfig(attempt.topic, attempt.mediaType, attempt.expectedRenditions)
+      ) {
+        return null;
+      }
+      if (prepared.tracks.length > 0 && !this.config.managedMediaStore) {
+        return null;
+      }
+      for (const track of prepared.tracks) {
+        this.config.managedMediaStore?.restoreTrack(
+          prepared.adminStreamId,
+          prepared.runNumber,
+          track.streamId,
+          track.rendition,
+          track.state,
+        );
+      }
+      checkpoint = prepared;
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Refused managed successor ${attempt.streamId}:`, error);
+      return null;
+    }
+
+    const wallNow = this.wallClock();
+    const record: ManagedRunRecord = {
+      ...attempt,
+      checkpointReference: checkpoint.checkpointReference,
+      claimId: null,
+      claimRequestId: crypto.randomUUID(),
+      eventSequence: 0,
+      state: 'claiming',
+      deadlineWallMs: wallNow + reconnectMs,
+      deadlineRecordedAtWallMs: wallNow,
+      deadlineRemainingMs: reconnectMs,
+      lastProgressPts: null,
+      source: null,
+      rungConnections: [],
+      pendingReports: [],
+    };
+    try {
+      store.save(record);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed successor ${attempt.streamId}:`, error);
+      return null;
+    }
+
+    predecessorState?.timer?.cancel();
+    predecessorState?.heartbeat?.cancel();
+    predecessorState?.reportRetry?.cancel();
+    predecessorState?.closureRetry?.cancel();
+    predecessorState?.finalizationRetry?.cancel();
+    this.managedSources.set(attempt.streamId, { record, mediatype: attempt.mediaType });
+    this.managedStreamIds.add(attempt.streamId);
+    return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
+  }
+
+  private hasManagedRunWriters(
+    streamId: string,
+    expectedRenditions: readonly ManagedExpectedRendition[],
+  ): boolean {
+    const trackIds = [streamId, ...expectedRenditions.map((rendition) => `${streamId}_${rendition.name}`)];
+    return trackIds.some((trackId) => this.activeStreams.has(trackId) || this.drainPromises.has(trackId));
   }
 
   /** Bind the durable request attempt to the exact claim the admin returned. */

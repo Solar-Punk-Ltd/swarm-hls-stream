@@ -358,6 +358,145 @@ describe('managed run recovery', () => {
     assert.equal(decision?.expectedRevision, CLAIM.revision);
   });
 
+  it('admits only prepared cumulative successor runs in the same and a fresh process', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-successor-admission-'));
+    const clock = new FakeClock();
+    const runs = new MemoryManagedRuns();
+    const checkpoints = new ManagedCheckpointStore(path.join(root, 'checkpoints'));
+    const mediaStore = new ManagedMediaStore(path.join(root, 'media'));
+    const sent: ManagedRunReport[] = [];
+    const uploads = {
+      uploadData: async () => ({ reference: { toHex: () => 'a'.repeat(64) } }),
+      uploadPayload: async (index: number) => ({
+        reference: { toHex: () => String(index + 1).padStart(64, '0') },
+      }),
+    };
+    const first = makeTestOrchestrator(
+      {
+        clock,
+        wallClock: () => WALL_START + clock.now(),
+        managedSourceReconnectMs: RECONNECT_MS,
+        managedRunStore: runs,
+        managedCheckpointStore: checkpoints,
+        managedMediaStore: mediaStore,
+        adminApi: reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+      },
+      uploads,
+    );
+    const successor = (runNumber: number, revision: number) => ({
+      lifecycleVersion: 1 as const,
+      streamId: STREAM_ID,
+      adminStreamId: CLAIM.adminStreamId,
+      topic: CLAIM.topic,
+      mediaType: CLAIM.mediaType,
+      revision,
+      runNumber,
+      uploaderId: CLAIM.uploaderId,
+      expectedRenditions: CLAIM.expectedRenditions,
+    });
+
+    try {
+      assert.equal(first.prepareManagedRun(CLAIM), true);
+      assert.equal(provision(first, SOURCE_A), true);
+      assert.deepEqual(media(first, SOURCE_A), { accepted: true });
+      await activeUploader(first)!.segmentQueue.onIdle();
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
+      await waitFor(() => runs.records.get(STREAM_ID)?.pendingReports.length === 0);
+      await waitFor(() => activeUploader(first) === undefined);
+
+      const recordingA = checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.completedRecording;
+      assert.ok(recordingA);
+      const attemptB = successor(CLAIM.runNumber + 1, 21);
+      assert.equal(first.beginManagedClaimAttempt(attemptB), null);
+      const preparedB = checkpoints.prepare({
+        lifecycleVersion: 1,
+        operationId: '55555555-5555-4555-8555-555555555555',
+        requestId: '66666666-6666-4666-8666-666666666666',
+        streamId: CLAIM.adminStreamId,
+        topic: CLAIM.topic,
+        mediaType: CLAIM.mediaType,
+        uploaderId: CLAIM.uploaderId,
+        previousRunNumber: CLAIM.runNumber,
+        nextRunNumber: CLAIM.runNumber + 1,
+        revision: 20,
+        status: 'pending',
+        retainedRecording: recordingA,
+      });
+      const decisionB = first.beginManagedClaimAttempt(attemptB);
+      assert.equal(decisionB?.needsClaim, true);
+      assert.equal(runs.records.get(STREAM_ID)?.runNumber, attemptB.runNumber);
+      assert.equal(runs.records.get(STREAM_ID)?.checkpointReference, preparedB.checkpointReference);
+      assert.deepEqual(media(first, SOURCE_A, 1), { accepted: false, reason: 'stale_source' });
+      assert.equal(first.completeManagedClaim(STREAM_ID, {
+        lifecycleVersion: 1,
+        streamId: CLAIM.adminStreamId,
+        revision: 22,
+        runNumber: attemptB.runNumber,
+        uploaderId: CLAIM.uploaderId,
+        claimId: '77777777-7777-4777-8777-777777777777',
+        expectedRenditions: CLAIM.expectedRenditions,
+        state: 'claimed',
+        permission: 'claimed',
+      }), true);
+      assert.equal(provision(first, SOURCE_B), true);
+      assert.deepEqual(media(first, SOURCE_A, 1), { accepted: false, reason: 'stale_source' });
+      assert.deepEqual(media(first, SOURCE_B), { accepted: true });
+      await activeUploader(first)!.segmentQueue.onIdle();
+      await clock.advance(RECONNECT_MS);
+      await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
+      await waitFor(() => runs.records.get(STREAM_ID)?.pendingReports.length === 0);
+      await waitFor(() => activeUploader(first) === undefined);
+
+      const recordingB = checkpoints.findRun(CLAIM.adminStreamId, attemptB.runNumber)?.completedRecording;
+      assert.ok(recordingB);
+      assert.equal(
+        checkpoints.findRun(CLAIM.adminStreamId, attemptB.runNumber)?.tracks[0]?.state.segments.length,
+        2,
+      );
+      await first.cleanup();
+
+      const restarted = makeTestOrchestrator(
+        {
+          clock: new FakeClock(),
+          wallClock: () => WALL_START + clock.now() + 1_000,
+          managedSourceReconnectMs: RECONNECT_MS,
+          managedRunStore: runs,
+          managedCheckpointStore: checkpoints,
+          managedMediaStore: mediaStore,
+          adminApi: reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+        },
+        uploads,
+      );
+      restarted.restoreManagedRuns();
+      const preparedC = checkpoints.prepare({
+        lifecycleVersion: 1,
+        operationId: '88888888-8888-4888-8888-888888888888',
+        requestId: '99999999-9999-4999-8999-999999999999',
+        streamId: CLAIM.adminStreamId,
+        topic: CLAIM.topic,
+        mediaType: CLAIM.mediaType,
+        uploaderId: CLAIM.uploaderId,
+        previousRunNumber: attemptB.runNumber,
+        nextRunNumber: attemptB.runNumber + 1,
+        revision: 30,
+        status: 'pending',
+        retainedRecording: recordingB,
+      });
+      const attemptC = successor(attemptB.runNumber + 1, 31);
+      const decisionC = restarted.beginManagedClaimAttempt(attemptC);
+      assert.equal(decisionC?.needsClaim, true);
+      assert.equal(runs.records.get(STREAM_ID)?.runNumber, attemptC.runNumber);
+      assert.equal(runs.records.get(STREAM_ID)?.checkpointReference, preparedC.checkpointReference);
+      assert.equal(checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status, 'complete');
+      assert.equal(checkpoints.findRun(CLAIM.adminStreamId, attemptB.runNumber)?.status, 'complete');
+      await restarted.cleanup();
+    } finally {
+      await first.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not erase the incumbent while checking an overlapping publish', () => {
     const clock = new FakeClock();
     const store = new MemoryManagedRuns();
