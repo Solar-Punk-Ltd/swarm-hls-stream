@@ -104,7 +104,7 @@ describe('continuation media runtime adapters', () => {
 
     assert.deepEqual(response, { status: 200, body: { ok: true } });
     assert.equal(new Headers(calls[0]?.init.headers).get('cookie'), SECRET);
-    assert.equal(new Headers(calls[0]?.init.headers).get('x-requested-with'), 'streaming-infra-manager');
+    assert.equal(new Headers(calls[0]?.init.headers).get('x-requested-with'), 'web2-admin');
     assert.equal(JSON.stringify(response).includes(SECRET), false);
     await assert.rejects(
       subject.fetch({

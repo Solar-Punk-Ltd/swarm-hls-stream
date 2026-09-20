@@ -82,6 +82,8 @@ describe('continuation admin fixture bootstrap', () => {
     assert.equal(new Headers(httpCalls[1]?.init.headers).get('cookie'), COOKIE);
     assert.equal(new Headers(httpCalls[2]?.init.headers).get('cookie'), COOKIE);
     assert.equal(new Headers(httpCalls[3]?.init.headers).get('cookie'), COOKIE);
+    assert.equal(new Headers(httpCalls[1]?.init.headers).get('x-requested-with'), 'web2-admin');
+    assert.equal(new Headers(httpCalls[2]?.init.headers).get('x-requested-with'), 'web2-admin');
     assert.match(String(httpCalls[1]?.init.body), /scheduledStartTime/);
     assert.deepEqual(bodies, []);
   });
