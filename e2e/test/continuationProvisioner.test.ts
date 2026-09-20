@@ -310,6 +310,26 @@ describe('GuardedApplicationProvisioner', () => {
 });
 
 describe('SpawnBoundedProcess', () => {
+  it('accepts a caller-bounded private input above the default stdin limit', async () => {
+    const subject = new SpawnBoundedProcess();
+    const input = 'x'.repeat(70 * 1024);
+    const invocation = {
+      file: process.execPath,
+      args: [
+        '-e',
+        "let bytes=0;process.stdin.on('data',chunk=>bytes+=chunk.length);process.stdin.on('end',()=>process.stdout.write(String(bytes)))",
+      ],
+      stdin: input,
+      timeoutMs: 2_000,
+      maxOutputBytes: 1_024,
+    };
+
+    await assert.rejects(subject.run(invocation), /malformed/);
+    const result = await subject.run({ ...invocation, maxInputBytes: 128 * 1024 });
+
+    assert.equal(result.stdout, String(Buffer.byteLength(input)));
+  });
+
   it('routes process-only stdin and environment without putting either value in argv', async () => {
     const subject = new SpawnBoundedProcess();
     const result = await subject.run({
