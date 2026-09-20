@@ -144,6 +144,43 @@ describe('the environment contract', () => {
     }
   });
 
+  describe('the managed SRS lifecycle switch', () => {
+    const managedEnv = (): Record<string, string> => ({
+      ...requiredEnv(),
+      ENGINE: 'srs',
+      ADMIN_API_URL: 'http://admin.test',
+      ADMIN_API_TOKEN: 'test-admin-token-that-is-long-enough',
+      SRS_LIFECYCLE_VERSION: '1',
+      SRS_UPLOADER_ID: 'srs-157-90-34-105',
+    });
+
+    it('keeps legacy behavior when the version is absent', async () => {
+      assert.equal((await loadConfig(requiredEnv())).srsLifecycle, null);
+    });
+
+    it('reads version one with its stable uploader assignment', async () => {
+      assert.deepEqual((await loadConfig(managedEnv())).srsLifecycle, {
+        version: 1,
+        uploaderId: 'srs-157-90-34-105',
+      });
+    });
+
+    it('refuses unsupported versions and missing uploader identity', async () => {
+      await assert.rejects(() => loadConfig({ ...managedEnv(), SRS_LIFECYCLE_VERSION: '2' }), /SRS_LIFECYCLE_VERSION/);
+      const missing = managedEnv();
+      delete missing.SRS_UPLOADER_ID;
+      await assert.rejects(() => loadConfig(missing), /SRS_UPLOADER_ID/);
+    });
+
+    it('refuses version one outside SRS admin mode', async () => {
+      const noAdmin = managedEnv();
+      delete noAdmin.ADMIN_API_URL;
+      delete noAdmin.ADMIN_API_TOKEN;
+      await assert.rejects(() => loadConfig(noAdmin), /ADMIN_API_URL/);
+      await assert.rejects(() => loadConfig({ ...managedEnv(), ENGINE: 'ome' }), /ENGINE=srs/);
+    });
+  });
+
   for (const variable of REQUIRED_ENV) {
     it(`refuses to start when ${variable.name} is absent, and says which one`, async () => {
       const env = requiredEnv();

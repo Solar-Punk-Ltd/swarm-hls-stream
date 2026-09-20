@@ -7,7 +7,7 @@ export const MANAGED_RUN_MISSING = 'missing' as const;
 export const MANAGED_RUN_LOADED = 'loaded' as const;
 export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
 
-export type ManagedRunState = 'claimed' | 'live' | 'waiting' | 'closed';
+export type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed';
 
 /** Admission state that must outlive normal media-recovery cleanup. */
 export interface ManagedRunRecord {
@@ -19,7 +19,8 @@ export interface ManagedRunRecord {
   readonly revision: number;
   readonly runNumber: number;
   readonly uploaderId: string;
-  readonly claimId: string;
+  readonly claimId: string | null;
+  readonly claimRequestId: string;
   readonly eventSequence: number;
   readonly state: ManagedRunState;
   readonly deadlineWallMs: number;
@@ -27,6 +28,21 @@ export interface ManagedRunRecord {
   readonly deadlineRemainingMs: number;
   readonly lastProgressPts: number | null;
   readonly source: SourceConnectionIdentity | null;
+  readonly pendingReports: readonly ManagedRunReportRecord[];
+}
+
+export interface ManagedRunReportRecord {
+  readonly lifecycleVersion: 1;
+  readonly runNumber: number;
+  readonly uploaderId: string;
+  readonly claimId: string;
+  readonly eventSequence: number;
+  readonly observedAt: string;
+  readonly state: 'live' | 'waiting' | 'closed' | 'vod';
+  readonly reconnectDeadline?: string;
+  readonly reason?: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
+  readonly emptyOutcome?: { checkpointReference: string; acceptedMediaCount: 0 };
+  readonly completedRecording?: unknown;
 }
 
 /** The immutable claim fields. Deadline and source progress are owned by this process. */
@@ -38,7 +54,29 @@ export type ManagedRunClaim = Omit<
   | 'deadlineRemainingMs'
   | 'lastProgressPts'
   | 'source'
+  | 'claimRequestId'
+  | 'pendingReports'
 >;
+
+export type ManagedClaimAttempt = Omit<ManagedRunClaim, 'claimId' | 'eventSequence'>;
+
+export interface ManagedClaimDecision {
+  readonly requestId: string;
+  readonly expectedRevision: number;
+  /** False once this process already holds the durable claim for this run. */
+  readonly needsClaim: boolean;
+}
+
+export interface ManagedClaimCompletion {
+  readonly lifecycleVersion: 1;
+  readonly streamId: string;
+  readonly revision: number;
+  readonly runNumber: number;
+  readonly uploaderId: string;
+  readonly claimId: string;
+  readonly state: 'claimed';
+  readonly permission: 'claimed';
+}
 
 export type ManagedRunEntry =
   | { kind: typeof MANAGED_RUN_MISSING }
@@ -78,7 +116,7 @@ const nodeFileOps: DurableFileOps = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const STATES = new Set<ManagedRunState>(['claimed', 'live', 'waiting', 'closed']);
+const STATES = new Set<ManagedRunState>(['claiming', 'claimed', 'live', 'waiting', 'closed']);
 const PTS_MODULUS = 2 ** 33;
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -119,8 +157,9 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     isPositiveInteger(record.runNumber) &&
     typeof record.uploaderId === 'string' &&
     record.uploaderId.length > 0 &&
-    typeof record.claimId === 'string' &&
-    UUID.test(record.claimId) &&
+    (record.claimId === null || (typeof record.claimId === 'string' && UUID.test(record.claimId))) &&
+    typeof record.claimRequestId === 'string' &&
+    UUID.test(record.claimRequestId) &&
     isNonNegativeInteger(record.eventSequence) &&
     typeof record.state === 'string' &&
     STATES.has(record.state as ManagedRunState) &&
@@ -129,7 +168,35 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     isNonNegativeInteger(record.deadlineRemainingMs) &&
     (record.lastProgressPts === null ||
       (isNonNegativeInteger(record.lastProgressPts) && record.lastProgressPts < PTS_MODULUS)) &&
-    (record.source === null || isSource(record.source))
+    (record.source === null || isSource(record.source)) &&
+    Array.isArray(record.pendingReports) &&
+    record.pendingReports.every((report) =>
+      isManagedRunReport(report) &&
+      report.runNumber === record.runNumber &&
+      report.uploaderId === record.uploaderId &&
+      report.claimId === record.claimId,
+    ) &&
+    record.pendingReports.every((report, index) =>
+      report.eventSequence === record.eventSequence - record.pendingReports.length + index + 1,
+    ) &&
+    (record.state === 'claiming' ? record.claimId === null : record.claimId !== null)
+  );
+}
+
+function isManagedRunReport(value: unknown): value is ManagedRunReportRecord {
+  if (!value || typeof value !== 'object') {return false;}
+  const report = value as Partial<ManagedRunReportRecord>;
+  return (
+    report.lifecycleVersion === 1 &&
+    isPositiveInteger(report.runNumber) &&
+    typeof report.uploaderId === 'string' &&
+    report.uploaderId.length > 0 &&
+    typeof report.claimId === 'string' &&
+    UUID.test(report.claimId) &&
+    isPositiveInteger(report.eventSequence) &&
+    typeof report.observedAt === 'string' &&
+    Number.isFinite(Date.parse(report.observedAt)) &&
+    (report.state === 'live' || report.state === 'waiting' || report.state === 'closed' || report.state === 'vod')
   );
 }
 

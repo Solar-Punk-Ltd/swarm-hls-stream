@@ -53,7 +53,7 @@ import { rungTopicFor } from '../utils/rungTopic.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { AbrLadder } from './AbrLadder.js';
-import { AdminApiClient } from './AdminApiClient.js';
+import { AdminApiClient, ManagedRunReport, stateWasReported } from './AdminApiClient.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { BroadcastDating, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
@@ -75,9 +75,13 @@ import { LadderRegistry } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import {
   MANAGED_RUN_LOADED,
+  ManagedClaimAttempt,
+  ManagedClaimCompletion,
+  ManagedClaimDecision,
   ManagedRunClaim,
   ManagedRunPersistence,
   ManagedRunRecord,
+  ManagedRunReportRecord,
   remainingManagedDeadline,
 } from './ManagedRunStore.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
@@ -107,6 +111,7 @@ const FIRST_BROADCAST_SEQUENCE = 0;
  * waiting, and short enough that the map is bounded by the poll window rather than by uptime.
  */
 const DEFAULT_STOP_OUTCOME_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const MANAGED_HEARTBEAT_MS = 10_000;
 
 export interface StreamOrchestratorConfig {
   streamKey: string;
@@ -197,8 +202,19 @@ interface ManagedSourceState {
   lastProgressPts?: number;
   deadline?: number;
   timer?: Timer;
+  heartbeat?: Timer;
+  reportRetry?: Timer;
+  reportInFlight?: boolean;
   closed?: boolean;
 }
+
+type ManagedReportEvent =
+  | { readonly state: 'live' }
+  | { readonly state: 'waiting'; readonly reconnectDeadline: string }
+  | {
+      readonly state: 'closed';
+      readonly reason: 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
+    };
 
 const PTS_MODULUS = 2 ** 33;
 const PTS_HALF_RANGE = PTS_MODULUS / 2;
@@ -407,6 +423,7 @@ export class StreamOrchestrator {
   private streamBases = new Map<string, string>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
+  private managedSourceDisconnector?: (identity: SourceConnectionIdentity) => void;
 
   constructor(
     private publishers: BeePublisherPool,
@@ -417,6 +434,11 @@ export class StreamOrchestrator {
     this.clock = config.clock ?? systemClock;
     this.wallClock = config.wallClock ?? Date.now;
     this.stopOutcomeTtlMs = config.stopOutcomeTtlMs ?? DEFAULT_STOP_OUTCOME_TTL_MS;
+  }
+
+  /** Installed by the managed SRS engine so a persisted cutoff can evict the attached publisher. */
+  public registerManagedSourceDisconnector(disconnect: (identity: SourceConnectionIdentity) => void): void {
+    this.managedSourceDisconnector = disconnect;
   }
 
   private readonly clock: Clock;
@@ -563,7 +585,13 @@ export class StreamOrchestrator {
     }
 
     const state = this.managedSources.get(streamId);
-    if (!state || state.record.mediaType !== mediatype || state.record.adminStreamId !== admin.id || state.record.topic !== admin.topic) {
+    if (
+      !state ||
+      state.record.state === 'claiming' ||
+      state.record.mediaType !== mediatype ||
+      state.record.adminStreamId !== admin.id ||
+      state.record.topic !== admin.topic
+    ) {
       return false;
     }
     if (state?.closed) {
@@ -601,6 +629,132 @@ export class StreamOrchestrator {
     return true;
   }
 
+  /** Persist an idempotency key before the claim request can leave this process. */
+  public beginManagedClaimAttempt(attempt: ManagedClaimAttempt): ManagedClaimDecision | null {
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    const store = this.config.managedRunStore;
+    if (reconnectMs === undefined || !store) {
+      return null;
+    }
+
+    const loaded = this.managedSources.get(attempt.streamId);
+    if (loaded) {
+      const record = loaded.record;
+      if (
+        record.adminStreamId !== attempt.adminStreamId ||
+        record.runNumber !== attempt.runNumber ||
+        record.uploaderId !== attempt.uploaderId ||
+        record.topic !== attempt.topic ||
+        record.mediaType !== attempt.mediaType ||
+        record.state === 'closed'
+      ) {
+        return null;
+      }
+      return {
+        requestId: record.claimRequestId,
+        expectedRevision: record.revision,
+        needsClaim: record.state === 'claiming',
+      };
+    }
+
+    const existing = store.read(attempt.streamId);
+    if (existing.kind === MANAGED_RUN_LOADED) {
+      const record = existing.record;
+      if (
+        record.adminStreamId !== attempt.adminStreamId ||
+        record.runNumber !== attempt.runNumber ||
+        record.uploaderId !== attempt.uploaderId ||
+        record.topic !== attempt.topic ||
+        record.mediaType !== attempt.mediaType ||
+        record.state === 'closed'
+      ) {
+        return null;
+      }
+      this.managedSources.set(attempt.streamId, {
+        record,
+        current: record.state === 'live' ? (record.source ?? undefined) : undefined,
+        mediatype: record.mediaType,
+        lastProgressPts: record.lastProgressPts ?? undefined,
+        deadline: this.clock.now() + remainingManagedDeadline(record, this.wallClock()),
+      });
+      return {
+        requestId: record.claimRequestId,
+        expectedRevision: record.revision,
+        needsClaim: record.state === 'claiming',
+      };
+    }
+    if (existing.kind !== 'missing') {
+      return null;
+    }
+
+    const wallNow = this.wallClock();
+    const record: ManagedRunRecord = {
+      ...attempt,
+      claimId: null,
+      claimRequestId: crypto.randomUUID(),
+      eventSequence: 0,
+      state: 'claiming',
+      deadlineWallMs: wallNow + reconnectMs,
+      deadlineRecordedAtWallMs: wallNow,
+      deadlineRemainingMs: reconnectMs,
+      lastProgressPts: null,
+      source: null,
+      pendingReports: [],
+    };
+    try {
+      store.save(record);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed claim attempt ${attempt.streamId}:`, error);
+      return null;
+    }
+    this.managedSources.set(attempt.streamId, { record, mediatype: attempt.mediaType });
+    return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
+  }
+
+  /** Bind the durable request attempt to the exact claim the admin returned. */
+  public completeManagedClaim(streamId: string, claimed: ManagedClaimCompletion): boolean {
+    const state = this.managedSources.get(streamId);
+    const store = this.config.managedRunStore;
+    if (
+      !state ||
+      !store ||
+      state.record.state !== 'claiming' ||
+      claimed.lifecycleVersion !== 1 ||
+      claimed.streamId !== state.record.adminStreamId ||
+      claimed.state !== 'claimed' ||
+      claimed.permission !== 'claimed' ||
+      claimed.runNumber !== state.record.runNumber ||
+      claimed.uploaderId !== state.record.uploaderId
+    ) {
+      return false;
+    }
+
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    if (reconnectMs === undefined) {
+      return false;
+    }
+    const wallNow = this.wallClock();
+    const record: ManagedRunRecord = {
+      ...state.record,
+      revision: claimed.revision,
+      claimId: claimed.claimId,
+      state: 'claimed',
+      deadlineWallMs: wallNow + reconnectMs,
+      deadlineRecordedAtWallMs: wallNow,
+      deadlineRemainingMs: reconnectMs,
+    };
+    try {
+      store.save(record);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed claim response ${streamId}:`, error);
+      return false;
+    }
+    state.record = record;
+    state.deadline = this.clock.now() + reconnectMs;
+    this.armManagedSourceDeadline(streamId, state);
+    return true;
+  }
+
   /** Persist a claimed managed run before any SRS source callback can be admitted. */
   public prepareManagedRun(claim: ManagedRunClaim): boolean {
     const reconnectMs = this.config.managedSourceReconnectMs;
@@ -618,6 +772,8 @@ export class StreamOrchestrator {
       deadlineRemainingMs: reconnectMs,
       lastProgressPts: null,
       source: null,
+      claimRequestId: crypto.randomUUID(),
+      pendingReports: [],
     };
     try {
       store.save(record);
@@ -655,11 +811,18 @@ export class StreamOrchestrator {
       closed: record.state === 'closed',
     };
     this.managedSources.set(streamId, state);
+    if (record.state === 'claiming') {
+      return entry.kind;
+    }
     if (!state.closed && remaining === 0) {
       this.closeManagedSourceAtDeadline(streamId, state);
     } else if (!state.closed) {
       this.armManagedSourceDeadline(streamId, state);
+      if (record.state === 'live' || record.state === 'waiting') {
+        this.armManagedHeartbeat(streamId, state);
+      }
     }
+    void this.flushManagedReports(streamId, state);
     return entry.kind;
   }
 
@@ -697,7 +860,7 @@ export class StreamOrchestrator {
       if ('reason' in inspected) {
         return { accepted: false, reason: inspected.reason };
       }
-      const result = this.handleSegment(streamId, segmentIndex, duration, data, discontinuity);
+      const result = this.enqueueSegment(streamId, segmentIndex, duration, data, discontinuity, identity.generation);
       if (result.accepted) {
         state.lastProgressPts = inspected.latestPts;
         if (!this.renewManagedSourceDeadline(streamId, state, reconnectMs)) {
@@ -733,7 +896,14 @@ export class StreamOrchestrator {
       this.spawnUploader(streamId, candidate.mediatype, candidate.claimant, candidate.admin);
     }
 
-    const result = this.handleSegment(streamId, segmentIndex, duration, data, resumed || discontinuity);
+    const result = this.enqueueSegment(
+      streamId,
+      segmentIndex,
+      duration,
+      data,
+      resumed || discontinuity,
+      identity.generation,
+    );
     if (result.accepted) {
       state.lastProgressPts = inspected.latestPts;
       if (!this.renewManagedSourceDeadline(streamId, state, reconnectMs)) {
@@ -742,6 +912,78 @@ export class StreamOrchestrator {
       this.cancelManagedStallReaper(streamId);
     }
     return result;
+  }
+
+  /** Accept a transcoded rung only while it remains bound to the current managed base source. */
+  public handleManagedRenditionSegment(
+    streamId: string,
+    baseStreamId: string,
+    identity: SourceConnectionIdentity,
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    discontinuity = false,
+  ): SegmentResult {
+    const state = this.managedSources.get(baseStreamId);
+    if (
+      !state ||
+      state.closed ||
+      !state.current ||
+      !sameSource(state.current, identity) ||
+      this.streamBases.get(streamId) !== baseStreamId ||
+      (state.deadline !== undefined && this.clock.now() >= state.deadline)
+    ) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    return this.enqueueSegment(
+      streamId,
+      segmentIndex,
+      duration,
+      data,
+      discontinuity,
+      identity.generation,
+    );
+  }
+
+  /** Verify an ABR base source without publishing its untranscoded HLS fragment. */
+  public handleManagedSourceProgress(
+    streamId: string,
+    identity: SourceConnectionIdentity,
+    duration: number,
+    data: Buffer,
+  ): SegmentResult {
+    const state = this.managedSources.get(streamId);
+    const reconnectMs = this.config.managedSourceReconnectMs;
+    if (!state || state.closed || reconnectMs === undefined) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    if (state.deadline !== undefined && this.clock.now() >= state.deadline) {
+      this.closeManagedSourceAtDeadline(streamId, state);
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+
+    const candidate = state.candidate;
+    const isCurrent = state.current && sameSource(state.current, identity);
+    if (!isCurrent && (!candidate || !sameSource(candidate.identity, identity))) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    const mediatype = isCurrent ? (state.mediatype ?? MEDIA_TYPE_VIDEO) : (candidate as ManagedSourceCandidate).mediatype;
+    const inspected = this.inspectManagedMedia(streamId, mediatype, duration, data, state.lastProgressPts);
+    if ('reason' in inspected) {
+      return { accepted: false, reason: inspected.reason };
+    }
+    if (!isCurrent) {
+      state.candidate = undefined;
+      state.current = identity;
+      state.mediatype = mediatype;
+      state.lastProgressPts = undefined;
+    }
+    state.lastProgressPts = inspected.latestPts;
+    if (!this.renewManagedSourceDeadline(streamId, state, reconnectMs)) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    this.cancelManagedStallReaper(streamId);
+    return { accepted: true };
   }
 
   /** Enter the bounded wait only when the callback names the source that actually acquired. */
@@ -754,13 +996,13 @@ export class StreamOrchestrator {
 
     const remaining = Math.max(0, (state.deadline ?? this.clock.now()) - this.clock.now());
     const wallNow = this.wallClock();
-    const record: ManagedRunRecord = {
+    const record = this.appendManagedReport({
       ...state.record,
       state: 'waiting',
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: remaining,
       source: identity,
-    };
+    }, { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() });
     try {
       this.config.managedRunStore?.save(record);
     } catch (error) {
@@ -773,6 +1015,8 @@ export class StreamOrchestrator {
     state.candidate = undefined;
     this.cancelManagedStallReaper(streamId);
     this.armManagedSourceDeadline(streamId, state);
+    this.armManagedHeartbeat(streamId, state);
+    void this.flushManagedReports(streamId, state);
     return true;
   }
 
@@ -829,7 +1073,7 @@ export class StreamOrchestrator {
     const wallNow = this.wallClock();
     const record: ManagedRunRecord = {
       ...state.record,
-      state: 'live',
+      state: state.record.state,
       deadlineWallMs: wallNow + reconnectMs,
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: reconnectMs,
@@ -854,6 +1098,128 @@ export class StreamOrchestrator {
     return true;
   }
 
+  /** Advertise live only after the uploader has published a usable manifest. */
+  private markManagedManifestPublished(streamId: string, sourceGeneration: number): void {
+    const state = this.managedSources.get(streamId);
+    if (
+      !state?.current ||
+      state.current.generation !== sourceGeneration ||
+      state.closed ||
+      state.record.state === 'live' ||
+      state.record.state === 'closed'
+    ) {
+      return;
+    }
+    const record = this.appendManagedReport({ ...state.record, state: 'live' }, { state: 'live' });
+    try {
+      this.config.managedRunStore?.save(record);
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to persist managed live publication ${streamId}:`, error);
+      return;
+    }
+    state.record = record;
+    this.armManagedHeartbeat(streamId, state);
+    void this.flushManagedReports(streamId, state);
+  }
+
+  private appendManagedReport(record: ManagedRunRecord, event: ManagedReportEvent): ManagedRunRecord {
+    if (record.claimId === null) {
+      return record;
+    }
+    const report: ManagedRunReportRecord = {
+      lifecycleVersion: 1,
+      runNumber: record.runNumber,
+      uploaderId: record.uploaderId,
+      claimId: record.claimId,
+      eventSequence: record.eventSequence + 1,
+      observedAt: new Date(this.wallClock()).toISOString(),
+      ...event,
+    };
+    return {
+      ...record,
+      eventSequence: report.eventSequence,
+      pendingReports: [...record.pendingReports, report],
+    };
+  }
+
+  private armManagedHeartbeat(streamId: string, state: ManagedSourceState): void {
+    state.heartbeat?.cancel();
+    if (state.closed || (state.record.state !== 'live' && state.record.state !== 'waiting')) {
+      state.heartbeat = undefined;
+      return;
+    }
+    state.heartbeat = this.clock.setTimer(() => {
+      state.heartbeat = undefined;
+      if (this.managedSources.get(streamId) !== state || state.closed) {
+        return;
+      }
+      if (state.record.pendingReports.length === 0) {
+        const event: ManagedReportEvent =
+          state.record.state === 'waiting'
+            ? { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() }
+            : { state: 'live' };
+        const record = this.appendManagedReport(state.record, event);
+        try {
+          this.config.managedRunStore?.save(record);
+          state.record = record;
+        } catch (error) {
+          this.logger.error(`[StreamOrchestrator] Failed to persist managed heartbeat ${streamId}:`, error);
+        }
+      }
+      void this.flushManagedReports(streamId, state);
+      this.armManagedHeartbeat(streamId, state);
+    }, MANAGED_HEARTBEAT_MS, { unref: true });
+  }
+
+  private async flushManagedReports(streamId: string, state: ManagedSourceState): Promise<void> {
+    const adminApi = this.config.adminApi;
+    if (!adminApi || state.reportInFlight) {
+      return;
+    }
+    state.reportInFlight = true;
+    try {
+      while (state.record.pendingReports.length > 0) {
+        const report = state.record.pendingReports[0] as ManagedRunReport;
+        const outcome = await adminApi.reportManagedRun(state.record.adminStreamId, state.record.runNumber, report);
+        if (!stateWasReported(outcome)) {
+          this.armManagedReportRetry(streamId, state);
+          return;
+        }
+        const current = state.record;
+        if (current.pendingReports[0]?.eventSequence !== report.eventSequence) {
+          return;
+        }
+        const record: ManagedRunRecord = { ...current, pendingReports: current.pendingReports.slice(1) };
+        try {
+          this.config.managedRunStore?.save(record);
+        } catch (error) {
+          this.logger.error(`[StreamOrchestrator] Failed to acknowledge managed report ${streamId}:`, error);
+          this.armManagedReportRetry(streamId, state);
+          return;
+        }
+        state.record = record;
+      }
+    } finally {
+      state.reportInFlight = false;
+      if (state.record.pendingReports.length === 0) {
+        state.reportRetry?.cancel();
+        state.reportRetry = undefined;
+      }
+    }
+  }
+
+  private armManagedReportRetry(streamId: string, state: ManagedSourceState): void {
+    if (state.reportRetry || state.record.pendingReports.length === 0) {
+      return;
+    }
+    state.reportRetry = this.clock.setTimer(() => {
+      state.reportRetry = undefined;
+      if (this.managedSources.get(streamId) === state) {
+        void this.flushManagedReports(streamId, state);
+      }
+    }, MANAGED_HEARTBEAT_MS, { unref: true });
+  }
+
   private armManagedSourceDeadline(streamId: string, state: ManagedSourceState): void {
     if (state.deadline === undefined) {
       return;
@@ -870,24 +1236,32 @@ export class StreamOrchestrator {
     if (state !== expected || state.deadline === undefined || this.clock.now() < state.deadline) {
       return;
     }
-    if (!this.persistManagedClosure(streamId, state)) {
+    const attached = state.current;
+    if (!this.persistManagedClosure(streamId, state, 'reconnect_timeout')) {
       return;
+    }
+    if (attached) {
+      this.managedSourceDisconnector?.(attached);
     }
     if (this.activeStreams.has(streamId)) {
       void this.stopStream(streamId, true);
     }
   }
 
-  private persistManagedClosure(streamId: string, state: ManagedSourceState): boolean {
+  private persistManagedClosure(
+    streamId: string,
+    state: ManagedSourceState,
+    reason: 'reconnect_timeout' | 'cancelled',
+  ): boolean {
     const wallNow = this.wallClock();
-    const record: ManagedRunRecord = {
+    const record = this.appendManagedReport({
       ...state.record,
       state: 'closed',
       deadlineWallMs: Math.min(state.record.deadlineWallMs, wallNow),
       deadlineRecordedAtWallMs: wallNow,
       deadlineRemainingMs: 0,
       source: state.current ?? state.record.source,
-    };
+    }, { state: 'closed', reason });
     try {
       this.config.managedRunStore?.save(record);
     } catch (error) {
@@ -906,6 +1280,9 @@ export class StreamOrchestrator {
     state.candidate = undefined;
     state.timer?.cancel();
     state.timer = undefined;
+    state.heartbeat?.cancel();
+    state.heartbeat = undefined;
+    void this.flushManagedReports(streamId, state);
     return true;
   }
 
@@ -1184,6 +1561,8 @@ export class StreamOrchestrator {
     // anything arriving through the generic API, rides the coordinator: the longest-lived batch.
     const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
 
+    const managedStreamId = match?.baseStreamId ?? streamId;
+    const managedSource = this.managedSources.get(managedStreamId)?.current;
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
@@ -1199,6 +1578,9 @@ export class StreamOrchestrator {
       dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
+      managedLifecycle: managedSource
+        ? { onLivePublished: (sourceGeneration) => this.markManagedManifestPublished(managedStreamId, sourceGeneration) }
+        : undefined,
       predecessorDrained,
     });
 
@@ -1263,6 +1645,21 @@ export class StreamOrchestrator {
     data: Buffer,
     /** The origin declared a break immediately before this segment. Applied only if the segment is taken. */
     discontinuity = false,
+  ): SegmentResult {
+    const managedStreamId = this.streamBases.get(streamId) ?? streamId;
+    if (this.managedSources.has(managedStreamId)) {
+      return { accepted: false, reason: REJECT_STALE_SOURCE };
+    }
+    return this.enqueueSegment(streamId, segmentIndex, duration, data, discontinuity);
+  }
+
+  private enqueueSegment(
+    streamId: string,
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    discontinuity = false,
+    sourceGeneration?: number,
   ): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
@@ -1347,7 +1744,12 @@ export class StreamOrchestrator {
     if (discontinuity) {
       uploader.markDiscontinuity();
     }
-    uploader.handleSegment(segmentIndex, this.mediaDuration(streamId, segmentIndex, duration, reading), data);
+    uploader.handleSegment(
+      segmentIndex,
+      this.mediaDuration(streamId, segmentIndex, duration, reading),
+      data,
+      sourceGeneration,
+    );
     return { accepted: true };
   }
 
@@ -1672,7 +2074,7 @@ export class StreamOrchestrator {
     if (!preserveManagedSource) {
       const managed = this.managedSources.get(streamId);
       if (managed) {
-        if (managed.record.state !== 'closed' && !this.persistManagedClosure(streamId, managed)) {
+        if (managed.record.state !== 'closed' && !this.persistManagedClosure(streamId, managed, 'cancelled')) {
           return;
         }
         preserveManagedSource = true;
@@ -1852,6 +2254,8 @@ export class StreamOrchestrator {
     // its siblings are still publishing.
     const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
 
+    const managedStreamId = base ?? streamId;
+    const managedSource = this.managedSources.get(managedStreamId)?.current;
     const uploader = new StreamUploader({
       publisher,
       streamCatalog: this.streamCatalog,
@@ -1887,6 +2291,9 @@ export class StreamOrchestrator {
       // this is the only surviving record of which declaration it belongs to. Absent on an entry
       // written before admin mode, and on every entry written outside it.
       admin: this.adminReportingFor(state.adminStreamId),
+      managedLifecycle: managedSource
+        ? { onLivePublished: (sourceGeneration) => this.markManagedManifestPublished(managedStreamId, sourceGeneration) }
+        : undefined,
     });
 
     if (state.ladder || (state.adminStreamId && this.config.adminApi)) {
@@ -2346,6 +2753,8 @@ export class StreamOrchestrator {
   public async cleanup(): Promise<void> {
     for (const source of this.managedSources.values()) {
       source.timer?.cancel();
+      source.heartbeat?.cancel();
+      source.reportRetry?.cancel();
     }
 
     // Clear all recovery timers

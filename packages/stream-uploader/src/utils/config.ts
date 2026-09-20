@@ -153,6 +153,26 @@ interface AdminConfig {
   apiToken: string;
 }
 
+export interface SrsLifecycleConfig {
+  version: 1;
+  uploaderId: string;
+}
+
+function readSrsLifecycleConfig(): SrsLifecycleConfig | null {
+  const requested = optional('SRS_LIFECYCLE_VERSION', '');
+  if (!requested) {
+    return null;
+  }
+  if (requested !== '1') {
+    throw new Error(`SRS_LIFECYCLE_VERSION must be 1 when set, got ${requested}`);
+  }
+  const uploaderId = required('SRS_UPLOADER_ID');
+  if (!/^[A-Za-z0-9._:-]{1,200}$/.test(uploaderId)) {
+    throw new Error('SRS_UPLOADER_ID must be 1-200 letters, digits, dots, underscores, colons or hyphens');
+  }
+  return { version: 1, uploaderId };
+}
+
 /**
  * Admin mode, which `ADMIN_API_URL` alone turns on.
  *
@@ -287,4 +307,12 @@ export const config = {
    * off this one value being non-null. See {@link readAdminConfig}.
    */
   admin: readAdminConfig(),
+  srsLifecycle: readSrsLifecycleConfig(),
 };
+
+if (config.srsLifecycle && !config.admin) {
+  throw new Error('SRS_LIFECYCLE_VERSION=1 requires ADMIN_API_URL');
+}
+if (config.srsLifecycle && config.engine !== 'srs') {
+  throw new Error('SRS_LIFECYCLE_VERSION=1 requires ENGINE=srs');
+}

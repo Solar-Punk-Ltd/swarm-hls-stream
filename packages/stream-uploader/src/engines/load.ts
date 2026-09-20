@@ -20,6 +20,7 @@ export interface EngineLoaderDeps {
   adminApi: EngineFactoryDeps['adminApi'];
   /** Passed straight through with the admin client, for the same reason. */
   signerOwner: EngineFactoryDeps['signerOwner'];
+  managedLifecycle: EngineFactoryDeps['managedLifecycle'];
 }
 
 /**
@@ -41,6 +42,7 @@ export function loadEngines(engine: string, deps: Partial<EngineLoaderDeps> = {}
     logger = Logger.getInstance(),
     adminApi,
     signerOwner,
+    managedLifecycle,
   } = deps;
 
   const createEngine = registry[engine];
@@ -48,7 +50,7 @@ export function loadEngines(engine: string, deps: Partial<EngineLoaderDeps> = {}
     // Before constructing, because the engine reads its own settings out of the environment as it is
     // built, and a plugin built against an unloaded environment gets the defaults in silence.
     loadEnv(engine);
-    return [createEngine({ adminApi, signerOwner })];
+    return [createEngine({ adminApi, signerOwner, managedLifecycle })];
   }
 
   if (engine && engine !== ENGINE_NONE) {

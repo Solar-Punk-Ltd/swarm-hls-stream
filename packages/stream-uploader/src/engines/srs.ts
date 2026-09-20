@@ -5,7 +5,7 @@ import path from 'path';
 import { AdminApiClient } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
-import { AdminSession, MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
+import { AdminSession, MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, SourceConnectionIdentity } from '../types.js';
 import { AbrGuard, readAbrConfig } from '../utils/abrConfig.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, required } from '../utils/env.js';
@@ -52,6 +52,12 @@ export interface SrsEngineOptions {
    * declaration owned by another feed key. See {@link EngineFactoryDeps.signerOwner}.
    */
   signerOwner?: string;
+  /** Lifecycle-v1 admission, present only when the SRS-specific feature switch is enabled. */
+  managedLifecycle?: { uploaderId: string };
+  /** Internal SRS control endpoint. Injectable for the exact cutoff request test. */
+  apiUrl?: string;
+  /** Injectable transport for the SRS control request. */
+  fetcher?: typeof globalThis.fetch;
 }
 
 // SRS webhook response codes
@@ -93,6 +99,9 @@ interface SrsStreamPayload {
    * Optional for the same reason `ip` is: a build that omits it has to mean "presented nothing".
    */
   param?: string;
+  server_id?: string;
+  service_id?: string;
+  client_id?: string;
 }
 
 interface SrsHlsPayload {
@@ -103,6 +112,16 @@ interface SrsHlsPayload {
   file: string;
   seq_no: number;
   duration: number;
+  server_id?: string;
+  service_id?: string;
+  client_id?: string;
+}
+
+function connectionKey(payload: SrsStreamPayload | SrsHlsPayload): string | null {
+  if (!payload.server_id || !payload.service_id || !payload.client_id) {
+    return null;
+  }
+  return `${payload.server_id}\u0000${payload.service_id}\u0000${payload.client_id}`;
 }
 
 function srsResponse(res: Response, code: number): void {
@@ -139,6 +158,7 @@ export function createSrsEngineFromEnv(deps: EngineFactoryDeps = {}): EnginePlug
     abr: readAbrConfig() ?? undefined,
     adminApi: deps.adminApi,
     signerOwner: deps.signerOwner,
+    managedLifecycle: deps.managedLifecycle,
   });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
@@ -176,6 +196,12 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
   const webhookToken = options.webhookToken ?? '';
   const adminApi = options.adminApi;
   const signerOwner = options.signerOwner;
+  const managedLifecycle = options.managedLifecycle;
+  const apiUrl = options.apiUrl ?? 'http://srs:1985';
+  const fetcher = options.fetcher ?? globalThis.fetch;
+  if (managedLifecycle && !adminApi) {
+    throw new Error('SRS lifecycle version 1 requires ADMIN_API_URL');
+  }
   // Blanked rather than read alongside, so no later change can accidentally consult both. The two
   // modes answer the same question — is this publisher the owner of this stream — from two different
   // sources of truth, and a deployment in which they disagree has no right answer.
@@ -228,6 +254,11 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
 
     createRouter(streamOrchestrator: StreamOrchestrator): Router {
       const router = Router();
+      if (managedLifecycle) {
+        streamOrchestrator.registerManagedSourceDisconnector((identity) => {
+          void disconnectSrsClient(apiUrl, identity.clientId, fetcher);
+        });
+      }
 
       // Base streams that authenticated, so their rungs — republished onto the ABR vhost with no key
       // of their own — can be admitted by that origin. Empty and unread without a ladder. See SEC-28.
@@ -239,6 +270,10 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
       // base as "present" therefore still means exactly what it meant, which is what keeps SEC-28's
       // rule — a rung is admitted only because its base authenticated — unchanged.
       const authenticatedBases = new Map<string, AdminSession | null>();
+      const managedConnections = new Map<string, SourceConnectionIdentity>();
+      const managedBases = new Map<string, SourceConnectionIdentity>();
+      const legacyConnections = new Set<string>();
+      let sourceGeneration = 0;
 
       router.use(createWebhookGate(webhookToken));
 
@@ -254,16 +289,43 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
           { publishKeySecret, adminApi, signerOwner },
           abr,
           authenticatedBases,
+          managedLifecycle,
+          managedConnections,
+          managedBases,
+          legacyConnections,
+          () => ++sourceGeneration,
         );
       });
 
       router.post('/hls', (req: Request, res: Response) => {
-        handleHls(req, res, streamOrchestrator, mediaRootPath, abr);
+        handleHls(
+          req,
+          res,
+          streamOrchestrator,
+          mediaRootPath,
+          abr,
+          managedLifecycle,
+          managedConnections,
+          managedBases,
+        );
       });
 
       return router;
     },
   };
+}
+
+async function disconnectSrsClient(apiUrl: string, clientId: string, fetcher: typeof globalThis.fetch): Promise<void> {
+  const url = `${apiUrl.replace(/\/+$/, '')}/api/v1/clients/${encodeURIComponent(clientId)}`;
+  try {
+    const response = await fetcher(url, { method: 'DELETE' });
+    const body = (await response.json()) as unknown;
+    if (!response.ok || !body || typeof body !== 'object' || (body as Record<string, unknown>).code !== 0) {
+      logger.error(`[SRS] Failed to disconnect managed publisher ${clientId}: SRS answered ${response.status}`);
+    }
+  } catch (error) {
+    logger.error(`[SRS] Failed to disconnect managed publisher ${clientId}: ${getErrorMessage(error)}`);
+  }
 }
 
 function resolveMediaType(app: string): MediaType {
@@ -416,6 +478,11 @@ async function handleStreams(
   gate: SrsPublishGate,
   abr?: AbrGuard,
   authenticatedBases: Map<string, AdminSession | null> = new Map(),
+  managedLifecycle?: { uploaderId: string },
+  managedConnections: Map<string, SourceConnectionIdentity> = new Map(),
+  managedBases: Map<string, SourceConnectionIdentity> = new Map(),
+  legacyConnections: Set<string> = new Set(),
+  nextSourceGeneration: () => number = () => 0,
 ): Promise<void> {
   const { publishKeySecret, adminApi, signerOwner } = gate;
   // Read before the try, so the catch below can tell a publish from anything else. A handler error on
@@ -458,6 +525,27 @@ async function handleStreams(
         srsResponse(res, SRS_ACCEPT);
         if (isLoopbackPublisher(payload)) {
           logger.info(`[SRS] Rung unpublished: ${streamId}`);
+          stopStreamQuietly(streamOrchestrator, streamId);
+        }
+        return;
+      }
+
+      if (managedLifecycle) {
+        const key = connectionKey(payload);
+        const identity = key ? managedConnections.get(key) : undefined;
+        const isLegacy = key ? legacyConnections.has(key) : false;
+        srsResponse(res, SRS_ACCEPT);
+        if (identity) {
+          streamOrchestrator.markManagedSourceUnpublished(streamId, identity);
+          managedConnections.delete(key as string);
+          if (managedBases.get(streamId) === identity) {
+            managedBases.delete(streamId);
+          }
+          if (role.kind === 'source') {
+            authenticatedBases.delete(streamId);
+          }
+        } else if (isLegacy) {
+          legacyConnections.delete(key as string);
           stopStreamQuietly(streamOrchestrator, streamId);
         }
         return;
@@ -572,6 +660,72 @@ async function handleStreams(
         return;
       }
 
+      if (managedLifecycle && 'mode' in verdict.draft && verdict.draft.mode === 'managed') {
+        const lifecycle = verdict.draft.lifecycle;
+        if (
+          lifecycle.uploaderId !== managedLifecycle.uploaderId ||
+          lifecycle.permission === 'closed' ||
+          (lifecycle.permission === 'claimed' && lifecycle.uploaderId !== managedLifecycle.uploaderId)
+        ) {
+          srsResponse(res, SRS_REJECT);
+          return;
+        }
+        const key = connectionKey(payload);
+        if (!key) {
+          logger.error(`[SRS] Refused managed publish ${streamId}: callback omitted server_id, service_id or client_id`);
+          srsResponse(res, SRS_REJECT);
+          return;
+        }
+        const claimDecision = streamOrchestrator.beginManagedClaimAttempt({
+          lifecycleVersion: 1,
+          streamId,
+          adminStreamId: verdict.draft.id,
+          topic: verdict.draft.topic,
+          mediaType: mediatype,
+          revision: lifecycle.revision,
+          runNumber: lifecycle.runNumber,
+          uploaderId: lifecycle.uploaderId,
+        });
+        if (!claimDecision) {
+          srsResponse(res, SRS_REJECT);
+          return;
+        }
+        if (claimDecision.needsClaim) {
+          const claimed = await adminApi.claimManagedRun(verdict.draft.id, lifecycle.runNumber, {
+            lifecycleVersion: 1,
+            expectedRevision: claimDecision.expectedRevision,
+            uploaderId: lifecycle.uploaderId,
+            requestId: claimDecision.requestId,
+          });
+          if (!streamOrchestrator.completeManagedClaim(streamId, claimed)) {
+            srsResponse(res, SRS_REJECT);
+            return;
+          }
+        }
+        const identity: SourceConnectionIdentity = {
+          serverId: payload.server_id as string,
+          serviceId: payload.service_id as string,
+          clientId: payload.client_id as string,
+          generation: nextSourceGeneration(),
+        };
+        const admitted = streamOrchestrator.provisionManagedSource(
+          streamId,
+          mediatype,
+          identity,
+          { address: publisherAddress(payload), isAuthenticated: true },
+          verdict.session,
+        );
+        if (admitted) {
+          managedConnections.set(key, identity);
+          managedBases.set(streamId, identity);
+          if (role.kind === 'source') {
+            authenticatedBases.set(streamId, verdict.session);
+          }
+        }
+        srsResponse(res, admitted ? SRS_ACCEPT : SRS_REJECT);
+        return;
+      }
+
       if (role.kind === 'source') {
         // Not ingested, exactly as outside admin mode: the uploader publishes the ladder's rungs and
         // the source exists to be transcoded into them. What is remembered is the declaration rather
@@ -593,6 +747,10 @@ async function handleStreams(
         { address: publisherAddress(payload), isAuthenticated: true },
         verdict.session,
       );
+      const legacyKey = connectionKey(payload);
+      if (managedLifecycle && admitted && legacyKey) {
+        legacyConnections.add(legacyKey);
+      }
       srsResponse(res, admitted ? SRS_ACCEPT : SRS_REJECT);
       return;
     }
@@ -687,6 +845,9 @@ function handleHls(
   streamOrchestrator: StreamOrchestrator,
   mediaRootPath: string,
   abr?: AbrGuard,
+  managedLifecycle?: { uploaderId: string },
+  managedConnections: Map<string, SourceConnectionIdentity> = new Map(),
+  managedBases: Map<string, SourceConnectionIdentity> = new Map(),
 ): void {
   try {
     const payload = req.body as SrsHlsPayload;
@@ -701,10 +862,7 @@ function handleHls(
       return;
     }
 
-    if (!isPublishable(payload, streamId, abr)) {
-      srsResponse(res, SRS_ACCEPT);
-      return;
-    }
+    const role = classifyLadderStream(payload, streamId, abr);
 
     const segmentPath = resolveSegmentPath(mediaRootPath, payload.file);
 
@@ -723,7 +881,33 @@ function handleHls(
     }
 
     const segmentData = fs.readFileSync(segmentPath);
-    const result = streamOrchestrator.handleSegment(streamId, payload.seq_no, payload.duration, segmentData);
+    const key = connectionKey(payload);
+    const managedIdentity = managedLifecycle && key ? managedConnections.get(key) : undefined;
+    const managedRungSource = managedLifecycle && role.kind === 'rung' ? managedBases.get(role.baseStreamId) : undefined;
+    if (!managedIdentity && !isPublishable(payload, streamId, abr)) {
+      srsResponse(res, SRS_ACCEPT);
+      return;
+    }
+    const result = managedIdentity
+      ? role.kind === 'source'
+        ? streamOrchestrator.handleManagedSourceProgress(streamId, managedIdentity, payload.duration, segmentData)
+        : streamOrchestrator.handleManagedSegment(
+            streamId,
+            managedIdentity,
+            payload.seq_no,
+            payload.duration,
+            segmentData,
+          )
+      : managedRungSource && role.kind === 'rung'
+        ? streamOrchestrator.handleManagedRenditionSegment(
+            streamId,
+            role.baseStreamId,
+            managedRungSource,
+            payload.seq_no,
+            payload.duration,
+            segmentData,
+          )
+        : streamOrchestrator.handleSegment(streamId, payload.seq_no, payload.duration, segmentData);
 
     if (result.accepted) {
       fs.rmSync(segmentPath, { force: true });

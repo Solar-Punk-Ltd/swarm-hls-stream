@@ -19,6 +19,8 @@ export interface EngineFactoryDeps {
    * declaration's owner. Read only when `adminApi` is set. See `resolveAdminPublish`.
    */
   signerOwner?: string;
+  /** SRS-only lifecycle-v1 admission, absent for every legacy engine path. */
+  managedLifecycle?: { uploaderId: string };
 }
 
 export interface EnginePlugin {

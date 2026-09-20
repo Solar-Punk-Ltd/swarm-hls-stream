@@ -54,7 +54,7 @@ type AdminPublishRefusal =
   | typeof ADMIN_PUBLISH_WRONG_MEDIA_TYPE;
 
 type AdminPublishVerdict =
-  | { kind: typeof ADMIN_PUBLISH_ALLOWED; session: AdminSession }
+  | { kind: typeof ADMIN_PUBLISH_ALLOWED; session: AdminSession; draft: AdminStreamDraft }
   | { kind: AdminPublishRefusal };
 
 /**
@@ -131,5 +131,5 @@ export async function resolveAdminPublish(
   }
 
   logger.info(`${tag} resolved ${streamId} to announced stream ${draft.id} ("${draft.title}") on topic ${draft.topic}`);
-  return { kind: ADMIN_PUBLISH_ALLOWED, session: { id: draft.id, topic: draft.topic } };
+  return { kind: ADMIN_PUBLISH_ALLOWED, session: { id: draft.id, topic: draft.topic }, draft };
 }

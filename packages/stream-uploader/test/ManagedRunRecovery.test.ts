@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
 
 import {
+  AdminApiClient,
+  ManagedRunReport,
+  STATE_REPORT_ACCEPTED,
+  STATE_REPORT_FAILED,
+  StateReportOutcome,
+} from '../src/libs/AdminApiClient.js';
+import {
   MANAGED_RUN_LOADED,
   MANAGED_RUN_MISSING,
   MANAGED_RUN_UNREADABLE,
@@ -15,7 +22,7 @@ import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, SourceConnectionIdentity } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { FakeUploads, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
 import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 
 const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
@@ -77,13 +84,37 @@ function activeUploader(orchestrator: StreamOrchestrator): StreamUploader | unde
   return (orchestrator as unknown as OrchestratorInternals).activeStreams.get(STREAM_ID);
 }
 
-function orchestrator(clock: FakeClock, wallNow: () => number, store: ManagedRunPersistence): StreamOrchestrator {
+function orchestrator(
+  clock: FakeClock,
+  wallNow: () => number,
+  store: ManagedRunPersistence,
+  adminApi?: AdminApiClient,
+  uploads: FakeUploads = {},
+): StreamOrchestrator {
   return makeTestOrchestrator({
     clock,
     wallClock: wallNow,
     managedSourceReconnectMs: RECONNECT_MS,
     managedRunStore: store,
-  });
+    adminApi,
+  }, uploads);
+}
+
+function reportingAdmin(
+  reports: ManagedRunReport[],
+  outcome: StateReportOutcome,
+): AdminApiClient {
+  return {
+    reportManagedRun: async (_streamId: string, _runNumber: number, report: ManagedRunReport) => {
+      reports.push(structuredClone(report));
+      return outcome;
+    },
+  } as AdminApiClient;
+}
+
+async function settleReports(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 function provision(target: StreamOrchestrator, source: SourceConnectionIdentity): boolean {
@@ -101,6 +132,77 @@ function media(target: StreamOrchestrator, source: SourceConnectionIdentity, ind
 }
 
 describe('managed run recovery', () => {
+  it('reuses the durable request identity after a crash before the claim response', () => {
+    const firstClock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const first = orchestrator(firstClock, () => WALL_START, store);
+    const attempt = {
+      lifecycleVersion: 1 as const,
+      streamId: STREAM_ID,
+      adminStreamId: CLAIM.adminStreamId,
+      topic: CLAIM.topic,
+      mediaType: CLAIM.mediaType,
+      revision: 7,
+      runNumber: CLAIM.runNumber,
+      uploaderId: CLAIM.uploaderId,
+    };
+
+    const decision = first.beginManagedClaimAttempt(attempt);
+    assert.match(decision?.requestId ?? '', /^[0-9a-f-]{36}$/);
+    assert.equal(decision?.needsClaim, true);
+
+    const restarted = orchestrator(new FakeClock(), () => WALL_START + 1_000, store);
+    const retry = restarted.beginManagedClaimAttempt(attempt);
+    assert.equal(retry?.requestId, decision?.requestId);
+    assert.equal(retry?.needsClaim, true);
+    assert.equal(store.records.get(STREAM_ID)?.state, 'claiming');
+    assert.equal(store.records.get(STREAM_ID)?.claimRequestId, decision?.requestId);
+  });
+
+  it('does not reclaim a run that this uploader already owns', () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const target = orchestrator(clock, () => WALL_START, store);
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+
+    const decision = target.beginManagedClaimAttempt({
+      lifecycleVersion: 1,
+      streamId: STREAM_ID,
+      adminStreamId: CLAIM.adminStreamId,
+      topic: CLAIM.topic,
+      mediaType: CLAIM.mediaType,
+      revision: CLAIM.revision,
+      runNumber: CLAIM.runNumber,
+      uploaderId: CLAIM.uploaderId,
+    });
+
+    assert.equal(decision?.needsClaim, false);
+    assert.equal(decision?.expectedRevision, CLAIM.revision);
+  });
+
+  it('does not erase the incumbent while checking an overlapping publish', () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const target = orchestrator(clock, () => WALL_START, store);
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+
+    const decision = target.beginManagedClaimAttempt({
+      lifecycleVersion: 1,
+      streamId: STREAM_ID,
+      adminStreamId: CLAIM.adminStreamId,
+      topic: CLAIM.topic,
+      mediaType: CLAIM.mediaType,
+      revision: CLAIM.revision,
+      runNumber: CLAIM.runNumber,
+      uploaderId: CLAIM.uploaderId,
+    });
+
+    assert.equal(decision?.needsClaim, false);
+    assert.equal(provision(target, SOURCE_B), false);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+  });
+
   it('does not admit a source until its claim is durably prepared', () => {
     const clock = new FakeClock();
     const store = new MemoryManagedRuns();
@@ -119,6 +221,8 @@ describe('managed run recovery', () => {
     assert.equal(first.prepareManagedRun(CLAIM), true);
     assert.equal(provision(first, SOURCE_A), true);
     assert.deepEqual(media(first, SOURCE_A), { accepted: true });
+    await activeUploader(first)?.segmentQueue.onIdle();
+    await settleReports();
     await firstClock.advance(30_000);
 
     const secondClock = new FakeClock();
@@ -201,4 +305,241 @@ describe('managed run recovery', () => {
     assert.equal(provision(target, SOURCE_B), false, 'generic stop erased the managed closed permission');
     await target.cleanup();
   });
+
+  it('retries the exact durable report after restart', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const sent: ManagedRunReport[] = [];
+    const first = orchestrator(
+      clock,
+      () => WALL_START + clock.now(),
+      store,
+      reportingAdmin(sent, STATE_REPORT_FAILED),
+    );
+    assert.equal(first.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(first, SOURCE_A), true);
+    assert.deepEqual(media(first, SOURCE_A), { accepted: true });
+    await settleReports();
+
+    const pending = store.records.get(STREAM_ID)?.pendingReports[0];
+    assert.equal(pending?.state, 'live');
+    assert.equal(pending?.eventSequence, 2);
+
+    const restarted = orchestrator(
+      new FakeClock(),
+      () => WALL_START + 1_000,
+      store,
+      reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+    );
+    assert.equal(restarted.restoreManagedRun(STREAM_ID), MANAGED_RUN_LOADED);
+    await settleReports();
+
+    assert.deepEqual(sent, [pending, pending]);
+    assert.deepEqual(store.records.get(STREAM_ID)?.pendingReports, []);
+  });
+
+  it('does not advertise live when the first segment upload fails', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const sent: ManagedRunReport[] = [];
+    const target = orchestrator(
+      clock,
+      () => WALL_START + clock.now(),
+      store,
+      reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+      { uploadData: rejectImmediately },
+    );
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    await activeUploader(target)?.segmentQueue.onIdle();
+    await settleReports();
+
+    assert.equal(store.records.get(STREAM_ID)?.state, 'claimed');
+    assert.deepEqual(sent, []);
+  });
+
+  it('refuses identity-free media while a managed run owns the stream', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const target = orchestrator(clock, () => WALL_START + clock.now(), store);
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    const uploader = activeUploader(target);
+    assert.ok(uploader);
+    const queuedBefore = uploader.segmentQueue.size;
+
+    const result = target.handleSegment(STREAM_ID, 1, 0.1, videoSegment(4, 4 * FRAME_TICKS));
+
+    assert.equal(result.accepted, false);
+    assert.equal(uploader.segmentQueue.size, queuedBefore);
+    await target.cleanup();
+  });
+
+  it('keeps identity-free callbacks closed after restoring a managed run', () => {
+    const store = new MemoryManagedRuns();
+    const first = orchestrator(new FakeClock(), () => WALL_START, store);
+    assert.equal(first.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(first, SOURCE_A), true);
+
+    const restarted = orchestrator(new FakeClock(), () => WALL_START + 1_000, store);
+    assert.equal(restarted.restoreManagedRun(STREAM_ID), MANAGED_RUN_LOADED);
+
+    const result = restarted.handleSegment(STREAM_ID, 0, 0.1, videoSegment(4, 0));
+
+    assert.equal(result.accepted, false);
+  });
+
+  it('returns waiting to live only after the reconnect source publishes', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const sent: ManagedRunReport[] = [];
+    const target = orchestrator(
+      clock,
+      () => WALL_START + clock.now(),
+      store,
+      reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+    );
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    await activeUploader(target)?.segmentQueue.onIdle();
+    await settleReports();
+    assert.equal(sent.findLast((report) => report.state === 'live')?.state, 'live');
+
+    assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    assert.equal(provision(target, SOURCE_B), true);
+    assert.deepEqual(media(target, SOURCE_B, 1), { accepted: true });
+    await activeUploader(target)?.segmentQueue.onIdle();
+    await settleReports();
+
+    assert.deepEqual(sent.slice(-2).map((report) => report.state), ['waiting', 'live']);
+    assert.equal(store.records.get(STREAM_ID)?.source?.clientId, SOURCE_B.clientId);
+  });
+
+  it('does not let a delayed old-source manifest mark the reconnect live', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const sent: ManagedRunReport[] = [];
+    let releaseA: (value: unknown) => void = () => undefined;
+    let releaseB: (value: unknown) => void = () => undefined;
+    const manifests = [
+      new Promise((resolve) => { releaseA = resolve; }),
+      new Promise((resolve) => { releaseB = resolve; }),
+    ];
+    let manifest = 0;
+    const target = orchestrator(
+      clock,
+      () => WALL_START + clock.now(),
+      store,
+      reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+      { uploadPayload: async () => manifests[manifest++] },
+    );
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    await activeUploader(target)?.segmentQueue.onIdle();
+    assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    assert.equal(provision(target, SOURCE_B), true);
+    assert.deepEqual(media(target, SOURCE_B, 1), { accepted: true });
+    await activeUploader(target)?.segmentQueue.onIdle();
+
+    releaseA({ reference: { toHex: () => 'manifest-a' } });
+    await settleReports();
+    assert.equal(sent.some((report) => report.state === 'live'), false);
+
+    releaseB({ reference: { toHex: () => 'manifest-b' } });
+    await settleReports();
+    assert.equal(sent.findLast((report) => report.state === 'live')?.state, 'live');
+  });
+
+  it('heartbeats without extending the source media deadline', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const sent: ManagedRunReport[] = [];
+    const target = orchestrator(
+      clock,
+      () => WALL_START + clock.now(),
+      store,
+      reportingAdmin(sent, STATE_REPORT_ACCEPTED),
+    );
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    await settleReports();
+    const mediaDeadline = store.records.get(STREAM_ID)?.deadlineWallMs;
+
+    await clock.advance(10_000);
+    await settleReports();
+    assert.deepEqual(
+      sent.slice(0, 2).map((report) => [report.state, report.eventSequence]),
+      [
+        ['live', 2],
+        ['live', 3],
+      ],
+    );
+    assert.equal(store.records.get(STREAM_ID)?.deadlineWallMs, mediaDeadline);
+
+    assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+    await settleReports();
+    const waiting = sent.findLast((report) => report.state === 'waiting');
+    assert.equal(waiting?.state, 'waiting');
+    if (waiting?.state === 'waiting') {
+      assert.equal(waiting.reconnectDeadline, new Date(mediaDeadline as number).toISOString());
+    }
+
+    await clock.advance(50_000);
+    assert.equal(store.records.get(STREAM_ID)?.state, 'closed', 'heartbeats renewed the source cutoff');
+  });
+
+  it('disconnects the attached source only after the deadline closure is durable', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const disconnected: SourceConnectionIdentity[] = [];
+    const target = orchestrator(clock, () => WALL_START + clock.now(), store);
+    target.registerManagedSourceDisconnector((identity) => disconnected.push(identity));
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+
+    await clock.advance(RECONNECT_MS);
+
+    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.deepEqual(disconnected, [SOURCE_A]);
+    await target.cleanup();
+  });
+
+  it('retries a durable closed report after the admin recovers without a restart', async () => {
+    const clock = new FakeClock();
+    const store = new MemoryManagedRuns();
+    const sent: ManagedRunReport[] = [];
+    let online = false;
+    const admin = {
+      reportManagedRun: async (_streamId: string, _runNumber: number, report: ManagedRunReport) => {
+        sent.push(structuredClone(report));
+        return online ? STATE_REPORT_ACCEPTED : STATE_REPORT_FAILED;
+      },
+    } as AdminApiClient;
+    const target = orchestrator(clock, () => WALL_START + clock.now(), store, admin);
+    assert.equal(target.prepareManagedRun(CLAIM), true);
+    assert.equal(provision(target, SOURCE_A), true);
+    assert.deepEqual(media(target, SOURCE_A), { accepted: true });
+    await activeUploader(target)?.segmentQueue.onIdle();
+    await settleReports();
+    assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
+
+    await clock.advance(RECONNECT_MS);
+    await settleReports();
+    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(store.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'closed'), true);
+
+    online = true;
+    await clock.advance(MANAGED_REPORT_RETRY_MS);
+    await settleReports();
+    assert.equal(sent.some((report) => report.state === 'closed'), true);
+    assert.deepEqual(store.records.get(STREAM_ID)?.pendingReports, []);
+  });
 });
+
+const MANAGED_REPORT_RETRY_MS = 10_000;

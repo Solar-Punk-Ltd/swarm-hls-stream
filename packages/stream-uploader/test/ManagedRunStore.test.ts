@@ -40,6 +40,7 @@ function record(overrides: Partial<ManagedRunRecord> = {}): ManagedRunRecord {
     runNumber: 2,
     uploaderId: 'srs-157-90-34-105',
     claimId: '44444444-4444-4444-8444-444444444444',
+    claimRequestId: '33333333-3333-4333-8333-333333333333',
     eventSequence: 1,
     state: 'live',
     deadlineWallMs: 1_060_000,
@@ -52,6 +53,7 @@ function record(overrides: Partial<ManagedRunRecord> = {}): ManagedRunRecord {
       clientId: 'client-a',
       generation: 1,
     },
+    pendingReports: [],
     ...overrides,
   };
 }

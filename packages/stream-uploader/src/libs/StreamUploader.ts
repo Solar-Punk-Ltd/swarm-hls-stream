@@ -305,6 +305,8 @@ export interface StreamUploaderOptions {
   metrics?: ServiceMetrics;
   /** The admin service, when the deployment has one. See {@link AdminReporting}. */
   admin?: AdminReporting;
+  /** Lifecycle-v1 notification after a usable live manifest has been published. */
+  managedLifecycle?: { onLivePublished: (sourceGeneration: number) => void };
   /**
    * The actual write completion of every earlier session on this topic, when any are still pending.
    *
@@ -406,6 +408,8 @@ export class StreamUploader {
 
   /** The admin service and this stream's id in it, or undefined in the standalone deployment. */
   private readonly admin?: AdminReporting;
+  private readonly managedLifecycle?: { onLivePublished: (sourceGeneration: number) => void };
+  private managedPublicationGeneration?: number;
   /** Whether the feed head has been read for this session. See {@link resumeFeedIndex}. */
   private feedIndexResumed = false;
   /**
@@ -424,6 +428,7 @@ export class StreamUploader {
     this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
     this.metrics = options.metrics;
     this.admin = options.admin;
+    this.managedLifecycle = options.managedLifecycle;
     if (options.predecessorDrained) {
       this.predecessorHasDrained = false;
       // Settled rather than awaited inside a manifest job, so a stuck predecessor does not occupy
@@ -487,7 +492,7 @@ export class StreamUploader {
     }
   }
 
-  public handleSegment(segmentIndex: number, duration: number, data: Buffer): void {
+  public handleSegment(segmentIndex: number, duration: number, data: Buffer, sourceGeneration?: number): void {
     // Counted when queued and released however the job ends, so a stream whose uploads are failing
     // reports a backlog that drains rather than one that grows forever.
     this.queuedSeconds += duration;
@@ -495,7 +500,7 @@ export class StreamUploader {
     recordSegment(this.bitrate, data.length, duration);
     this.segmentQueue.add(async () => {
       try {
-        await this.uploadSegment(segmentIndex, duration, data);
+        await this.uploadSegment(segmentIndex, duration, data, sourceGeneration);
       } finally {
         this.queuedSeconds -= duration;
       }
@@ -506,7 +511,12 @@ export class StreamUploader {
     return this.queuedSeconds;
   }
 
-  private async uploadSegment(segmentIndex: number, duration: number, data: Buffer): Promise<void> {
+  private async uploadSegment(
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    sourceGeneration?: number,
+  ): Promise<void> {
     const result = await this.uploadDataToBee(data);
     if (!result) {
       // Nothing landed within the retry window, so this segment's sequence stays empty and
@@ -523,6 +533,7 @@ export class StreamUploader {
     this.consecutiveSegmentFailures = 0;
     const ref = result.reference.toHex();
     this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
+    this.managedPublicationGeneration = sourceGeneration;
     this.pendingDiscontinuity = false;
     this.readiness = onFirstSegmentUploaded(this.readiness);
 
@@ -616,7 +627,17 @@ export class StreamUploader {
     });
   }
 
-  public async notifyStart(): Promise<void> {
+  public async notifyStart(sourceGeneration?: number): Promise<void> {
+    if (this.managedLifecycle) {
+      if (this.ladder) {
+        const announced = await this.announceRendition();
+        if (announced && announced.masterIndex !== null && sourceGeneration !== undefined) {
+          this.managedLifecycle.onLivePublished(sourceGeneration);
+        }
+      }
+      return;
+    }
+
     if (this.admin && this.ladder) {
       // ⛔ The rung first and the ladder's state second, which is the same ordering as everywhere
       // else here: the master a viewer opens has to exist before anything says the broadcast is live.
@@ -1269,6 +1290,7 @@ export class StreamUploader {
       return;
     }
 
+    const sourceGeneration = this.managedPublicationGeneration;
     this.liveManifestQueued = true;
     void this.manifestQueue.add(async () => {
       this.liveManifestQueued = false;
@@ -1295,7 +1317,7 @@ export class StreamUploader {
       const neverNamed =
         this.announcedThrough === null ? 0 : this.manifestManager.segmentsNeverNamed(this.announcedThrough);
 
-      const index = await this.commitManifest(manifest);
+      const index = await this.commitManifest(manifest, sourceGeneration);
       if (index === null) {
         this.recordManifestPublishFailure();
         return;
@@ -1349,7 +1371,7 @@ export class StreamUploader {
     return this.segmentsNeverNamed;
   }
 
-  private async commitManifest(manifestContent: string): Promise<number | null> {
+  private async commitManifest(manifestContent: string, sourceGeneration?: number): Promise<number | null> {
     // ⛔ Before the head read, because the head is only worth reading once it is final. The session
     // this one replaced shares the declared topic and is still writing its closing and VOD manifests
     // onto it; reading past it would hand both sessions the same next index, and its VOD would then
@@ -1389,9 +1411,13 @@ export class StreamUploader {
 
     this.socIndex = nextIndex;
 
+    if (this.managedLifecycle && sourceGeneration !== undefined && (!this.ladder || this.readiness === READINESS_ANNOUNCED)) {
+      this.managedLifecycle.onLivePublished(sourceGeneration);
+    }
+
     if (needsCatalogAnnounce(this.readiness)) {
       this.persistState();
-      await this.announceToCatalog();
+      await this.announceToCatalog(sourceGeneration);
     }
 
     this.logger.log(manifestUploaded(this.streamId, nextIndex));
@@ -1408,7 +1434,7 @@ export class StreamUploader {
    * makes a live broadcast discoverable, so this keeps trying at a rate set by the viewer rather than
    * by the encoder.
    */
-  private async announceToCatalog(): Promise<void> {
+  private async announceToCatalog(sourceGeneration?: number): Promise<void> {
     const now = Date.now();
     if (this.lastCatalogAnnounceAt !== null && now - this.lastCatalogAnnounceAt < this.catalogAnnounceRetryMs) {
       return;
@@ -1416,7 +1442,7 @@ export class StreamUploader {
 
     this.lastCatalogAnnounceAt = now;
     try {
-      await this.notifyStart();
+      await this.notifyStart(sourceGeneration);
       this.readiness = onCatalogAnnounced(this.readiness);
       this.catalogAnnounceFailedAt = null;
     } catch (error) {

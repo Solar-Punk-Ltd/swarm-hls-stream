@@ -20,6 +20,7 @@ import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
+import { ManagedRunStore } from './libs/ManagedRunStore.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { assertNodeReachable, waitForNode } from './libs/NodeWait.js';
 import { PostageGate } from './libs/PostageGate.js';
@@ -83,7 +84,11 @@ function buildAdminApi(): AdminApiClient | undefined {
     `[Admin] Admin mode against ${config.admin.apiUrl}: streams are declared there, publishes are resolved ` +
       'and authenticated against those declarations, and this service writes no stream catalog entries',
   );
-  return new AdminApiClient({ baseUrl: config.admin.apiUrl, token: config.admin.apiToken });
+  return new AdminApiClient({
+    baseUrl: config.admin.apiUrl,
+    token: config.admin.apiToken,
+    lifecycleVersion: config.srsLifecycle?.version,
+  });
 }
 
 /**
@@ -137,6 +142,9 @@ async function start() {
     const gateNodes = gatePublishers.nodes();
 
     const recoveryStore = new RecoveryStore(config.stateDir);
+    const managedRunStore = config.srsLifecycle
+      ? new ManagedRunStore(path.join(config.stateDir, 'managed-runs'))
+      : undefined;
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
     const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
@@ -190,11 +198,17 @@ async function start() {
       ladderGroupStore,
       adminApi,
       ladderRegistry,
+      managedSourceReconnectMs: config.srsLifecycle ? 60_000 : undefined,
+      managedRunStore,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);
 
-    const engines = loadEngines(config.engine, { adminApi, signerOwner });
+    const engines = loadEngines(config.engine, {
+      adminApi,
+      signerOwner,
+      managedLifecycle: config.srsLifecycle ? { uploaderId: config.srsLifecycle.uploaderId } : undefined,
+    });
 
     // ⛔ Stripped once, here, because a node url may carry basic auth in its userinfo and everything
     // built from this reaches `/health`, which takes no credential of its own. `waitForNode` strips
