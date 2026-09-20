@@ -1,0 +1,272 @@
+import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+
+export interface VideoFormatTrack {
+  readonly kind: 'video';
+  readonly codec: string;
+  readonly profile: string | null;
+  readonly level: number | null;
+  readonly width: number;
+  readonly height: number;
+  readonly pixelFormat: string;
+  readonly chromaLocation: string | null;
+  readonly bitsPerRawSample: number | null;
+}
+
+export interface AudioFormatTrack {
+  readonly kind: 'audio';
+  readonly codec: string;
+  readonly profile: string | null;
+  readonly sampleRate: number;
+  readonly channels: number;
+  readonly channelLayout: string;
+}
+
+export type MediaFormatTrack = VideoFormatTrack | AudioFormatTrack;
+
+export interface MediaFormatFingerprint {
+  readonly version: 1;
+  readonly container: 'mpegts';
+  readonly tracks: readonly MediaFormatTrack[];
+}
+
+export type MediaFormatProbeResult =
+  | { readonly kind: 'valid'; readonly fingerprint: MediaFormatFingerprint }
+  | { readonly kind: 'incomplete' }
+  | { readonly kind: 'failed'; readonly reason: string };
+
+export interface MediaFormatProbeOptions {
+  readonly executable?: string;
+  readonly maxInputBytes?: number;
+  readonly maxOutputBytes?: number;
+  readonly timeoutMs?: number;
+  readonly maxConcurrent?: number;
+}
+
+interface FfprobeStream {
+  codec_type?: unknown;
+  codec_name?: unknown;
+  profile?: unknown;
+  level?: unknown;
+  width?: unknown;
+  height?: unknown;
+  pix_fmt?: unknown;
+  chroma_location?: unknown;
+  bits_per_raw_sample?: unknown;
+  sample_rate?: unknown;
+  channels?: unknown;
+  channel_layout?: unknown;
+}
+
+const DEFAULT_MAX_INPUT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
+const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_CONCURRENT = 2;
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function nullableString(value: unknown): string | null {
+  return value === undefined || value === null || value === 'unknown' ? null : nonEmptyString(value);
+}
+
+function positiveInteger(value: unknown): number | null {
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  return Number.isSafeInteger(parsed) && Number(parsed) > 0 ? Number(parsed) : null;
+}
+
+function nullableNonNegativeInteger(value: unknown): number | null {
+  if (value === undefined || value === null || value === 'N/A' || value === 'unknown') {
+    return null;
+  }
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  return Number.isSafeInteger(parsed) && Number(parsed) >= 0 ? Number(parsed) : null;
+}
+
+function canonicalTrackKey(track: MediaFormatTrack): string {
+  return JSON.stringify(track);
+}
+
+/** Normalize ffprobe's loose JSON into the exact compatibility fields persisted by managed runs. */
+export function mediaFormatFingerprintFromFfprobe(value: unknown): MediaFormatFingerprint | null {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as { streams?: unknown }).streams)) {
+    return null;
+  }
+  const tracks: MediaFormatTrack[] = [];
+  for (const raw of (value as { streams: FfprobeStream[] }).streams) {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+    const codec = nonEmptyString(raw.codec_name);
+    if (raw.codec_type === 'video') {
+      const width = positiveInteger(raw.width);
+      const height = positiveInteger(raw.height);
+      const pixelFormat = nonEmptyString(raw.pix_fmt);
+      if (!codec || width === null || height === null || !pixelFormat) {
+        return null;
+      }
+      tracks.push({
+        kind: 'video',
+        codec,
+        profile: nullableString(raw.profile),
+        level: nullableNonNegativeInteger(raw.level),
+        width,
+        height,
+        pixelFormat,
+        chromaLocation: nullableString(raw.chroma_location),
+        bitsPerRawSample: nullableNonNegativeInteger(raw.bits_per_raw_sample),
+      });
+    } else if (raw.codec_type === 'audio') {
+      const sampleRate = positiveInteger(raw.sample_rate);
+      const channels = positiveInteger(raw.channels);
+      const channelLayout = nonEmptyString(raw.channel_layout);
+      if (!codec || sampleRate === null || channels === null || !channelLayout) {
+        return null;
+      }
+      tracks.push({
+        kind: 'audio',
+        codec,
+        profile: nullableString(raw.profile),
+        sampleRate,
+        channels,
+        channelLayout,
+      });
+    }
+  }
+  if (tracks.length === 0) {
+    return null;
+  }
+  tracks.sort((left, right) => {
+    const leftKey = canonicalTrackKey(left);
+    const rightKey = canonicalTrackKey(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+  return { version: 1, container: 'mpegts', tracks };
+}
+
+/** Bounded ffprobe subprocess pool. Input is fixed to MPEG-TS on stdin and no network protocol is allowed. */
+export class MediaFormatProbe {
+  private readonly executable: string;
+  private readonly maxInputBytes: number;
+  private readonly maxOutputBytes: number;
+  private readonly timeoutMs: number;
+  private readonly maxConcurrent: number;
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(options: MediaFormatProbeOptions = {}) {
+    this.executable = options.executable ?? 'ffprobe';
+    this.maxInputBytes = options.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES;
+    this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
+    if (
+      !Number.isSafeInteger(this.maxInputBytes) ||
+      this.maxInputBytes <= 0 ||
+      !Number.isSafeInteger(this.maxOutputBytes) ||
+      this.maxOutputBytes <= 0 ||
+      !Number.isSafeInteger(this.timeoutMs) ||
+      this.timeoutMs <= 0 ||
+      !Number.isSafeInteger(this.maxConcurrent) ||
+      this.maxConcurrent <= 0
+    ) {
+      throw new Error('Media format probe bounds must be positive integers');
+    }
+  }
+
+  public async inspect(data: Buffer): Promise<MediaFormatProbeResult> {
+    if (data.length === 0 || data.length > this.maxInputBytes) {
+      return { kind: 'failed', reason: 'input_limit' };
+    }
+    await this.acquire();
+    try {
+      return await this.run(data);
+    } finally {
+      this.release();
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.maxConcurrent) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    this.active++;
+  }
+
+  private release(): void {
+    this.active--;
+    this.waiters.shift()?.();
+  }
+
+  private run(data: Buffer): Promise<MediaFormatProbeResult> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let stdout = Buffer.alloc(0);
+      let stderr = Buffer.alloc(0);
+      const child = spawn(
+        this.executable,
+        [
+          '-v',
+          'error',
+          '-protocol_whitelist',
+          'pipe',
+          '-f',
+          'mpegts',
+          '-show_entries',
+          'stream=codec_type,codec_name,profile,level,width,height,pix_fmt,chroma_location,bits_per_raw_sample,sample_rate,channels,channel_layout',
+          '-of',
+          'json',
+          'pipe:0',
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      ) as ChildProcessWithoutNullStreams;
+      const finish = (result: MediaFormatProbeResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const append = (current: Buffer, chunk: Buffer): Buffer | null => {
+        if (current.length + chunk.length > this.maxOutputBytes) {
+          child.kill('SIGKILL');
+          finish({ kind: 'failed', reason: 'output_limit' });
+          return null;
+        }
+        return Buffer.concat([current, chunk]);
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish({ kind: 'failed', reason: 'timeout' });
+      }, this.timeoutMs);
+      timer.unref();
+      child.stdout.on('data', (chunk: Buffer) => {
+        const next = append(stdout, chunk);
+        if (next) {stdout = next;}
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        const next = append(stderr, chunk);
+        if (next) {stderr = next;}
+      });
+      child.on('error', (error) => finish({ kind: 'failed', reason: `spawn:${error.message}` }));
+      child.on('close', (code) => {
+        if (settled) {return;}
+        if (code !== 0) {
+          finish({ kind: 'incomplete' });
+          return;
+        }
+        try {
+          const fingerprint = mediaFormatFingerprintFromFfprobe(JSON.parse(stdout.toString('utf8')));
+          finish(fingerprint ? { kind: 'valid', fingerprint } : { kind: 'incomplete' });
+        } catch {
+          finish({ kind: 'failed', reason: 'invalid_json' });
+        }
+      });
+      child.stdin.on('error', () => undefined);
+      child.stdin.end(data);
+    });
+  }
+}
