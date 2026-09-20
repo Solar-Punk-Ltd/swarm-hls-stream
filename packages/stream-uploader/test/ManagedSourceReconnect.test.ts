@@ -5,6 +5,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import {
   MEDIA_TYPE_VIDEO,
+  MEDIA_TYPE_AUDIO,
   SourceConnectionIdentity,
   STREAM_STATUS_VOD,
   StreamState,
@@ -12,7 +13,7 @@ import {
 
 import { FakeClock } from './helpers/fakeClock.js';
 import { makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
-import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
+import { audioOnlySegment, FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 import { waitFor } from './helpers/waiting.js';
 
 const STREAM_ID = 'video/managed-stream';
@@ -57,12 +58,22 @@ function makeManagedOrchestrator(
   );
 }
 
-function provision(orchestrator: StreamOrchestrator, source: SourceConnectionIdentity): boolean {
-  return orchestrator.provisionManagedSource(STREAM_ID, MEDIA_TYPE_VIDEO, source, CLAIMANT, ADMIN_SESSION);
+function provision(
+  orchestrator: StreamOrchestrator,
+  source: SourceConnectionIdentity,
+  mediatype = MEDIA_TYPE_VIDEO,
+): boolean {
+  return orchestrator.provisionManagedSource(STREAM_ID, mediatype, source, CLAIMANT, ADMIN_SESSION);
 }
 
-function media(orchestrator: StreamOrchestrator, source: SourceConnectionIdentity, index: number) {
-  return orchestrator.handleManagedSegment(STREAM_ID, source, index, 0.1, videoSegment(4, index * 4 * FRAME_TICKS));
+function media(orchestrator: StreamOrchestrator, source: SourceConnectionIdentity, index: number, firstPts?: number) {
+  return orchestrator.handleManagedSegment(
+    STREAM_ID,
+    source,
+    index,
+    0.1,
+    videoSegment(4, firstPts ?? index * 4 * FRAME_TICKS),
+  );
 }
 
 describe('managed SRS source reconnect foundation', () => {
@@ -254,6 +265,63 @@ describe('managed SRS source reconnect foundation', () => {
     await clock.advance(1);
     await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
     assert.equal(notifyStop.mock.callCount(), 1, 'delayed unpublish extended the no-media cutoff');
+    await orchestrator.cleanup();
+  });
+
+  it('does not renew the source deadline when later callbacks repeat the same timestamps', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeManagedOrchestrator(clock);
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0, 0), { accepted: true });
+    const uploaderA = activeUploader(orchestrator);
+    assert.ok(uploaderA);
+    const notifyStop = mock.method(uploaderA, 'notifyStop');
+
+    await clock.advance(20_000);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 1, 0), {
+      accepted: false,
+      reason: 'unverified_source_media',
+    });
+    await clock.advance(20_000);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 2, 0), {
+      accepted: false,
+      reason: 'unverified_source_media',
+    });
+
+    await clock.advance(19_999);
+    assert.equal(notifyStop.mock.callCount(), 0);
+    await clock.advance(1);
+    await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+    assert.equal(notifyStop.mock.callCount(), 1, 'repeated timestamps renewed the source deadline');
+    await orchestrator.cleanup();
+  });
+
+  it('uses audio timestamps to verify an audio-only managed source', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeManagedOrchestrator(clock);
+
+    assert.equal(provision(orchestrator, SOURCE_A, MEDIA_TYPE_AUDIO), true);
+    assert.deepEqual(
+      orchestrator.handleManagedSegment(STREAM_ID, SOURCE_A, 0, 0.1, audioOnlySegment(4, 0)),
+      { accepted: true },
+    );
+    assert.deepEqual(
+      orchestrator.handleManagedSegment(STREAM_ID, SOURCE_A, 1, 0.1, audioOnlySegment(4, 4 * FRAME_TICKS)),
+      { accepted: true },
+    );
+    assert.ok(activeUploader(orchestrator), 'advancing audio did not acquire the source');
+    await orchestrator.cleanup();
+  });
+
+  it('keeps advancing source timestamps valid across the 33-bit PTS wrap', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeManagedOrchestrator(clock);
+    const ptsModulus = 2 ** 33;
+
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(media(orchestrator, SOURCE_A, 0, ptsModulus - 4 * FRAME_TICKS), { accepted: true });
+    assert.deepEqual(media(orchestrator, SOURCE_A, 1, 0), { accepted: true });
     await orchestrator.cleanup();
   });
 });

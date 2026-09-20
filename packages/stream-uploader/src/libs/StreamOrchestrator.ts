@@ -1,4 +1,7 @@
 import {
+  measureSpanTicks,
+  readAudioPts,
+  readVideoPts,
   replacedSessionFinalized,
   rungAnnounced,
   segmentDurationUnread,
@@ -13,6 +16,7 @@ import {
   BroadcastEpoch,
   HealthSignals,
   LadderMembership,
+  MEDIA_TYPE_AUDIO,
   MEDIA_TYPE_VIDEO,
   MediaType,
   PRESSURE_HIGH,
@@ -179,9 +183,18 @@ interface ManagedSourceCandidate {
 interface ManagedSourceState {
   candidate?: ManagedSourceCandidate;
   current?: SourceConnectionIdentity;
+  mediatype?: MediaType;
+  lastProgressPts?: number;
   deadline?: number;
   timer?: Timer;
   closed?: boolean;
+}
+
+const PTS_MODULUS = 2 ** 33;
+const PTS_HALF_RANGE = PTS_MODULUS / 2;
+
+interface ManagedMediaReading {
+  latestPts: number;
 }
 
 /** One rung's routing plus what bee answered on its batch. See {@link StreamOrchestrator.refusedPublishers}. */
@@ -605,12 +618,19 @@ export class StreamOrchestrator {
     }
 
     if (state.current && sameSource(state.current, identity)) {
-      const refusal = this.managedMediaRefusal(streamId, duration, data);
-      if (refusal) {
-        return { accepted: false, reason: refusal };
+      const inspected = this.inspectManagedMedia(
+        streamId,
+        state.mediatype ?? MEDIA_TYPE_VIDEO,
+        duration,
+        data,
+        state.lastProgressPts,
+      );
+      if ('reason' in inspected) {
+        return { accepted: false, reason: inspected.reason };
       }
       const result = this.handleSegment(streamId, segmentIndex, duration, data, discontinuity);
       if (result.accepted) {
+        state.lastProgressPts = inspected.latestPts;
         this.renewManagedSourceDeadline(streamId, state, reconnectMs);
         this.cancelManagedStallReaper(streamId);
       }
@@ -621,14 +641,16 @@ export class StreamOrchestrator {
     if (!candidate || !sameSource(candidate.identity, identity)) {
       return { accepted: false, reason: REJECT_STALE_SOURCE };
     }
-    const refusal = this.managedMediaRefusal(streamId, duration, data);
-    if (refusal) {
-      return { accepted: false, reason: refusal };
+    const inspected = this.inspectManagedMedia(streamId, candidate.mediatype, duration, data);
+    if ('reason' in inspected) {
+      return { accepted: false, reason: inspected.reason };
     }
 
     const resumed = this.activeStreams.has(streamId);
     state.candidate = undefined;
     state.current = identity;
+    state.mediatype = candidate.mediatype;
+    state.lastProgressPts = undefined;
 
     if (resumed) {
       this.processedSegments.set(streamId, this.newDuplicateFilter());
@@ -642,6 +664,7 @@ export class StreamOrchestrator {
 
     const result = this.handleSegment(streamId, segmentIndex, duration, data, resumed || discontinuity);
     if (result.accepted) {
+      state.lastProgressPts = inspected.latestPts;
       this.renewManagedSourceDeadline(streamId, state, reconnectMs);
       this.cancelManagedStallReaper(streamId);
     }
@@ -663,23 +686,53 @@ export class StreamOrchestrator {
     return true;
   }
 
-  private managedMediaRefusal(streamId: string, duration: number, data: Buffer): RejectReason | null {
+  private inspectManagedMedia(
+    streamId: string,
+    mediatype: MediaType,
+    duration: number,
+    data: Buffer,
+    previousPts?: number,
+  ): ManagedMediaReading | { reason: RejectReason } {
     if (!isUsableDuration(duration) || duration === 0) {
-      return REJECT_UNVERIFIED_SOURCE_MEDIA;
+      return { reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
     }
-    const reading = measureSegmentDuration(data, duration);
-    if (reading.fellBackBecause !== null || reading.videoPackets === 0) {
-      return REJECT_UNVERIFIED_SOURCE_MEDIA;
+
+    const pts = mediatype === MEDIA_TYPE_AUDIO ? readAudioPts(data) : readVideoPts(data);
+    const unwrapped = this.unwrapPts(pts);
+    try {
+      measureSpanTicks(unwrapped, 'this managed source segment');
+    } catch {
+      return { reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
+    }
+    const latestPts = ((Math.max(...unwrapped) % PTS_MODULUS) + PTS_MODULUS) % PTS_MODULUS;
+    if (previousPts !== undefined && !this.ptsAdvanced(previousPts, latestPts)) {
+      return { reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
     }
 
     const uploader = this.activeStreams.get(streamId);
     if (uploader && this.isDraining(streamId, uploader)) {
-      return REJECT_DRAINING;
+      return { reason: REJECT_DRAINING };
     }
     if (uploader && uploader.segmentQueue.size >= this.config.maxQueueSize) {
-      return REJECT_QUEUE_FULL;
+      return { reason: REJECT_QUEUE_FULL };
     }
-    return null;
+    return { latestPts };
+  }
+
+  private unwrapPts(pts: readonly number[]): number[] {
+    const anchor = pts[0];
+    if (anchor === undefined) {
+      return [];
+    }
+    return pts.map((value) => {
+      const forward = (value - anchor + PTS_MODULUS) % PTS_MODULUS;
+      return anchor + (forward >= PTS_HALF_RANGE ? forward - PTS_MODULUS : forward);
+    });
+  }
+
+  private ptsAdvanced(previous: number, current: number): boolean {
+    const forward = (current - previous + PTS_MODULUS) % PTS_MODULUS;
+    return forward > 0 && forward < PTS_HALF_RANGE;
   }
 
   private renewManagedSourceDeadline(streamId: string, state: ManagedSourceState, reconnectMs: number): void {
