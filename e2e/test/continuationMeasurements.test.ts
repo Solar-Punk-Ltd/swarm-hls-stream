@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import type { BoundedCommand, CommandResult } from '../src/continuation/dockerCli.js';
+import { FixtureRefusal } from '../src/continuation/fixture.js';
 import { captureContinuationMeasurements } from '../src/continuation/measurements.js';
 import type { RuntimeContainerBinding } from '../src/continuation/readinessSource.js';
 import type { TopologyServiceRole } from '../src/continuation/topology.js';
@@ -37,6 +38,15 @@ class RecordingCommand implements BoundedCommand {
       return { stdout: '{"id":"foreign","name":"neighbor","image":"synthetic"}\n', stderr: '' };
     }
     throw new Error(`unexpected command ${file} ${args.join(' ')}`);
+  }
+}
+
+class BoundedFailureCommand extends RecordingCommand {
+  override async run(file: string, args: readonly string[]): Promise<CommandResult> {
+    if (args.includes(`http://${FIXTURE_ID}-bee-queen:1633/metrics`)) {
+      throw new FixtureRefusal('bounded command timed out (stdout 17 bytes, stderr 23 bytes)');
+    }
+    return super.run(file, args);
   }
 }
 
@@ -84,6 +94,8 @@ describe('continuation measurement snapshots', () => {
 
     const saved = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     assert.equal(saved.phase, 'before');
+    assert.equal(saved.complete, true);
+    assert.deepEqual(saved.failures, []);
     assert.match(JSON.stringify(saved), /full service metrics/);
     assert.match(JSON.stringify(saved), /neighbor/);
     assert.deepEqual(saved.rolesWithoutServiceMetrics, [
@@ -171,6 +183,31 @@ describe('continuation measurement snapshots', () => {
       `http://${FIXTURE_ID}-bee-worker-3:1639/metrics`,
       `http://${FIXTURE_ID}-bee-worker-4:1641/metrics`,
       'http://srs:10019/api/v1/summaries',
+    ]);
+  });
+
+  it('retains only the command runner safe failure diagnostic', async () => {
+    const outputRoot = mkdtempSync(join(tmpdir(), 'continuation-measurements-bounded-failure-'));
+
+    await assert.rejects(
+      captureContinuationMeasurements(new BoundedFailureCommand(), {
+        fixtureId: FIXTURE_ID,
+        outputRoot,
+        phase: 'after',
+        probeContainerId: 'admin-api-container-id',
+        containers: containers(),
+      }),
+      /snapshot is incomplete/i,
+    );
+
+    const saved = JSON.parse(readFileSync(join(outputRoot, 'measurements', 'after.json'), 'utf8')) as {
+      failures: Array<{ surface: string; diagnostic: string }>;
+    };
+    assert.deepEqual(saved.failures, [
+      {
+        surface: 'serviceMetrics.bee-queen',
+        diagnostic: 'bounded command timed out (stdout 17 bytes, stderr 23 bytes)',
+      },
     ]);
   });
 });

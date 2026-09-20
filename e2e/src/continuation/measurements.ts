@@ -11,6 +11,9 @@ import type { TopologyServiceRole } from './topology.js';
 const SAFE_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
 const FIXTURE_ID = /^srs-continuation-20260920-[a-z0-9]{8,16}$/;
 const SERVICE_METRIC_MAX_BYTES = 256 * 1024;
+const SAFE_COMMAND_DIAGNOSTIC =
+  /^bounded command (?:timed out|failed with exit (?:unknown|-?\d+)(?: and signal [A-Za-z0-9]+)?) \(stdout \d+ bytes, stderr \d+ bytes\)$/;
+const GENERIC_COMMAND_DIAGNOSTIC = 'bounded command failed';
 const EXPECTED_ROLES: readonly TopologyServiceRole[] = [
   'blockchain', 'bee-queen', 'bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4',
   'postgres', 'admin-api', 'admin-web', 'srs', 'uploader', 'viewer', 'browser', 'media-sender',
@@ -44,6 +47,21 @@ export interface ContinuationMeasurementInput {
   containers: ReadonlyMap<TopologyServiceRole, RuntimeContainerBinding>;
 }
 
+export interface ContinuationMeasurementFailure {
+  surface: string;
+  diagnostic: string;
+}
+
+export class IncompleteContinuationMeasurements extends FixtureRefusal {
+  constructor(
+    readonly snapshotPath: string,
+    readonly failedSurfaces: readonly string[],
+  ) {
+    super('continuation measurement snapshot is incomplete');
+    this.name = 'IncompleteContinuationMeasurements';
+  }
+}
+
 /** Captures the complete available metric surfaces and exact fixture capacity context without logging response bodies. */
 export async function captureContinuationMeasurements(
   command: BoundedCommand,
@@ -51,6 +69,7 @@ export async function captureContinuationMeasurements(
 ): Promise<string> {
   const containers = validateInput(input);
   const uploader = containers.get('uploader')!;
+  const failures: ContinuationMeasurementFailure[] = [];
   const serviceMetrics: Record<string, string> = {};
   const metricEndpoints = new Map<string, string>([
     ['bee-queen', `http://${input.fixtureId}-bee-queen:1633/metrics`],
@@ -61,33 +80,41 @@ export async function captureContinuationMeasurements(
     ['srs', 'http://srs:10019/api/v1/summaries'],
   ]);
   for (const [name, url] of metricEndpoints) {
-    const result = await command.run('docker', [
+    const result = await captureSurface(failures, `serviceMetrics.${name}`, () => command.run('docker', [
       'exec', input.probeContainerId, 'node', '-e', HTTP_TEXT_SCRIPT, url, String(SERVICE_METRIC_MAX_BYTES),
-    ]);
-    serviceMetrics[name] = result.stdout;
+    ]));
+    if (result) {
+      serviceMetrics[name] = result.stdout;
+    }
   }
-  serviceMetrics.uploader = (await command.run('docker', [
+  const uploaderMetrics = await captureSurface(failures, 'serviceMetrics.uploader', () => command.run('docker', [
     'exec', uploader.id, 'node', '-e', uploaderMetricsScript(),
-  ])).stdout;
+  ]));
+  if (uploaderMetrics) {
+    serviceMetrics.uploader = uploaderMetrics.stdout;
+  }
 
   const ids = EXPECTED_ROLES.map((role) => containers.get(role)!.id);
-  const stats = (await command.run('docker', [
+  const stats = await captureSurface(failures, 'exactContainerStats', () => command.run('docker', [
     'stats', '--no-stream', '--format',
     '{"id":{{json .ID}},"name":{{json .Name}},"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}},"pids":{{json .PIDs}},"net":{{json .NetIO}},"block":{{json .BlockIO}}}',
     ...ids,
-  ])).stdout;
+  ]));
   const limits: Record<string, string> = {};
   for (const role of EXPECTED_ROLES) {
     const binding = containers.get(role)!;
-    limits[role] = (await command.run('docker', [
+    const result = await captureSurface(failures, `exactContainerLimits.${role}`, () => command.run('docker', [
       'inspect', '--format',
       '{"id":{{json .Id}},"nanoCpus":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}',
       binding.id,
-    ])).stdout;
+    ]));
+    if (result) {
+      limits[role] = result.stdout;
+    }
   }
-  const coTenancy = (await command.run('docker', [
+  const coTenancy = await captureSurface(failures, 'coTenancy', () => command.run('docker', [
     'ps', '--no-trunc', '--format', '{"id":{{json .ID}},"name":{{json .Names}},"image":{{json .Image}}}',
-  ])).stdout;
+  ]));
 
   const directory = join(input.outputRoot, 'measurements');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -97,13 +124,38 @@ export async function captureContinuationMeasurements(
     fixtureId: input.fixtureId,
     phase: input.phase,
     capturedAt: new Date().toISOString(),
+    complete: failures.length === 0,
+    failures,
     serviceMetrics,
     rolesWithoutServiceMetrics: ROLES_WITHOUT_SERVICE_METRICS,
-    exactContainerStats: stats,
+    exactContainerStats: stats?.stdout ?? null,
     exactContainerLimits: limits,
-    coTenancy,
+    coTenancy: coTenancy?.stdout ?? null,
   }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  if (failures.length > 0) {
+    throw new IncompleteContinuationMeasurements(path, failures.map(({ surface }) => surface));
+  }
   return path;
+}
+
+async function captureSurface<T>(
+  failures: ContinuationMeasurementFailure[],
+  surface: string,
+  capture: () => Promise<T>,
+): Promise<T | undefined> {
+  try {
+    return await capture();
+  } catch (error) {
+    failures.push({ surface, diagnostic: safeCommandDiagnostic(error) });
+    return undefined;
+  }
+}
+
+function safeCommandDiagnostic(error: unknown): string {
+  if (error instanceof FixtureRefusal && SAFE_COMMAND_DIAGNOSTIC.test(error.message)) {
+    return error.message;
+  }
+  return GENERIC_COMMAND_DIAGNOSTIC;
 }
 
 function validateInput(input: ContinuationMeasurementInput): Map<TopologyServiceRole, RuntimeContainerBinding> {
