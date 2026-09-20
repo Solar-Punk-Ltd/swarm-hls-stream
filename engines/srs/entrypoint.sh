@@ -217,8 +217,9 @@ SRS_ADAPTER_PORT="${SRS_ADAPTER_PORT:-3000}"
 # ABR ladder
 #
 # Off by default: with ABR_ENABLED unset this file produces exactly the single-rendition config
-# it always has. Enabled, the ingest vhost stops segmenting and becomes a transcode source, and
-# each rung is republished onto a second vhost that carries the HLS and the webhooks.
+# it always has. Enabled, each rung is republished onto a second vhost that carries HLS and the
+# webhooks. Lifecycle version 1 also segments the ingest source as private progress evidence. That
+# source playlist is never uploaded or advertised.
 #
 # The second vhost is not tidiness. Transcode scope is matched at vhost, app and stream level and
 # the matches are cumulative (srs_app_encoder.cpp, parse_scope_engines), so a rung republished
@@ -395,7 +396,11 @@ EOF
     echo "warning: $CONF_SOURCE has no TRANSCODE_PLACEHOLDER or ABR_VHOST_PLACEHOLDER line, so the ladder's transcode block and rung vhost were not inserted. Put the lines back, or carry the ladder in the file yourself." >&2
   fi
 
-  sed -i "s/INGEST_HLS_PLACEHOLDER/off/" "$CONF"
+  if [ "${SRS_LIFECYCLE_VERSION:-}" = "1" ]; then
+    sed -i "s/INGEST_HLS_PLACEHOLDER/on/" "$CONF"
+  else
+    sed -i "s/INGEST_HLS_PLACEHOLDER/off/" "$CONF"
+  fi
   sed -i -e "/TRANSCODE_PLACEHOLDER/r $TRANSCODE_FRAGMENT" -e "/TRANSCODE_PLACEHOLDER/d" "$CONF"
   sed -i -e "/ABR_VHOST_PLACEHOLDER/r $ABR_VHOST_FRAGMENT" -e "/ABR_VHOST_PLACEHOLDER/d" "$CONF"
 

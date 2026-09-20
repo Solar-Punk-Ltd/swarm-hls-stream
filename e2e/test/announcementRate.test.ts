@@ -5,6 +5,7 @@ import {
   ACKNOWLEDGE_UNMEASURED,
   announcementLoad,
   announcementRefusal,
+  announcementStreams,
   announcementSummary,
   ladderRungs,
   MEASURED_BROKEN_PER_S,
@@ -74,6 +75,26 @@ describe('announcementLoad', () => {
   it('refuses a segment length that is not a length, rather than dividing by it', () => {
     assert.throws(() => announcementLoad(['720p'], 0), /not a length/);
     assert.throws(() => announcementLoad(['720p'], Number.NaN), /not a length/);
+  });
+});
+
+describe('announcementStreams', () => {
+  const ladder = confWithRungs(['1080p', '720p', '360p']);
+
+  it('counts the managed ABR source alongside every rung', () => {
+    const ingest = 'vhost __defaultVhost__ {\n    hls {\n        enabled on;\n    }\n}\n';
+    assert.deepEqual(announcementStreams(`${ingest}\n${ladder}`), ['source', '1080p', '720p', '360p']);
+  });
+
+  it('keeps the legacy ABR load at its rung count', () => {
+    const ingest = 'vhost __defaultVhost__ {\n    hls {\n        enabled off;\n    }\n}\n';
+    assert.deepEqual(announcementStreams(`${ingest}\n${ladder}`), ['1080p', '720p', '360p']);
+  });
+
+  it('leaves a single rendition to the existing synthetic count', () => {
+    const ingest = 'vhost __defaultVhost__ {\n    hls {\n        enabled on;\n    }\n}\n';
+    assert.deepEqual(announcementStreams(ingest), []);
+    assert.equal(announcementLoad(announcementStreams(ingest), 0.5).perSecond, 2);
   });
 });
 

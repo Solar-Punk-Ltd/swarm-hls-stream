@@ -121,6 +121,21 @@ function vhostBlock(conf, name) {
   assert.fail(`the 'vhost ${name}' block is never closed`);
 }
 
+function childBlock(parent, name) {
+  const start = parent.indexOf(`${name} {`);
+  assert.notEqual(start, -1, `no '${name}' block in the generated vhost`);
+
+  let depth = 0;
+  for (let i = parent.indexOf('{', start); i < parent.length; i += 1) {
+    if (parent[i] === '{') {depth += 1;}
+    if (parent[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {return parent.slice(start, i + 1);}
+    }
+  }
+  assert.fail(`the '${name}' block is never closed`);
+}
+
 /** One directive's value from within a single vhost block, refusing a repeat rather than taking the first. */
 function directive(block, name) {
   const matches = [...block.matchAll(new RegExp(`^\\s*${name}\\s+([^;]+);`, 'gm'))].map((m) => m[1].trim());
@@ -147,6 +162,17 @@ describe('the generated ABR vhost', () => {
     for (const name of ['hls_fragment', 'hls_aof_ratio', 'hls_window']) {
       assert.equal(directive(ladder, name), directive(ingest, name), `${name} differs between the two vhosts`);
     }
+  });
+
+  it('segments the ABR source only for managed lifecycle progress evidence', () => {
+    const managed = renderLadderConf({ ...VALID, SRS_LIFECYCLE_VERSION: '1', HLS_WINDOW: '12' });
+    const legacy = renderLadderConf({ ...VALID, SRS_LIFECYCLE_VERSION: '', HLS_WINDOW: '12' });
+
+    const managedHls = childBlock(vhostBlock(managed, INGEST_VHOST), 'hls');
+    const legacyHls = childBlock(vhostBlock(legacy, INGEST_VHOST), 'hls');
+    assert.equal(directive(managedHls, 'enabled'), 'on');
+    assert.equal(directive(managedHls, 'hls_window'), '12');
+    assert.equal(directive(legacyHls, 'enabled'), 'off');
   });
 
   it('puts the webhook token on every hook the rungs call', () => {

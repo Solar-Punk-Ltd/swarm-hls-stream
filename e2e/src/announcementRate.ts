@@ -75,6 +75,35 @@ export function ladderRungs(srsConf: string): string[] {
   return [...seen];
 }
 
+/** Every stream whose closed segments generate on_hls callbacks in the running config. */
+export function announcementStreams(srsConf: string): string[] {
+  const rungs = ladderRungs(srsConf);
+  if (rungs.length === 0) {
+    return rungs;
+  }
+  const ingest = namedBlock(srsConf, 'vhost __defaultVhost__');
+  const ingestHls = ingest === null ? null : namedBlock(ingest, 'hls');
+  const sourceHlsEnabled = ingestHls !== null && /^[ \t]*enabled[ \t]+on[ \t]*;/m.test(ingestHls);
+  return sourceHlsEnabled ? ['source', ...rungs] : rungs;
+}
+
+function namedBlock(text: string, declaration: string): string | null {
+  const start = text.indexOf(`${declaration} {`);
+  if (start === -1) {
+    return null;
+  }
+  const opening = text.indexOf('{', start);
+  let depth = 0;
+  for (let index = opening; index < text.length; index += 1) {
+    if (text[index] === '{') {depth += 1;}
+    if (text[index] === '}') {
+      depth -= 1;
+      if (depth === 0) {return text.slice(start, index + 1);}
+    }
+  }
+  return null;
+}
+
 function bandFor(perSecond: number): RateBand {
   if (perSecond <= MEASURED_SUSTAINED_PER_S) {
     return 'sustained';

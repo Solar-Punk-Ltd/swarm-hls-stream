@@ -5,8 +5,8 @@ import {
   ACKNOWLEDGE_UNMEASURED,
   announcementLoad,
   announcementRefusal,
+  announcementStreams,
   announcementSummary,
-  ladderRungs,
 } from '../../src/announcementRate.js';
 import { loadConfig } from '../../src/config.js';
 import { makeHost } from '../../src/harness/host.js';
@@ -65,7 +65,7 @@ describe('preflight — the ladder asks for a rate SRS has been shown sustaining
   it('is inside the measured band', async () => {
     const conf = await readStageConf(host, cfg);
     const segmentSeconds = stageSegmentSeconds(parseStageSegmenting(conf, PUBLISHER_GOP_SECONDS));
-    const load = announcementLoad(ladderRungs(conf), segmentSeconds);
+    const load = announcementLoad(announcementStreams(conf), segmentSeconds);
 
     const refusal = announcementRefusal(load, unmeasuredAcknowledged());
     if (refusal !== null) {
@@ -73,6 +73,6 @@ describe('preflight — the ladder asks for a rate SRS has been shown sustaining
     }
 
     console.log(`  ${announcementSummary(load)}`);
-    console.log(`    rungs: ${load.rungs.join(', ')}`);
+    console.log(`    announcement streams: ${load.rungs.join(', ')}`);
   });
 });
