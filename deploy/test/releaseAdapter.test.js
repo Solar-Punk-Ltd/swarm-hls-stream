@@ -58,7 +58,13 @@ function fixture(role, services, overrides = {}) {
   const work = realpathSync(workPath);
   mkdirSync(join(root, 'deploy', 'scripts'), { recursive: true });
   mkdirSync(join(root, 'engines', 'srs'), { recursive: true });
-  for (const name of ['_lib.sh', 'assert-started.sh', 'release-adapter.sh', 'viewer-release-adapter.sh']) {
+  for (const name of [
+    '_lib.sh',
+    'assert-started.sh',
+    'release-effective-config.mjs',
+    'release-adapter.sh',
+    'viewer-release-adapter.sh',
+  ]) {
     cpSync(join(REPO_ROOT, 'deploy', 'scripts', name), join(root, 'deploy', 'scripts', name));
   }
   for (const name of [
@@ -68,6 +74,9 @@ function fixture(role, services, overrides = {}) {
     'docker-compose.srs-conf.yml',
   ]) {
     cpSync(join(REPO_ROOT, 'deploy', name), join(root, 'deploy', name));
+  }
+  for (const name of ['entrypoint.sh', 'healthcheck.sh', 'srs.conf.template']) {
+    cpSync(join(REPO_ROOT, 'engines', 'srs', name), join(root, 'engines', 'srs', name));
   }
   writeFileSync(join(root, 'engines', 'srs', '.env.release-a'), 'SRS_HTTP_PORT=8080\n');
   writeFileSync(join(root, 'engines', 'srs', 'custom.conf'), 'synthetic\n');
@@ -110,7 +119,7 @@ function fixture(role, services, overrides = {}) {
   mkdirSync(bin);
   const journal = join(root, 'docker.log');
   writeFileSync(journal, '');
-  writeNodeStub(join(bin, 'docker'), dockerStub(journal));
+  writeNodeStub(join(bin, 'docker'), dockerStub(journal, root));
   writeFileSync(join(root, 'gate.log'), '');
   writeFileSync(
     join(root, 'deploy', 'scripts', 'assert-started.sh'),
@@ -141,6 +150,7 @@ function fixture(role, services, overrides = {}) {
       PATH: `${bin}:${process.env.PATH ?? ''}`,
       HOME: root,
       ADAPTER_GATE_JOURNAL: join(root, 'gate.log'),
+      DOCKER_STUB_NETWORK_MODE: overrides.fixtureNetwork ? FIXTURE_NETWORK.name : 'release-a_default',
       ...overrides.env,
     },
   };
@@ -178,6 +188,11 @@ function planFor(f, phase, changes = {}) {
         : f.argumentsValue,
     ...changes,
   };
+}
+
+function srsConfigDigestFromOverride(f) {
+  const override = readFileSync(join(f.work, 'release-image-override.yml'), 'utf8');
+  return override.match(/org\.solarpunk\.srs-continuation\.srs-config: "([0-9a-f]{64})"/)?.[1] ?? '';
 }
 
 async function run(f, script, phase, changes = {}) {
@@ -233,6 +248,12 @@ describe('guarded uploader release adapter', () => {
       fixtureNetworkId: FIXTURE_NETWORK_ID,
       fixtureVolumeNames: FIXTURE_VOLUME_NAMES,
     });
+    const fixtureTransition = await run(fixturePreparation, 'release-adapter.sh', 'transition');
+    assert.equal(fixtureTransition.exitCode, 0, `${fixtureTransition.stdout}${fixtureTransition.stderr}`);
+    fixturePreparation.env.DOCKER_STUB_SRS_CONFIG_DIGEST = srsConfigDigestFromOverride(fixturePreparation);
+    fixturePreparation.env.DOCKER_STUB_MISSING_VOLUME = 'release-a_uploader-state';
+    const fixtureVerify = await run(fixturePreparation, 'release-adapter.sh', 'verify');
+    assert.equal(fixtureVerify.exitCode, 0, `${fixtureVerify.stdout}${fixtureVerify.stderr}`);
 
     const built = await run(f, 'release-adapter.sh', 'build');
     assert.equal(built.exitCode, 0, `${built.stdout}${built.stderr}`);
@@ -245,6 +266,7 @@ describe('guarded uploader release adapter', () => {
     assert.equal(transitioned.exitCode, 0, `${transitioned.stdout}${transitioned.stderr}`);
     const calls = readFileSync(f.journal, 'utf8').split('\n');
     const up = calls.find((call) => call.includes(' up -d '));
+    assert.match(up ?? '', / up -d --no-deps --no-build /);
     assert.match(up ?? '', /bee-uploader srs$/);
     assert.equal(readFileSync(f.gate, 'utf8').trim(), 'release-a bee-uploader srs');
 
@@ -256,10 +278,28 @@ describe('guarded uploader release adapter', () => {
     ]);
   });
 
-  it('validates the whole managed target before updating only the reserved uploader subset', async () => {
+  it('validates untouched services before updating only the reserved uploader subset', async () => {
+    const prepared = fixture('uploader', ['srs', 'stream-uploader'], {
+      operation: { kind: 'prepare', mutatingServices: ['srs'] },
+      fixtureNetwork: FIXTURE_NETWORK,
+    });
+    const preparedEnvPath = join(prepared.root, '.env.release-a');
+    writeFileSync(
+      preparedEnvPath,
+      readFileSync(preparedEnvPath, 'utf8').replace('SRS_LIFECYCLE_VERSION=1', 'SRS_LIFECYCLE_VERSION='),
+    );
+    const preparation = await run(prepared, 'release-adapter.sh', 'transition');
+    assert.equal(preparation.exitCode, 0, `${preparation.stdout}${preparation.stderr}`);
+    const preparedSrsDigest = srsConfigDigestFromOverride(prepared);
+    assert.match(preparedSrsDigest, /^[0-9a-f]{64}$/);
+
     const f = fixture('uploader', ['srs', 'stream-uploader'], {
       operation: { kind: 'update', mutatingServices: ['stream-uploader'] },
       fixtureNetwork: FIXTURE_NETWORK,
+      env: {
+        DOCKER_STUB_ABSENT_SERVICE: 'stream-uploader',
+        DOCKER_STUB_SRS_CONFIG_DIGEST: preparedSrsDigest,
+      },
     });
 
     const built = await run(f, 'release-adapter.sh', 'build');
@@ -274,7 +314,6 @@ describe('guarded uploader release adapter', () => {
     assert.equal(validated.exitCode, 0, `${validated.stdout}${validated.stderr}`);
     assert.deepEqual(JSON.parse(readFileSync(validated.output, 'utf8')).images, [
       { service: 'srs', imageId: `sha256:${'f'.repeat(64)}` },
-      { service: 'stream-uploader', imageId: IMAGE_IDS['stream-uploader'] },
     ]);
     assert.equal(
       readFileSync(f.journal, 'utf8')
@@ -283,11 +322,13 @@ describe('guarded uploader release adapter', () => {
       false,
     );
     delete f.env.DOCKER_STUB_WRONG_IMAGE;
+    delete f.env.DOCKER_STUB_ABSENT_SERVICE;
 
     const transitioned = await run(f, 'release-adapter.sh', 'transition');
     assert.equal(transitioned.exitCode, 0, `${transitioned.stdout}${transitioned.stderr}`);
     const calls = readFileSync(f.journal, 'utf8').split('\n');
     const up = calls.find((call) => call.includes(' up -d '));
+    assert.match(up ?? '', / up -d --no-deps --no-build /);
     assert.match(up ?? '', /stream-uploader$/);
     assert.doesNotMatch(up ?? '', / up -d .* srs( |$)/);
     assert.equal(readFileSync(f.gate, 'utf8').trim(), 'release-a stream-uploader');
@@ -295,6 +336,67 @@ describe('guarded uploader release adapter', () => {
     const verified = await run(f, 'release-adapter.sh', 'verify');
     assert.equal(verified.exitCode, 0, `${verified.stdout}${verified.stderr}`);
     assert.equal(JSON.parse(readFileSync(verified.output, 'utf8')).images.length, 2);
+  });
+
+  it('refuses changed untouched SRS bytes or resolved environment before updater movement', async () => {
+    const prepared = fixture('uploader', ['srs', 'stream-uploader'], {
+      operation: { kind: 'prepare', mutatingServices: ['srs'] },
+    });
+    const preparedEnvPath = join(prepared.root, '.env.release-a');
+    writeFileSync(
+      preparedEnvPath,
+      readFileSync(preparedEnvPath, 'utf8').replace('SRS_LIFECYCLE_VERSION=1', 'SRS_LIFECYCLE_VERSION='),
+    );
+    const preparation = await run(prepared, 'release-adapter.sh', 'transition');
+    assert.equal(preparation.exitCode, 0, `${preparation.stdout}${preparation.stderr}`);
+    const preparedSrsDigest = srsConfigDigestFromOverride(prepared);
+
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      operation: { kind: 'update', mutatingServices: ['stream-uploader'] },
+      env: { DOCKER_STUB_SRS_CONFIG_DIGEST: preparedSrsDigest },
+    });
+    const customConfig = join(f.root, 'engines', 'srs', 'custom.conf');
+    writeFileSync(customConfig, 'changed-config-at-the-same-path\n');
+    const changedBytes = await run(f, 'release-adapter.sh', 'validate');
+    assert.notEqual(changedBytes.exitCode, 0);
+    assert.match(changedBytes.stderr, /effective configuration/);
+    assert.doesNotMatch(`${changedBytes.stdout}${changedBytes.stderr}`, new RegExp(preparedSrsDigest));
+    assert.equal(
+      readFileSync(f.journal, 'utf8')
+        .split('\n')
+        .some((call) => call.includes(' up -d ')),
+      false,
+    );
+
+    writeFileSync(customConfig, 'synthetic\n');
+    const envPath = join(f.root, '.env.release-a');
+    writeFileSync(envPath, `${readFileSync(envPath, 'utf8')}HLS_FRAGMENT=0.75\n`);
+    const changedEnvironment = await run(f, 'release-adapter.sh', 'validate');
+    assert.notEqual(changedEnvironment.exitCode, 0);
+    assert.match(changedEnvironment.stderr, /effective configuration/);
+    assert.equal(
+      readFileSync(f.journal, 'utf8')
+        .split('\n')
+        .some((call) => call.includes(' up -d ')),
+      false,
+    );
+  });
+
+  it('refuses a changed untouched Bee configuration before updater movement', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader', 'bee-uploader'], {
+      operation: { kind: 'update', mutatingServices: ['srs', 'stream-uploader'] },
+      env: { DOCKER_STUB_BAD_BEE_CONFIG_HASH: '1' },
+    });
+    const result = await run(f, 'release-adapter.sh', 'validate');
+
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /effective configuration/);
+    assert.equal(
+      readFileSync(f.journal, 'utf8')
+        .split('\n')
+        .some((call) => call.includes(' up -d ')),
+      false,
+    );
   });
 
   it('refuses invalid preparation and update mutation sets before Docker moves anything', async () => {
@@ -310,6 +412,29 @@ describe('guarded uploader release adapter', () => {
       assert.notEqual(result.exitCode, 0);
       assert.equal(readFileSync(f.journal, 'utf8'), '');
     }
+  });
+
+  it('refuses an external mutable SRS configuration for a partial guarded operation', async () => {
+    const f = fixture('uploader', ['srs', 'stream-uploader'], {
+      operation: { kind: 'prepare', mutatingServices: ['srs'] },
+    });
+    const externalRoot = mkdtempSync(join(tmpdir(), 'release-external-srs-'));
+    roots.push(externalRoot);
+    const externalConfig = join(externalRoot, 'srs.conf');
+    writeFileSync(externalConfig, 'external mutable configuration\n');
+    const envPath = join(f.root, '.env.release-a');
+    writeFileSync(
+      envPath,
+      readFileSync(envPath, 'utf8')
+        .replace('SRS_LIFECYCLE_VERSION=1', 'SRS_LIFECYCLE_VERSION=')
+        .replace(/^SRS_CONF_FILE=.*$/m, `SRS_CONF_FILE=${externalConfig}`),
+    );
+
+    const result = await run(f, 'release-adapter.sh', 'preflight');
+
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /inside its immutable candidate/);
+    assert.equal(readFileSync(f.journal, 'utf8'), '');
   });
 
   it('binds an internal labeled fixture network during preflight', async () => {
@@ -502,6 +627,7 @@ describe('guarded uploader release adapter', () => {
     assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
     const calls = readFileSync(f.journal, 'utf8');
     assert.match(calls, / up -d --no-build --pull never srs stream-uploader/);
+    assert.doesNotMatch(calls, / up -d --no-deps /);
     assert.equal(
       calls.split('\n').some((call) => /(^| )(build|pull)( |$)/.test(call)),
       false,
@@ -652,7 +778,7 @@ function writeNodeStub(path, body) {
   chmodSync(path, 0o755);
 }
 
-function dockerStub(journal) {
+function dockerStub(journal, candidateRoot) {
   return `const fs = require('node:fs');
 const argv = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(journal)}, argv.join(' ') + '\\n');
@@ -663,6 +789,7 @@ const ids = ${JSON.stringify(IMAGE_IDS)};
 const references = ${JSON.stringify(IMAGE_REFERENCES)};
 const fixtureId = process.env.DOCKER_STUB_FIXTURE_LABEL || ${JSON.stringify(FIXTURE_ID)};
 const fixtureNetworkId = process.env.DOCKER_STUB_NETWORK_ID || ${JSON.stringify(FIXTURE_NETWORK_ID)};
+const composeHash = '7'.repeat(64);
 function serviceFrom(value) {
   for (const [service, reference] of Object.entries(references)) if (value === reference) return service;
   for (const service of Object.keys(ids)) if (value === service || value.endsWith('-' + service) || value === 'c-' + service) return service;
@@ -684,6 +811,7 @@ if (argv[0] === 'network' && argv[1] === 'inspect') {
   process.exit(0);
 }
 if (argv[0] === 'volume' && argv[1] === 'inspect') {
+  if (process.env.DOCKER_STUB_MISSING_VOLUME === argv.at(-1)) process.exit(1);
   console.log(JSON.stringify([{
     Name: argv.at(-1),
     Labels: {
@@ -695,8 +823,37 @@ if (argv[0] === 'volume' && argv[1] === 'inspect') {
 }
 if (argv[0] === 'compose') {
   const command = ['build', 'pull', 'up', 'ps', 'images', 'config'].find((value) => argv.includes(value));
-  if (command === 'ps') console.log('c-' + argv.at(-1));
-  if (command === 'config') console.log(references[serviceFrom(argv.at(-1))] || '');
+  const service = serviceFrom(argv.at(-1));
+  if (command === 'ps' && process.env.DOCKER_STUB_ABSENT_SERVICE !== service) console.log('c-' + argv.at(-1));
+  if (command === 'config' && argv.includes('--images')) console.log(references[service] || '');
+  if (command === 'config' && argv.includes('--hash')) console.log(service + ' ' + composeHash);
+  if (command === 'config' && argv.includes('--format')) console.log(JSON.stringify({
+    services: {
+      srs: {
+        environment: {
+          HLS_FRAGMENT: process.env.HLS_FRAGMENT || '0.5',
+          SRS_ADAPTER_HOST: process.env.SRS_ADAPTER_HOST || 'stream-uploader',
+          SRS_ADAPTER_PORT: process.env.SRS_ADAPTER_PORT || '3000',
+          SRS_WEBHOOK_TOKEN: process.env.SRS_WEBHOOK_TOKEN || '',
+        },
+        entrypoint: ['/bin/bash', '/usr/local/srs/conf/entrypoint.sh'],
+        networks: { default: null },
+        volumes: [
+          { type: 'bind', source: ${JSON.stringify(
+            join(candidateRoot, 'engines/srs/srs.conf.template'),
+          )}, target: '/usr/local/srs/conf/srs.conf.template', read_only: true },
+          { type: 'bind', source: ${JSON.stringify(
+            join(candidateRoot, 'engines/srs/entrypoint.sh'),
+          )}, target: '/usr/local/srs/conf/entrypoint.sh', read_only: true },
+          { type: 'bind', source: ${JSON.stringify(
+            join(candidateRoot, 'engines/srs/healthcheck.sh'),
+          )}, target: '/usr/local/srs/conf/healthcheck.sh', read_only: true },
+          ...(process.env.SRS_CONF_FILE ? [{ type: 'bind', source: process.env.SRS_CONF_FILE, target: '/usr/local/srs/conf/srs.conf.custom', read_only: true }] : []),
+          { type: 'volume', source: 'srs-media', target: '/usr/local/srs/objs/nginx/html' },
+        ],
+      },
+    },
+  }));
   process.exit(0);
 }
 if (argv[0] === 'inspect') {
@@ -705,10 +862,19 @@ if (argv[0] === 'inspect') {
   if (format.includes('.State.Status')) console.log('running');
   else if (format.includes('.State.Health')) console.log(process.env.DOCKER_STUB_NO_HEALTH === service ? '' : process.env.DOCKER_STUB_UNHEALTHY === service ? 'unhealthy' : 'healthy');
   else if (format.includes('.Image')) console.log(process.env.DOCKER_STUB_WRONG_IMAGE === service ? 'sha256:' + 'f'.repeat(64) : ids[service]);
+  else if (format.includes('.HostConfig.NetworkMode')) console.log(process.env.DOCKER_STUB_NETWORK_MODE || 'release-a_default');
   else if (format.includes('.NetworkSettings.Networks')) console.log(process.env.DOCKER_STUB_CONTAINER_NETWORK_ID || fixtureNetworkId);
+  else if (format.includes('com.docker.compose.config-hash')) console.log(process.env.DOCKER_STUB_BAD_BEE_CONFIG_HASH === '1' ? '8'.repeat(64) : composeHash);
+  else if (format.includes('com.docker.compose.project')) console.log('release-a');
+  else if (format.includes('com.docker.compose.service')) console.log(service);
+  else if (format.includes('org.solarpunk.srs-continuation.srs-config')) console.log(process.env.DOCKER_STUB_SRS_CONFIG_DIGEST || '');
   else if (format.includes('.Config.Labels')) console.log(JSON.stringify({
     'org.solarpunk.srs-continuation.fixture': fixtureId,
     'org.solarpunk.srs-continuation.managed': process.env.DOCKER_STUB_CONTAINER_MANAGED_LABEL || 'true',
+    'org.solarpunk.srs-continuation.srs-config': process.env.DOCKER_STUB_SRS_CONFIG_DIGEST || '',
+    'com.docker.compose.config-hash': process.env.DOCKER_STUB_BAD_BEE_CONFIG_HASH === '1' ? '8'.repeat(64) : composeHash,
+    'com.docker.compose.project': 'release-a',
+    'com.docker.compose.service': service,
   }));
   else if (format.includes('.NetworkSettings.Ports')) {
     if (process.env.DOCKER_STUB_PUBLISHED_PORTS === 'unexpected') console.log(JSON.stringify({ '1935/tcp': [{ HostIp: '0.0.0.0', HostPort: '1935' }] }));

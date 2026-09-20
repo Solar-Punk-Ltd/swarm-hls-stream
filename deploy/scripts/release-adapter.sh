@@ -288,6 +288,16 @@ action_services=("${sorted_services[@]}")
 [ -z "$operation_kind" ] || action_services=("${sorted_mutating_services[@]}")
 verification_services=("${sorted_services[@]}")
 [ "$operation_kind" != "prepare" ] || verification_services=("${sorted_mutating_services[@]}")
+untouched_services=()
+if [ "$operation_kind" = "update" ]; then
+  for service in "${sorted_services[@]}"; do
+    is_mutating=false
+    for mutating_service in "${sorted_mutating_services[@]}"; do
+      [ "$service" != "$mutating_service" ] || is_mutating=true
+    done
+    [ "$is_mutating" = true ] || untouched_services+=("$service")
+  done
+fi
 
 if [ "$phase" = "transition" ] || [ "$phase" = "validate" ] || [ "$phase" = "verify" ]; then
   expected_image_services=("${sorted_services[@]}")
@@ -332,6 +342,14 @@ apply_port_slot
 
 if [ -n "${SRS_CONF_FILE:-}" ]; then
   [ -f "$SRS_CONF_FILE" ] && [ ! -L "$SRS_CONF_FILE" ] || refuse "uploader release SRS configuration is missing or invalid"
+  if [ -n "$operation_kind" ]; then
+    srs_conf_parent="$(cd "$(dirname "$SRS_CONF_FILE")" && pwd -P)"
+    srs_conf_path="${srs_conf_parent}/$(basename "$SRS_CONF_FILE")"
+    case "$srs_conf_path" in
+      "$candidate_root"/*) ;;
+      *) refuse "guarded uploader operation requires SRS_CONF_FILE inside its immutable candidate" ;;
+    esac
+  fi
 fi
 
 case "${COMPOSE_NETWORK:-}" in
@@ -417,6 +435,53 @@ compose_for() {
   docker compose --project-name "$project" --project-directory "$deploy_dir" "${compose_files[@]}" --env-file "$ENV_FILE" "${compose_profiles[@]}" "$@"
 }
 
+srs_effective_config_digest() {
+  local resolved size digest
+  if ! resolved="$(compose_for "$profile" config --format json srs)"; then
+    refuse "uploader release could not resolve the SRS effective configuration"
+  fi
+  size="${#resolved}"
+  [ "$size" -ge 1 ] && [ "$size" -le 1048576 ] || refuse "uploader release SRS effective configuration is invalid"
+  if ! digest="$(printf '%s' "$resolved" | node "$script_dir/release-effective-config.mjs" srs "$fixture_network_id" 2>/dev/null)"; then
+    refuse "uploader release SRS effective configuration is invalid"
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || refuse "uploader release SRS effective configuration is invalid"
+  printf '%s' "$digest"
+}
+
+verify_untouched_effective_config() {
+  local service="$1" container="$2" project_label service_label actual_hash candidate_hash_line candidate_service candidate_hash extra expected_network_mode
+  project_label="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")"
+  service_label="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")"
+  [ "$project_label" = "$profile" ] && [ "$service_label" = "$service" ] || refuse "uploader release untouched service identity does not match"
+  case "$service" in
+    srs)
+      candidate_hash="$(srs_effective_config_digest)"
+      actual_hash="$(docker inspect --format '{{index .Config.Labels "org.solarpunk.srs-continuation.srs-config"}}' "$container")"
+      ;;
+    bee-uploader|bee-gateway|bee-uploader-480p|bee-uploader-720p|bee-uploader-1080p)
+      if ! candidate_hash_line="$(compose_for "$profile" config --hash "$service")"; then
+        refuse "uploader release could not resolve an untouched Bee configuration"
+      fi
+      [ "${#candidate_hash_line}" -le 256 ] || refuse "uploader release untouched Bee configuration is invalid"
+      read -r candidate_service candidate_hash extra <<< "$candidate_hash_line"
+      [ "$candidate_service" = "$service" ] && [ -z "${extra:-}" ] && [[ "$candidate_hash" =~ ^[0-9a-f]{64}$ ]] || refuse "uploader release untouched Bee configuration is invalid"
+      actual_hash="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$container")"
+      ;;
+    *) refuse "uploader release cannot prove an untouched service configuration" ;;
+  esac
+  [ "$actual_hash" = "$candidate_hash" ] || refuse "uploader release untouched service effective configuration does not match"
+
+  if [ -n "$fixture_id" ]; then
+    expected_network_mode="$fixture_network_name"
+  elif [ "${COMPOSE_NETWORK:-}" = "host" ]; then
+    expected_network_mode=host
+  else
+    expected_network_mode="${profile}_default"
+  fi
+  [ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container")" = "$expected_network_mode" ] || refuse "uploader release untouched service network identity does not match"
+}
+
 write_preflight() {
   local temporary="${output}.tmp.$$"
   umask 077
@@ -496,10 +561,11 @@ case "$phase" in
   validate)
     result_services=()
     result_images=()
-    for service in "${sorted_services[@]}"; do
+    for service in "${untouched_services[@]}"; do
       container="$(compose_for "$profile" ps -q "$service")"
       [[ "$container" =~ ^[A-Za-z0-9_.:-]+$ ]] || refuse "$role release could not identify one container per service"
       [ "$(docker inspect --format '{{.State.Status}}' "$container")" = "running" ] || refuse "$role release service is not running"
+      verify_untouched_effective_config "$service" "$container"
       image_id="$(docker inspect --format '{{.Image}}' "$container")"
       [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse "$role release running image id is invalid"
       result_services+=("$service")
@@ -511,13 +577,25 @@ case "$phase" in
     override="$(dirname "$plan")/release-image-override.yml"
     reset_override="$(dirname "$plan")/release-fixture-port-reset.yml"
     temporary="${override}.tmp.$$"
+    srs_config_digest=""
+    for service in "${action_services[@]}"; do
+      [ "$service" != srs ] || srs_config_digest="$(srs_effective_config_digest)"
+    done
     umask 077
     printf 'services:\n' > "$temporary"
     for service in "${action_services[@]}"; do
       image_id="$(image_from_plan "$service")"
       printf '  %s:\n    image: %s\n    pull_policy: never\n' "$service" "$image_id" >> "$temporary"
+      if [ -n "$fixture_id" ] || [ "$service" = srs ]; then
+        printf '    labels:\n' >> "$temporary"
+        if [ -n "$fixture_id" ]; then
+          printf '      org.solarpunk.srs-continuation.fixture: "%s"\n      org.solarpunk.srs-continuation.managed: "true"\n' "$fixture_id" >> "$temporary"
+        fi
+        if [ "$service" = srs ]; then
+          printf '      org.solarpunk.srs-continuation.srs-config: "%s"\n' "$srs_config_digest" >> "$temporary"
+        fi
+      fi
       if [ -n "$fixture_id" ]; then
-        printf '    labels:\n      org.solarpunk.srs-continuation.fixture: "%s"\n      org.solarpunk.srs-continuation.managed: "true"\n' "$fixture_id" >> "$temporary"
         printf '    networks:\n      - default\n' >> "$temporary"
         if [ "$role" = "viewer" ] && [ "$service" = "client" ]; then
           printf '    ports:\n      - "127.0.0.1:%s:80"\n' "$CLIENT_PORT" >> "$temporary"
@@ -541,9 +619,17 @@ case "$phase" in
         printf '  %s:\n    ports: !reset []\n' "$service" >> "$temporary"
       done
       mv "$temporary" "$reset_override"
-      compose_for "$profile" -f "$reset_override" -f "$override" up -d --no-build --pull never "${action_services[@]}"
+      if [ -n "$operation_kind" ]; then
+        compose_for "$profile" -f "$reset_override" -f "$override" up -d --no-deps --no-build --pull never "${action_services[@]}"
+      else
+        compose_for "$profile" -f "$reset_override" -f "$override" up -d --no-build --pull never "${action_services[@]}"
+      fi
     else
-      compose_for "$profile" -f "$override" up -d --no-build --pull never "${action_services[@]}"
+      if [ -n "$operation_kind" ]; then
+        compose_for "$profile" -f "$override" up -d --no-deps --no-build --pull never "${action_services[@]}"
+      else
+        compose_for "$profile" -f "$override" up -d --no-build --pull never "${action_services[@]}"
+      fi
     fi
     "$script_dir/assert-started.sh" "$profile" "${action_services[@]}"
     ;;
@@ -577,8 +663,19 @@ case "$phase" in
       result_images+=("$image_id")
     done
     if [ -n "$fixture_id" ] && [ "$role" = "uploader" ]; then
-      inspect_fixture_volume "${profile}_srs-media"
-      inspect_fixture_volume "${profile}_uploader-state"
+      needs_media_volume=false
+      needs_uploader_state=false
+      for service in "${verification_services[@]}"; do
+        case "$service" in
+          srs) needs_media_volume=true ;;
+          stream-uploader)
+            needs_media_volume=true
+            needs_uploader_state=true
+            ;;
+        esac
+      done
+      [ "$needs_media_volume" != true ] || inspect_fixture_volume "${profile}_srs-media"
+      [ "$needs_uploader_state" != true ] || inspect_fixture_volume "${profile}_uploader-state"
     fi
     write_images
     ;;
