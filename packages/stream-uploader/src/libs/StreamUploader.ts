@@ -305,8 +305,12 @@ export interface StreamUploaderOptions {
   metrics?: ServiceMetrics;
   /** The admin service, when the deployment has one. See {@link AdminReporting}. */
   admin?: AdminReporting;
-  /** Lifecycle-v1 notification after a usable live manifest has been published. */
-  managedLifecycle?: { onLivePublished: (sourceGeneration: number) => void };
+  /** Lifecycle-v1 durable media and publication callbacks. */
+  managedLifecycle?: {
+    onLivePublished: (sourceGeneration: number) => void;
+    onSegmentUploaded?: (token: string, reference: string, state: StreamState) => void;
+    onSegmentSettled?: (token: string) => void;
+  };
   /**
    * The actual write completion of every earlier session on this topic, when any are still pending.
    *
@@ -408,7 +412,7 @@ export class StreamUploader {
 
   /** The admin service and this stream's id in it, or undefined in the standalone deployment. */
   private readonly admin?: AdminReporting;
-  private readonly managedLifecycle?: { onLivePublished: (sourceGeneration: number) => void };
+  private readonly managedLifecycle?: StreamUploaderOptions['managedLifecycle'];
   private managedPublicationGeneration?: number;
   /** Whether the feed head has been read for this session. See {@link resumeFeedIndex}. */
   private feedIndexResumed = false;
@@ -492,19 +496,30 @@ export class StreamUploader {
     }
   }
 
-  public handleSegment(segmentIndex: number, duration: number, data: Buffer, sourceGeneration?: number): void {
+  public handleSegment(
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    sourceGeneration?: number,
+    managedMediaToken?: string,
+  ): void {
     // Counted when queued and released however the job ends, so a stream whose uploads are failing
     // reports a backlog that drains rather than one that grows forever.
     this.queuedSeconds += duration;
     this.segmentsOffered += 1;
     recordSegment(this.bitrate, data.length, duration);
-    this.segmentQueue.add(async () => {
+    void this.segmentQueue
+      .add(async () => {
       try {
-        await this.uploadSegment(segmentIndex, duration, data, sourceGeneration);
+        await this.uploadSegment(segmentIndex, duration, data, sourceGeneration, managedMediaToken);
       } finally {
         this.queuedSeconds -= duration;
+        if (managedMediaToken) {
+          this.managedLifecycle?.onSegmentSettled?.(managedMediaToken);
+        }
       }
-    });
+      })
+      .catch((error) => this.errorHandler.handleError(error, 'StreamUploader.handleSegment'));
   }
 
   public getQueuedSeconds(): number {
@@ -516,6 +531,7 @@ export class StreamUploader {
     duration: number,
     data: Buffer,
     sourceGeneration?: number,
+    managedMediaToken?: string,
   ): Promise<void> {
     const result = await this.uploadDataToBee(data);
     if (!result) {
@@ -536,6 +552,10 @@ export class StreamUploader {
     this.managedPublicationGeneration = sourceGeneration;
     this.pendingDiscontinuity = false;
     this.readiness = onFirstSegmentUploaded(this.readiness);
+
+    if (managedMediaToken) {
+      this.managedLifecycle?.onSegmentUploaded?.(managedMediaToken, ref, this.getStreamState());
+    }
 
     this.logger.log(segmentUploaded(this.streamId, segmentIndex, ref));
 

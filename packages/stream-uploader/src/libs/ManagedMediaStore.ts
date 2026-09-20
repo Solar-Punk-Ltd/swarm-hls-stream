@@ -40,6 +40,18 @@ export type ManagedMediaAcceptance =
   | { kind: 'accepted'; record: ManagedMediaRecord }
   | { kind: 'duplicate'; record: ManagedMediaRecord }
   | { kind: 'conflict' };
+export type ManagedMediaExisting = 'missing' | 'duplicate' | 'conflict';
+
+/** The durable managed-media boundary used by the orchestrator and replaceable in focused tests. */
+export interface ManagedMediaPersistence {
+  find(input: ManagedMediaInput, data: Uint8Array): ManagedMediaExisting;
+  accept(input: ManagedMediaInput, data: Uint8Array): ManagedMediaAcceptance;
+  commitUploaded(token: string, reference: string, trackState: StreamState): ManagedMediaRecord;
+  readBytes(token: string): Buffer | null;
+  listPending(adminStreamId: string, runNumber: number): ManagedMediaRecord[];
+  listRun(adminStreamId: string, runNumber: number): ManagedMediaRecord[];
+  readTrackState(adminStreamId: string, runNumber: number, streamId: string, rendition: string | null): StreamState | null;
+}
 
 /** Synchronous filesystem boundary required before an engine callback can be acknowledged. */
 export interface ManagedMediaFileOps {
@@ -194,7 +206,7 @@ function sameAcceptedPayload(record: ManagedMediaRecord, input: ManagedMediaInpu
 }
 
 /** Durable journal for media callbacks accepted from lifecycle-v1 sources. */
-export class ManagedMediaStore {
+export class ManagedMediaStore implements ManagedMediaPersistence {
   private readonly nextOrdinals = new Map<string, number>();
 
   constructor(
@@ -238,6 +250,17 @@ export class ManagedMediaStore {
       throw error;
     }
     return { kind: 'accepted', record };
+  }
+
+  public find(input: ManagedMediaInput, data: Uint8Array): ManagedMediaExisting {
+    if (!isInput(input) || data.byteLength === 0) {
+      return 'missing';
+    }
+    const existing = this.readRecord(digest(Buffer.from(identityJson(input), 'utf8')));
+    if (!existing) {
+      return 'missing';
+    }
+    return sameAcceptedPayload(existing, input, data) ? 'duplicate' : 'conflict';
   }
 
   public commitUploaded(token: string, reference: string, trackState: StreamState): ManagedMediaRecord {

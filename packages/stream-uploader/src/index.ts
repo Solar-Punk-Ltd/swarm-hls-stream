@@ -20,6 +20,7 @@ import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
+import { ManagedMediaStore } from './libs/ManagedMediaStore.js';
 import { ManagedRunStore } from './libs/ManagedRunStore.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { assertNodeReachable, waitForNode } from './libs/NodeWait.js';
@@ -145,6 +146,9 @@ async function start() {
     const managedRunStore = config.srsLifecycle
       ? new ManagedRunStore(path.join(config.stateDir, 'managed-runs'))
       : undefined;
+    const managedMediaStore = config.srsLifecycle
+      ? new ManagedMediaStore(path.join(config.stateDir, 'managed-media'))
+      : undefined;
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
     const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
@@ -200,6 +204,7 @@ async function start() {
       ladderRegistry,
       managedSourceReconnectMs: config.srsLifecycle ? 60_000 : undefined,
       managedRunStore,
+      managedMediaStore,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);

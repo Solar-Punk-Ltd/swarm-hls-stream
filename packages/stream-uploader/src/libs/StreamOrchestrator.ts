@@ -74,6 +74,12 @@ import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
 import { LadderRegistry } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import {
+  ManagedMediaAcceptance,
+  ManagedMediaInput,
+  ManagedMediaPersistence,
+  ManagedMediaRecord,
+} from './ManagedMediaStore.js';
+import {
   MANAGED_RUN_LOADED,
   ManagedClaimAttempt,
   ManagedClaimCompletion,
@@ -127,6 +133,8 @@ export interface StreamOrchestratorConfig {
   managedSourceReconnectMs?: number;
   /** Durable admission state for lifecycle-v1 managed SRS streams. */
   managedRunStore?: ManagedRunPersistence;
+  /** Durable raw callbacks and cumulative placed track history for lifecycle-v1 managed SRS streams. */
+  managedMediaStore?: ManagedMediaPersistence;
   /**
    * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is the grid every segment's
    * `#EXT-X-PROGRAM-DATE-TIME` reads its media against. See {@link BroadcastAnchor}.
@@ -319,6 +327,8 @@ export class StreamOrchestrator {
   private managedSources = new Map<string, ManagedSourceState>();
   /** Source generation whose first accepted fragment reset each managed ABR rung's ingress state. */
   private managedRenditionGenerations = new Map<string, number>();
+  /** Media tokens already handed to an uploader queue in this process. */
+  private managedQueuedMedia = new Set<string>();
   /**
    * The drain running for a stream id, with the session it is draining. The uploader is what makes the
    * entry answerable: a reconnect registers a replacement under the same id while the outgoing drain is
@@ -856,6 +866,21 @@ export class StreamOrchestrator {
     }
 
     if (state.current && sameSource(state.current, identity)) {
+      const existing = this.findManagedMedia(
+        state,
+        streamId,
+        identity,
+        segmentIndex,
+        duration,
+        data,
+        discontinuity,
+      );
+      if (existing === 'duplicate') {
+        return { accepted: true };
+      }
+      if (existing === 'conflict') {
+        return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
+      }
       const inspected = this.inspectManagedMedia(
         streamId,
         state.mediatype ?? MEDIA_TYPE_VIDEO,
@@ -866,7 +891,23 @@ export class StreamOrchestrator {
       if ('reason' in inspected) {
         return { accepted: false, reason: inspected.reason };
       }
-      const result = this.enqueueSegment(streamId, segmentIndex, duration, data, discontinuity, identity.generation);
+      const refusal = this.managedQueueRefusal(streamId);
+      if (refusal) {
+        return { accepted: false, reason: refusal };
+      }
+      const durable = this.persistManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
+      if (durable === null) {
+        return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
+      }
+      const result = this.enqueueManagedMedia(
+        streamId,
+        segmentIndex,
+        duration,
+        data,
+        discontinuity,
+        identity.generation,
+        durable,
+      );
       if (result.accepted) {
         state.lastProgressPts = inspected.latestPts;
         if (!this.renewManagedSourceDeadline(streamId, state, reconnectMs)) {
@@ -885,6 +926,14 @@ export class StreamOrchestrator {
     if ('reason' in inspected) {
       return { accepted: false, reason: inspected.reason };
     }
+    const refusal = this.managedQueueRefusal(streamId);
+    if (refusal) {
+      return { accepted: false, reason: refusal };
+    }
+    const durable = this.persistManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
+    if (durable === null) {
+      return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
+    }
 
     const resumed = this.activeStreams.has(streamId);
     state.candidate = undefined;
@@ -902,13 +951,14 @@ export class StreamOrchestrator {
       this.spawnUploader(streamId, candidate.mediatype, candidate.claimant, candidate.admin);
     }
 
-    const result = this.enqueueSegment(
+    const result = this.enqueueManagedMedia(
       streamId,
       segmentIndex,
       duration,
       data,
       resumed || discontinuity,
       identity.generation,
+      durable,
     );
     if (result.accepted) {
       state.lastProgressPts = inspected.latestPts;
@@ -945,6 +995,29 @@ export class StreamOrchestrator {
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
     }
+    const existing = this.findManagedMedia(
+      state,
+      streamId,
+      identity,
+      segmentIndex,
+      duration,
+      data,
+      discontinuity,
+    );
+    if (existing === 'duplicate') {
+      return { accepted: true };
+    }
+    if (existing === 'conflict') {
+      return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
+    }
+    const refusal = this.managedQueueRefusal(streamId);
+    if (refusal) {
+      return { accepted: false, reason: refusal };
+    }
+    const durable = this.persistManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
+    if (durable === null) {
+      return { accepted: false, reason: REJECT_UNVERIFIED_SOURCE_MEDIA };
+    }
     if (this.managedRenditionGenerations.get(streamId) !== identity.generation) {
       this.processedSegments.set(streamId, this.newDuplicateFilter());
       this.lastAccountedIndex.delete(streamId);
@@ -953,14 +1026,125 @@ export class StreamOrchestrator {
       uploader.markDiscontinuity();
       this.managedRenditionGenerations.set(streamId, identity.generation);
     }
-    return this.enqueueSegment(
+    return this.enqueueManagedMedia(
       streamId,
       segmentIndex,
       duration,
       data,
       discontinuity,
       identity.generation,
+      durable,
     );
+  }
+
+  private managedQueueRefusal(streamId: string): RejectReason | null {
+    const uploader = this.activeStreams.get(streamId);
+    if (!uploader) {
+      return null;
+    }
+    if (this.isDraining(streamId, uploader)) {
+      return REJECT_DRAINING;
+    }
+    return uploader.segmentQueue.size >= this.config.maxQueueSize ? REJECT_QUEUE_FULL : null;
+  }
+
+  private persistManagedMedia(
+    state: ManagedSourceState,
+    streamId: string,
+    source: SourceConnectionIdentity,
+    sequence: number,
+    duration: number,
+    data: Buffer,
+    discontinuity: boolean,
+  ): ManagedMediaAcceptance | null | undefined {
+    const store = this.config.managedMediaStore;
+    if (!store) {
+      return undefined;
+    }
+    try {
+      const accepted = store.accept(
+        this.managedMediaInput(state, streamId, source, sequence, duration, discontinuity),
+        data,
+      );
+      if (accepted.kind === 'conflict') {
+        this.logger.error(`[StreamOrchestrator] Refused conflicting managed media identity for ${streamId}:${sequence}`);
+        return null;
+      }
+      return accepted;
+    } catch (error) {
+      this.logger.error(`[StreamOrchestrator] Failed to durably accept managed media ${streamId}:${sequence}:`, error);
+      return null;
+    }
+  }
+
+  private findManagedMedia(
+    state: ManagedSourceState,
+    streamId: string,
+    source: SourceConnectionIdentity,
+    sequence: number,
+    duration: number,
+    data: Buffer,
+    discontinuity: boolean,
+  ): 'missing' | 'duplicate' | 'conflict' {
+    return (
+      this.config.managedMediaStore?.find(
+        this.managedMediaInput(state, streamId, source, sequence, duration, discontinuity),
+        data,
+      ) ?? 'missing'
+    );
+  }
+
+  private managedMediaInput(
+    state: ManagedSourceState,
+    streamId: string,
+    source: SourceConnectionIdentity,
+    sequence: number,
+    duration: number,
+    discontinuity: boolean,
+  ): ManagedMediaInput {
+    return {
+      lifecycleVersion: 1,
+      adminStreamId: state.record.adminStreamId,
+      runNumber: state.record.runNumber,
+      streamId,
+      source,
+      rendition: this.config.ladder?.match(streamId)?.rung.name ?? null,
+      sequence,
+      duration,
+      discontinuity,
+    };
+  }
+
+  private enqueueManagedMedia(
+    streamId: string,
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    discontinuity: boolean,
+    sourceGeneration: number,
+    acceptance: ManagedMediaAcceptance | undefined,
+  ): SegmentResult {
+    if (!this.config.managedMediaStore) {
+      return this.enqueueSegment(streamId, segmentIndex, duration, data, discontinuity, sourceGeneration);
+    }
+    const record = acceptance?.kind === 'conflict' ? undefined : acceptance?.record;
+    if (!record || record.status === 'committed' || this.managedQueuedMedia.has(record.token)) {
+      return { accepted: true };
+    }
+    this.managedQueuedMedia.add(record.token);
+    const result = this.enqueueSegment(
+      streamId,
+      segmentIndex,
+      duration,
+      data,
+      discontinuity,
+      sourceGeneration,
+      record,
+    );
+    if (!result.accepted) {
+      this.managedQueuedMedia.delete(record.token);
+    }
+    return result;
   }
 
   /** Admit a managed transcode without replacing the uploader retained for reconnect grace. */
@@ -1628,7 +1812,15 @@ export class StreamOrchestrator {
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
       managedLifecycle: managedState
-        ? { onLivePublished: (sourceGeneration) => this.markManagedManifestPublished(managedStreamId, sourceGeneration) }
+        ? {
+            onLivePublished: (sourceGeneration) =>
+              this.markManagedManifestPublished(managedStreamId, sourceGeneration),
+            onSegmentUploaded: this.config.managedMediaStore
+              ? (token, reference, trackState) =>
+                  this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
+              : undefined,
+            onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
+          }
         : undefined,
       predecessorDrained,
     });
@@ -1711,6 +1903,7 @@ export class StreamOrchestrator {
     data: Buffer,
     discontinuity = false,
     sourceGeneration?: number,
+    managedMedia?: ManagedMediaRecord,
   ): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
@@ -1759,6 +1952,10 @@ export class StreamOrchestrator {
     // Deduplication
     const processed = this.processedSegments.get(streamId);
     if (processed?.has(segmentIndex)) {
+      if (managedMedia?.status === 'pending') {
+        uploader.handleSegment(segmentIndex, duration, data, sourceGeneration, managedMedia.token);
+        return { accepted: true };
+      }
       // Deliberately not counted as activity. A replayed index does no upload work and advances no
       // manifest, so a sender stuck on one index would otherwise look alive to the stall signal.
       return { accepted: true }; // silently accept duplicate
@@ -1800,6 +1997,7 @@ export class StreamOrchestrator {
       this.mediaDuration(streamId, segmentIndex, duration, reading),
       data,
       sourceGeneration,
+      managedMedia?.token,
     );
     return { accepted: true };
   }
@@ -2346,7 +2544,15 @@ export class StreamOrchestrator {
       // written before admin mode, and on every entry written outside it.
       admin: this.adminReportingFor(state.adminStreamId),
       managedLifecycle: managedState
-        ? { onLivePublished: (sourceGeneration) => this.markManagedManifestPublished(managedStreamId, sourceGeneration) }
+        ? {
+            onLivePublished: (sourceGeneration) =>
+              this.markManagedManifestPublished(managedStreamId, sourceGeneration),
+            onSegmentUploaded: this.config.managedMediaStore
+              ? (token, reference, trackState) =>
+                  this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
+              : undefined,
+            onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
+          }
         : undefined,
     });
 

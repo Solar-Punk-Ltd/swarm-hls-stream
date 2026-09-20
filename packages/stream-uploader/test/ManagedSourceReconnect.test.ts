@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 
+import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import {
   MANAGED_RUN_LOADED,
   MANAGED_RUN_MISSING,
@@ -73,6 +77,8 @@ function makeManagedOrchestrator(
   saved: StreamState[] = [],
   maxQueueSize = 100,
   mediaType: MediaType = MEDIA_TYPE_VIDEO,
+  managedMediaStore?: ManagedMediaStore,
+  uploads: Parameters<typeof makeTestOrchestrator>[1] = {},
 ): StreamOrchestrator {
   const orchestrator = makeTestOrchestrator(
     {
@@ -80,9 +86,10 @@ function makeManagedOrchestrator(
       wallClock: () => 1_000_000 + clock.now(),
       managedSourceReconnectMs: RECONNECT_MS,
       managedRunStore: new MemoryManagedRuns(),
+      managedMediaStore,
       maxQueueSize,
     },
-    {},
+    uploads,
     makeFakeRecoveryStore({
       save: (_streamId: string, state: StreamState) => saved.push(state),
     }),
@@ -371,5 +378,75 @@ describe('managed SRS source reconnect foundation', () => {
     assert.deepEqual(media(orchestrator, SOURCE_A, 0, ptsModulus - 4 * FRAME_TICKS), { accepted: true });
     assert.deepEqual(media(orchestrator, SOURCE_A, 1, 0), { accepted: true });
     await orchestrator.cleanup();
+  });
+
+  it('durably accepts managed bytes before acknowledging and removes them only after placed history is durable', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'managed-media-runtime-'));
+    const clock = new FakeClock();
+    const store = new ManagedMediaStore(root);
+    const reference = 'a'.repeat(64);
+    let finishUpload!: (value: unknown) => void;
+    const upload = new Promise((resolve) => {
+      finishUpload = resolve;
+    });
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_VIDEO, store, {
+      uploadData: async () => upload,
+    });
+
+    try {
+      assert.equal(provision(orchestrator, SOURCE_A), true);
+      assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+
+      const pending = store.listPending(ADMIN_SESSION.id, 2);
+      assert.equal(pending.length, 1, 'the callback was acknowledged before its bytes were durable');
+      assert.ok(store.readBytes(pending[0].token)?.equals(videoSegment(4, 0)));
+
+      finishUpload({ reference: { toHex: () => reference } });
+      const uploader = activeUploader(orchestrator);
+      assert.ok(uploader);
+      await uploader.segmentQueue.onIdle();
+
+      const committed = store.listRun(ADMIN_SESSION.id, 2);
+      assert.equal(committed[0].status, 'committed');
+      assert.equal(committed[0].reference, reference);
+      assert.equal(store.readBytes(committed[0].token), null, 'raw bytes survived durable placement');
+      assert.equal(store.readTrackState(ADMIN_SESSION.id, 2, STREAM_ID, null)?.segments[0].ref, reference);
+    } finally {
+      await orchestrator.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps failed managed uploads pending and does not upload an exact duplicate twice', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'managed-media-runtime-'));
+    const clock = new FakeClock();
+    const store = new ManagedMediaStore(root);
+    let attempts = 0;
+    let refuseUpload!: (reason: unknown) => void;
+    const upload = new Promise((_, reject) => {
+      refuseUpload = reject;
+    });
+    const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_VIDEO, store, {
+      uploadData: async () => {
+        attempts++;
+        return upload;
+      },
+    });
+
+    try {
+      assert.equal(provision(orchestrator, SOURCE_A), true);
+      assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+      const uploader = activeUploader(orchestrator);
+      assert.ok(uploader);
+      assert.deepEqual(media(orchestrator, SOURCE_A, 0), { accepted: true });
+      assert.equal(attempts, 1, 'an exact duplicate callback was uploaded twice while the first was queued');
+
+      refuseUpload({ status: 400, message: 'refused' });
+      await uploader.segmentQueue.onIdle();
+      assert.equal(store.listPending(ADMIN_SESSION.id, 2).length, 1, 'a failed upload was treated as empty');
+    } finally {
+      await orchestrator.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
