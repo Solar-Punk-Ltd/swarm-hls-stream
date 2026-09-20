@@ -315,6 +315,18 @@ describe('runContinuationMediaScenario', () => {
       evidence.snapshots.every((snapshot) => snapshot.decoded.evidenceKind === 'sampled-order'),
       true,
     );
+    assert.equal(
+      evidence.snapshots.every((snapshot) => snapshot.decoded.audioAnalysisWindowSeconds === 0.256),
+      true,
+    );
+    assert.equal(
+      evidence.snapshots.every((snapshot) => snapshot.decoded.audioAnalysisHopSeconds === 0.128),
+      true,
+    );
+    assert.equal(
+      evidence.snapshots.every((snapshot) => snapshot.decoded.audioCentroidUnit === 'hertz'),
+      true,
+    );
 
     const continuationPosts = fetch.requests.filter((request) => request.method === 'POST');
     assert.equal(continuationPosts.length, 2);

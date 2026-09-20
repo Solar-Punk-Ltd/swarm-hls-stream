@@ -130,7 +130,9 @@ export interface DecodedMarkerRange {
 export interface DecodedReplayEvidence {
   evidenceKind: 'sampled-order';
   videoSampleRateFps: 1;
-  audioWindowSeconds: 1;
+  audioAnalysisWindowSeconds: 0.256;
+  audioAnalysisHopSeconds: 0.128;
+  audioCentroidUnit: 'hertz';
   track: {
     kind: 'master' | 'rendition';
     name?: string;
@@ -834,7 +836,9 @@ function decodeEvidence(
   return {
     evidenceKind: 'sampled-order',
     videoSampleRateFps: 1,
-    audioWindowSeconds: 1,
+    audioAnalysisWindowSeconds: 0.256,
+    audioAnalysisHopSeconds: 0.128,
+    audioCentroidUnit: 'hertz',
     track: selectedTrack(recording),
     videoMarkerRanges: videoMarkerRanges(videoResult),
     audioMarkerRanges: audioMarkerRanges(audioResult),
