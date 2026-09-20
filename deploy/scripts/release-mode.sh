@@ -5,6 +5,9 @@ umask 077
 
 GUARD_BIN="${HOME}/.local/bin/streaming-release-guard"
 GUARD_STATE_ROOT="${HOME}/.local/state/streaming-release-guard"
+FIXED_GUARD_ROOT="/opt/streaming-release-guard"
+FIXED_GUARD_BIN="${FIXED_GUARD_ROOT}/streaming-release-guard"
+FIXED_GUARD_BINDING="${FIXED_GUARD_ROOT}/container-binding.json"
 BOOTSTRAP_LOCK="${HOME}/.local/state/streaming-release-bootstrap.lock"
 BOOTSTRAP_OWNER="${BOOTSTRAP_LOCK}/owner"
 BOOTSTRAP_RELEASE_CLAIM="${BOOTSTRAP_LOCK}/release.claim"
@@ -12,6 +15,53 @@ UUID_PATTERN='^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 path_exists() {
     [ -e "$1" ] || [ -L "$1" ]
+}
+
+select_guard_installation() {
+    if ! path_exists "$FIXED_GUARD_ROOT" &&
+        ! path_exists "$FIXED_GUARD_BIN" &&
+        ! path_exists "$FIXED_GUARD_BINDING"; then
+        return
+    fi
+    if [ ! -d "$FIXED_GUARD_ROOT" ] || [ -L "$FIXED_GUARD_ROOT" ] ||
+        [ ! -f "$FIXED_GUARD_BINDING" ] || [ -L "$FIXED_GUARD_BINDING" ] ||
+        [ ! -f "$FIXED_GUARD_BIN" ] || [ -L "$FIXED_GUARD_BIN" ] || [ ! -x "$FIXED_GUARD_BIN" ]; then
+        echo "ERROR: installed release guard binding is partial or invalid" >&2
+        exit 1
+    fi
+    binding_size="$(wc -c < "$FIXED_GUARD_BINDING" | tr -d '[:space:]')"
+    if [[ ! "$binding_size" =~ ^[0-9]+$ ]] || [ "$binding_size" -lt 1 ] || [ "$binding_size" -gt 4096 ]; then
+        echo "ERROR: installed release guard binding is invalid" >&2
+        exit 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "ERROR: installed release guard binding cannot be read" >&2
+        exit 1
+    fi
+    if ! bound_state_root="$(node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+try {
+  const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== "schemaVersion" || keys[1] !== "stateRoot") process.exit(1);
+  if (value.schemaVersion !== 1 || typeof value.stateRoot !== "string") process.exit(1);
+  if (!path.isAbsolute(value.stateRoot) || path.normalize(value.stateRoot) !== value.stateRoot) process.exit(1);
+  if (Buffer.byteLength(value.stateRoot) > 4096 || /[\0\r\n]/.test(value.stateRoot)) process.exit(1);
+  process.stdout.write(value.stateRoot);
+} catch {
+  process.exit(1);
+}
+' "$FIXED_GUARD_BINDING" 2>/dev/null)"; then
+        echo "ERROR: installed release guard binding is invalid" >&2
+        exit 1
+    fi
+    if [ ! -d "$bound_state_root" ] || [ -L "$bound_state_root" ]; then
+        echo "ERROR: installed release guard binding state is missing or invalid" >&2
+        exit 1
+    fi
+    GUARD_BIN="$FIXED_GUARD_BIN"
+    GUARD_STATE_ROOT="$bound_state_root"
 }
 
 sync_paths() {
@@ -152,6 +202,8 @@ begin_release() {
             ;;
     esac
 }
+
+select_guard_installation
 
 case "${1:-begin}" in
     begin) begin_release "${2:-}" ;;

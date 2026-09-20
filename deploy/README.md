@@ -189,6 +189,13 @@ that profile before building images or moving services. The deployment manager i
 An unrelated legacy profile can still use `deploy.sh`. It receives its own profile-scoped lease from
 the installed guard and cannot select any protected manager, admin, uploader, or viewer profile.
 
+Inside the deployment manager API container, the entry reads the fixed
+`/opt/streaming-release-guard/container-binding.json` descriptor and uses the installed executable
+beside it with the descriptor's state directory. This keeps raw unrelated-profile deployment on the
+same durable lease even though the API process has a different `HOME`. A partial or malformed fixed
+installation, or a descriptor whose state directory is missing, refuses before bootstrap or
+deployment work. A host with no fixed installation keeps the existing `HOME/.local` discovery path.
+
 The isolated continuation fixture is narrower than an ordinary deployment. Its uploader target is
 exactly `srs` plus `stream-uploader`, and its viewer target is exactly `client`. Both attach only to
 the guard-bound internal fixture network. The uploader publishes no host ports. The viewer publishes
