@@ -158,6 +158,12 @@ describe('the environment contract', () => {
       assert.equal((await loadConfig(requiredEnv())).srsLifecycle, null);
     });
 
+    it('ships disabled defaults in the supported environment sample', () => {
+      const sample = readFileSync(resolve(REPO_ROOT, '.env.sample'), 'utf8');
+      assert.match(sample, /^SRS_LIFECYCLE_VERSION=$/m);
+      assert.match(sample, /^SRS_UPLOADER_ID=$/m);
+    });
+
     it('reads version one with its stable uploader assignment', async () => {
       assert.deepEqual((await loadConfig(managedEnv())).srsLifecycle, {
         version: 1,
