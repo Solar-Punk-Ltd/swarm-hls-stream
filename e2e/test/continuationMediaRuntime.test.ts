@@ -35,7 +35,7 @@ function successfulProcessResult(): CommandResult {
 }
 
 function mediaProcessResult() {
-  return { code: 0, signal: null, stdout: new Uint8Array(), stderr: '' } as const;
+  return { code: 0, stdout: new Uint8Array(), stderr: '' } as const;
 }
 
 async function nextTurn(): Promise<void> {
@@ -307,6 +307,7 @@ describe('continuation media runtime adapters', () => {
     await assert.rejects(process.stop(), /synthetic remote stop failure/);
 
     assert.equal(handle.stopClientCalls, 1);
+    assert.throws(() => subject.assertIdle(), /not idle/i);
     await assert.rejects(subject.spawn(invocation), /stop.*unresolved/i);
     assert.equal(launcher.inputs.length, 1);
   });
@@ -332,6 +333,7 @@ describe('continuation media runtime adapters', () => {
     const first = await subject.spawn(invocation);
 
     await first.stop();
+    assert.doesNotThrow(() => subject.assertIdle());
     await subject.spawn(invocation);
 
     assert.deepEqual(command.calls, [

@@ -126,6 +126,19 @@ class QueuedSpawn implements MediaScenarioSpawn {
   }
 }
 
+class StopBeforeNextSpawn extends QueuedSpawn {
+  override async spawn(invocation: MediaScenarioProcessInvocation): Promise<MediaScenarioProcess> {
+    if (this.invocations.length === 3) {
+      assert.equal(
+        this.processes[2]?.stopCalls,
+        1,
+        'closed publisher must be stopped before Continue starts its successor',
+      );
+    }
+    return await super.spawn(invocation);
+  }
+}
+
 function processResult(code: number): MediaScenarioProcessResult {
   return { code, stdout: new Uint8Array(), stderr: code === 0 ? '' : 'network failed at credential-bearing URL' };
 }
@@ -179,7 +192,7 @@ function successfulFetch(
 describe('runReconnectAcceptanceScenario', () => {
   it('observes same-run reconnect, cutoff termination, unchanged closure, and admission after Continue', async () => {
     const fetch = successfulFetch();
-    const spawn = new QueuedSpawn([processResult(0), processResult(0), processResult(1), processResult(0)]);
+    const spawn = new StopBeforeNextSpawn([processResult(0), processResult(0), processResult(1), processResult(0)]);
     let now = 10_000;
     const sleeps: number[] = [];
 
@@ -242,7 +255,7 @@ describe('runReconnectAcceptanceScenario', () => {
       [
         { stopCalls: 1, waitCalls: 0 },
         { stopCalls: 1, waitCalls: 0 },
-        { stopCalls: 0, waitCalls: 1 },
+        { stopCalls: 1, waitCalls: 1 },
         { stopCalls: 1, waitCalls: 0 },
       ],
     );
