@@ -1,6 +1,6 @@
+import react from '@vitejs/plugin-react-swc';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import react from '@vitejs/plugin-react-swc';
 import { defineConfig } from 'vite';
 
 const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams,spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { chromium, type Browser, type Locator } from 'playwright-core';
+import { fileURLToPath } from 'node:url';
+import { type Browser, chromium, type Locator } from 'playwright-core';
 
 const E2E_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const REPOSITORY_ROOT = dirname(E2E_ROOT);
@@ -24,7 +24,7 @@ type CatalogEntry = {
   title: string;
   renditions: Array<{ name: string; width: number; height: number; topic: string; bandwidth: number; avgBandwidth: number }>;
   lifecycle: { version: 1; revision: number; runNumber: number; state: 'live' | 'vod' };
-  completedRecording: {
+  completedRecording?: {
     runNumber: number;
     master: { topic: string; index: number; reference: string; duration: number };
     expectedRenditions: string[];
@@ -63,7 +63,11 @@ function recording(): CatalogEntry['completedRecording'] {
   };
 }
 
-function catalog(state: 'live' | 'vod'): CatalogEntry {
+function catalog(
+  state: 'live' | 'vod',
+  runNumber = state === 'live' ? 5 : 4,
+  completedRecording: CatalogEntry['completedRecording'] | null = recording(),
+): CatalogEntry {
   return {
     owner: '0xviewer',
     topic: 'stable-master-topic',
@@ -80,8 +84,8 @@ function catalog(state: 'live' | 'vod'): CatalogEntry {
         avgBandwidth: 1_800_000,
       },
     ],
-    lifecycle: { version: 1, revision: state === 'live' ? 10 : 9, runNumber: state === 'live' ? 5 : 4, state },
-    completedRecording: recording(),
+    lifecycle: { version: 1, revision: state === 'live' ? 10 : 9, runNumber, state },
+    ...(completedRecording ? { completedRecording } : {}),
   };
 }
 
@@ -150,7 +154,7 @@ async function waitForFixture(
       throw new Error(`fixture stopped before it started at ${url}\n${fixture.diagnostics()}`);
     }
     try {
-      if ((await fetch(url)).ok) return;
+      if ((await fetch(url)).ok) {return;}
     } catch {
       // Vite has not accepted connections yet.
     }
@@ -160,12 +164,24 @@ async function waitForFixture(
 }
 
 async function stopFixture(vite: ChildProcessWithoutNullStreams): Promise<void> {
-  if (vite.exitCode !== null) return;
+  if (vite.exitCode !== null) {return;}
   vite.kill('SIGTERM');
   await Promise.race([once(vite, 'exit'), new Promise((resolve) => setTimeout(resolve, 5_000))]);
   if (vite.exitCode === null) {
     vite.kill('SIGKILL');
     await once(vite, 'exit');
+  }
+}
+
+async function launchBrowser(fixture: { diagnostics: () => string }): Promise<Browser> {
+  try {
+    return await chromium.launch({
+      executablePath: CHROME_PATH,
+      headless: true,
+      args: process.getuid?.() === 0 ? ['--no-sandbox'] : [],
+    });
+  } catch (error) {
+    throw new Error(`could not launch Chromium at ${CHROME_PATH}: ${(error as Error).message}\n${fixture.diagnostics()}`);
   }
 }
 
@@ -177,15 +193,7 @@ test('keeps a mounted replay through a catalogue refresh and remounts once only 
 
   try {
     await waitForFixture(fixtureUrl, fixture);
-    try {
-      browser = await chromium.launch({
-        executablePath: CHROME_PATH,
-        headless: true,
-        args: process.getuid?.() === 0 ? ['--no-sandbox'] : [],
-      });
-    } catch (error) {
-      throw new Error(`could not launch Chromium at ${CHROME_PATH}: ${(error as Error).message}\n${fixture.diagnostics()}`);
-    }
+    browser = await launchBrowser(fixture);
     const page = await browser.newPage();
     await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
     await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod'));
@@ -207,6 +215,42 @@ test('keeps a mounted replay through a catalogue refresh and remounts once only 
     await page.getByRole('button', { name: 'Stream resumed · Watch live' }).click();
     await expectAttribute(player, 'data-master-reference', '');
     await expectAttribute(player, 'data-rendition-topic', 'live-rung');
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
+  } finally {
+    await browser?.close();
+    await stopFixture(fixture.vite);
+  }
+});
+
+test('keeps live run A mounted through closure and run B until Watch live is selected', async () => {
+  const port = await freePort();
+  const fixtureUrl = `http://127.0.0.1:${port}`;
+  const fixture = startFixture(port);
+  let browser: Browser | undefined;
+
+  try {
+    await waitForFixture(fixtureUrl, fixture);
+    browser = await launchBrowser(fixture);
+    const page = await browser.newPage();
+    await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
+    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('live', 4, null));
+    const player = page.getByTestId('continuation-player');
+    await player.waitFor();
+    await page.evaluate(() => {
+      (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
+    });
+
+    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 4));
+    await expectAttribute(player, 'data-pinned-master-reference', MASTER_REFERENCE);
+    assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 1, destroyed: 0 });
+
+    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('live', 5));
+    await expectAttribute(player, 'data-pinned-master-reference', MASTER_REFERENCE);
+    assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 1, destroyed: 0 });
+
+    await page.getByRole('button', { name: 'Stream resumed · Watch live' }).click();
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
   } finally {
     await browser?.close();

@@ -21,10 +21,14 @@ async function freePort() {
 
 async function main() {
   const port = await freePort();
-  const server = spawn(vite, ['--config', join(fixtureRoot, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: clientRoot,
-    stdio: 'pipe',
-  });
+  const server = spawn(
+    vite,
+    ['--config', join(fixtureRoot, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)],
+    {
+      cwd: clientRoot,
+      stdio: 'pipe',
+    },
+  );
   let diagnostics = '';
   server.stdout.on('data', (chunk) => {
     diagnostics = `${diagnostics}${chunk}`.slice(-8_000);
