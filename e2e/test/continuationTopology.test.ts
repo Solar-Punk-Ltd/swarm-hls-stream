@@ -307,7 +307,7 @@ describe('continuation fixture topology', () => {
       kind: 'create-manager-profile',
       profileName: 'srs-a1b2c3d4-uploader',
       expectedPortSlot: 1,
-      beeUrl: 'http://bee-queen:1633',
+      beeUrl: `http://${FIXTURE_ID}-bee-queen:1633`,
       authenticatedBy: 'manager-session',
       privateKeyInput: 'feedPrivateKey',
       output: 'manager.uploaderInstanceId',

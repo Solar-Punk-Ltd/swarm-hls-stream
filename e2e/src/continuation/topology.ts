@@ -9,6 +9,7 @@ import {
   type ReadinessEvidence,
   validateFixturePlan,
 } from './fixture.js';
+import { managerUploaderProfileName } from './managerProfile.js';
 
 const MANAGER_INSTANCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -47,7 +48,8 @@ export type BootstrapOutput =
   | 'chain.stakingAddress'
   | 'chain.swapFactoryAddress'
   | 'chain.swapPriceOracleAddress'
-  | 'storage.postageBatchId';
+  | 'storage.postageBatchId'
+  | 'manager.uploaderInstanceId';
 
 export type RuntimeValue =
   | { kind: 'literal'; value: string }
@@ -178,6 +180,10 @@ export interface GuardedActivation {
   serviceBindings: readonly GuardedServiceBinding[];
   fixtureNetwork?: FixtureNetworkBinding;
   startsEnrollmentDisabled?: true;
+  runtime?:
+    | { managedLifecycleVersion: null; uploaderId: null }
+    | { managedLifecycleVersion: 1; uploaderId: string };
+  expectedReceiptGeneration?: number;
 }
 
 export interface ActivateGuardedReleaseStep extends BootstrapStepBase {
@@ -194,6 +200,16 @@ export interface SubmitReleaseGuardReceiptsStep extends BootstrapStepBase {
   slots: readonly ReleaseGuardSlot[];
 }
 
+export interface CreateManagerProfileStep extends BootstrapStepBase {
+  kind: 'create-manager-profile';
+  profileName: string;
+  expectedPortSlot: 1;
+  beeUrl: string;
+  authenticatedBy: 'manager-session';
+  privateKeyInput: 'feedPrivateKey';
+  output: 'manager.uploaderInstanceId';
+}
+
 export type BootstrapStep =
   | StartServicesStep
   | LoadAnvilStateStep
@@ -202,6 +218,7 @@ export type BootstrapStep =
   | AdvanceAnvilChainStep
   | ProvisionPostageStep
   | ActivateGuardedReleaseStep
+  | CreateManagerProfileStep
   | SubmitReleaseGuardReceiptsStep;
 
 export type ReadinessProbeId =
@@ -246,6 +263,14 @@ export interface ContinuationTopology {
   guardedActivations: readonly GuardedActivation[];
   bootstrap: readonly BootstrapStep[];
   readiness: readonly ReadinessProbe[];
+}
+
+export interface ContinuationBootstrap {
+  schemaVersion: 1;
+  fixtureId: string;
+  network: string;
+  guardedActivations: readonly GuardedActivation[];
+  bootstrap: readonly BootstrapStep[];
 }
 
 export interface ReadinessProbeTransport {
@@ -718,56 +743,9 @@ function validateTopologyPrerequisites(plan: FixturePlan): void {
   }
 }
 
-export function createContinuationTopology(plan: FixturePlan, uploaderId: string): ContinuationTopology {
-  validateTopologyPrerequisites(plan);
-  if (!MANAGER_INSTANCE_ID.test(uploaderId)) {
-    throw new FixtureRefusal('uploader identity must be the persisted manager profile instance UUID');
-  }
-  const services = EXPECTED_ROLES.map((role) => serviceTopology(plan, role, uploaderId));
+function infrastructureBootstrap(plan: FixturePlan): readonly BootstrapStep[] {
   const workers = ['bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4'] as const;
-  const fixtureNetwork = { name: plan.network.name, fixtureId: plan.fixtureId };
-  const guardedActivations: readonly GuardedActivation[] = [
-    {
-      role: 'admin',
-      slot: { role: 'admin', id: 'default' },
-      candidateRole: 'admin',
-      services: ['admin-api', 'admin-web'],
-      serviceBindings: [
-        { adapterService: 'postgres', topologyRole: 'postgres' },
-        { adapterService: 'api', topologyRole: 'admin-api' },
-        { adapterService: 'web', topologyRole: 'admin-web' },
-      ],
-      fixtureNetwork,
-      startsEnrollmentDisabled: true,
-    },
-    {
-      role: 'manager',
-      slot: { role: 'manager', id: 'default' },
-      candidateRole: 'manager',
-      services: ['api', 'web'],
-      serviceBindings: [],
-    },
-    {
-      role: 'viewer',
-      slot: { role: 'viewer', id: 'default' },
-      candidateRole: 'stack',
-      services: ['client'],
-      serviceBindings: [{ adapterService: 'client', topologyRole: 'viewer' }],
-      fixtureNetwork,
-    },
-    {
-      role: 'uploader',
-      slot: { role: 'uploader', id: uploaderId },
-      candidateRole: 'stack',
-      services: ['srs', 'stream-uploader'],
-      serviceBindings: [
-        { adapterService: 'srs', topologyRole: 'srs' },
-        { adapterService: 'stream-uploader', topologyRole: 'uploader' },
-      ],
-      fixtureNetwork,
-    },
-  ];
-  const bootstrap: readonly BootstrapStep[] = [
+  return [
     { id: 'start-blockchain', kind: 'start-services', services: ['blockchain'], after: [] },
     {
       id: 'load-chain-state',
@@ -821,23 +799,124 @@ export function createContinuationTopology(plan: FixturePlan, uploaderId: string
       output: 'storage.postageBatchId',
       after: ['advance-private-chain'],
     },
+  ];
+}
+
+export function createContinuationBootstrap(plan: FixturePlan): ContinuationBootstrap {
+  validateTopologyPrerequisites(plan);
+  const fixtureNetwork = { name: plan.network.name, fixtureId: plan.fixtureId };
+  const guardedActivations: readonly GuardedActivation[] = [
     {
-      id: 'activate-admin',
-      kind: 'activate-guarded-release',
-      activationRole: 'admin',
-      after: ['provision-postage'],
+      role: 'admin',
+      slot: { role: 'admin', id: 'default' },
+      candidateRole: 'admin',
+      services: ['admin-api', 'admin-web'],
+      serviceBindings: [
+        { adapterService: 'postgres', topologyRole: 'postgres' },
+        { adapterService: 'api', topologyRole: 'admin-api' },
+        { adapterService: 'web', topologyRole: 'admin-web' },
+      ],
+      fixtureNetwork,
+      startsEnrollmentDisabled: true,
+      runtime: { managedLifecycleVersion: null, uploaderId: null },
+      expectedReceiptGeneration: 1,
     },
     {
-      id: 'activate-manager',
+      role: 'manager',
+      slot: { role: 'manager', id: 'default' },
+      candidateRole: 'manager',
+      services: ['api', 'web'],
+      serviceBindings: [],
+    },
+  ];
+  return {
+    schemaVersion: 1,
+    fixtureId: plan.fixtureId,
+    network: plan.network.name,
+    guardedActivations,
+    bootstrap: [
+      ...infrastructureBootstrap(plan),
+      {
+        id: 'activate-admin-bootstrap',
+        kind: 'activate-guarded-release',
+        activationRole: 'admin',
+        after: ['provision-postage'],
+      },
+      {
+        id: 'activate-manager',
+        kind: 'activate-guarded-release',
+        activationRole: 'manager',
+        after: ['activate-admin-bootstrap'],
+      },
+      {
+        id: 'create-manager-profile',
+        kind: 'create-manager-profile',
+        profileName: managerUploaderProfileName(plan.fixtureId),
+        expectedPortSlot: 1,
+        beeUrl: plan.internalEndpoints.bee,
+        authenticatedBy: 'manager-session',
+        privateKeyInput: 'feedPrivateKey',
+        output: 'manager.uploaderInstanceId',
+        after: ['activate-manager'],
+      },
+    ],
+  };
+}
+
+export function createContinuationTopology(plan: FixturePlan, uploaderId: string): ContinuationTopology {
+  validateTopologyPrerequisites(plan);
+  if (!MANAGER_INSTANCE_ID.test(uploaderId)) {
+    throw new FixtureRefusal('uploader identity must be the persisted manager profile instance UUID');
+  }
+  const services = EXPECTED_ROLES.map((role) => serviceTopology(plan, role, uploaderId));
+  const fixtureNetwork = { name: plan.network.name, fixtureId: plan.fixtureId };
+  const guardedActivations: readonly GuardedActivation[] = [
+    {
+      role: 'admin',
+      slot: { role: 'admin', id: 'default' },
+      candidateRole: 'admin',
+      services: ['admin-api', 'admin-web'],
+      serviceBindings: [
+        { adapterService: 'postgres', topologyRole: 'postgres' },
+        { adapterService: 'api', topologyRole: 'admin-api' },
+        { adapterService: 'web', topologyRole: 'admin-web' },
+      ],
+      fixtureNetwork,
+      runtime: { managedLifecycleVersion: 1, uploaderId },
+      expectedReceiptGeneration: 2,
+    },
+    {
+      role: 'viewer',
+      slot: { role: 'viewer', id: 'default' },
+      candidateRole: 'stack',
+      services: ['client'],
+      serviceBindings: [{ adapterService: 'client', topologyRole: 'viewer' }],
+      fixtureNetwork,
+    },
+    {
+      role: 'uploader',
+      slot: { role: 'uploader', id: uploaderId },
+      candidateRole: 'stack',
+      services: ['srs', 'stream-uploader'],
+      serviceBindings: [
+        { adapterService: 'srs', topologyRole: 'srs' },
+        { adapterService: 'stream-uploader', topologyRole: 'uploader' },
+      ],
+      fixtureNetwork,
+    },
+  ];
+  const bootstrap: readonly BootstrapStep[] = [
+    {
+      id: 'activate-admin-managed',
       kind: 'activate-guarded-release',
-      activationRole: 'manager',
-      after: ['activate-admin'],
+      activationRole: 'admin',
+      after: [],
     },
     {
       id: 'activate-viewer',
       kind: 'activate-guarded-release',
       activationRole: 'viewer',
-      after: ['activate-manager'],
+      after: ['activate-admin-managed'],
     },
     {
       id: 'activate-uploader',
@@ -852,7 +931,12 @@ export function createContinuationTopology(plan: FixturePlan, uploaderId: string
       authenticatedBy: 'adminInternalApiToken',
       source: 'guard-persisted-receipts',
       mode: 'retry-and-verify',
-      slots: guardedActivations.map((activation) => activation.slot),
+      slots: [
+        { role: 'manager', id: 'default' },
+        { role: 'admin', id: 'default' },
+        { role: 'viewer', id: 'default' },
+        { role: 'uploader', id: uploaderId },
+      ],
       after: ['activate-uploader'],
     },
     {
