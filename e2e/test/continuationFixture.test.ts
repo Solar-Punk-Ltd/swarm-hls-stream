@@ -421,4 +421,24 @@ describe('the isolated continuation fixture plan', () => {
 
     assert.deepEqual(fixture.docker.removed, []);
   });
+
+  it('refuses cleanup while manager profile creation or guarded start is unresolved', async () => {
+    for (const state of ['creating', 'created'] as const) {
+      const fixturePlan = plan();
+      const fixture = runner(fixturePlan);
+      await fixture.runner.up();
+      const journal = new ResourceJournal(fixturePlan.outputRoot);
+      journal.beginManagerProfile('srs-a1b2c3d4-uploader', 1);
+      if (state === 'created') {
+        journal.completeManagerProfile(
+          'srs-a1b2c3d4-uploader',
+          1,
+          '11111111-1111-4111-8111-111111111111',
+        );
+      }
+
+      await assert.rejects(cleanupFixture(journal, fixture.docker), /provisioning is unresolved/i);
+      assert.deepEqual(fixture.docker.removed, []);
+    }
+  });
 });

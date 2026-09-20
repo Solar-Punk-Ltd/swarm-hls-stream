@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { type FixturePlan, FixtureRefusal, ResourceJournal } from './fixture.js';
@@ -8,6 +9,7 @@ import type {
   StartHeldUploaderInput,
 } from './managerProfile.js';
 import { managerUploaderProfileName } from './managerProfile.js';
+import type { GuardedReleaseObservation } from './readinessTransport.js';
 import { type ContinuationTopology,createContinuationTopology } from './topology.js';
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
@@ -165,11 +167,16 @@ export interface HeldUploaderProfileClient {
   setStampAndStartUploader(input: StartHeldUploaderInput): Promise<void>;
 }
 
+export interface GuardReceiptVerifier {
+  inspectGuard(role: 'manager' | 'admin' | 'viewer' | 'uploader'): Promise<GuardedReleaseObservation>;
+}
+
 export interface GuardedApplicationProvisionerOptions {
   plan: FixturePlan;
   targets: ReleaseFixtureTargets;
   process: BoundedProcess;
   profiles: HeldUploaderProfileClient;
+  receipts: GuardReceiptVerifier;
   journal: ResourceJournal;
   managerUsername: string;
   managerPassword: string;
@@ -206,7 +213,7 @@ export class GuardedApplicationProvisioner {
     if (current?.status === 'created') {
       profile = { name: current.name, instanceId: current.instanceId, portSlot: current.portSlot };
     } else {
-      await this.run('release guard install', {
+      await this.guardMutation('release guard install', {
         file: managerCandidate(this.options.plan, 'deploy/install-release-guard.sh'),
         args: installerArguments(this.options.plan, this.options.targets),
         timeoutMs: 120_000,
@@ -247,17 +254,30 @@ export class GuardedApplicationProvisioner {
       ['--managed-lifecycle-version', '1', '--managed-uploader-id', profile.instanceId],
     );
     await this.activate('viewer', 'stack', 'default');
-    await this.options.profiles.setStampAndStartUploader({
-      profile,
-      postageBatchId: this.options.postageBatchId,
-    });
+    this.recordGuardStage('manager uploader guarded activation', 'planned');
+    try {
+      await this.options.profiles.setStampAndStartUploader({
+        profile,
+        postageBatchId: this.options.postageBatchId,
+      });
+      this.recordGuardStage('manager uploader guarded activation', 'passed');
+    } catch {
+      this.recordGuardStage('manager uploader guarded activation', 'failed');
+      throw new FixtureRefusal('manager uploader guarded activation failed');
+    }
     for (const [role, id] of [
       ['manager', 'default'],
       ['admin', 'default'],
       ['viewer', 'default'],
       ['uploader', profile.instanceId],
     ] as const) {
-      await this.retryReceipt(role, id);
+      if (this.pendingReceipt(role, id)) {
+        await this.retryReceipt(role, id);
+      }
+      const receipt = await this.options.receipts.inspectGuard(role);
+      if (receipt.slot.role !== role || receipt.slot.id !== id) {
+        throw new FixtureRefusal(`${role} acknowledged release receipt does not match its exact slot`);
+      }
     }
     this.options.journal.markManagerProfileReady(profile.instanceId);
     return createContinuationTopology(this.options.plan, profile.instanceId);
@@ -270,7 +290,7 @@ export class GuardedApplicationProvisioner {
     environment?: Readonly<Record<string, string | null>>,
     extraArguments: readonly string[] = [],
   ): Promise<void> {
-    await this.run(`${role} guarded activation`, {
+    await this.guardMutation(`${role} guarded activation`, {
       file: this.guard,
       args: [
         role,
@@ -311,7 +331,7 @@ export class GuardedApplicationProvisioner {
   }
 
   private async retryReceipt(role: 'manager' | 'admin' | 'viewer' | 'uploader', slotId: string): Promise<void> {
-    await this.run(`${role} release receipt reconciliation`, {
+    await this.guardMutation(`${role} release receipt reconciliation`, {
       file: this.guard,
       args: [
         'retry',
@@ -322,6 +342,55 @@ export class GuardedApplicationProvisioner {
       ],
       timeoutMs: 30_000,
     });
+  }
+
+  private pendingReceipt(role: 'manager' | 'admin' | 'viewer' | 'uploader', slotId: string): boolean {
+    const path = join(this.stateRoot, 'pending', `${role}-${slotId}.json`);
+    let stat;
+    try {
+      stat = lstatSync(path);
+    } catch (error) {
+      if (error !== null && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return false;
+      }
+      throw new FixtureRefusal(`${role} release receipt outbox could not be inspected`);
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2 || stat.size > 64 * 1024) {
+      throw new FixtureRefusal(`${role} release receipt outbox is malformed`);
+    }
+    let receipt: unknown;
+    try {
+      receipt = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    } catch {
+      throw new FixtureRefusal(`${role} release receipt outbox is malformed`);
+    }
+    if (
+      receipt === null ||
+      typeof receipt !== 'object' ||
+      Array.isArray(receipt) ||
+      (receipt as Record<string, unknown>).schemaVersion !== 1 ||
+      ((receipt as Record<string, unknown>).slot as Record<string, unknown> | undefined)?.role !== role ||
+      ((receipt as Record<string, unknown>).slot as Record<string, unknown> | undefined)?.id !== slotId
+    ) {
+      throw new FixtureRefusal(`${role} release receipt outbox does not match its exact slot`);
+    }
+    return true;
+  }
+
+  private async guardMutation(label: string, invocation: ProcessInvocation): Promise<ProcessResult> {
+    this.recordGuardStage(label, 'planned');
+    try {
+      const result = await this.run(label, invocation);
+      this.recordGuardStage(label, 'passed');
+      return result;
+    } catch (error) {
+      this.recordGuardStage(label, 'failed');
+      throw error;
+    }
+  }
+
+  private recordGuardStage(label: string, status: 'planned' | 'passed' | 'failed'): void {
+    this.options.journal.recordStage({ name: label, status, command: [], stdout: '', stderr: '' });
   }
 
   private async run(label: string, invocation: ProcessInvocation): Promise<ProcessResult> {

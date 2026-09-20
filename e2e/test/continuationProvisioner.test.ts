@@ -13,6 +13,7 @@ import {
   type ReleaseFixtureTargets,
   SpawnBoundedProcess,
 } from '../src/continuation/provisioner.js';
+import type { GuardedReleaseObservation } from '../src/continuation/readinessTransport.js';
 
 const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 const IMAGE_ID = `sha256:${'a'.repeat(64)}`;
@@ -93,11 +94,28 @@ class ProfileClient {
   }
 }
 
+class ReceiptVerifier {
+  readonly calls: string[] = [];
+
+  async inspectGuard(role: 'manager' | 'admin' | 'viewer' | 'uploader'): Promise<GuardedReleaseObservation> {
+    this.calls.push(role);
+    return {
+      slot: { role, id: role === 'uploader' ? INSTANCE_ID : 'default' },
+      installationId: '22222222-2222-4222-8222-222222222222',
+      generation: 1,
+      stateDigest: 'a'.repeat(64),
+      artifact: { treeDigest: 'b'.repeat(64), images: [] },
+      candidate: { role: role === 'admin' ? 'admin' : role === 'manager' ? 'manager' : 'stack', root: '/candidate', commit: 'c'.repeat(40), treeDigest: 'b'.repeat(64) },
+    };
+  }
+}
+
 function provisioner(
   fixturePlan: FixturePlan,
   process: RecordingProcess,
   profiles: ProfileClient,
   journal = new ResourceJournal(fixturePlan.outputRoot),
+  receipts = new ReceiptVerifier(),
 ): GuardedApplicationProvisioner {
   journal.initialize(fixturePlan, []);
   return new GuardedApplicationProvisioner({
@@ -105,6 +123,7 @@ function provisioner(
     targets: targets(),
     process,
     profiles,
+    receipts,
     journal,
     managerUsername: 'srs-a1b2c3d4-operator',
     managerPassword: 'synthetic-manager-password',
@@ -118,7 +137,8 @@ describe('GuardedApplicationProvisioner', () => {
     const fixturePlan = plan();
     const process = new RecordingProcess();
     const profiles = new ProfileClient();
-    const subject = provisioner(fixturePlan, process, profiles);
+    const receipts = new ReceiptVerifier();
+    const subject = provisioner(fixturePlan, process, profiles, undefined, receipts);
 
     const topology = await subject.provision();
 
@@ -142,25 +162,13 @@ describe('GuardedApplicationProvisioner', () => {
       'manager',
       'admin',
       'viewer',
-      'retry',
-      'retry',
-      'retry',
-      'retry',
     ]);
     assert.equal(guardCalls[0]?.args.includes('--managed-lifecycle-version'), false);
     assert.deepEqual(
       guardCalls[2]?.args.slice(-4),
       ['--managed-lifecycle-version', '1', '--managed-uploader-id', INSTANCE_ID],
     );
-    assert.deepEqual(
-      guardCalls.slice(4).map((call) => call.args.slice(-4)),
-      [
-        ['--role', 'manager', '--admin-url', 'http://127.0.0.1:18080'],
-        ['--role', 'admin', '--admin-url', 'http://127.0.0.1:18080'],
-        ['--role', 'viewer', '--admin-url', 'http://127.0.0.1:18080'],
-        ['--slot-id', INSTANCE_ID, '--admin-url', 'http://127.0.0.1:18080'],
-      ],
-    );
+    assert.deepEqual(receipts.calls, ['manager', 'admin', 'viewer', 'uploader']);
 
     const userAdd = process.calls.find((call) => call.file === 'docker' && call.args[0] === 'exec');
     assert.ok(userAdd);
@@ -195,6 +203,7 @@ describe('GuardedApplicationProvisioner', () => {
       targets: targets(),
       process,
       profiles,
+      receipts: new ReceiptVerifier(),
       journal,
       managerUsername: 'srs-a1b2c3d4-operator',
       managerPassword: 'synthetic-manager-password',
@@ -218,6 +227,7 @@ describe('GuardedApplicationProvisioner', () => {
       targets: targets(),
       process: restartedProcess,
       profiles,
+      receipts: new ReceiptVerifier(),
       journal,
       managerUsername: 'srs-a1b2c3d4-operator',
       managerPassword: 'synthetic-manager-password',

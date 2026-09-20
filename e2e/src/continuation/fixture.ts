@@ -739,6 +739,9 @@ export class MediaFixtureRunner {
 
 export async function cleanupFixture(journal: ResourceJournal, docker: FixtureDocker): Promise<void> {
   const document = journal.read();
+  if (document.managerProfile !== undefined && document.managerProfile.status !== 'ready') {
+    throw new FixtureRefusal('cleanup refused while application provisioning is unresolved');
+  }
   const unresolved = document.intents.filter((intent) => intent.status === 'planned');
   if (unresolved.length > 0) {
     throw new FixtureRefusal(
