@@ -49,6 +49,16 @@ function isCurrentRun(stream: Stream | undefined): stream is Stream & { lifecycl
   return stream?.lifecycle?.version === 1 && ['live', 'waiting'].includes(stream.lifecycle.state);
 }
 
+function hasDifferentReplay(
+  selected: SelectedPlayback | null,
+  stream: Stream | undefined,
+): stream is Stream & { completedRecording: CompletedRecording } {
+  return (
+    hasCompletedRecording(stream) &&
+    (selected?.kind !== 'replay' || selected.runNumber !== stream.completedRecording.runNumber)
+  );
+}
+
 /**
  * The player inputs chosen for one mounted watch page.
  *
@@ -91,7 +101,7 @@ export class StreamPlaybackSelection {
   }
 
   watchReplay(stream: Stream | undefined): SelectedPlayback {
-    if (hasCompletedRecording(stream) && this.selected?.kind !== 'replay') {
+    if (hasDifferentReplay(this.selected, stream)) {
       this.selected = this.replay(stream);
     }
     return this.selected ?? this.select(stream);

@@ -9,6 +9,7 @@ declare global {
 }
 
 type Replay = {
+  runNumber: number;
   master: { reference: string };
   renditions: Array<{ reference: string }>;
 };
@@ -38,6 +39,7 @@ export function SwarmHlsPlayer({ topicString, renditions, replay, pinnedRecordin
       ref={video}
       data-testid="continuation-player"
       data-master-reference={replay?.master.reference ?? ''}
+      data-replay-run={replay?.runNumber ?? ''}
       data-rendition-reference={replay?.renditions[0]?.reference ?? ''}
       data-pinned-master-reference={pinnedRecording?.master.reference ?? ''}
       data-rendition-topic={renditions?.[0]?.topic ?? ''}

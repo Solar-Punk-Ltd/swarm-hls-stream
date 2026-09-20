@@ -258,6 +258,28 @@ describe('StreamWatcher playback selection', () => {
     assert.notEqual(replayB.session, runA.session, 'the explicit replay switch must mount a new player');
   });
 
+  it('replaces replay A with completed replay B only after the viewer asks for it', () => {
+    const selection = new StreamPlaybackSelection(ROUTE);
+    const replayA = selection.select(managedStream('vod'));
+    const vodB = {
+      ...managedStream('vod'),
+      lifecycle: { version: 1 as const, revision: 7, runNumber: 5, state: 'vod' as const },
+      completedRecording: { ...completedRecording(), runNumber: 5 },
+    };
+
+    const beforeReplaySelection = selection.select(vodB);
+
+    assert.equal(beforeReplaySelection.session, replayA.session, 'a catalogue poll must keep replay A selected');
+    assert.equal(beforeReplaySelection.runNumber, 4);
+
+    const replayB = selection.watchReplay(vodB);
+    assert.equal(replayB.kind, 'replay');
+    assert.equal(replayB.runNumber, 5);
+    assert.notEqual(replayB.session, replayA.session, 'the explicit replay switch must mount replay B once');
+
+    assert.equal(selection.watchReplay(vodB).session, replayB.session, 'selecting replay B again must keep its player');
+  });
+
   it('offers the previous combined replay while a managed continuation is live, without adding a history list', () => {
     watchPage.isStreamListLoaded = true;
     watchPage.streamList = [managedStream('live')];
@@ -267,4 +289,5 @@ describe('StreamWatcher playback selection', () => {
     assert.match(html, /Watch previous replay/);
     assert.doesNotMatch(html, /history/i);
   });
+
 });

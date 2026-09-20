@@ -127,6 +127,12 @@ function startFixture(port: number): {
   let spawnError: Error | null = null;
   const vite = spawn(VITE, ['--config', join(FIXTURE_ROOT, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)], {
     cwd: REPOSITORY_ROOT,
+    env: {
+      ...process.env,
+      VITE_APP_OWNER: '0xfixture',
+      VITE_APP_RAW_TOPIC: 'fixture-catalog-topic',
+      VITE_READER_BEE_URL: 'http://127.0.0.1:1633',
+    },
     stdio: 'pipe',
   });
   vite.stdout.on('data', (chunk: Buffer) => {
@@ -207,7 +213,7 @@ test('keeps a mounted replay through a catalogue refresh and remounts once only 
     await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
     await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod'));
     const player = page.getByTestId('continuation-player');
-    await player.waitFor();
+    await player.waitFor({ state: 'attached' });
     await expectAttribute(player, 'data-master-reference', MASTER_REFERENCE);
     await expectAttribute(player, 'data-rendition-reference', RUNG_REFERENCE);
     await page.evaluate(() => {
@@ -244,7 +250,7 @@ test('keeps live run A mounted through closure and run B until Watch live is sel
     await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
     await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('live', 4, null));
     const player = page.getByTestId('continuation-player');
-    await player.waitFor();
+    await player.waitFor({ state: 'attached' });
     await page.evaluate(() => {
       (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
     });
@@ -266,12 +272,43 @@ test('keeps live run A mounted through closure and run B until Watch live is sel
     });
 
     await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 5, recording(5)));
+    await expectAttribute(player, 'data-pinned-master-reference', MASTER_REFERENCE);
     assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
+    assert.equal(await page.getByRole('button', { name: 'Watch combined replay' }).count(), 0);
+  } finally {
+    await browser?.close();
+    await stopFixture(fixture.vite);
+  }
+});
+
+test('keeps replay A mounted until the viewer selects completed replay B', async () => {
+  const port = await freePort();
+  const fixtureUrl = `http://127.0.0.1:${port}`;
+  const fixture = startFixture(port);
+  let browser: Browser | undefined;
+
+  try {
+    await waitForFixture(fixtureUrl, fixture);
+    browser = await launchBrowser(fixture);
+    const page = await browser.newPage();
+    await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
+    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 4, recording(4)));
+    const player = page.getByTestId('continuation-player');
+    await player.waitFor({ state: 'attached' });
+    await expectAttribute(player, 'data-replay-run', '4');
+    await page.evaluate(() => {
+      (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
+    });
+
+    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 5, recording(5)));
+    await expectAttribute(player, 'data-replay-run', '4');
+    assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 1, destroyed: 0 });
 
     await page.getByRole('button', { name: 'Watch combined replay' }).click();
-    await expectAttribute(player, 'data-master-reference', MASTER_REFERENCE);
-    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 3, destroyed: 2 });
+    await expectAttribute(player, 'data-replay-run', '5');
+    assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
   } finally {
     await browser?.close();
     await stopFixture(fixture.vite);
