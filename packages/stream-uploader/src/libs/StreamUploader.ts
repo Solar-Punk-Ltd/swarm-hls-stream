@@ -1226,6 +1226,13 @@ export class StreamUploader {
    */
   private buildRendition(final?: { index: number; duration: number }): Rendition {
     const rung = this.ladder!.rung;
+    if (this.managedLifecycle) {
+      const frozen = this.managedLifecycle.run.expectedRenditions.find((expected) => expected.name === rung.name);
+      if (!frozen || frozen.topic !== this.streamRawTopic) {
+        throw new Error(`Managed rung ${rung.name} does not match the frozen run shape`);
+      }
+      return { ...frozen, ...(final ?? {}) };
+    }
     const configuredBps = rung.configuredKbps * 1000;
 
     return {
@@ -1337,7 +1344,7 @@ export class StreamUploader {
   }
 
   private async refreshBandwidthIfDrifted(): Promise<void> {
-    if (!this.ladder || this.readiness !== READINESS_ANNOUNCED || this.driftBaselineBps <= 0) {
+    if (this.managedLifecycle || !this.ladder || this.readiness !== READINESS_ANNOUNCED || this.driftBaselineBps <= 0) {
       return;
     }
 

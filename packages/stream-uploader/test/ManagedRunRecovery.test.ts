@@ -29,7 +29,7 @@ import {
 } from '../src/libs/ManagedRunStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
-import { MEDIA_TYPE_VIDEO, SourceConnectionIdentity } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, Rendition, SourceConnectionIdentity } from '../src/types.js';
 import { rungTopicFor } from '../src/utils/rungTopic.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
@@ -895,10 +895,12 @@ describe('managed run recovery', () => {
       },
     ];
     const announcedIdentities: LadderIdentity[] = [];
+    const announcedRenditions: Rendition[] = [];
     const ladderRegistry = {
       recordRungDelivered: () => {},
-      upsertRendition: async (identity: LadderIdentity) => {
+      upsertRendition: async (identity: LadderIdentity, rendition: Rendition) => {
         announcedIdentities.push(structuredClone(identity));
+        announcedRenditions.push(structuredClone(rendition));
         return {
           masterIndex: 9,
           masterReference: 'b'.repeat(64),
@@ -962,6 +964,13 @@ describe('managed run recovery', () => {
         claimId: CLAIM.claimId,
         expectedRenditions,
       });
+      assert.ok(announcedRenditions.length > 0);
+      assert.ok(
+        announcedRenditions.every((rendition) =>
+          rendition.bandwidth === expectedRenditions[0].bandwidth &&
+          rendition.avgBandwidth === expectedRenditions[0].avgBandwidth
+        ),
+      );
     } finally {
       await target.cleanup();
       fs.rmSync(root, { recursive: true, force: true });
