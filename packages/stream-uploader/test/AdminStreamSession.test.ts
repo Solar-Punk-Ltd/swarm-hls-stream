@@ -1149,5 +1149,4 @@ describe('a rung of a declared ladder', () => {
       assert.ok(!recording.includes('#EXT-X-DISCONTINUITY-SEQUENCE'));
     });
   });
-
 });

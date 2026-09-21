@@ -748,9 +748,7 @@ export class ManifestManager {
       `${HLS_TARGET_DURATION}:${Math.max(prefix.targetDuration, this.targetDuration)}`,
       HLS_PLAYLIST_TYPE_VOD,
       `${HLS_MEDIA_SEQUENCE}:${prefix.mediaSequence}`,
-      ...(prefix.discontinuitySequence > 0
-        ? [`${HLS_DISCONTINUITY_SEQUENCE}:${prefix.discontinuitySequence}`]
-        : []),
+      ...(prefix.discontinuitySequence > 0 ? [`${HLS_DISCONTINUITY_SEQUENCE}:${prefix.discontinuitySequence}`] : []),
       '',
       ...prefix.lines,
       HLS_DISCONTINUITY,
