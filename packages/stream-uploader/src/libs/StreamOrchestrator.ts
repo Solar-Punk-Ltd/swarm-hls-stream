@@ -1441,6 +1441,10 @@ export class StreamOrchestrator {
         // numbering it is resuming had already got. Dropping it republishes the
         // broadcast from a media sequence viewers were handed minutes ago.
         sequenceOffset: state.sequenceOffset,
+        // Carried for exactly that reason too: the recording this session finalizes opens with the
+        // media that was on the feed before it, and a recovered session cannot re-read it, because
+        // by now the head is its own live playlist. See `ManifestManager.inherit`.
+        inherited: state.inherited,
       },
       metrics: this.metrics,
       // From the entry rather than from a fresh lookup: nothing re-announces a recovered stream, so

@@ -18,6 +18,7 @@ import PQueue from 'p-queue';
 import {
   BitrateSample,
   BroadcastAnchor,
+  InheritedTimeline,
   LadderMembership,
   MediaType,
   Rendition,
@@ -52,7 +53,7 @@ import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
-import { continuesFrom, ManifestManager } from './ManifestManager.js';
+import { continuesFrom, inheritedTimeline, ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
@@ -242,6 +243,8 @@ interface RestoreState {
   anchor?: BroadcastAnchor;
   /** Absent on an entry written before a rung's feed outlived its session. See {@link StreamState}. */
   sequenceOffset?: number;
+  /** Absent on an entry written before recordings were glued, and on a session over an empty feed. */
+  inherited?: InheritedTimeline;
 }
 
 export interface StreamUploaderOptions {
@@ -476,7 +479,9 @@ export class StreamUploader {
       if (restoreState.bitrate) {
         this.bitrate = restoreState.bitrate;
       }
-      this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
+      // The inherited prefix goes in with the segments rather than after them, because it is part of
+      // what this session's recording is and `restoreState` is where that is settled.
+      this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders, restoreState.inherited);
       // After the segments, because it is about how they are published rather than about what they
       // are: `restoreState` replays a numbering that is already in a feed, and this is the offset
       // that numbering was published under.
@@ -929,6 +934,11 @@ export class StreamUploader {
    * sequence that moved backwards as a parsing error rather than as a new broadcast. See
    * {@link continuesFrom} and `ManifestManager.continueFrom`.
    *
+   * ⛔ **A third thing comes off it: the media that head holds.** The recording this session
+   * finalizes opens with it, so the catalogue's head recording plays every session this feed has
+   * carried rather than the last one alone. See {@link inheritedTimeline} and
+   * `ManifestManager.inherit`.
+   *
    * @returns whether the index is settled and a manifest may be committed.
    */
   private async resumeFeedIndex(): Promise<boolean> {
@@ -953,11 +963,27 @@ export class StreamUploader {
       if (continueAt !== null) {
         this.manifestManager.continueFrom(continueAt);
       }
+      // Read off the same head, and only the head. What it holds is the recording this session's own
+      // recording opens with, so the catalogue's head entry plays the broadcast from its first
+      // session rather than from the last restart. A head that was left by a session which never
+      // finalized is a live window, and only that window is here to inherit — that session's own
+      // recovery entry is the path that recovers the rest of it. See `ManifestManager.inherit`.
+      const prefix = inheritedTimeline(head.manifest);
+      if (prefix !== null) {
+        this.manifestManager.inherit(prefix);
+      }
       this.logger.info(
         `[StreamUploader] Stream ${this.streamId} resumes its topic at SOC index ${head.index}, numbering ` +
           `its playlist from media sequence ${continueAt ?? 0}, so this session continues the feed rather ` +
           'than writing over the last one',
       );
+      if (prefix !== null) {
+        this.logger.info(
+          `[StreamUploader] Stream ${this.streamId} opens its recording with the ${prefix.lines.length} ` +
+            `timeline lines and ${prefix.durationSeconds.toFixed(3)}s of media already on this feed, so the ` +
+            'recording it finalizes carries every session rather than this one alone',
+        );
+      }
     }
     return true;
   }
@@ -1117,6 +1143,11 @@ export class StreamUploader {
       // feed, and a recovered session that lost it would publish this broadcast's history again from
       // a number a viewer has already been handed.
       sequenceOffset: this.manifestManager.publishedSequenceOffset(),
+      // Persisted beside the offset because the two were read off one head, and after a crash that
+      // head is this session's own live playlist. A recovered session that re-read it would glue its
+      // own window in front of itself; one that simply lost this would finalize a recording naming
+      // only what it had held since the crash, which is the whole defect the gluing exists to end.
+      inherited: this.manifestManager.inheritedPrefix() ?? undefined,
       // Absent outside admin mode, and absent on every entry written before admin mode existed. See
       // {@link StreamState.adminStreamId} for why a recovered session cannot resolve it again.
       adminStreamId: this.admin?.id,

@@ -13,6 +13,29 @@ export {
 
 import type { MediaType } from '@swarm-hls-stream/shared';
 
+/**
+ * A previous session's recording, carried verbatim so this session's own recording opens with the
+ * whole broadcast rather than with this session alone.
+ *
+ * ⛔ **`lines` is the previous playlist's own text and nothing here re-derives any of it.** Not the
+ * dates, not the numbering, not the references. A rung's feed outlives its sessions, so the head this
+ * was read off is a playlist somebody may already be playing, and a prefix that re-dated or
+ * renumbered it would be this session inventing a history for media it never saw. The uploader's own
+ * anchor and sequence apply to the segments this session placed, and stop at the seam.
+ *
+ * @see ManifestManager.inherit
+ */
+export interface InheritedTimeline {
+  /** The `#EXT-X-MEDIA-SEQUENCE` the prefix's first entry is numbered from, which the glued recording declares. */
+  mediaSequence: number;
+  /** The `#EXT-X-TARGETDURATION` the prefix was published with, which the glued recording takes the max of. */
+  targetDuration: number;
+  /** The seconds of media the prefix holds, summed off its `#EXTINF` values, for the reported duration. */
+  durationSeconds: number;
+  /** Every timeline line of the prefix, in order, from its first timeline tag to before its `#EXT-X-ENDLIST`. */
+  lines: string[];
+}
+
 export interface StreamState {
   streamId: string;
   streamRawTopic: string;
@@ -40,6 +63,16 @@ export interface StreamState {
    * `ManifestManager.continueFrom`.
    */
   sequenceOffset?: number;
+  /**
+   * The previous session's recording, which this session's own recording opens with. Absent means
+   * the feed was empty, which is every entry written before recordings were glued.
+   *
+   * ⛔ Persisted for the same reason {@link StreamState.sequenceOffset} is, and it is the same head
+   * that both were read off. By the time a recovered session runs, the feed head is this session's
+   * own live playlist, so re-reading it would glue this session's own window in front of itself.
+   * See `ManifestManager.inherit`.
+   */
+  inherited?: InheritedTimeline;
   /**
    * The admin's id for this broadcast, when the service is in admin mode. See {@link AdminSession}.
    *
