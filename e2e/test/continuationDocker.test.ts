@@ -220,6 +220,25 @@ describe('continuation fixture Docker adapter', () => {
     await assert.rejects(docker.create(container.kind, container.name, container.labels, container), /planned image/);
   });
 
+  it('distinguishes a verified absent resource from a Docker lookup failure', async () => {
+    const fixturePlan = plan();
+    const absent = new DockerCliFixture(fixturePlan, {
+      run: async () => ({ stdout: '', stderr: '' }),
+    });
+
+    assert.equal(await absent.inspectIfPresent('container', 'container-old'), null);
+
+    const unavailable = new DockerCliFixture(fixturePlan, {
+      run: async () => {
+        throw new Error('synthetic daemon unavailable');
+      },
+    });
+    await assert.rejects(
+      unavailable.inspectIfPresent('container', 'container-old'),
+      /Docker container existence check failed/i,
+    );
+  });
+
   it('bounds a real argv-only command and reports counts without its output bytes', async () => {
     const sentinel = 'development-private-key-sentinel';
     const command = new ExecFileCommand();

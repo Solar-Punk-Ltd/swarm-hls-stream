@@ -84,6 +84,7 @@ export interface ContainerResourceLimits {
 }
 
 export type FixtureResourcePlan = NetworkPlan | VolumePlan | ContainerPlan;
+export type ResourceIntentPlan = Pick<FixtureResourcePlan, 'kind' | 'name' | 'labels'>;
 
 export interface FixturePlan {
   schemaVersion: 1;
@@ -130,6 +131,7 @@ export interface FixtureDocker {
   ): Promise<InspectedResource>;
   startContainer(id: string): Promise<void>;
   inspect(kind: ResourceKind, id: string): Promise<InspectedResource | null>;
+  inspectIfPresent?(kind: ResourceKind, id: string): Promise<InspectedResource | null>;
   remove(kind: ResourceKind, id: string): Promise<void>;
 }
 
@@ -217,7 +219,7 @@ export interface ResourceIntent {
   kind: ResourceKind;
   name: string;
   labels: Record<string, string>;
-  status: 'planned' | 'created' | 'absent';
+  status: 'planned' | 'created' | 'unchanged' | 'absent';
   id?: string;
 }
 
@@ -451,8 +453,10 @@ export class ResourceJournal {
 
   recordResource(resource: InspectedResource): void {
     const document = this.read();
-    const intent = document.intents.find((entry) => entry.kind === resource.kind && entry.name === resource.name);
-    if (!intent || intent.status !== 'planned') {
+    const intent = document.intents.find(
+      (entry) => entry.kind === resource.kind && entry.name === resource.name && entry.status === 'planned',
+    );
+    if (!intent) {
       throw new FixtureRefusal(`resource ${resource.name} has no unresolved creation intent`);
     }
     intent.status = 'created';
@@ -464,9 +468,29 @@ export class ResourceJournal {
     this.write(document);
   }
 
-  planResource(resource: FixtureResourcePlan): void {
+  recordUnchanged(resource: InspectedResource): void {
     const document = this.read();
-    if (document.intents.some((intent) => intent.kind === resource.kind && intent.name === resource.name)) {
+    const intent = document.intents.find(
+      (entry) => entry.kind === resource.kind && entry.name === resource.name && entry.status === 'planned',
+    );
+    const recorded = document.resources.some(
+      (entry) => entry.kind === resource.kind && entry.name === resource.name && entry.id === resource.id,
+    );
+    if (!intent || !recorded) {
+      throw new FixtureRefusal(`resource ${resource.name} has no recorded predecessor`);
+    }
+    intent.status = 'unchanged';
+    intent.id = resource.id;
+    this.write(document);
+  }
+
+  planResource(resource: ResourceIntentPlan): void {
+    const document = this.read();
+    if (
+      document.intents.some(
+        (intent) => intent.kind === resource.kind && intent.name === resource.name && intent.status === 'planned',
+      )
+    ) {
       throw new FixtureRefusal(`resource ${resource.name} already has a creation intent`);
     }
     document.intents.push({
@@ -480,8 +504,10 @@ export class ResourceJournal {
 
   recordAbsent(intent: ResourceIntent): void {
     const document = this.read();
-    const pending = document.intents.find((entry) => entry.kind === intent.kind && entry.name === intent.name);
-    if (!pending || pending.status !== 'planned') {
+    const pending = document.intents.find(
+      (entry) => entry.kind === intent.kind && entry.name === intent.name && entry.status === 'planned',
+    );
+    if (!pending) {
       throw new FixtureRefusal(`resource ${intent.name} has no unresolved creation intent`);
     }
     pending.status = 'absent';
@@ -845,7 +871,9 @@ export async function cleanupFixture(journal: ResourceJournal, docker: FixtureDo
   }
   const existing: InspectedResource[] = [];
   for (const recorded of document.resources) {
-    const actual = await docker.inspect(recorded.kind, recorded.id);
+    const actual = docker.inspectIfPresent
+      ? await docker.inspectIfPresent(recorded.kind, recorded.id)
+      : await docker.inspect(recorded.kind, recorded.id);
     if (!actual) {
       continue;
     }
@@ -853,14 +881,17 @@ export async function cleanupFixture(journal: ResourceJournal, docker: FixtureDo
       actual.id !== recorded.id ||
       actual.name !== recorded.name ||
       actual.labels[FIXTURE_LABEL] !== document.fixtureId ||
-      actual.labels[MANAGED_LABEL] !== 'true'
+      actual.labels[MANAGED_LABEL] !== 'true' ||
+      Object.entries(recorded.labels).some(([name, value]) => actual.labels[name] !== value)
     ) {
       throw new FixtureRefusal(`resource ${recorded.id} label or identity does not match the journal`);
     }
     existing.push(actual);
   }
-  for (const resource of existing.reverse()) {
-    await docker.remove(resource.kind, resource.id);
+  for (const kind of ['container', 'volume', 'network'] as const) {
+    for (const resource of existing.filter((entry) => entry.kind === kind).reverse()) {
+      await docker.remove(resource.kind, resource.id);
+    }
   }
 }
 
@@ -876,10 +907,18 @@ export async function resolveCreationIntents(journal: ResourceJournal, docker: F
       actual.name !== intent.name ||
       actual.kind !== intent.kind ||
       actual.labels[FIXTURE_LABEL] !== document.fixtureId ||
-      actual.labels[MANAGED_LABEL] !== 'true'
+      actual.labels[MANAGED_LABEL] !== 'true' ||
+      Object.entries(intent.labels).some(([name, value]) => actual.labels[name] !== value)
     ) {
       throw new FixtureRefusal(`unresolved resource ${intent.name} does not have the full fixture identity`);
     }
-    journal.recordResource(actual);
+    const predecessor = document.resources
+      .filter((resource) => resource.kind === intent.kind && resource.name === intent.name)
+      .at(-1);
+    if (predecessor?.id === actual.id) {
+      journal.recordUnchanged(actual);
+    } else {
+      journal.recordResource(actual);
+    }
   }
 }

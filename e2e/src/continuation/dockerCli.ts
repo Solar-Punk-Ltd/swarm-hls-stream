@@ -221,6 +221,25 @@ export class DockerCliFixture implements FixtureDocker {
     return parseInspection(kind, result.stdout);
   }
 
+  async inspectIfPresent(kind: ResourceKind, id: string): Promise<InspectedResource | null> {
+    const safeId = checkedId(id);
+    const args =
+      kind === 'container'
+        ? ['ps', '--all', '--quiet', '--no-trunc', '--filter', `id=${safeId}`]
+        : kind === 'network'
+        ? ['network', 'ls', '--quiet', '--no-trunc', '--filter', `id=${safeId}`]
+        : ['volume', 'ls', '--quiet', '--filter', `name=^${safeId}$`];
+    const result = await this.invoke(`${kind} existence check`, args);
+    const ids = result.stdout.trim() === '' ? [] : result.stdout.trim().split(/\s+/);
+    if (ids.length === 0) {
+      return null;
+    }
+    if (ids.length !== 1 || ids[0] !== safeId) {
+      throw new FixtureRefusal(`Docker returned an ambiguous ${kind} identity`);
+    }
+    return this.inspect(kind, safeId);
+  }
+
   async remove(kind: ResourceKind, id: string): Promise<void> {
     const safeId = checkedId(id);
     const args = kind === 'container' ? ['container', 'rm', '--force', safeId] : [kind, 'rm', safeId];

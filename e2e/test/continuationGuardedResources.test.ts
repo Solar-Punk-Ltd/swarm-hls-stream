@@ -17,10 +17,7 @@ import {
   ResourceJournal,
   type ResourceKind,
 } from '../src/continuation/fixture.js';
-import {
-  GuardedResourceInventory,
-  type GuardedResourceStage,
-} from '../src/continuation/guardedResources.js';
+import { GuardedResourceInventory, type GuardedResourceStage } from '../src/continuation/guardedResources.js';
 import type { ReleaseFixtureTargets } from '../src/continuation/provisioner.js';
 
 const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
@@ -131,6 +128,9 @@ class InventoryDocker implements FixtureDocker {
 
   async remove(kind: ResourceKind, id: string): Promise<void> {
     assert.equal(this.resources.get(id)?.kind, kind);
+    if (kind !== 'container' && [...this.resources.values()].some((resource) => resource.kind === 'container')) {
+      throw new Error('synthetic resource is still attached to a container');
+    }
     this.resources.delete(id);
     this.removed.push(id);
   }
@@ -159,17 +159,37 @@ function createStageResources(docker: InventoryDocker, stage: GuardedResourceSta
     for (const service of ['postgres', 'api', 'web']) {
       create('container', `${target.admin.projectName}-${service}-1`, labels(target.admin.projectName, service));
     }
-    create('network', `${target.admin.projectName}-fixture-db`, labels(target.admin.projectName, undefined, 'network:admin-db'));
-    create('volume', target.admin.postgresVolumeName, labels(target.admin.projectName, undefined, 'volume:web2admin-pg'));
+    create(
+      'network',
+      `${target.admin.projectName}-fixture-db`,
+      labels(target.admin.projectName, undefined, 'network:admin-db'),
+    );
+    create(
+      'volume',
+      target.admin.postgresVolumeName,
+      labels(target.admin.projectName, undefined, 'volume:web2admin-pg'),
+    );
   } else if (stage === 'manager') {
     for (const service of ['postgres', 'api', 'web']) {
       create('container', `${target.manager.projectName}-${service}-1`, labels(target.manager.projectName, service));
     }
-    create('network', `${target.manager.projectName}-fixture-manager`, labels(target.manager.projectName, undefined, 'network:default'));
-    create('volume', target.manager.postgresVolumeName, labels(target.manager.projectName, undefined, 'volume:manager-pg'));
+    create(
+      'network',
+      `${target.manager.projectName}-fixture-manager`,
+      labels(target.manager.projectName, undefined, 'network:fixture_manager'),
+    );
+    create(
+      'volume',
+      target.manager.postgresVolumeName,
+      labels(target.manager.projectName, undefined, 'volume:manager-pg'),
+    );
   } else if (stage === 'uploader-preparation') {
     create('container', `${target.uploader.profile}-srs-1`, labels(target.uploader.profile, 'srs'));
-    create('volume', `${target.uploader.profile}_srs-media`, labels(target.uploader.profile, undefined, 'volume:srs-media'));
+    create(
+      'volume',
+      `${target.uploader.profile}_srs-media`,
+      labels(target.uploader.profile, undefined, 'volume:srs-media'),
+    );
   } else if (stage === 'admin-managed') {
     docker.replaceExpected('container', `${target.admin.projectName}-api-1`, labels(target.admin.projectName, 'api'));
   } else if (stage === 'viewer') {
@@ -209,35 +229,35 @@ describe('guarded resource inventory', () => {
     }
 
     const document = journal.read();
-    const managerResources = document.resources.filter((resource) =>
-      resource.labels['com.docker.compose.project'] === targets().manager.projectName,
+    const managerResources = document.resources.filter(
+      (resource) => resource.labels['com.docker.compose.project'] === targets().manager.projectName,
     );
-    assert.deepEqual(
-      managerResources.map(({ kind, name }) => [kind, name]).sort(),
-      [
-        ['container', 'srs-a1b2c3d4-manager-api-1'],
-        ['container', 'srs-a1b2c3d4-manager-postgres-1'],
-        ['container', 'srs-a1b2c3d4-manager-web-1'],
-        ['network', 'srs-a1b2c3d4-manager-fixture-manager'],
-        ['volume', 'srs-a1b2c3d4-manager-pg'],
-      ],
-    );
-    const adminApiGenerations = document.resources.filter(
-      ({ name }) => name === 'srs-a1b2c3d4-admin-api-1',
-    );
+    assert.deepEqual(managerResources.map(({ kind, name }) => [kind, name]).sort(), [
+      ['container', 'srs-a1b2c3d4-manager-api-1'],
+      ['container', 'srs-a1b2c3d4-manager-postgres-1'],
+      ['container', 'srs-a1b2c3d4-manager-web-1'],
+      ['network', 'srs-a1b2c3d4-manager-fixture-manager'],
+      ['volume', 'srs-a1b2c3d4-manager-pg'],
+    ]);
+    const adminApiGenerations = document.resources.filter(({ name }) => name === 'srs-a1b2c3d4-admin-api-1');
     assert.equal(adminApiGenerations.length, 2);
     assert.notEqual(adminApiGenerations[0]?.id, adminApiGenerations[1]?.id);
     assert.equal(
-      document.intents.find(
-        (intent) => intent.name === 'srs-a1b2c3d4-admin-web-1' && intent.status === 'unchanged',
-      )?.id,
+      document.intents.find((intent) => intent.name === 'srs-a1b2c3d4-admin-web-1' && intent.status === 'unchanged')
+        ?.id,
       document.resources.find(({ name }) => name === 'srs-a1b2c3d4-admin-web-1')?.id,
     );
 
-    const survivingIds = [...docker.resources.keys()];
+    const survivingResources = [...docker.resources.values()];
     await cleanupFixture(journal, docker);
 
-    assert.deepEqual(docker.removed, survivingIds.reverse());
+    assert.deepEqual(new Set(docker.removed), new Set(survivingResources.map(({ id }) => id)));
+    const removedKinds = docker.removed.map(
+      (id) => survivingResources.find((resource) => resource.id === id)?.kind,
+    );
+    assert.deepEqual(removedKinds, [...removedKinds].sort((left, right) =>
+      ['container', 'volume', 'network'].indexOf(left ?? '') - ['container', 'volume', 'network'].indexOf(right ?? ''),
+    ));
   });
 
   it('leaves write-ahead intents unresolved when a guarded mutation outcome is ambiguous', async () => {
@@ -302,5 +322,20 @@ describe('guarded resource inventory', () => {
     docker.failInspectionFor = null;
     await cleanupFixture(journal, docker);
     assert.ok(docker.removed.length > 0);
+  });
+
+  it('refuses every removal when a recorded Compose label no longer matches', async () => {
+    const fixturePlan = plan();
+    const journal = new ResourceJournal(fixturePlan.outputRoot);
+    const docker = new InventoryDocker();
+    journal.initialize(fixturePlan, []);
+    const inventory = new GuardedResourceInventory(FIXTURE_ID, targets(), journal, docker);
+    await inventory.run('viewer', async () => createStageResources(docker, 'viewer'));
+    const viewer = [...docker.resources.values()].find(({ kind }) => kind === 'container');
+    assert.ok(viewer);
+    viewer.labels['com.docker.compose.service'] = 'foreign';
+
+    await assert.rejects(cleanupFixture(journal, docker), /label or identity does not match/i);
+    assert.deepEqual(docker.removed, []);
   });
 });

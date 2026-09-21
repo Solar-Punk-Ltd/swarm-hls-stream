@@ -15,6 +15,7 @@ import {
   ResourceJournal,
   validateFixturePlan,
 } from './fixture.js';
+import { GuardedResourceInventory } from './guardedResources.js';
 import { FetchManagerProfileClient } from './managerProfile.js';
 import { captureContinuationMeasurements } from './measurements.js';
 import { DockerMediaScenarioSpawn, LoopbackMediaScenarioFetch } from './mediaRuntime.js';
@@ -195,6 +196,7 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
       profiles,
       receipts,
       journal: this.journal,
+      resources: new GuardedResourceInventory(plan.fixtureId, targets, this.journal, this.docker),
       managerUsername: this.configuration.managerUsername,
       managerPassword: this.secrets.managerPassword,
       feedPrivateKey: this.secrets.feedPrivateKey,

@@ -3,6 +3,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { type FixturePlan, FixtureRefusal, ResourceJournal } from './fixture.js';
+import type { GuardedResourceTracker } from './guardedResources.js';
 import type {
   CreateHeldUploaderProfileInput,
   HeldUploaderProfile,
@@ -184,6 +185,7 @@ export interface GuardedApplicationProvisionerOptions {
   profiles: HeldUploaderProfileClient;
   receipts: GuardReceiptVerifier;
   journal: ResourceJournal;
+  resources: GuardedResourceTracker;
   managerUsername: string;
   managerPassword: string;
   feedPrivateKey: string;
@@ -223,22 +225,26 @@ export class GuardedApplicationProvisioner {
       args: installerArguments(this.options.plan, this.options.targets),
       timeoutMs: 120_000,
     });
-    await this.activate('admin', 'admin', 'default', {
-      INGEST_MANAGED_LIFECYCLE_VERSION: null,
-      INGEST_MANAGED_UPLOADER_ID: null,
-    });
-    await this.activate('manager', 'manager', 'default');
+    await this.options.resources.run('admin-bootstrap', () =>
+      this.activate('admin', 'admin', 'default', {
+        INGEST_MANAGED_LIFECYCLE_VERSION: null,
+        INGEST_MANAGED_UPLOADER_ID: null,
+      }),
+    );
+    await this.options.resources.run('manager', () => this.activate('manager', 'manager', 'default'));
     await this.createManagerOperator();
 
     const name = managerUploaderProfileName(this.options.plan.fixtureId);
     this.options.journal.beginManagerProfile(name, this.options.targets.uploader.portSlot);
     try {
-      profile = await this.options.profiles.createHeldUploaderProfile({
-        fixtureId: this.options.plan.fixtureId,
-        expectedPortSlot: this.options.targets.uploader.portSlot,
-        beeUrl: this.options.plan.internalEndpoints.bee,
-        privateKey: this.options.feedPrivateKey,
-      });
+      profile = await this.options.resources.run('uploader-preparation', () =>
+        this.options.profiles.createHeldUploaderProfile({
+          fixtureId: this.options.plan.fixtureId,
+          expectedPortSlot: this.options.targets.uploader.portSlot,
+          beeUrl: this.options.plan.internalEndpoints.bee,
+          privateKey: this.options.feedPrivateKey,
+        }),
+      );
     } catch {
       throw new FixtureRefusal('manager profile creation outcome is unresolved');
     }
@@ -247,23 +253,27 @@ export class GuardedApplicationProvisioner {
     }
     this.options.journal.completeManagerProfile(profile.name, profile.portSlot, profile.instanceId);
 
-    await this.activate(
-      'admin',
-      'admin',
-      'default',
-      {
-        INGEST_MANAGED_LIFECYCLE_VERSION: '1',
-        INGEST_MANAGED_UPLOADER_ID: profile.instanceId,
-      },
-      ['--managed-lifecycle-version', '1', '--managed-uploader-id', profile.instanceId],
+    await this.options.resources.run('admin-managed', () =>
+      this.activate(
+        'admin',
+        'admin',
+        'default',
+        {
+          INGEST_MANAGED_LIFECYCLE_VERSION: '1',
+          INGEST_MANAGED_UPLOADER_ID: profile.instanceId,
+        },
+        ['--managed-lifecycle-version', '1', '--managed-uploader-id', profile.instanceId],
+      ),
     );
-    await this.activate('viewer', 'stack', 'default');
+    await this.options.resources.run('viewer', () => this.activate('viewer', 'stack', 'default'));
     this.recordGuardStage('manager uploader guarded activation', 'planned');
     try {
-      await this.options.profiles.setStampAndStartUploader({
-        profile,
-        postageBatchId: this.options.postageBatchId,
-      });
+      await this.options.resources.run('uploader', () =>
+        this.options.profiles.setStampAndStartUploader({
+          profile,
+          postageBatchId: this.options.postageBatchId,
+        }),
+      );
       this.recordGuardStage('manager uploader guarded activation', 'passed');
     } catch {
       this.recordGuardStage('manager uploader guarded activation', 'failed');

@@ -14,6 +14,7 @@ import {
   ResourceJournal,
   type ResourceKind,
 } from '../src/continuation/fixture.js';
+import type { GuardedResourceStage, GuardedResourceTracker } from '../src/continuation/guardedResources.js';
 import type { HeldUploaderProfile } from '../src/continuation/managerProfile.js';
 import {
   GuardedApplicationProvisioner,
@@ -140,12 +141,22 @@ class ReceiptVerifier {
   }
 }
 
+class RecordingResourceTracker implements GuardedResourceTracker {
+  readonly calls: GuardedResourceStage[] = [];
+
+  async run<T>(stage: GuardedResourceStage, mutation: () => Promise<T>): Promise<T> {
+    this.calls.push(stage);
+    return mutation();
+  }
+}
+
 function provisioner(
   fixturePlan: FixturePlan,
   process: RecordingProcess,
   profiles: ProfileClient,
   journal = new ResourceJournal(fixturePlan.outputRoot),
   receipts = new ReceiptVerifier(),
+  resources = new RecordingResourceTracker(),
 ): GuardedApplicationProvisioner {
   journal.initialize(fixturePlan, []);
   return new GuardedApplicationProvisioner({
@@ -155,6 +166,7 @@ function provisioner(
     profiles,
     receipts,
     journal,
+    resources,
     managerUsername: 'srs-a1b2c3d4-operator',
     managerPassword: 'synthetic-manager-password',
     feedPrivateKey: 'synthetic-feed-private-key',
@@ -168,7 +180,8 @@ describe('GuardedApplicationProvisioner', () => {
     const process = new RecordingProcess();
     const profiles = new ProfileClient();
     const receipts = new ReceiptVerifier();
-    const subject = provisioner(fixturePlan, process, profiles, undefined, receipts);
+    const resources = new RecordingResourceTracker();
+    const subject = provisioner(fixturePlan, process, profiles, undefined, receipts, resources);
 
     const topology = await subject.provision();
 
@@ -199,6 +212,14 @@ describe('GuardedApplicationProvisioner', () => {
       ['--managed-lifecycle-version', '1', '--managed-uploader-id', INSTANCE_ID],
     );
     assert.deepEqual(receipts.calls, ['manager', 'admin', 'viewer', 'uploader']);
+    assert.deepEqual(resources.calls, [
+      'admin-bootstrap',
+      'manager',
+      'uploader-preparation',
+      'admin-managed',
+      'viewer',
+      'uploader',
+    ]);
 
     const userAdd = process.calls.find((call) => call.file === 'docker' && call.args[0] === 'exec');
     assert.ok(userAdd);
@@ -235,6 +256,7 @@ describe('GuardedApplicationProvisioner', () => {
       profiles,
       receipts: new ReceiptVerifier(),
       journal,
+      resources: new RecordingResourceTracker(),
       managerUsername: 'srs-a1b2c3d4-operator',
       managerPassword: 'synthetic-manager-password',
       feedPrivateKey: 'synthetic-feed-private-key',
@@ -259,6 +281,7 @@ describe('GuardedApplicationProvisioner', () => {
       profiles,
       receipts: new ReceiptVerifier(),
       journal,
+      resources: new RecordingResourceTracker(),
       managerUsername: 'srs-a1b2c3d4-operator',
       managerPassword: 'synthetic-manager-password',
       feedPrivateKey: 'synthetic-feed-private-key',
@@ -297,6 +320,7 @@ describe('GuardedApplicationProvisioner', () => {
       profiles: new ProfileClient(),
       receipts: new ReceiptVerifier(),
       journal,
+      resources: new RecordingResourceTracker(),
       managerUsername: 'srs-a1b2c3d4-operator',
       managerPassword: 'synthetic-manager-password',
       feedPrivateKey: 'synthetic-feed-private-key',
