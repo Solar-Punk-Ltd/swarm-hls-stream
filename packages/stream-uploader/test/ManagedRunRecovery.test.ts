@@ -44,6 +44,7 @@ const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
 const RUNG_ID = `${STREAM_ID}_360p`;
 const RECONNECT_MS = 60_000;
 const WALL_START = 1_000_000;
+const CLAIM_ID = '44444444-4444-4444-8444-444444444444';
 const CLAIM: ManagedRunClaim = {
   lifecycleVersion: 1,
   streamId: STREAM_ID,
@@ -53,7 +54,7 @@ const CLAIM: ManagedRunClaim = {
   revision: 8,
   runNumber: 2,
   uploaderId: 'srs-157-90-34-105',
-  claimId: '44444444-4444-4444-8444-444444444444',
+  claimId: CLAIM_ID,
   eventSequence: 1,
   expectedRenditions: [],
 };
@@ -229,7 +230,7 @@ describe('managed run recovery', () => {
         revision: 8,
         runNumber: CLAIM.runNumber,
         uploaderId: CLAIM.uploaderId,
-        claimId: CLAIM.claimId,
+        claimId: CLAIM_ID,
         expectedRenditions: CLAIM.expectedRenditions,
         state: 'claimed',
         permission: 'claimed',
@@ -270,7 +271,7 @@ describe('managed run recovery', () => {
         revision: 8,
         runNumber: CLAIM.runNumber,
         uploaderId: CLAIM.uploaderId,
-        claimId: CLAIM.claimId,
+        claimId: CLAIM_ID,
         expectedRenditions: CLAIM.expectedRenditions,
         state: 'claimed',
         permission: 'claimed',
@@ -953,7 +954,7 @@ describe('managed run recovery', () => {
       assert.deepEqual(announcedIdentities.at(-1)?.managedRun, {
         runNumber: CLAIM.runNumber,
         uploaderId: CLAIM.uploaderId,
-        claimId: CLAIM.claimId,
+        claimId: CLAIM_ID,
         expectedRenditions,
       });
       assert.ok(announcedRenditions.length > 0);
