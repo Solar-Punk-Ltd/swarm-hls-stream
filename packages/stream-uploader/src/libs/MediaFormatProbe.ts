@@ -282,8 +282,8 @@ export class MediaFormatProbe {
     return new Promise((resolve) => {
       let settled = false;
       let terminalFailure: string | undefined;
-      let stdout = Buffer.alloc(0);
-      let stderr = Buffer.alloc(0);
+      let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+      let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       const child = spawn(
         this.executable,
         [
@@ -309,7 +309,10 @@ export class MediaFormatProbe {
         clearTimeout(timer);
         resolve(result);
       };
-      const append = (current: Buffer, chunk: Buffer): Buffer | null => {
+      const append = (
+        current: Buffer<ArrayBufferLike>,
+        chunk: Buffer<ArrayBufferLike>,
+      ): Buffer<ArrayBufferLike> | null => {
         if (current.length + chunk.length > this.maxOutputBytes) {
           terminalFailure ??= 'output_limit';
           child.kill('SIGKILL');
