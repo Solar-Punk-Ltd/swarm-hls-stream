@@ -45,6 +45,18 @@ function lastMatching<T>(items: readonly T[], matches: (item: T) => boolean): T 
   return [...items].reverse().find(matches);
 }
 
+/**
+ * Whether the run's closure reached the store and still holds.
+ *
+ * A closed run whose recording then finalizes ends at `vod`, which is the same closed run one step
+ * later, so the newest record alone cannot say whether the closure was ever written. That is the
+ * guarantee these cases exist for, and it is read from what the store was actually given.
+ */
+function closureIsDurable(store: MemoryManagedRuns, streamId = STREAM_ID): boolean {
+  const state = store.records.get(streamId)?.state;
+  return store.savedStates.includes('closed') && (state === 'closed' || state === 'vod');
+}
+
 const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
 const RUNG_ID = `${STREAM_ID}_360p`;
 const RECONNECT_MS = 60_000;
@@ -80,6 +92,7 @@ const SOURCE_B: SourceConnectionIdentity = {
 
 class MemoryManagedRuns implements ManagedRunPersistence {
   public records = new Map<string, ManagedRunRecord>();
+  public savedStates: ManagedRunRecord['state'][] = [];
   public failState?: ManagedRunRecord['state'];
   public failClosedSaves = 0;
   public failVodSaves = 0;
@@ -96,6 +109,7 @@ class MemoryManagedRuns implements ManagedRunPersistence {
     if (record.state === this.failState) {
       throw new Error(`injected ${record.state} save failure`);
     }
+    this.savedStates.push(record.state);
     this.records.set(record.streamId, structuredClone(record));
   }
 
@@ -619,7 +633,7 @@ describe('managed run recovery', () => {
     assert.equal(provision(target, SOURCE_B), false, 'a failed closed save left admission open in memory');
     store.failState = undefined;
     await target.stopStream(STREAM_ID);
-    assert.equal(store.records.get(STREAM_ID)?.state, 'closed', 'a later stop skipped the missing durable closure');
+    assert.equal(closureIsDurable(store), true, 'a later stop skipped the missing durable closure');
     await target.cleanup();
   });
 
@@ -648,7 +662,7 @@ describe('managed run recovery', () => {
     await clock.advance(10_000);
     await settleReports();
 
-    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(closureIsDurable(store), true);
     assert.equal(store.records.get(STREAM_ID)?.deadlineWallMs, WALL_START + RECONNECT_MS);
     assert.deepEqual(disconnected, [SOURCE_A]);
     assert.equal(notifyStop.mock.callCount(), 1);
@@ -737,7 +751,7 @@ describe('managed run recovery', () => {
 
     await target.stopStream(STREAM_ID);
 
-    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(closureIsDurable(store), true);
     assert.equal(provision(target, SOURCE_B), false, 'generic stop erased the managed closed permission');
     await target.cleanup();
   });
@@ -1457,7 +1471,7 @@ describe('managed run recovery', () => {
     }
 
     await clock.advance(50_000);
-    assert.equal(store.records.get(STREAM_ID)?.state, 'closed', 'heartbeats renewed the source cutoff');
+    assert.equal(closureIsDurable(store), true, 'heartbeats renewed the source cutoff');
   });
 
   it('disconnects the attached source only after the deadline closure is durable', async () => {
@@ -1472,7 +1486,7 @@ describe('managed run recovery', () => {
 
     await clock.advance(RECONNECT_MS);
 
-    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(closureIsDurable(store), true);
     assert.deepEqual(disconnected, [SOURCE_A]);
     await target.cleanup();
   });
@@ -1498,7 +1512,7 @@ describe('managed run recovery', () => {
 
     await clock.advance(RECONNECT_MS);
     await settleReports();
-    assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
+    assert.equal(closureIsDurable(store), true);
     assert.equal(
       store.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'closed'),
       true,
