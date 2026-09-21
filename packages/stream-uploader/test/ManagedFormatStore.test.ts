@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 
 import { ManagedFormatInput, ManagedFormatStore } from '../src/libs/ManagedFormatStore.js';
 import { DurableFileOps } from '../src/libs/ManagedRunStore.js';
-import { MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
+import { AudioFormatTrack, MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
 
 const roots: string[] = [];
 const INPUT: ManagedFormatInput = {
@@ -18,10 +18,18 @@ const INPUT: ManagedFormatInput = {
   source: { serverId: 'server', serviceId: 'service', clientId: 'client-a', generation: 1 },
   sequence: 4,
 };
+const STEREO_AAC: AudioFormatTrack = {
+  kind: 'audio',
+  codec: 'aac',
+  profile: 'LC',
+  sampleRate: 48_000,
+  channels: 2,
+  channelLayout: 'stereo',
+};
 const FINGERPRINT: MediaFormatFingerprint = {
   version: 1,
   container: 'mpegts',
-  tracks: [{ kind: 'audio', codec: 'aac', profile: 'LC', sampleRate: 48_000, channels: 2, channelLayout: 'stereo' }],
+  tracks: [STEREO_AAC],
 };
 
 function root(): string {
@@ -130,7 +138,7 @@ describe('ManagedFormatStore', () => {
     };
     assert.deepEqual(store.stage(sourceB, Buffer.from('b')), { kind: 'ready', bytes: Buffer.from('b') });
     assert.throws(
-      () => store.commit(sourceB, { ...FINGERPRINT, tracks: [{ ...FINGERPRINT.tracks[0], channels: 1 }] }),
+      () => store.commit(sourceB, { ...FINGERPRINT, tracks: [{ ...STEREO_AAC, channels: 1 }] }),
       /changed from its durable fingerprint/,
     );
     assert.deepEqual(store.commit(sourceB, FINGERPRINT), FINGERPRINT);
