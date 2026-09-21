@@ -13,7 +13,7 @@ import { LegacyRecordingAdopter } from '../src/libs/LegacyRecordingAdopter.js';
 import { ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
 import { MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
 
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { makeFakeRecoveryStore, makeRecoveredState, makeTestOrchestrator } from './helpers/fakes.js';
 
 const STREAM_ID = '11111111-1111-4111-8111-111111111111';
 const TOPIC = '22222222-2222-4222-8222-222222222222';
@@ -93,6 +93,60 @@ describe('legacy adoption polling', () => {
         assert.equal(preparations[0].completedRecording.checkpointReference, checkpoints.findRun(STREAM_ID, 1)?.checkpointReference);
         assert.deepEqual(preparations[0].validation.tracks, [{ topic: TOPIC, formatFingerprint: VIDEO_FORMAT }]);
       }
+    } finally {
+      await target.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not block adoption on a retained recovery entry for another topic', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-adoption-unrelated-recovery-'));
+    const preparations: LegacyAdoptionPreparation[] = [];
+    const adminApi = {
+      listManagedContinuations: async () => [],
+      listLegacyAdoptions: async () => [OPERATION],
+      reportLegacyAdoptionPreparation: async (
+        _operation: LegacyAdoptionOperation,
+        preparation: LegacyAdoptionPreparation,
+      ) => {
+        preparations.push(preparation);
+      },
+    } as unknown as AdminApiClient;
+    const unrelatedState = {
+      ...makeRecoveredState('video/unrelated'),
+      streamRawTopic: 'unrelated-topic',
+    };
+    const recoveryStore = makeFakeRecoveryStore({
+      listActive: () => [unrelatedState.streamId],
+      load: () => unrelatedState,
+    });
+    const readFeed = mock.fn(async () => ({
+      playlist: `#EXTM3U\n#EXTINF:2,\n${SEGMENT}\n#EXT-X-ENDLIST\n`,
+      reference: 'b'.repeat(64),
+    }));
+    const target = makeTestOrchestrator(
+      {
+        adminApi,
+        managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
+        legacyRecordingAdopter: new LegacyRecordingAdopter(
+          {
+            owner: '0'.repeat(40),
+            readFeed,
+            readSegment: async () => Buffer.from('mpeg-ts'),
+          },
+          { inspect: async () => ({ kind: 'valid', fingerprint: VIDEO_FORMAT }) },
+        ),
+      },
+      {},
+      recoveryStore,
+    );
+
+    try {
+      await target.pollManagedContinuations(OPERATION.uploaderId);
+
+      assert.equal(readFeed.mock.callCount(), 1);
+      assert.equal(preparations.length, 1);
+      assert.equal(preparations[0].status, 'ready');
     } finally {
       await target.cleanup();
       fs.rmSync(root, { recursive: true, force: true });
