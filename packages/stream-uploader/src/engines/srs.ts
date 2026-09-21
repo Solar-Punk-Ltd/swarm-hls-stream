@@ -431,7 +431,11 @@ type LadderStreamRole =
   | { kind: 'rung'; baseStreamId: string }
   | { kind: 'stray'; misroutedRendition: boolean };
 
-function classifyLadderStream(payload: SrsStreamPayload, streamId: string, abr?: AbrGuard): LadderStreamRole {
+function classifyLadderStream(
+  payload: Pick<SrsStreamPayload, 'vhost'>,
+  streamId: string,
+  abr?: AbrGuard,
+): LadderStreamRole {
   if (!abr) {
     return { kind: 'single' };
   }
@@ -981,7 +985,7 @@ async function handleHls(
   managedRungConnections: Map<string, ManagedRungConnection> = new Map(),
   legacyRungConnections: Map<string, string> = new Map(),
   authenticatedBases: Map<string, AdminSession | null> = new Map(),
-): void {
+): Promise<void> {
   try {
     const payload = req.body as SrsHlsPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
