@@ -114,8 +114,10 @@ async function withManagedSrs(
   options: {
     abr?: boolean;
     mediaRoot?: string;
+    managedRuns?: readonly number[];
     mode?: 'legacy' | 'managed';
     managedSegmentAccepted?: boolean;
+    unpublishAccepted?: (identity: SourceConnectionIdentity) => boolean;
   } = {},
 ): Promise<void> {
   const calls: Calls = {
@@ -133,6 +135,7 @@ async function withManagedSrs(
     stops: [],
     deletes: [],
   };
+  let managedLookup = 0;
   const admin = {
     describe: () => 'http://admin.test',
     lookupByIngestId: async () => {
@@ -146,6 +149,7 @@ async function withManagedSrs(
         publishKey: 'secret',
         lifecycleVersion: 1 as const,
       };
+      const runNumber = options.managedRuns?.[Math.min(managedLookup++, options.managedRuns.length - 1)] ?? 2;
       return options.mode === 'legacy'
         ? { ...draft, mode: 'legacy' as const }
         : {
@@ -153,21 +157,21 @@ async function withManagedSrs(
             mode: 'managed' as const,
             expectedRenditions: [],
             lifecycle: {
-              revision: 7,
-              runNumber: 2,
+              revision: 5 + runNumber,
+              runNumber,
               state: 'ready' as const,
               permission: 'open' as const,
               uploaderId: UPLOADER_ID,
             },
           };
     },
-    claimManagedRun: async (_id: string, _run: number, request: ManagedClaimRequest) => {
+    claimManagedRun: async (_id: string, runNumber: number, request: ManagedClaimRequest) => {
       calls.requests.push(request);
       return {
         lifecycleVersion: 1 as const,
         streamId: ADMIN_ID,
-        revision: 8,
-        runNumber: 2,
+        revision: 6 + runNumber,
+        runNumber,
         uploaderId: UPLOADER_ID,
         claimId: CLAIM_ID,
         expectedRenditions: [],
@@ -182,7 +186,7 @@ async function withManagedSrs(
       return {
         requestId: '33333333-3333-4333-8333-333333333333',
         expectedRevision: attempt.revision,
-        needsClaim: calls.attempts.length === 1,
+        needsClaim: options.managedRuns !== undefined || calls.attempts.length === 1,
       };
     },
     completeManagedClaim: (_streamId: string, claim: ManagedClaimCompletion) => {
@@ -199,7 +203,7 @@ async function withManagedSrs(
     },
     markManagedSourceUnpublished: (_streamId: string, identity: SourceConnectionIdentity) => {
       calls.unpublished.push(identity);
-      return true;
+      return options.unpublishAccepted?.(identity) ?? true;
     },
     recoverManagedSourceConnection: () => null,
     startStream: (streamId: string) => {
@@ -365,6 +369,31 @@ describe('SRS managed lifecycle callbacks', () => {
       assert.equal(await post(callback('client-a', 'on_unpublish')), 0);
       assert.deepEqual(calls.unpublished.map((identity) => identity.clientId), ['client-a']);
     });
+  });
+
+  it('keeps continued-run rung authorization when an old source unpublishes late', async () => {
+    await withManagedSrs(
+      () => true,
+      async (post, calls) => {
+        assert.equal(await post(callback('source-a')), 0);
+        assert.equal(await post(callback('source-b')), 0);
+        assert.deepEqual(calls.attempts.map(({ runNumber }) => runNumber), [2, 3]);
+
+        assert.equal(await post(callback('source-a', 'on_unpublish')), 0);
+        assert.equal(await post(callback('source-a', 'on_unpublish')), 0);
+        assert.equal(await post(rungCallback('on_publish', 'rung-b')), 0);
+        assert.deepEqual(calls.managedRenditions, [`${STREAM_ID}_360p`]);
+
+        assert.equal(await post(callback('source-b', 'on_unpublish')), 0);
+        assert.equal(await post(rungCallback('on_publish', 'rung-after-b')), 1);
+        assert.deepEqual(calls.unpublished.map(({ clientId }) => clientId), ['source-a', 'source-b']);
+      },
+      {
+        abr: true,
+        managedRuns: [2, 3],
+        unpublishAccepted: ({ clientId }) => clientId === 'source-b',
+      },
+    );
   });
 
   it('refuses managed callbacks that omit SRS connection identity', async () => {
