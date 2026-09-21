@@ -169,7 +169,7 @@ export const PARSED_LINES: readonly ParsedLine[] = [
   {
     what: 'a finalize resuming after a crash ("Resuming the finalize of <stream> at the catalog write")',
     level: 'log',
-    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'finalizeResumed(this.streamId, alreadyPublished)' },
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'finalizeResumed(this.streamId, alreadyPublished.index)' },
     neededBy:
       'resumedFinalizeCount, which is how a reader of scenarios/finalize-crash tells a kill that ' +
       'landed inside the window and was answered from one that missed the window entirely. Both ' +
