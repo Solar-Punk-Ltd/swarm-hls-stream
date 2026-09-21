@@ -29,8 +29,11 @@ the ladder's group id and the rung's name** (`src/utils/rungTopic.ts`, a version
 therefore outlives any one session: a rung that restarts mid-broadcast — SRS bouncing a transcoder,
 an encoder reconnecting — comes back onto the feed the master already names, reads its head, and
 numbers its playlist on from there with a single `#EXT-X-DISCONTINUITY` at the seam, rather than
-appearing on a feed nothing points at until it re-announces. Recordings sit back to back on one
-rung's feed and the catalog entry lists the latest. Two things then tie the rungs back together:
+appearing on a feed nothing points at until it re-announces. A session opening over that feed also
+**inherits the playlist at its head into its own recording**, so the head recording carries every
+session the feed has held, oldest first, with an `#EXT-X-DISCONTINUITY` at each seam and the reported
+duration covering the whole broadcast. The live playlists are unchanged by that: they stay a window
+over the current session's own segments. Two things then tie the rungs back together:
 
 - The four rungs merge into a **single catalog entry**, keyed by a shared group id rather than by
   topic. Four uploaders write that entry concurrently, which is safe only because every catalog
@@ -799,8 +802,10 @@ Everything else follows. Each rung publishes its own media playlists on a topic 
 group and its rung name** — four rungs sharing the master's feed would write over each other and over
 the master, and a rung's feed has to be found again by name after a restart rather than re-minted.
 That topic is stable for the life of the declaration, so a rung that restarts continues the same feed
-above its own last session's head, its recordings sit back to back there, and the entry lists the
-latest. **The admin therefore accepts `live` after `vod`**: a broadcaster who stops and comes back is
+above its own last session's head, and the recording it finalizes opens with the one that was already
+there — so the entry the admin holds points at a recording of the whole broadcast, seams marked,
+however many times it was restarted. **The admin therefore accepts `live` after `vod`**: a
+broadcaster who stops and comes back is
 a stream going live again under a declaration the admin already holds as a recording. (That admin
 change ships from the `feat/ladder-feed-sessions` branch of the streaming-monorepo repository.)
 
