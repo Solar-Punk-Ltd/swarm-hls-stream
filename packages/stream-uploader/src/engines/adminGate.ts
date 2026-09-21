@@ -1,4 +1,4 @@
-import { AdminApiClient, AdminStreamDraft } from '../libs/AdminApiClient.js';
+import { AdminApiClient, AdminIngestLookup } from '../libs/AdminApiClient.js';
 import { Logger } from '../libs/Logger.js';
 import { AdminSession, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
@@ -54,7 +54,7 @@ type AdminPublishRefusal =
   | typeof ADMIN_PUBLISH_WRONG_MEDIA_TYPE;
 
 type AdminPublishVerdict =
-  | { kind: typeof ADMIN_PUBLISH_ALLOWED; session: AdminSession; draft: AdminStreamDraft }
+  | { kind: typeof ADMIN_PUBLISH_ALLOWED; session: AdminSession; draft: AdminIngestLookup }
   | { kind: AdminPublishRefusal };
 
 /**
@@ -88,7 +88,7 @@ export async function resolveAdminPublish(
   presentedKey: string | null,
   signerOwner?: string,
 ): Promise<AdminPublishVerdict> {
-  let draft: AdminStreamDraft | null;
+  let draft: AdminIngestLookup | null;
   try {
     draft = await client.lookupByIngestId(streamId);
   } catch (error) {
