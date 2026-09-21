@@ -492,12 +492,10 @@ describe('the admin API client, negotiating lifecycle v1', () => {
         completedRecording: { runNumber: 2, checkpointReference: 'checkpoint-a' },
       };
       await withAdmin(
-        (req, res) => {
-          if (req.method === 'POST') {
-            res.status(409).json({ error: conflict });
-          } else {
-            res.status(409).json({ error: conflict });
-          }
+        // The report and the readback behind it both answer with the conflict, which is what leaves
+        // the client no way to settle.
+        (_req, res) => {
+          res.status(409).json({ error: conflict });
         },
         async ({ client, received }) => {
           assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_FAILED);
