@@ -396,7 +396,7 @@ def cmd_drift(root, count):
             continue
         cells = windowed(rows, count)
         slope = slope_per_hour(rows)
-        floor_start, floor_grew = heap_floor(rows)
+        _, floor_grew = heap_floor(rows)
         minutes = (rows[-1]["Timestamp"] - rows[0]["Timestamp"]) / 60
         print(f"{arm:<28} {minutes:5.1f}min  {' '.join(dashed(c) for c in cells)}"
               f"   slope/hr {signed(slope)}   heapFloor {dashed(floor_grew, 1)}MB"
