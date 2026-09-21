@@ -134,12 +134,15 @@ describe('deploy.sh minting the client build stamp', () => {
 
 /**
  * ⛔⛔ The two sides have to agree on what "the client sources" are, or the gate compares one answer
- * against a different question. `deploy.sh` decides what the image records and `bench-on-host.sh`
- * decides what the harness expects, and a path added to one and not the other is a source that can
- * change a viewer's client while both sides still call it a match.
+ * against a different question. `deploy-standalone.sh` decides what the image records and
+ * `bench-on-host.sh` decides what the harness expects, and a path added to one and not the other is
+ * a source that can change a viewer's client while both sides still call it a match.
+ *
+ * The building side is `deploy-standalone.sh` and not `deploy.sh`, which is now the release gate in
+ * front of it and computes no stamp of its own.
  */
 describe('the two sides of the client stamp asking about the same sources', () => {
-  const scripts = ['deploy.sh', 'bench-on-host.sh'].map((name) => ({
+  const scripts = ['deploy-standalone.sh', 'bench-on-host.sh'].map((name) => ({
     name,
     body: readFileSync(join(SCRIPTS, name), 'utf8'),
   }));
