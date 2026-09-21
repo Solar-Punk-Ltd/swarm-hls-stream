@@ -14,12 +14,17 @@ const SERVICE_METRIC_MAX_BYTES = 256 * 1024;
 const SAFE_COMMAND_DIAGNOSTIC =
   /^bounded command (?:timed out|failed with exit (?:unknown|-?\d+)(?: and signal [A-Za-z0-9]+)?) \(stdout \d+ bytes, stderr \d+ bytes\)$/;
 const GENERIC_COMMAND_DIAGNOSTIC = 'bounded command failed';
-const EXPECTED_ROLES: readonly TopologyServiceRole[] = [
+export type ManagerMeasurementRole = 'manager-postgres' | 'manager-api' | 'manager-web';
+export type MeasurementContainerRole = TopologyServiceRole | ManagerMeasurementRole;
+
+const EXPECTED_ROLES: readonly MeasurementContainerRole[] = [
   'blockchain', 'bee-queen', 'bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4',
   'postgres', 'admin-api', 'admin-web', 'srs', 'uploader', 'viewer', 'browser', 'media-sender',
+  'manager-postgres', 'manager-api', 'manager-web',
 ];
-const ROLES_WITHOUT_SERVICE_METRICS: readonly TopologyServiceRole[] = [
+const ROLES_WITHOUT_SERVICE_METRICS: readonly MeasurementContainerRole[] = [
   'blockchain', 'postgres', 'admin-api', 'admin-web', 'viewer', 'browser', 'media-sender',
+  'manager-postgres', 'manager-api', 'manager-web',
 ];
 
 const HTTP_TEXT_SCRIPT = `
@@ -44,7 +49,7 @@ export interface ContinuationMeasurementInput {
   outputRoot: string;
   phase: 'before' | 'after';
   probeContainerId: string;
-  containers: ReadonlyMap<TopologyServiceRole, RuntimeContainerBinding>;
+  containers: ReadonlyMap<MeasurementContainerRole, RuntimeContainerBinding>;
 }
 
 export interface ContinuationMeasurementFailure {
@@ -95,19 +100,27 @@ export async function captureContinuationMeasurements(
   }
 
   const ids = EXPECTED_ROLES.map((role) => containers.get(role)!.id);
-  const stats = await captureSurface(failures, 'exactContainerStats', () => command.run('docker', [
-    'stats', '--no-stream', '--format',
-    '{"id":{{json .ID}},"name":{{json .Name}},"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}},"pids":{{json .PIDs}},"net":{{json .NetIO}},"block":{{json .BlockIO}}}',
-    ...ids,
-  ]));
+  const stats = await captureSurface(failures, 'exactContainerStats', async () => {
+    const result = await command.run('docker', [
+      'stats', '--no-stream', '--no-trunc', '--format',
+      '{"id":{{json .ID}},"name":{{json .Name}},"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}},"pids":{{json .PIDs}},"net":{{json .NetIO}},"block":{{json .BlockIO}}}',
+      ...ids,
+    ]);
+    validateExactStats(result.stdout, ids);
+    return result;
+  });
   const limits: Record<string, string> = {};
   for (const role of EXPECTED_ROLES) {
     const binding = containers.get(role)!;
-    const result = await captureSurface(failures, `exactContainerLimits.${role}`, () => command.run('docker', [
-      'inspect', '--format',
-      '{"id":{{json .Id}},"nanoCpus":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}',
-      binding.id,
-    ]));
+    const result = await captureSurface(failures, `exactContainerLimits.${role}`, async () => {
+      const observed = await command.run('docker', [
+        'inspect', '--format',
+        '{"id":{{json .Id}},"nanoCpus":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}',
+        binding.id,
+      ]);
+      validateExactLimit(observed.stdout, binding.id);
+      return observed;
+    });
     if (result) {
       limits[role] = result.stdout;
     }
@@ -158,7 +171,7 @@ function safeCommandDiagnostic(error: unknown): string {
   return GENERIC_COMMAND_DIAGNOSTIC;
 }
 
-function validateInput(input: ContinuationMeasurementInput): Map<TopologyServiceRole, RuntimeContainerBinding> {
+function validateInput(input: ContinuationMeasurementInput): Map<MeasurementContainerRole, RuntimeContainerBinding> {
   if (!FIXTURE_ID.test(input.fixtureId) || !SAFE_ID.test(input.probeContainerId)) {
     throw new FixtureRefusal('continuation measurement identity is malformed');
   }
@@ -172,5 +185,44 @@ function validateInput(input: ContinuationMeasurementInput): Map<TopologyService
   ) {
     throw new FixtureRefusal('continuation measurement container set is incomplete');
   }
+  if (new Set([...containers.values()].map(({ id }) => id)).size !== EXPECTED_ROLES.length) {
+    throw new FixtureRefusal('continuation measurement container identities are not distinct');
+  }
   return containers;
+}
+
+function validateExactStats(value: string, expectedIds: readonly string[]): void {
+  const rows = value.trim() === '' ? [] : value.trim().split('\n');
+  const observed = rows.map((row) => parseExactId(row));
+  if (
+    observed.length !== expectedIds.length ||
+    new Set(observed).size !== observed.length ||
+    observed.some((id) => !expectedIds.includes(id))
+  ) {
+    throw new FixtureRefusal('exact container stats identity set is incomplete');
+  }
+}
+
+function validateExactLimit(value: string, expectedId: string): void {
+  if (parseExactId(value) !== expectedId) {
+    throw new FixtureRefusal('exact container limit identity does not match');
+  }
+}
+
+function parseExactId(value: string): string {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof (parsed as { id?: unknown }).id === 'string' &&
+      SAFE_ID.test((parsed as { id: string }).id)
+    ) {
+      return (parsed as { id: string }).id;
+    }
+  } catch {
+    throw new FixtureRefusal('exact container observation is malformed');
+  }
+  throw new FixtureRefusal('exact container observation is malformed');
 }

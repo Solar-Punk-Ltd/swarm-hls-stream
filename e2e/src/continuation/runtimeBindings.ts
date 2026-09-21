@@ -1,5 +1,6 @@
 import type { BoundedCommand } from './dockerCli.js';
 import { FIXTURE_LABEL, type FixturePlan, FixtureRefusal, MANAGED_LABEL } from './fixture.js';
+import type { MeasurementContainerRole } from './measurements.js';
 import type {
   GuardCandidateBinding,
   RuntimeContainerBinding,
@@ -16,6 +17,7 @@ const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 const NETWORK_ID = /^[0-9a-f]{64}$/;
 
 interface GuardProjects {
+  manager: string;
   admin: string;
   uploader: string;
   viewer: string;
@@ -38,6 +40,9 @@ export interface ResolvedFixtureEndpoints {
 
 export interface ResolvedFixtureRuntime {
   readiness: RuntimeReadinessBindings;
+  measurements: {
+    containers: ReadonlyMap<MeasurementContainerRole, RuntimeContainerBinding>;
+  };
   endpoints: ResolvedFixtureEndpoints;
 }
 
@@ -108,6 +113,15 @@ const GUARDED_CONTAINERS: readonly GuardedContainer[] = [
   },
 ];
 
+const MANAGER_MEASUREMENT_CONTAINERS: ReadonlyArray<{
+  role: Extract<MeasurementContainerRole, `manager-${string}`>;
+  service: string;
+}> = [
+  { role: 'manager-postgres', service: 'postgres' },
+  { role: 'manager-api', service: 'api' },
+  { role: 'manager-web', service: 'web' },
+];
+
 /** Resolves guard-owned runtime identities without reading container environments or logs. */
 export async function resolveFixtureRuntime(
   command: BoundedCommand,
@@ -122,7 +136,7 @@ export async function resolveFixtureRuntime(
   const guarded = new Map<TopologyServiceRole, { binding: RuntimeContainerBinding; inspection: ContainerInspection }>();
   for (const expected of GUARDED_CONTAINERS) {
     const project = checkedName(input.projects[expected.project], `${expected.project} project`);
-    const id = await exactComposeContainer(command, input.plan.fixtureId, project, expected.service);
+    const id = await exactComposeContainer(command, input.plan.fixtureId, project, expected.service, expected.role);
     const inspection = await inspectContainer(command, id, input.plan.fixtureId);
     if (
       inspection.labels['com.docker.compose.project'] !== project ||
@@ -169,6 +183,29 @@ export async function resolveFixtureRuntime(
       throw new FixtureRefusal(`${service.role} runtime container binding is missing`);
     }
   }
+  const measurementContainers = new Map<MeasurementContainerRole, RuntimeContainerBinding>(containers);
+  const managerProject = checkedName(input.projects.manager, 'manager project');
+  for (const expected of MANAGER_MEASUREMENT_CONTAINERS) {
+    const id = await exactComposeContainer(command, input.plan.fixtureId, managerProject, expected.service, expected.role);
+    const inspection = await inspectContainer(command, id, input.plan.fixtureId);
+    if (
+      inspection.labels['com.docker.compose.project'] !== managerProject ||
+      inspection.labels['com.docker.compose.service'] !== expected.service
+    ) {
+      throw new FixtureRefusal(`${expected.role} runtime Compose identity does not match`);
+    }
+    measurementContainers.set(expected.role, {
+      id: inspection.id,
+      name: inspection.name,
+      configuredImage: inspection.configuredImage,
+    });
+  }
+  if (
+    measurementContainers.size !== 17 ||
+    new Set([...measurementContainers.values()].map(({ id }) => id)).size !== 17
+  ) {
+    throw new FixtureRefusal('runtime measurement container identities are incomplete');
+  }
 
   const candidates = new Map<ReleaseGuardRole, GuardCandidateBinding>();
   for (const activation of input.topology.guardedActivations) {
@@ -203,6 +240,7 @@ export async function resolveFixtureRuntime(
       guardSlots: new Map(input.guardSlots),
       candidates,
     },
+    measurements: { containers: measurementContainers },
     endpoints: {
       srs: { host: 'srs', rtmpPort: 10_012, srtPort: 10_011 },
       viewerMediaBaseUrl: 'http://client',
@@ -216,6 +254,7 @@ async function exactComposeContainer(
   fixtureId: string,
   project: string,
   service: string,
+  diagnosticRole: string,
 ): Promise<string> {
   const result = await command.run('docker', [
     'ps', '--quiet', '--no-trunc',
@@ -227,7 +266,7 @@ async function exactComposeContainer(
   ]);
   const ids = result.stdout.trim() === '' ? [] : result.stdout.trim().split(/\s+/);
   if (ids.length !== 1 || !SAFE_NAME.test(ids[0] ?? '')) {
-    throw new FixtureRefusal(`${service} guarded runtime did not resolve to one exact container`);
+    throw new FixtureRefusal(`${diagnosticRole} guarded runtime did not resolve to one exact container`);
   }
   return ids[0];
 }

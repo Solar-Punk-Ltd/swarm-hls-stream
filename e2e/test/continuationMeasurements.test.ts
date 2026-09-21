@@ -32,7 +32,7 @@ class RecordingCommand implements BoundedCommand {
     }
     if (args[0] === 'stats') {
       return {
-        stdout: args.slice(args.indexOf('{"id":{{json .ID}}') + 1)
+        stdout: args.slice(args.indexOf('--format') + 2)
           .map((id) => JSON.stringify({ id, cpu: '0.1%', memory: '1MiB / 1GiB', pids: '1', net: '0B / 0B', block: '0B / 0B' }))
           .join('\n') + '\n',
         stderr: '',
@@ -147,7 +147,10 @@ describe('continuation measurement snapshots', () => {
     const savedStats = String(saved.exactContainerStats).trim().split('\n').map((row) => JSON.parse(row) as { id: string });
     assert.equal(savedStats.length, 17);
     assert.equal(new Set(savedStats.map(({ id }) => id)).size, 17);
-    assert.deepEqual(new Set(savedStats.map(({ id }) => id)), new Set(containers().values().map(({ id }) => id)));
+    assert.deepEqual(
+      new Set(savedStats.map(({ id }) => id)),
+      new Set([...containers().values()].map(({ id }) => id)),
+    );
     assert.ok(command.calls.every(({ args }) => !args.includes('env')));
     assert.ok(command.calls.every(({ args }) => !args.includes('logs')));
   });
@@ -190,7 +193,7 @@ describe('continuation measurement snapshots', () => {
     assert.equal('bee-queen' in saved.serviceMetrics, false);
     assert.match(saved.serviceMetrics['bee-worker-1'] ?? '', /full service metrics/);
     assert.match(saved.serviceMetrics.uploader ?? '', /"complete":true/);
-    assert.match(saved.exactContainerStats ?? '', /CPUPerc/);
+    assert.match(saved.exactContainerStats ?? '', /"cpu":"0\.1%"/);
     assert.equal(Object.keys(saved.exactContainerLimits).length, 17);
     assert.match(saved.coTenancy ?? '', /neighbor/);
     assert.equal(command.calls.filter(({ args }) => args[0] === 'stats').length, 1);

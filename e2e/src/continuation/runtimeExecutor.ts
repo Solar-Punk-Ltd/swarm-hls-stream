@@ -256,7 +256,7 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
       outputRoot: this.configuration.plan.outputRoot,
       phase,
       probeContainerId: runtime.readiness.probeContainerId,
-      containers: runtime.readiness.containers,
+      containers: runtime.measurements.containers,
     });
   }
 
@@ -408,6 +408,7 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
       plan: this.configuration.plan,
       topology,
       projects: {
+        manager: this.configuration.targets.manager.projectName,
         admin: this.configuration.targets.admin.projectName,
         uploader: this.configuration.targets.uploader.profile,
         viewer: this.configuration.targets.viewer.profile,

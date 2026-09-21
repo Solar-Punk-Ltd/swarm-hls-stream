@@ -42,6 +42,7 @@ interface ContainerFixture {
   name: string;
   service: string;
   project: string;
+  inspectedProject?: string;
   aliases: string[];
   ports: Array<{ port: number; protocol: 'tcp' | 'udp' }>;
 }
@@ -90,7 +91,7 @@ class DockerObservations implements BoundedCommand {
           configuredImage: `fixture/${container.service}:candidate`,
           imageId: IMAGE_ID,
           labels: {
-            'com.docker.compose.project': container.project,
+            'com.docker.compose.project': container.inspectedProject ?? container.project,
             'com.docker.compose.service': container.service,
             'org.solarpunk.srs-continuation.fixture': FIXTURE_ID,
             'org.solarpunk.srs-continuation.managed': 'true',
@@ -189,6 +190,19 @@ function guardedContainers(): ContainerFixture[] {
   ];
 }
 
+function rawContainers() {
+  return new Map([
+    ['blockchain', { id: 'blockchain-id', name: `${FIXTURE_ID}-blockchain`, configuredImage: IMAGE_ID }],
+    ['bee-queen', { id: 'bee-queen-id', name: `${FIXTURE_ID}-bee-queen`, configuredImage: IMAGE_ID }],
+    ['bee-worker-1', { id: 'bee-worker-1-id', name: `${FIXTURE_ID}-bee-worker-1`, configuredImage: IMAGE_ID }],
+    ['bee-worker-2', { id: 'bee-worker-2-id', name: `${FIXTURE_ID}-bee-worker-2`, configuredImage: IMAGE_ID }],
+    ['bee-worker-3', { id: 'bee-worker-3-id', name: `${FIXTURE_ID}-bee-worker-3`, configuredImage: IMAGE_ID }],
+    ['bee-worker-4', { id: 'bee-worker-4-id', name: `${FIXTURE_ID}-bee-worker-4`, configuredImage: IMAGE_ID }],
+    ['browser', { id: 'browser-id', name: `${FIXTURE_ID}-browser`, configuredImage: IMAGE_ID }],
+    ['media-sender', { id: 'sender-id', name: `${FIXTURE_ID}-media-sender`, configuredImage: IMAGE_ID }],
+  ] as const);
+}
+
 describe('resolveFixtureRuntime', () => {
   it('binds exact guard-created identities and inspected internal endpoints', async () => {
     const plan = fixturePlan();
@@ -200,16 +214,7 @@ describe('resolveFixtureRuntime', () => {
       topology,
       projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
       fixtureNetworkId: NETWORK_ID,
-      rawContainers: new Map([
-        ['blockchain', { id: 'blockchain-id', name: `${FIXTURE_ID}-blockchain`, configuredImage: IMAGE_ID }],
-        ['bee-queen', { id: 'bee-queen-id', name: `${FIXTURE_ID}-bee-queen`, configuredImage: IMAGE_ID }],
-        ['bee-worker-1', { id: 'bee-worker-1-id', name: `${FIXTURE_ID}-bee-worker-1`, configuredImage: IMAGE_ID }],
-        ['bee-worker-2', { id: 'bee-worker-2-id', name: `${FIXTURE_ID}-bee-worker-2`, configuredImage: IMAGE_ID }],
-        ['bee-worker-3', { id: 'bee-worker-3-id', name: `${FIXTURE_ID}-bee-worker-3`, configuredImage: IMAGE_ID }],
-        ['bee-worker-4', { id: 'bee-worker-4-id', name: `${FIXTURE_ID}-bee-worker-4`, configuredImage: IMAGE_ID }],
-        ['browser', { id: 'browser-id', name: `${FIXTURE_ID}-browser`, configuredImage: IMAGE_ID }],
-        ['media-sender', { id: 'sender-id', name: `${FIXTURE_ID}-media-sender`, configuredImage: IMAGE_ID }],
-      ]),
+      rawContainers: rawContainers(),
       guardSlots: new Map([
         ['manager', 'default'],
         ['admin', 'default'],
@@ -259,7 +264,7 @@ describe('resolveFixtureRuntime', () => {
         topology,
         projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
         fixtureNetworkId: NETWORK_ID,
-        rawContainers: new Map(),
+        rawContainers: rawContainers(),
         guardSlots: new Map(),
       }),
       /SRS.*slot-1|alias/i,
@@ -278,7 +283,7 @@ describe('resolveFixtureRuntime', () => {
         topology,
         projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
         fixtureNetworkId: NETWORK_ID,
-        rawContainers: new Map(),
+        rawContainers: rawContainers(),
         guardSlots: new Map(),
       }),
       /exact fixture network/i,
@@ -295,7 +300,7 @@ describe('resolveFixtureRuntime', () => {
         topology,
         projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
         fixtureNetworkId: NETWORK_ID,
-        rawContainers: new Map(),
+        rawContainers: rawContainers(),
         guardSlots: new Map(),
       }),
       /manager-api guarded runtime did not resolve/i,
@@ -304,17 +309,17 @@ describe('resolveFixtureRuntime', () => {
     const wrong = guardedContainers();
     const managerApi = wrong.find(({ service, project }) => project === 'manager-project' && service === 'api');
     assert.ok(managerApi);
-    managerApi.project = 'foreign-manager-project';
+    managerApi.inspectedProject = 'foreign-manager-project';
     await assert.rejects(
       resolveFixtureRuntime(new DockerObservations(wrong), {
         plan,
         topology,
         projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
         fixtureNetworkId: NETWORK_ID,
-        rawContainers: new Map(),
+        rawContainers: rawContainers(),
         guardSlots: new Map(),
       }),
-      /manager-api guarded runtime did not resolve/i,
+      /manager-api runtime Compose identity does not match/i,
     );
   });
 });
