@@ -35,8 +35,8 @@ function formatUuid(bytes: Buffer): string {
  * ⛔ **Uniqueness per broadcast is the group's job, not this function's.** Standalone the group is a
  * fresh uuid per broadcast, so the derived topics are fresh with it; in admin mode the group is the
  * declared topic, which is stable for the life of the declaration, and so are these. Both are what
- * the deployment wants: recordings on one rung's feed sit back to back, and the catalog entry names
- * the latest.
+ * the deployment wants: each session's recording opens with the one already at that rung's feed
+ * head, so the catalog entry names a recording of the whole broadcast with its seams marked.
  *
  * An RFC 4122 version-5 UUID, because the admin validates every topic it is handed against a UUID
  * shape (`UUID_RE`, `web2-admin/backend/src/schemas/stream.ts`) and because a name-based UUID is the

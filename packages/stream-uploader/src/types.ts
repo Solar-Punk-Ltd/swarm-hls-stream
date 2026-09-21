@@ -30,6 +30,14 @@ export interface InheritedTimeline {
   mediaSequence: number;
   /** The `#EXT-X-TARGETDURATION` the prefix was published with, which the glued recording takes the max of. */
   targetDuration: number;
+  /**
+   * The `#EXT-X-DISCONTINUITY-SEQUENCE` the prefix declared, which is the breaks that had already
+   * slid out of ITS window. Zero for a recording, which names the broadcast from its start.
+   *
+   * ⛔ Carried, because a session that dropped it published a discontinuity sequence LOWER than the
+   * head a viewer had just been handed. See `ManifestManager.inheritedDiscontinuities`.
+   */
+  discontinuitySequence: number;
   /** The seconds of media the prefix holds, summed off its `#EXTINF` values, for the reported duration. */
   durationSeconds: number;
   /** Every timeline line of the prefix, in order, from its first timeline tag to before its `#EXT-X-ENDLIST`. */
@@ -71,6 +79,14 @@ export interface StreamState {
    * that both were read off. By the time a recovered session runs, the feed head is this session's
    * own live playlist, so re-reading it would glue this session's own window in front of itself.
    * See `ManifestManager.inherit`.
+   *
+   * ⚠️ **What it costs, measured rather than estimated.** `RecoveryStore` writes this whole entry
+   * synchronously once per segment, and the prefix grows by a session every time the broadcaster
+   * restarts. Over four sessions of 30 minutes at 2s segments the entry measured 150 KB, 269 KB,
+   * 388 KB and 507 KB, the prefix being 357 KB of the last. The entry was already six figures at the
+   * first session, because `segments` holds every segment the broadcast ever published, so this
+   * roughly triples a write that was never small. Accepted at this size; a deployment seeing entries
+   * approach a megabyte should make the write incremental rather than trim what it records.
    */
   inherited?: InheritedTimeline;
   /**

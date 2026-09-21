@@ -60,6 +60,20 @@ const SETTLE_CEILING_MS = 4_000;
 /** A playlist the head read can hand back. Its content decides nothing on the resume path. */
 const SOME_PLAYLIST = '#EXTM3U\n#EXT-X-VERSION:3\n';
 
+/** A head naming one segment, so a case can read both facts a session takes off it. */
+const PREVIOUS_ON_THIS_FEED = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-TARGETDURATION:2',
+  '#EXT-X-MEDIA-SEQUENCE:6',
+  '',
+  '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:21.849Z',
+  '#EXTINF:2,',
+  'd'.repeat(64),
+  '#EXT-X-ENDLIST',
+  '',
+].join('\n');
+
 /**
  * A read failure that is not a 404 and not worth retrying, so the head read fails on its first
  * attempt instead of spending its fifteen second window proving it.
@@ -211,6 +225,90 @@ describe('the feed index a declared topic resumes from', () => {
     assert.equal(entry?.inherited?.mediaSequence, 6);
     assert.equal(entry?.inherited?.durationSeconds, 2);
     assert.deepEqual(entry?.inherited?.lines.at(-1), 'c'.repeat(64));
+  });
+
+  /**
+   * ⛔⛔ The window a review found on 2026-09-21. The head read runs behind the first segment's
+   * upload and the segment path does not await the manifest publish, so a recovery entry could be
+   * written while the feed position was still unsettled. Such an entry says `sequenceOffset: 0` and
+   * no inherited recording, which is not "unknown yet" but a positive claim that this session opened
+   * on an empty feed — and a recovered session never re-reads its head, so it republished the
+   * numbering from a number viewers had already been handed and finalized a recording that dropped
+   * every earlier session.
+   *
+   * Driven here through the other thing that holds the same state open, an earlier session still
+   * finalizing onto the topic they share, because it can be held deterministically where the race
+   * itself cannot. It is the same guard and the same refusal. Nothing is lost by writing no entry,
+   * because no playlist may be published before the same facts are settled, so a session that has
+   * not settled them has told no viewer anything.
+   */
+  it('writes no recovery entry while its feed position is unsettled', async () => {
+    let release: (() => void) | null = null;
+    const session = newSession({
+      feedHead: () => ({ index: 7, manifest: PREVIOUS_ON_THIS_FEED }),
+      // An earlier session still finalizing onto the topic they share, which is the other thing that
+      // holds the feed position open. The head is not read at all until it drains.
+      predecessorDrained: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(
+      session.saved.length,
+      0,
+      'an entry here would claim this session opened on an empty feed, which a recovery believes',
+    );
+
+    release!();
+    await feedOneSegment(session.uploader, 1);
+
+    const entry = session.saved.at(-1);
+    assert.ok(entry, 'and the entry is written as soon as the read answers');
+    assert.equal(entry?.sequenceOffset, 7, 'carrying the numbering the head really left');
+    assert.equal(entry?.inherited?.durationSeconds, 2, 'and the recording it really has to open with');
+    assert.equal(entry?.segments.length, 2, 'naming the segment it held while the read was outstanding as well');
+  });
+
+  /**
+   * ⛔ And the entry lands on the settling itself rather than waiting for a segment to follow it.
+   * Otherwise a broadcast whose first segment settled the position and whose second never came would
+   * hold an uploaded, unnamed segment with nothing on disk recording it.
+   */
+  it('writes the entry as soon as the head read settles, with no further segment needed', async () => {
+    let release: (() => void) | null = null;
+    const session = newSession({
+      feedHead: () => ({ index: 7, manifest: PREVIOUS_ON_THIS_FEED }),
+      predecessorDrained: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+    assert.equal(session.saved.length, 0);
+
+    release!();
+    // The publish the held segment already queued, re-attempted now the position can settle.
+    session.uploader.handleSegment(1, 2, Buffer.from('seg1'));
+    await drain(session.uploader);
+
+    const entry = session.saved.at(-1);
+    assert.equal(entry?.sequenceOffset, 7);
+    assert.equal(entry?.inherited?.mediaSequence, 6);
+  });
+
+  /**
+   * ⛔ The standalone deployment is untouched by that. Its topic is a fresh uuid per session, so its
+   * feed position is settled by construction and it persists from its first segment exactly as it
+   * always did.
+   */
+  it('persists from the first segment on a stream that reads no head at all', async () => {
+    const session = newSession({ standalone: true });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.ok(session.saved.length > 0, 'a session with nothing to settle has nothing to wait for');
   });
 
   it('carries no inherited recording when the topic has never been written', async () => {

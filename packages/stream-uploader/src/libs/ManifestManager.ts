@@ -167,6 +167,12 @@ function headerNumber(lines: readonly string[], tag: string, fallback: number): 
  * own recovery entry is the path that recovers its whole recording, and a session that went looking
  * back through earlier feed indices would be guessing at which of them belonged to which broadcast.
  *
+ * ⚠️ **Only the timeline is carried, so an initialization or key header would be lost.**
+ * `#EXT-X-MAP` and `#EXT-X-KEY` sit above the first timeline tag and are dropped with the rest of the
+ * header. Neither applies to this project: segments are self-contained MPEG-TS with no
+ * initialization section, and nothing here encrypts. A deployment that started publishing fMP4 or
+ * encrypted segments would have to carry them.
+ *
  * Works on a recording, a closing playlist and a live window alike, because any of the three can be
  * the head.
  */
@@ -187,9 +193,13 @@ export function inheritedTimeline(manifest: string): InheritedTimeline | null {
     return null;
   }
 
+  const headers = lines.slice(0, opensAt);
   return {
-    mediaSequence: headerNumber(lines.slice(0, opensAt), HLS_MEDIA_SEQUENCE, 0),
-    targetDuration: headerNumber(lines.slice(0, opensAt), HLS_TARGET_DURATION, 0),
+    mediaSequence: headerNumber(headers, HLS_MEDIA_SEQUENCE, 0),
+    targetDuration: headerNumber(headers, HLS_TARGET_DURATION, 0),
+    // Absent on a recording, which names its timeline from the start, and on every playlist written
+    // before this project declared it. Zero is what an absent tag already means.
+    discontinuitySequence: headerNumber(headers, HLS_DISCONTINUITY_SEQUENCE, 0),
     // A duration that will not parse contributes nothing rather than poisoning the whole sum with a
     // NaN, which would reach the admin as the broadcast's reported length.
     durationSeconds: durations.reduce((total, seconds) => total + (Number.isFinite(seconds) ? seconds : 0), 0),
@@ -659,16 +669,30 @@ export class ManifestManager {
       return this.inheritedDiscontinuities();
     }
 
+    // ⛔ Counted as {@link segmentLines} writes them and not as a separate sum, which is the whole of
+    // why the seam is not added on top here. This session's first segment can carry a break of its
+    // own, and that break IS the seam: one tag goes out for it, so one is counted for it.
     const openedBelow = this.segments.filter((seg) => sequenceOf(seg) < sequenceOf(first));
-    const ownSeam = this.sequenceOffset > 0 && sequenceOf(first) > 0 ? 1 : 0;
-    return (
-      this.inheritedDiscontinuities() + ownSeam + openedBelow.filter((seg) => seg.discontinuity === true).length
-    );
+    const ownBreaks = openedBelow.filter((seg) => (this.isSeam(seg) ? true : seg.discontinuity === true)).length;
+    return this.inheritedDiscontinuities() + ownBreaks;
   }
 
-  /** The breaks the inherited recording already declares, which every window of this session is behind. */
+  /**
+   * The breaks in front of this session's own first entry: the ones the inherited playlist declares,
+   * plus the ones it says had already slid out of ITS window.
+   *
+   * ⛔ The head's own `#EXT-X-DISCONTINUITY-SEQUENCE` counts, and leaving it out published a number
+   * LOWER than the head a viewer had just been handed. A head left by a session that was killed is a
+   * live window, so the breaks earlier in that broadcast are behind it and are named only by that
+   * header. A recording's own is zero, which is what an absent tag already says.
+   */
   private inheritedDiscontinuities(): number {
-    return this.inherited === null ? 0 : this.inherited.lines.filter((line) => line === HLS_DISCONTINUITY).length;
+    if (this.inherited === null) {
+      return 0;
+    }
+    return (
+      this.inherited.discontinuitySequence + this.inherited.lines.filter((line) => line === HLS_DISCONTINUITY).length
+    );
   }
 
   /**
@@ -681,13 +705,18 @@ export class ManifestManager {
    * walking the feed there, so the media sequence it has been given never moves backwards. Verified
    * 2026-09-21 against `LadderFeedPoller.ingest` and `ManifestStateManager.updateManifest`.
    *
-   * ⛔ **Exactly one `#EXT-X-DISCONTINUITY` at the seam.** It is written here, from the prefix path,
-   * and {@link segmentLines} is told to leave the one it would otherwise put on this session's own
-   * sequence 0 to this. Two tags on one join would tell a player there are two encodes between the
-   * sessions and move every later discontinuity sequence out by one.
+   * ⛔ **Exactly one `#EXT-X-DISCONTINUITY` at the seam, whatever this session's first segment
+   * carries.** It is written here, from the prefix path, and the entry that follows it declares none
+   * of its own — not the seam {@link segmentLines} would otherwise put on sequence 0, and not a break
+   * the origin declared or an engine restart armed on that same segment. Those are all one join said
+   * once. Two tags there would tell a player there are two encodes between the sessions and would
+   * move every later `#EXT-X-DISCONTINUITY-SEQUENCE` out by one.
    *
-   * The recording declares no `#EXT-X-DISCONTINUITY-SEQUENCE`: it names the timeline from its own
-   * first entry, so nothing precedes it and the absent tag's default of 0 is the truth.
+   * The recording declares an `#EXT-X-DISCONTINUITY-SEQUENCE` only where the playlist it inherited
+   * did. A prefix taken from a recording names the broadcast from its start, so nothing precedes it
+   * and the absent tag's default of 0 is the truth; a prefix taken from the live window of a session
+   * that was killed begins mid-broadcast, and that window's own header is the only thing that says
+   * how many breaks ran in front of it.
    */
   public buildVODManifest(): string {
     if (this.segments.length === 0) {
@@ -719,10 +748,13 @@ export class ManifestManager {
       `${HLS_TARGET_DURATION}:${Math.max(prefix.targetDuration, this.targetDuration)}`,
       HLS_PLAYLIST_TYPE_VOD,
       `${HLS_MEDIA_SEQUENCE}:${prefix.mediaSequence}`,
+      ...(prefix.discontinuitySequence > 0
+        ? [`${HLS_DISCONTINUITY_SEQUENCE}:${prefix.discontinuitySequence}`]
+        : []),
       '',
       ...prefix.lines,
       HLS_DISCONTINUITY,
-      ...this.timelineLines(this.segments, false),
+      ...this.timelineLines(this.segments, true),
       HLS_ENDLIST,
     ]);
   }
@@ -898,12 +930,21 @@ export class ManifestManager {
    * The lines one segment occupies, in the order RFC 8216 §4.3.2.6 wants them: the break first, then
    * the wall clock the media after the break resumes at, then the segment itself.
    *
-   * @param markSeam whether this build is the one that writes the seam tag. False only in the glued
-   *   recording, which has already written it between the inherited prefix and this session's media.
-   *   See {@link buildVODManifest}.
+   * ⛔⛔ **At the seam the tag is one statement, whoever armed it.** This session's first segment can
+   * carry a break of its own — the origin declared one, or the engine's counter restarted on it — and
+   * that break and the seam are the same join: the media here is not a continuation of what came
+   * before it, said once. Two tags there would tell a player there are two encodes between the
+   * sessions and would move every later `#EXT-X-DISCONTINUITY-SEQUENCE` out by one. So the seam
+   * answers for both, and in the glued recording, where the caller has already written it between the
+   * prefix and this media, nothing is written here at all.
+   *
+   * @param seamAlreadyWritten this entry is the one the caller has already written the seam in front
+   *   of, so it declares no break of its own whatever it carries. True only for the first entry of
+   *   this session's media in the glued recording. See {@link buildVODManifest}.
    */
-  private segmentLines(seg: SegmentEntry, markSeam = true): string[] {
-    const discontinuity = seg.discontinuity || (markSeam && this.isSeam(seg)) ? [HLS_DISCONTINUITY] : [];
+  private segmentLines(seg: SegmentEntry, seamAlreadyWritten = false): string[] {
+    const declares = seamAlreadyWritten ? false : seg.discontinuity === true || this.isSeam(seg);
+    const discontinuity = declares ? [HLS_DISCONTINUITY] : [];
     return [...discontinuity, buildProgramDateTime(this.presentedAtMsOf(seg)), buildExtinf(seg.duration), seg.ref];
   }
 
@@ -913,12 +954,17 @@ export class ManifestManager {
    * Written by both the live window and the recording, over whatever slice of the held segments each
    * of them names, so a hole reads the same in the playlist a viewer is following and in the one they
    * are handed afterwards.
+   *
+   * @param behindASeam the caller has just written an `#EXT-X-DISCONTINUITY` in front of these lines,
+   *   so the first of them declares none of its own. Positional rather than derived from
+   *   {@link isSeam}, which a head carrying no `#EXT-X-MEDIA-SEQUENCE` would leave unarmed while the
+   *   prefix path wrote the seam anyway.
    */
-  private timelineLines(held: readonly SegmentEntry[], markSeam = true): string[] {
+  private timelineLines(held: readonly SegmentEntry[], behindASeam = false): string[] {
     return held.flatMap((seg, position) =>
       position === 0
-        ? this.segmentLines(seg, markSeam)
-        : [...this.gapLines(held[position - 1], seg), ...this.segmentLines(seg, markSeam)],
+        ? this.segmentLines(seg, behindASeam)
+        : [...this.gapLines(held[position - 1], seg), ...this.segmentLines(seg)],
     );
   }
 

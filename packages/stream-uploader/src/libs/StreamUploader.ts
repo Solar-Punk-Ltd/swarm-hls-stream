@@ -985,6 +985,11 @@ export class StreamUploader {
         );
       }
     }
+    // ⛔ Written here rather than left to the next segment, because this is the moment the entry
+    // becomes writable at all: everything before this point was refused by {@link persistState} for
+    // having nothing true to say about where this session stands in its feed. A crash between the
+    // segments already held and the next one would otherwise leave no entry naming them.
+    this.persistState();
     return true;
   }
 
@@ -1478,8 +1483,33 @@ export class StreamUploader {
     return this.statePersistFailedAt === null ? null : Date.now() - this.statePersistFailedAt;
   }
 
+  /**
+   * Write the recovery entry, once there is anything true to write in it.
+   *
+   * ⛔⛔ **A session whose feed position is not settled persists nothing at all, and that is the
+   * safe half of the trade.** Where the head stands decides two facts this entry is the only surviving
+   * record of: the media sequence this session numbers from, and the recording it opens with. Both
+   * come off one head read, which runs behind the first segment's upload and is NOT awaited by the
+   * segment path — `uploadLiveManifest` is fired and `persistState` follows it immediately. So an
+   * entry written in between says `sequenceOffset: 0` and no inherited recording, which are not
+   * "unknown yet" but a positive claim that this session opened on an empty feed. A crash there used
+   * to resurrect the session on that claim: a recovered session never reads its head
+   * ({@link topicOutlivesThisSession} is false for one), so it republished the broadcast's numbering
+   * from a number viewers had already been handed and finalized a recording that silently dropped
+   * every earlier session.
+   *
+   * Nothing is lost by waiting. {@link commitManifest} refuses every publish until the same two facts
+   * are settled, so a session that has not settled them has told no viewer anything, and there is no
+   * published history for a recovery to have to keep faith with. The segments it uploaded are in
+   * Swarm and unnamed, which is exactly what they would be had the process died one moment earlier.
+   * A standalone single-rendition stream settles trivially — its topic is fresh per session — so it
+   * persists from its first segment exactly as it always did.
+   */
   private persistState(): void {
     if (!this.ownsRecoveryEntry) {
+      return;
+    }
+    if (!this.feedPositionSettled()) {
       return;
     }
     try {

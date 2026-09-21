@@ -702,9 +702,9 @@ export class StreamOrchestrator {
     // so it is the same string every time that rung of that ladder publishes. Its feed therefore
     // outlives the session, and a rung that restarts mid-broadcast — SRS bouncing a transcoder, an
     // encoder reconnecting — continues the feed the master already names instead of appearing on one
-    // nothing points at until it re-announces. Sessions sit back to back on it: the replacement reads
-    // the head, numbers its playlist on from there with a discontinuity at the seam, and its recording
-    // is the latest of however many that feed holds. See `rungTopicFor` and
+    // nothing points at until it re-announces. The replacement reads the head, numbers its playlist on
+    // from there with a discontinuity at the seam, and opens its own recording with what that head
+    // held, so the recording at the feed head carries every session. See `rungTopicFor` and
     // `StreamUploader.resumeFeedIndex`. Uniqueness per broadcast is the group's, which is a fresh uuid
     // standalone and the declared topic in admin mode.
     //
