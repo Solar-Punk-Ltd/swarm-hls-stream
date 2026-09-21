@@ -9,6 +9,11 @@ Every status below is a **live** status. The suites under `e2e/suites/` drive a 
 green here means a real broadcast really ran, not that a unit test passed. Nothing under `suites/`
 runs in CI.
 
+⛔ **The SRS reconnect and continuation acceptance is not covered here and is not covered anywhere.**
+Its fixture cannot start, and two of the things it exists to prove are unprovable by it as written.
+Added 2026-09-21, ruled not to be built for now, and written down in full at
+[srs-reconnect-acceptance-gaps.md](srs-reconnect-acceptance-gaps.md).
+
 ## Run profiles
 
 A **run profile** is a saved, named set of the environment values that decide what a sitting IS. It
