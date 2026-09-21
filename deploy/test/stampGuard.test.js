@@ -14,11 +14,6 @@ after(removeSandboxes);
  * instead, where the same `read` waits for a line that never comes, so a guard that asks a question
  * hangs the suite rather than failing it. Which of the two a caller gets decides whether an operator
  * sees a refusal or a deploy that never returns, so these cases use the manager's wiring.
- *
- * ⛔ `HOME` is the sandbox, the way the shared `runScript` sets it. `deploy.sh` takes its release
- * lease under `$HOME/.local/state` and leaves it there on purpose when a deploy fails, so a case
- * that borrows the real home writes into the person's own machine and then refuses every later case
- * in this file with a lease the first refusal left behind.
  */
 function runHeadless(sandbox, name, args = []) {
   return new Promise((resolve) => {

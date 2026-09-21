@@ -231,8 +231,9 @@ function pathWithoutPnpm(root, hostPath) {
  * deployment host every one of those is exported.
  *
  * `HOME` and `TMPDIR` are here because the scripts read both, and the locale and terminal names
- * because the tools they call do. Anything else a case needs it passes in itself, which is what makes
- * the case say what it depends on.
+ * because the tools they call do. `HOME` is the one exception to inheriting: a script gets the
+ * sandbox root as its home, so nothing it writes there reaches the real home directory. Anything else
+ * a case needs it passes in itself, which is what makes the case say what it depends on.
  */
 const INHERITED_ENV = ['HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM'];
 
