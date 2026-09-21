@@ -21,7 +21,7 @@ export interface AudioFormatTrack {
   readonly channelLayout: string;
 }
 
-export type MediaFormatTrack = VideoFormatTrack | AudioFormatTrack;
+type MediaFormatTrack = VideoFormatTrack | AudioFormatTrack;
 
 export interface MediaFormatFingerprint {
   readonly version: 1;
@@ -35,7 +35,7 @@ export type MediaFormatProbeResult =
   | { readonly kind: 'busy' }
   | { readonly kind: 'failed'; readonly reason: string };
 
-export interface MediaFormatProbeOptions {
+interface MediaFormatProbeOptions {
   readonly executable?: string;
   readonly maxInputBytes?: number;
   readonly maxOutputBytes?: number;

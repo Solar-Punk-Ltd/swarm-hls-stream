@@ -27,7 +27,7 @@ export interface Segment {
   programDateTime?: string;
 }
 
-export interface ParsedManifest {
+interface ParsedManifest {
   headers: string[];
   segments: Segment[];
   isFinalized: boolean;

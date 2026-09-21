@@ -35,7 +35,7 @@ export interface LegacyAdoptionMediaReader {
   readSegment(reference: string, rendition: string | null): Promise<Uint8Array>;
 }
 
-export interface LegacyAdoptionInspection {
+interface LegacyAdoptionInspection {
   readonly checkpoint: Omit<AdoptLegacyRecording, 'operationId' | 'candidateDigest'>;
   readonly validation: LegacyAdoptionValidation;
   readonly masterPlaylist: string;

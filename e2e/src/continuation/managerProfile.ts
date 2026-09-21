@@ -20,7 +20,7 @@ const TRANSITIONAL_STATUSES = new Set(['DEPLOYING', 'STOPPING', 'REMOVING']);
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export interface ManagerProfileClientOptions {
+interface ManagerProfileClientOptions {
   baseUrl: string;
   username: string;
   password: string;

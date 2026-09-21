@@ -1,4 +1,4 @@
-export interface StackPortProjection {
+interface StackPortProjection {
   uploaderApi: number;
   srsSrt: number;
   srsRtmp: number;

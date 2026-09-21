@@ -138,7 +138,7 @@ export interface OmeEngineSeams extends EngineFactoryDeps {
   fetcher?: Fetcher;
 }
 
-export interface OmeAdmissionRequest {
+interface OmeAdmissionRequest {
   direction: 'incoming' | 'outgoing';
   protocol: string;
   url: string;

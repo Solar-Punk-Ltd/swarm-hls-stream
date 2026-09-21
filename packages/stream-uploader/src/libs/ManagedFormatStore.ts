@@ -24,7 +24,7 @@ interface ManagedOpeningPart {
   readonly byteLength: number;
 }
 
-export interface ManagedFormatRecord {
+interface ManagedFormatRecord {
   readonly lifecycleVersion: 1;
   readonly adminStreamId: string;
   readonly runNumber: number;
@@ -39,7 +39,7 @@ export interface ManagedFormatRecord {
   readonly openingBytes: string;
 }
 
-export type ManagedOpeningResult =
+type ManagedOpeningResult =
   | { readonly kind: 'ready'; readonly bytes: Buffer }
   | { readonly kind: 'validated'; readonly fingerprint: MediaFormatFingerprint }
   | { readonly kind: 'conflict' }

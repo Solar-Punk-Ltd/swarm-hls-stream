@@ -146,7 +146,7 @@ export function readAudioPts(segment: Uint8Array): number[] {
 }
 
 /** How many elementary stream packets of each kind a segment opens. */
-export interface PesPacketCounts {
+interface PesPacketCounts {
   video: number;
   audio: number;
 }

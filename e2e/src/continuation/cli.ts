@@ -20,7 +20,7 @@ const CONFIG_DEPTH = 32;
 const USERNAME = /^[A-Za-z0-9_.-]{1,100}$/;
 const CREDENTIAL_FIELD = /(?:authorization|cookie|credential|password|passphrase|private.?key|secret|token)/i;
 
-export interface ContinuationCliConfiguration {
+interface ContinuationCliConfiguration {
   schemaVersion: 1;
   plan: FixturePlan;
   targets: ReleaseFixtureTargets;
@@ -28,7 +28,7 @@ export interface ContinuationCliConfiguration {
   adminUsername: string;
 }
 
-export interface ContinuationCliResult {
+interface ContinuationCliResult {
   schemaVersion: 1;
   fixtureId: string;
   scenario: ContinuationScenario;
@@ -38,7 +38,7 @@ export interface ContinuationCliResult {
   remainingWitness?: 'srs_on_publish_response_code_1';
 }
 
-export type ContinuationCliRunner = (
+type ContinuationCliRunner = (
   configuration: ContinuationCliConfiguration,
   secrets: ContinuationFixtureRuntimeSecrets,
   scenario: ContinuationScenario,

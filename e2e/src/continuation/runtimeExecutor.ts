@@ -53,7 +53,7 @@ const POSTAGE_BATCH_ID = /^(?:0x)?[0-9a-fA-F]{64}$/;
 
 export type ContinuationScenario = 'cumulative' | 'reconnect';
 
-export type ScenarioEvidenceMetadata =
+type ScenarioEvidenceMetadata =
   | { evidenceScope: 'cumulative-media-observation' }
   | {
       evidenceScope: 'reconnect-controller-observation';
@@ -85,7 +85,7 @@ export interface ContinuationFixtureRuntimeSecrets {
   srtPassphrase: string;
 }
 
-export interface FixtureControlFactoryInput {
+interface FixtureControlFactoryInput {
   plan: FixturePlan;
   topology: ContinuationTopology;
   runtime: ResolvedFixtureRuntime;
@@ -93,9 +93,9 @@ export interface FixtureControlFactoryInput {
   readinessStreamTopic: string;
 }
 
-export type FixtureControlFactory = (input: FixtureControlFactoryInput) => ReadinessControlExecutor;
+type FixtureControlFactory = (input: FixtureControlFactoryInput) => ReadinessControlExecutor;
 
-export interface ContinuationFixtureRuntimeDependencies {
+interface ContinuationFixtureRuntimeDependencies {
   command?: BoundedCommand;
   createControls: FixtureControlFactory;
 }

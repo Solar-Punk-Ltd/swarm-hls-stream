@@ -16,8 +16,8 @@ const MAX_SEAM_GAP_SECONDS = 4;
 const RECONNECT_CUTOFF_MARGIN_MS = POLL_INTERVAL_MS;
 const CONTROLLED_PUBLISH_DURATION_SECONDS = 120;
 
-export type SourceMarkerId = 'A' | 'B' | 'C';
-export type SourceProtocol = 'rtmp' | 'srt';
+type SourceMarkerId = 'A' | 'B' | 'C';
+type SourceProtocol = 'rtmp' | 'srt';
 
 export interface ContinuationMediaScenarioInput {
   fixtureId: string;
@@ -61,7 +61,7 @@ export interface MediaScenarioFetch {
   fetch(request: MediaScenarioFetchRequest): Promise<MediaScenarioFetchResponse>;
 }
 
-export type MediaScenarioProcessArgument =
+type MediaScenarioProcessArgument =
   | string
   | {
       kind: 'secret-template';
@@ -96,25 +96,25 @@ export interface MediaScenarioSpawn {
   spawn(invocation: MediaScenarioProcessInvocation): Promise<MediaScenarioProcess>;
 }
 
-export interface MediaScenarioClock {
+interface MediaScenarioClock {
   now(): number;
   sleep(ms: number): Promise<void>;
 }
 
-export interface MediaScenarioDependencies {
+interface MediaScenarioDependencies {
   fetch: MediaScenarioFetch;
   spawn: MediaScenarioSpawn;
   clock: MediaScenarioClock;
 }
 
-export interface ImmutableMediaEvidence {
+interface ImmutableMediaEvidence {
   topic: string;
   index: number;
   reference: string;
   duration: number;
 }
 
-export interface ImmutableRenditionEvidence extends ImmutableMediaEvidence {
+interface ImmutableRenditionEvidence extends ImmutableMediaEvidence {
   name: string;
   width: number;
   height: number;
@@ -122,14 +122,14 @@ export interface ImmutableRenditionEvidence extends ImmutableMediaEvidence {
   avgBandwidth: number;
 }
 
-export interface DecodedMarkerRange {
+interface DecodedMarkerRange {
   markerId: SourceMarkerId;
   firstTimestampSeconds: number;
   lastTimestampSeconds: number;
   frameCount: number;
 }
 
-export interface DecodedReplayEvidence {
+interface DecodedReplayEvidence {
   evidenceKind: 'sampled-order';
   videoSampleRateFps: 1;
   audioAnalysisWindowSeconds: 0.256;
@@ -146,7 +146,7 @@ export interface DecodedReplayEvidence {
   audioMarkerRanges: DecodedMarkerRange[];
 }
 
-export interface CompletedSnapshotEvidence {
+interface CompletedSnapshotEvidence {
   runNumber: number;
   lifecycleRevision: number;
   master: ImmutableMediaEvidence;

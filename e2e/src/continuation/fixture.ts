@@ -28,13 +28,13 @@ const BEE_IMAGES = {
 
 export type CandidateRole = 'stack' | 'admin' | 'manager';
 
-export interface Candidate {
+interface Candidate {
   role: CandidateRole;
   root: string;
   commit: string;
 }
 
-export interface CandidateImages {
+interface CandidateImages {
   postgres: string;
   srs: string;
   uploader: string;
@@ -61,12 +61,12 @@ interface ResourcePlanBase {
   labels: Readonly<Record<string, string>>;
 }
 
-export interface NetworkPlan extends ResourcePlanBase {
+interface NetworkPlan extends ResourcePlanBase {
   kind: 'network';
   internal: true;
 }
 
-export interface VolumePlan extends ResourcePlanBase {
+interface VolumePlan extends ResourcePlanBase {
   kind: 'volume';
 }
 
@@ -84,7 +84,7 @@ export interface ContainerResourceLimits {
 }
 
 export type FixtureResourcePlan = NetworkPlan | VolumePlan | ContainerPlan;
-export type ResourceIntentPlan = Pick<FixtureResourcePlan, 'kind' | 'name' | 'labels'>;
+type ResourceIntentPlan = Pick<FixtureResourcePlan, 'kind' | 'name' | 'labels'>;
 
 export interface FixturePlan {
   schemaVersion: 1;
@@ -100,7 +100,7 @@ export interface FixturePlan {
   minimumStorageTtlSeconds: number;
 }
 
-export interface CreateFixturePlanInput {
+interface CreateFixturePlanInput {
   fixtureId: string;
   outputRoot: string;
   candidates: readonly Candidate[];
@@ -191,9 +191,9 @@ export interface FixtureHttp {
   inspectReadiness(plan: FixturePlan): Promise<ReadinessEvidence>;
 }
 
-export type StageStatus = 'planned' | 'skipped' | 'passed' | 'failed';
+type StageStatus = 'planned' | 'skipped' | 'passed' | 'failed';
 
-export interface StageRecord {
+interface StageRecord {
   name: string;
   status: StageStatus;
   command: readonly string[];
@@ -215,7 +215,7 @@ export interface ResourceJournalDocument {
     | { status: 'created' | 'ready'; name: string; portSlot: number; instanceId: string };
 }
 
-export interface ResourceIntent {
+interface ResourceIntent {
   kind: ResourceKind;
   name: string;
   labels: Record<string, string>;
@@ -721,7 +721,7 @@ export function assertFixtureReadiness(plan: FixturePlan, evidence: ReadinessEvi
   }
 }
 
-export interface MediaFixtureRunnerOptions {
+interface MediaFixtureRunnerOptions {
   plan: FixturePlan;
   docker: FixtureDocker;
   candidates: CandidateVerifier;

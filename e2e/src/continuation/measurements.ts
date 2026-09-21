@@ -14,7 +14,7 @@ const SERVICE_METRIC_MAX_BYTES = 256 * 1024;
 const SAFE_COMMAND_DIAGNOSTIC =
   /^bounded command (?:timed out|failed with exit (?:unknown|-?\d+)(?: and signal [A-Za-z0-9]+)?) \(stdout \d+ bytes, stderr \d+ bytes\)$/;
 const GENERIC_COMMAND_DIAGNOSTIC = 'bounded command failed';
-export type ManagerMeasurementRole = 'manager-postgres' | 'manager-api' | 'manager-web';
+type ManagerMeasurementRole = 'manager-postgres' | 'manager-api' | 'manager-web';
 export type MeasurementContainerRole = TopologyServiceRole | ManagerMeasurementRole;
 
 const EXPECTED_ROLES: readonly MeasurementContainerRole[] = [
@@ -66,7 +66,7 @@ fetch(url).then(async response => {
 }).catch(() => process.exit(1));
 `.trim();
 
-export interface ContinuationMeasurementInput {
+interface ContinuationMeasurementInput {
   fixtureId: string;
   outputRoot: string;
   phase: 'before' | 'after';
@@ -74,12 +74,12 @@ export interface ContinuationMeasurementInput {
   containers: ReadonlyMap<MeasurementContainerRole, RuntimeContainerBinding>;
 }
 
-export interface ContinuationMeasurementFailure {
+interface ContinuationMeasurementFailure {
   surface: string;
   diagnostic: string;
 }
 
-export class IncompleteContinuationMeasurements extends FixtureRefusal {
+class IncompleteContinuationMeasurements extends FixtureRefusal {
   constructor(readonly snapshotPath: string, readonly failedSurfaces: readonly string[]) {
     super('continuation measurement snapshot is incomplete');
     this.name = 'IncompleteContinuationMeasurements';

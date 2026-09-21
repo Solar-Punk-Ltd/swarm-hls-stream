@@ -144,7 +144,7 @@ export interface BitrateSample {
   window?: SegmentSize[];
 }
 
-export interface SegmentSize {
+interface SegmentSize {
   bytes: number;
   duration: number;
 }
@@ -240,7 +240,7 @@ export const ANONYMOUS_CLAIMANT: StreamClaimant = { address: null, isAuthenticat
 
 export const REJECT_QUEUE_FULL = 'queue_full' as const;
 export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;
-export const REJECT_DUPLICATE = 'duplicate' as const;
+const REJECT_DUPLICATE = 'duplicate' as const;
 /** The stream is finalizing. Distinct from `unknown_stream`: it existed, and its manifest is closed. */
 export const REJECT_DRAINING = 'draining' as const;
 /** Media arrived from a source generation that never acquired, or no longer owns, this stream. */
@@ -280,7 +280,7 @@ export const HEALTH_DEGRADED = 'degraded' as const;
  */
 export const HEALTH_WAITING_FOR_NODE = 'waiting_for_node' as const;
 
-export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED | typeof HEALTH_WAITING_FOR_NODE;
+type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED | typeof HEALTH_WAITING_FOR_NODE;
 
 export const HEALTH_REASON_STALE_MANIFEST = 'stale_manifest' as const;
 export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as const;
@@ -596,7 +596,7 @@ export const STOP_FAILURE_FINALIZE_FAILED = 'finalize_failed' as const;
  * Typing it closed means no message built inside `src/libs/` can reach a response body by accident,
  * which a sanitizer on the way out would not guarantee. The detail still goes to the log. See S1.7.
  */
-export type StopFailureReason = typeof STOP_FAILURE_DRAIN_TIMEOUT | typeof STOP_FAILURE_FINALIZE_FAILED;
+type StopFailureReason = typeof STOP_FAILURE_DRAIN_TIMEOUT | typeof STOP_FAILURE_FINALIZE_FAILED;
 
 export interface StreamStatusReport {
   streamId: string;

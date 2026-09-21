@@ -58,13 +58,13 @@ interface AnvilSnapshot {
   addresses: ContractAddresses;
 }
 
-export interface PrivateChainProvisioningInput {
+interface PrivateChainProvisioningInput {
   plan: FixturePlan;
   bootstrap: ContinuationBootstrap;
   beePassword: string;
 }
 
-export interface PrivateChainProvisioningDependencies {
+interface PrivateChainProvisioningDependencies {
   journal: ResourceJournal;
   docker: FixtureDocker;
   process: BoundedProcess;

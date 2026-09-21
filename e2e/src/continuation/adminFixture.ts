@@ -12,7 +12,7 @@ const SESSION_COOKIE = 'web2_admin_session=';
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export interface ManagedFixtureStreamInput {
+interface ManagedFixtureStreamInput {
   fixtureId: string;
   uploaderId: string;
   apiContainerId: string;
@@ -29,7 +29,7 @@ export interface ManagedFixtureStreamSession {
   publishKey: string;
 }
 
-export interface ManagedFixtureStreamDependencies {
+interface ManagedFixtureStreamDependencies {
   process: BoundedProcess;
   fetch?: Fetch;
 }

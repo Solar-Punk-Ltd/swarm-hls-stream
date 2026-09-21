@@ -18,7 +18,7 @@ const MAX_REQUEST_BYTES = 256 * 1024;
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export interface LoopbackMediaScenarioFetchOptions {
+interface LoopbackMediaScenarioFetchOptions {
   secrets: ReadonlyMap<string, string>;
   fetch?: Fetch;
 }
@@ -159,7 +159,7 @@ export class NodeInteractiveProcessLauncher implements InteractiveProcessLaunche
   }
 }
 
-export interface DockerMediaScenarioSpawnOptions {
+interface DockerMediaScenarioSpawnOptions {
   senderContainerId: string;
   secrets: ReadonlyMap<string, string>;
   command: BoundedCommand;

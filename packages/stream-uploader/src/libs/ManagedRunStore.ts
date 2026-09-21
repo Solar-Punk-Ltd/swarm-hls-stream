@@ -9,15 +9,10 @@ export const MANAGED_RUN_MISSING = 'missing' as const;
 export const MANAGED_RUN_LOADED = 'loaded' as const;
 export const MANAGED_RUN_UNREADABLE = 'unreadable' as const;
 
-export type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
-export type ManagedRunCloseReason =
-  | 'reconnect_timeout'
-  | 'cancelled'
-  | 'recovery_required'
-  | 'finalization_failed'
-  | 'empty';
+type ManagedRunState = 'claiming' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+type ManagedRunCloseReason = 'reconnect_timeout' | 'cancelled' | 'recovery_required' | 'finalization_failed' | 'empty';
 
-export interface ManagedRungConnectionRecord {
+interface ManagedRungConnectionRecord {
   readonly streamId: string;
   readonly connection: Omit<SourceConnectionIdentity, 'generation'>;
   readonly source: SourceConnectionIdentity;

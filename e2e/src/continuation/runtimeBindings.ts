@@ -15,7 +15,7 @@ interface GuardProjects {
   viewer: string;
 }
 
-export interface ResolveFixtureRuntimeInput {
+interface ResolveFixtureRuntimeInput {
   plan: FixturePlan;
   topology: ContinuationTopology;
   projects: GuardProjects;
@@ -24,7 +24,7 @@ export interface ResolveFixtureRuntimeInput {
   guardSlots: ReadonlyMap<ReleaseGuardRole, string>;
 }
 
-export interface ResolvedFixtureEndpoints {
+interface ResolvedFixtureEndpoints {
   srs: { host: string; rtmpPort: number; srtPort: number };
   viewerMediaBaseUrl: string;
   adminInternalBaseUrl: string;

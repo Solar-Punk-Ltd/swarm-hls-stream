@@ -255,7 +255,7 @@ interface RestoreState {
   sequenceOffset?: number;
 }
 
-export interface StreamUploaderOptions {
+interface StreamUploaderOptions {
   /**
    * The Bee node this session publishes through and the postage batch it pays with, as one value.
    *

@@ -30,7 +30,7 @@ export type TopologyServiceRole =
   | 'browser'
   | 'media-sender';
 
-export type FixtureInput =
+type FixtureInput =
   | 'adminInternalApiToken'
   | 'beePassword'
   | 'feedPrivateKey'
@@ -52,7 +52,7 @@ export type BootstrapOutput =
   | 'storage.postageBatchId'
   | 'manager.uploaderInstanceId';
 
-export type RuntimeValue =
+type RuntimeValue =
   | { kind: 'literal'; value: string }
   | { kind: 'input'; input: FixtureInput }
   | { kind: 'endpoint'; endpoint: keyof FixturePlan['internalEndpoints'] }
@@ -66,34 +66,34 @@ export type RuntimeValue =
       database: 'web2admin';
     };
 
-export type CommandPart =
+type CommandPart =
   | { kind: 'literal'; value: string }
   | { kind: 'input'; input: FixtureInput; prefix?: string }
   | { kind: 'bootstrap'; output: BootstrapOutput; prefix?: string };
 
-export interface EnvironmentBinding {
+interface EnvironmentBinding {
   name: string;
   value: RuntimeValue;
 }
 
-export interface TopologyPort {
+interface TopologyPort {
   name: string;
   containerPort: number;
   protocol: 'tcp' | 'udp';
 }
 
-export type MountSource =
+type MountSource =
   | { kind: 'volume'; role: string; name: string }
   | { kind: 'candidate'; role: CandidateRole; root: string; relativePath: string }
   | { kind: 'fixture-file'; role: 'admin-active-artifact'; path: string };
 
-export interface TopologyMount {
+interface TopologyMount {
   source: MountSource;
   target: string;
   readOnly: boolean;
 }
 
-export interface ServiceTopology {
+interface ServiceTopology {
   role: TopologyServiceRole;
   container: ContainerPlan;
   aliases: readonly string[];
@@ -114,7 +114,7 @@ interface BootstrapStepBase {
   after: readonly string[];
 }
 
-export interface StartServicesStep extends BootstrapStepBase {
+interface StartServicesStep extends BootstrapStepBase {
   kind: 'start-services';
   services: readonly TopologyServiceRole[];
 }
@@ -128,7 +128,7 @@ export interface LoadAnvilStateStep extends BootstrapStepBase {
   reanchorClock: true;
 }
 
-export interface DiscoverBeeBootnodeStep extends BootstrapStepBase {
+interface DiscoverBeeBootnodeStep extends BootstrapStepBase {
   kind: 'discover-bee-bootnode';
   service: 'bee-queen';
   endpoint: string;
@@ -136,19 +136,19 @@ export interface DiscoverBeeBootnodeStep extends BootstrapStepBase {
   maxResponseBytes: number;
 }
 
-export interface FormBeePeerMeshStep extends BootstrapStepBase {
+interface FormBeePeerMeshStep extends BootstrapStepBase {
   kind: 'form-bee-peer-mesh';
   services: readonly ['bee-queen', 'bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4'];
   maxResponseBytes: number;
 }
 
-export interface AdvanceAnvilChainStep extends BootstrapStepBase {
+interface AdvanceAnvilChainStep extends BootstrapStepBase {
   kind: 'advance-anvil-chain';
   service: 'blockchain';
   blocks: 160;
 }
 
-export interface ProvisionPostageStep extends BootstrapStepBase {
+interface ProvisionPostageStep extends BootstrapStepBase {
   kind: 'provision-postage';
   service: 'bee-queen';
   minimumStorageBytes: number;
@@ -158,22 +158,22 @@ export interface ProvisionPostageStep extends BootstrapStepBase {
 
 export type ReleaseGuardRole = 'manager' | 'admin' | 'uploader' | 'viewer';
 
-export interface ReleaseGuardSlot {
+interface ReleaseGuardSlot {
   role: ReleaseGuardRole;
   id: string;
 }
 
-export interface GuardedServiceBinding {
+interface GuardedServiceBinding {
   adapterService: string;
   topologyRole: TopologyServiceRole;
 }
 
-export interface FixtureNetworkBinding {
+interface FixtureNetworkBinding {
   name: string;
   fixtureId: string;
 }
 
-export interface GuardedActivation {
+interface GuardedActivation {
   role: ReleaseGuardRole;
   slot: ReleaseGuardSlot;
   candidateRole: CandidateRole;
@@ -185,12 +185,12 @@ export interface GuardedActivation {
   expectedReceiptGeneration?: number;
 }
 
-export interface ActivateGuardedReleaseStep extends BootstrapStepBase {
+interface ActivateGuardedReleaseStep extends BootstrapStepBase {
   kind: 'activate-guarded-release';
   activationRole: ReleaseGuardRole;
 }
 
-export interface SubmitReleaseGuardReceiptsStep extends BootstrapStepBase {
+interface SubmitReleaseGuardReceiptsStep extends BootstrapStepBase {
   kind: 'submit-release-guard-receipts';
   endpointTemplate: string;
   authenticatedBy: 'adminInternalApiToken';
@@ -199,7 +199,7 @@ export interface SubmitReleaseGuardReceiptsStep extends BootstrapStepBase {
   slots: readonly ReleaseGuardSlot[];
 }
 
-export interface CreateManagerProfileStep extends BootstrapStepBase {
+interface CreateManagerProfileStep extends BootstrapStepBase {
   kind: 'create-manager-profile';
   profileName: string;
   expectedPortSlot: 1;
@@ -209,14 +209,14 @@ export interface CreateManagerProfileStep extends BootstrapStepBase {
   output: 'manager.uploaderInstanceId';
 }
 
-export interface StartManagerUploaderStep extends BootstrapStepBase {
+interface StartManagerUploaderStep extends BootstrapStepBase {
   kind: 'start-manager-uploader';
   profileName: string;
   postageBatchId: 'storage.postageBatchId';
   action: 'set-stamp-and-deploy-uploader';
 }
 
-export type BootstrapStep =
+type BootstrapStep =
   | StartServicesStep
   | LoadAnvilStateStep
   | DiscoverBeeBootnodeStep

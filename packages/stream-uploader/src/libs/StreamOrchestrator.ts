@@ -220,9 +220,9 @@ export interface StreamOrchestratorConfig {
   ladderRegistry?: LadderRegistry;
 }
 
-export type ManagedLifecycleSummaryState = Exclude<ManagedRunRecord['state'], 'claiming'>;
+type ManagedLifecycleSummaryState = Exclude<ManagedRunRecord['state'], 'claiming'>;
 
-export interface ManagedLifecycleSummary {
+interface ManagedLifecycleSummary {
   readonly lifecycleVersion: 1;
   readonly observedAt: string;
   readonly streams: readonly {

@@ -68,7 +68,7 @@ export interface ManagedTrackFinalization {
   readonly formatFingerprint?: MediaFormatFingerprint;
 }
 
-export interface ManagedTrackCheckpoint {
+interface ManagedTrackCheckpoint {
   readonly streamId: string;
   readonly rendition: string | null;
   readonly state: StreamState;

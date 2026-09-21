@@ -5,13 +5,13 @@ import { FixtureRefusal } from './fixture.js';
 
 const FIXTURE_ID = /^srs-continuation-20260920-[a-z0-9]{8,16}$/;
 
-export interface FixtureOperationLeaseInput {
+interface FixtureOperationLeaseInput {
   fixtureId: string;
   outputRoot: string;
   operation: 'run' | 'cleanup';
 }
 
-export interface FixtureOperationLease {
+interface FixtureOperationLease {
   /** Marks a successful operation safe to release after all owned children have closed. */
   releaseWhenComplete(): void;
 }

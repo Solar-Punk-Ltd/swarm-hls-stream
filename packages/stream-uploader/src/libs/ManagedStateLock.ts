@@ -13,14 +13,14 @@ export interface ManagedStateLockFileOps {
   closeSync(fd: number): void;
 }
 
-export interface ManagedStateLockAttempt {
+interface ManagedStateLockAttempt {
   readonly status: number | null;
   readonly signal?: NodeJS.Signals | null;
   readonly error?: Error;
   readonly stderr?: string;
 }
 
-export type ManagedStateLockRunner = (fd: number) => ManagedStateLockAttempt;
+type ManagedStateLockRunner = (fd: number) => ManagedStateLockAttempt;
 
 const nodeFileOps: ManagedStateLockFileOps = {
   mkdirSync: (target, options) => fs.mkdirSync(target, options),

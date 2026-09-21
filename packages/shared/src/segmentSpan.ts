@@ -29,7 +29,7 @@
  */
 
 /** What one segment's video timestamps say about it, in the stream's own ticks. */
-export interface SpanTicks {
+interface SpanTicks {
   /** The first frame's presentation timestamp to the end of the last frame. */
   total: number;
   /** What the final frame was credited with, since no timestamp measures the last frame's own length. */

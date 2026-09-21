@@ -1,7 +1,7 @@
 import { FixtureRefusal } from './fixture.js';
 import { withFixtureOperationLease } from './operationLease.js';
 
-export interface ContinuationFixtureCommandInput {
+interface ContinuationFixtureCommandInput {
   fixtureId: string;
   outputRoot: string;
 }

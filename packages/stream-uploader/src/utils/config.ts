@@ -153,7 +153,7 @@ interface AdminConfig {
   apiToken: string;
 }
 
-export interface SrsLifecycleConfig {
+interface SrsLifecycleConfig {
   version: 1;
   uploaderId: string;
 }

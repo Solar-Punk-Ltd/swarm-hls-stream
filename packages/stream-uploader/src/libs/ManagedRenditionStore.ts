@@ -13,7 +13,7 @@ export interface ManagedRenditionBinding {
   readonly claimId: string;
 }
 
-export interface PreparedManagedRendition {
+interface PreparedManagedRendition {
   readonly report: ManagedRenditionReport;
   /** False when an earlier distinct event must be delivered first. */
   readonly target: boolean;

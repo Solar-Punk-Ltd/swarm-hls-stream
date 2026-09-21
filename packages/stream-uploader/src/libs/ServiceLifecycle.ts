@@ -7,7 +7,7 @@ export interface StreamCleanup {
   cleanup(): Promise<void>;
 }
 
-export interface StateLock {
+interface StateLock {
   release(): void;
 }
 

@@ -8,7 +8,7 @@ import { EngineFactoryDeps, EnginePlugin } from './types.js';
 export const ENGINE_NONE = 'none';
 
 /** Injected so a test can choose an engine set without the real ones reading the real environment. */
-export interface EngineLoaderDeps {
+interface EngineLoaderDeps {
   registry: Record<string, (deps: EngineFactoryDeps) => EnginePlugin>;
   loadEnv: (engine: string) => void;
   logger: Pick<Logger, 'warn'>;

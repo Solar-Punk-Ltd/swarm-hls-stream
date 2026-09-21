@@ -46,7 +46,7 @@ export function feedSlotPath(owner: string, topic: Topic, index: FeedIndex): str
 }
 
 /** Resolves whichever update is newest, at the cost of a lookup that cannot keep up with a live feed. */
-export interface FeedHeadRequest {
+interface FeedHeadRequest {
   readonly kind: 'head';
   readonly path: string;
 }

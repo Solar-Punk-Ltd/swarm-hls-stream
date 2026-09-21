@@ -169,7 +169,7 @@ export interface ReleaseFixtureTargets {
   };
 }
 
-export interface HeldUploaderProfileClient {
+interface HeldUploaderProfileClient {
   createHeldUploaderProfile(input: CreateHeldUploaderProfileInput): Promise<HeldUploaderProfile>;
   setStampAndStartUploader(input: StartHeldUploaderInput): Promise<void>;
 }
@@ -178,7 +178,7 @@ export interface GuardReceiptVerifier {
   inspectGuard(role: 'manager' | 'admin' | 'viewer' | 'uploader'): Promise<GuardedReleaseObservation>;
 }
 
-export interface GuardedApplicationProvisionerOptions {
+interface GuardedApplicationProvisionerOptions {
   plan: FixturePlan;
   targets: ReleaseFixtureTargets;
   process: BoundedProcess;

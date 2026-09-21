@@ -110,8 +110,8 @@ export interface AdminStreamDraft {
   publishKey: string;
 }
 
-export type ManagedLifecycleState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
-export type ManagedRunPermission = 'open' | 'claimed' | 'closed';
+type ManagedLifecycleState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+type ManagedRunPermission = 'open' | 'claimed' | 'closed';
 
 export type AdminIngestLookup =
   | AdminStreamDraft
@@ -152,7 +152,7 @@ export type ManagedContinuationPreparation =
       failure: string;
     };
 
-export interface LegacyRecordingCandidate {
+interface LegacyRecordingCandidate {
   readonly streamId: string;
   readonly topic: string;
   readonly mediaType: MediaType;
@@ -211,7 +211,7 @@ export type LegacyAdoptionPreparation =
       readonly failure: string;
     };
 
-export interface ManagedClaimedRun {
+interface ManagedClaimedRun {
   lifecycleVersion: 1;
   streamId: string;
   revision: number;
@@ -251,7 +251,7 @@ export interface ManagedRenditionReportResponse {
   };
 }
 
-export interface UploaderRenditionProfile {
+interface UploaderRenditionProfile {
   readonly name: string;
   readonly width: number;
   readonly height: number;
@@ -259,7 +259,7 @@ export interface UploaderRenditionProfile {
   readonly avgBandwidth: number;
 }
 
-export interface UploaderMediaProfile {
+interface UploaderMediaProfile {
   readonly mediaType: MediaType;
   readonly renditions: readonly UploaderRenditionProfile[];
 }

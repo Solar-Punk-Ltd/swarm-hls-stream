@@ -25,7 +25,7 @@ export interface ManagedMediaRecord extends ManagedMediaInput {
   readonly reference?: string;
 }
 
-export interface ManagedTrackJournal {
+interface ManagedTrackJournal {
   readonly lifecycleVersion: 1;
   readonly adminStreamId: string;
   readonly runNumber: number;
@@ -40,7 +40,7 @@ export type ManagedMediaAcceptance =
   | { kind: 'accepted'; record: ManagedMediaRecord }
   | { kind: 'duplicate'; record: ManagedMediaRecord }
   | { kind: 'conflict' };
-export type ManagedMediaExisting = 'missing' | 'duplicate' | 'conflict';
+type ManagedMediaExisting = 'missing' | 'duplicate' | 'conflict';
 
 /** The durable managed-media boundary used by the orchestrator and replaceable in focused tests. */
 export interface ManagedMediaPersistence {
