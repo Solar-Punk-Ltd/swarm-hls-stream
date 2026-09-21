@@ -25,6 +25,8 @@ const LADDER = [
   rendition('1080p', 1920, 1080, 5_000_000),
 ];
 
+const MASTER_REFERENCE = 'a'.repeat(64);
+
 /**
  * The behaviour is asserted once, in `packages/shared/test/masterPlaylist.test.ts`, because there is
  * now one builder rather than two that promised to agree. What is left to check here is that this
@@ -56,13 +58,13 @@ describe('withMaster', () => {
     const entry = buildLadderEntry(identity, [], LADDER[0]);
     assert.equal(entry.topic, 'group-1-360p');
 
-    assert.equal(withMaster(entry, { topic: 'group-1', index: 0 }).topic, 'group-1');
+    assert.equal(withMaster(entry, { topic: 'group-1', reference: MASTER_REFERENCE, index: 0 }).topic, 'group-1');
   });
 
   it('leaves a live entry without an index, as it was', () => {
     const live = buildLadderEntry(identity, [], LADDER[0]);
 
-    assert.equal(withMaster(live, { topic: 'group-1', index: 7 }).index, undefined);
+    assert.equal(withMaster(live, { topic: 'group-1', reference: MASTER_REFERENCE, index: 7 }).index, undefined);
   });
 
   it('moves a finalized index onto the master feed, because it names an index in that feed', () => {
@@ -73,12 +75,12 @@ describe('withMaster', () => {
     assert.equal(finalized.state, 'vod');
     assert.equal(finalized.index, 42);
 
-    assert.equal(withMaster(finalized, { topic: 'group-1', index: 9 }).index, 9);
+    assert.equal(withMaster(finalized, { topic: 'group-1', reference: MASTER_REFERENCE, index: 9 }).index, 9);
   });
 
   it('changes nothing else, so the ladder stays describable without fetching the master', () => {
     const entry = buildLadderEntry(identity, [], LADDER[2]);
-    const repointed = withMaster(entry, { topic: 'group-1', index: 3 });
+    const repointed = withMaster(entry, { topic: 'group-1', reference: MASTER_REFERENCE, index: 3 });
 
     assert.deepEqual({ ...repointed, topic: entry.topic }, entry);
     assert.deepEqual(
