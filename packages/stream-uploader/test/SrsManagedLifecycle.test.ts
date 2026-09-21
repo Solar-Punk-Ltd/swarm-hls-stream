@@ -179,7 +179,7 @@ async function withManagedSrs(
         permission: 'claimed' as const,
       };
     },
-  } as AdminApiClient;
+  } as unknown as AdminApiClient;
   const orchestrator = {
     beginManagedClaimAttempt: (attempt: ManagedClaimAttempt) => {
       calls.attempts.push(attempt);
@@ -363,7 +363,7 @@ describe('SRS managed lifecycle callbacks', () => {
       assert.equal(await post(callback('client-a')), 0);
       assert.equal(await post(callback('client-b')), 1);
       assert.equal(await post(callback('client-b', 'on_unpublish')), 0);
-      assert.deepEqual(calls.unpublished, []);
+      assert.equal(calls.unpublished.length, 0);
       assert.equal(calls.requests.length, 1);
 
       assert.equal(await post(callback('client-a', 'on_unpublish')), 0);
