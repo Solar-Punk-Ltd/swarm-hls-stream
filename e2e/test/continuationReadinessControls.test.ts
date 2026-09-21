@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { runInNewContext } from 'node:vm';
 
 import type { BoundedCommand, CommandResult } from '../src/continuation/dockerCli.js';
-import { createFixturePlan,FixtureRefusal } from '../src/continuation/fixture.js';
+import { createFixturePlan, FixtureRefusal } from '../src/continuation/fixture.js';
 import {
   BROWSER_CONTROL_SCRIPT,
   FixtureReadinessControlExecutor,
@@ -87,7 +87,8 @@ class FakeCommand implements BoundedCommand {
     }
     if (joined.includes('/sys/fs/cgroup/memory.current')) {
       return {
-        stdout: '1048576\n2\nusage_usec 10\nuser_usec 5\nsystem_usec 5\nnr_periods 1\nnr_throttled 0\nthrottled_usec 0\n',
+        stdout:
+          '1048576\n2\nusage_usec 10\nuser_usec 5\nsystem_usec 5\nnr_periods 1\nnr_throttled 0\nthrottled_usec 0\n',
         stderr: '',
       };
     }
@@ -169,7 +170,9 @@ function generatedBrowserProgram(inputValue: Record<string, unknown>): string {
     Buffer,
     process: {
       argv: ['node', Buffer.from(JSON.stringify(inputValue)).toString('base64')],
-      exit: (code: number) => { throw new Error(`browser wrapper exited ${code}`); },
+      exit: (code: number) => {
+        throw new Error(`browser wrapper exited ${code}`);
+      },
       stdout: { write: () => {} },
     },
     require: (specifier: string) => {
@@ -224,10 +227,7 @@ async function runGeneratedBrowserProgram(
   class MediaSourceStub {
     static isTypeSupported(codec: string): boolean {
       codecQueries.push(codec);
-      return mode === 'decode' && [
-        'video/mp4; codecs="avc1.42c00a"',
-        'video/mp4; codecs="mp4a.40.2"',
-      ].includes(codec);
+      return mode === 'decode' && ['video/mp4; codecs="avc1.42c00a"', 'video/mp4; codecs="mp4a.40.2"'].includes(codec);
     }
 
     readyState = 'closed';
@@ -256,12 +256,16 @@ async function runGeneratedBrowserProgram(
     document: {
       body: {
         append: () => {},
-        set textContent(value: string) { rendered = value; },
+        set textContent(value: string) {
+          rendered = value;
+        },
       },
       createElement: () => video,
     },
     setTimeout: (callback: () => void, milliseconds: number) => {
-      if (milliseconds > 1_000 || !emitSourceOpen) {queueMicrotask(callback);}
+      if (milliseconds > 1_000 || !emitSourceOpen) {
+        queueMicrotask(callback);
+      }
       return 1;
     },
   });
@@ -348,30 +352,23 @@ describe('FixtureReadinessControlExecutor', () => {
     containers.set('srs', { id: 'srs-id', name: 'guarded-uploader-srs-1' });
     containers.set('uploader', { id: 'uploader-id', name: 'guarded-uploader-stream-uploader-1' });
     containers.set('viewer', { id: 'viewer-id', name: 'guarded-viewer-client-1' });
-    assert.doesNotThrow(() => new FixtureReadinessControlExecutor(
-      new FakeCommand(),
-      { ...resolved, containers },
-    ));
+    assert.doesNotThrow(() => new FixtureReadinessControlExecutor(new FakeCommand(), { ...resolved, containers }));
 
     assert.throws(
-      () => new FixtureReadinessControlExecutor(
-        new FakeCommand(),
-        { ...input(), viewerMediaBaseUrl: 'not a URL' },
-      ),
+      () => new FixtureReadinessControlExecutor(new FakeCommand(), { ...input(), viewerMediaBaseUrl: 'not a URL' }),
       (error: unknown) => error instanceof FixtureRefusal && /viewer media URL/i.test(error.message),
     );
     assert.throws(
-      () => new FixtureReadinessControlExecutor(
-        new FakeCommand(),
-        { ...input(), viewerMediaBaseUrl: 'http://example.test' },
-      ),
+      () =>
+        new FixtureReadinessControlExecutor(new FakeCommand(), {
+          ...input(),
+          viewerMediaBaseUrl: 'http://example.test',
+        }),
       /viewer media URL does not match the topology/i,
     );
     assert.throws(
-      () => new FixtureReadinessControlExecutor(
-        new FakeCommand(),
-        { ...input(), srs: { host: 'srs', rtmpPort: 1_935 } },
-      ),
+      () =>
+        new FixtureReadinessControlExecutor(new FakeCommand(), { ...input(), srs: { host: 'srs', rtmpPort: 1_935 } }),
       /SRS endpoint does not match the topology/i,
     );
   });
@@ -403,10 +400,7 @@ describe('FixtureReadinessControlExecutor', () => {
     assert.equal(decoded.result.source, 'browser-media-control');
     assert.equal(decoded.result.decodedFramesAfter, 4);
     assert.equal(decoded.result.decodedAudioBytesAfter, 4_096);
-    assert.deepEqual(decoded.codecQueries, [
-      'video/mp4; codecs="avc1.42c00a"',
-      'video/mp4; codecs="mp4a.40.2"',
-    ]);
+    assert.deepEqual(decoded.codecQueries, ['video/mp4; codecs="avc1.42c00a"', 'video/mp4; codecs="mp4a.40.2"']);
 
     const refused = await runGeneratedBrowserProgram('false-codec');
     assert.equal(refused.sourceOpenObserved, true);
@@ -450,7 +444,10 @@ describe('FixtureReadinessControlExecutor', () => {
     }
 
     const controls = new FixtureReadinessControlExecutor(new NoCallbackCommand(), input());
-    await assert.rejects(controls.run('callbacks', 64 * 1024), /callback control did not observe exactly one rejection/i);
+    await assert.rejects(
+      controls.run('callbacks', 64 * 1024),
+      /callback control did not observe exactly one rejection/i,
+    );
   });
 
   it('refuses a video-only browser reading as proof of the H.264 and AAC sample', async () => {
@@ -475,10 +472,7 @@ describe('FixtureReadinessControlExecutor', () => {
 
     const controls = new FixtureReadinessControlExecutor(new VideoOnlyCommand(), input());
     await controls.run('storage', 64 * 1024);
-    await assert.rejects(
-      controls.run('browserDecode', 64 * 1024),
-      /did not prove video and audio decoding/i,
-    );
+    await assert.rejects(controls.run('browserDecode', 64 * 1024), /did not prove video and audio decoding/i);
   });
 
   it('reads actual resource limits, usage, throttling, and disk for every planned service', async () => {
@@ -496,15 +490,18 @@ describe('FixtureReadinessControlExecutor', () => {
     assert.equal(result.timeoutsWithinBounds, true);
     const services = result.services as Array<Record<string, unknown>>;
     assert.equal(services.length, configured.topology.services.length);
-    assert.deepEqual(services.find(({ role }) => role === 'media-sender'), {
-      role: 'media-sender',
-      memoryCurrentBytes: 0,
-      memoryLimitBytes: 2_147_483_648,
-      pidsCurrent: 0,
-      pidsLimit: 256,
-      cpuLimit: 2,
-      cpuThrottledDelta: 0,
-    });
+    assert.deepEqual(
+      services.find(({ role }) => role === 'media-sender'),
+      {
+        role: 'media-sender',
+        memoryCurrentBytes: 0,
+        memoryLimitBytes: 2_147_483_648,
+        pidsCurrent: 0,
+        pidsLimit: 256,
+        cpuLimit: 2,
+        cpuThrottledDelta: 0,
+      },
+    );
     assert.ok(
       configured.topology.services
         .filter(({ role }) => role !== 'media-sender')

@@ -97,11 +97,7 @@ import {
   ManagedImmutableMediaReference,
   ManagedImmutableRenditionReference,
 } from './ManagedCheckpointStore.js';
-import {
-  ManagedFormatInput,
-  ManagedFormatMismatchError,
-  ManagedFormatPersistence,
-} from './ManagedFormatStore.js';
+import { ManagedFormatInput, ManagedFormatMismatchError, ManagedFormatPersistence } from './ManagedFormatStore.js';
 import { ManagedMasterPersistence } from './ManagedMasterStore.js';
 import {
   ManagedMediaAcceptance,
@@ -120,11 +116,7 @@ import {
   ManagedRunReportRecord,
   remainingManagedDeadline,
 } from './ManagedRunStore.js';
-import {
-  MediaFormatFingerprint,
-  MediaFormatInspector,
-  sameMediaFormatFingerprint,
-} from './MediaFormatProbe.js';
+import { MediaFormatFingerprint, MediaFormatInspector, sameMediaFormatFingerprint } from './MediaFormatProbe.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { MetricsSnapshot, ServiceMetrics } from './ServiceMetrics.js';
@@ -565,10 +557,7 @@ export class StreamOrchestrator {
 
   /** True only while the lookup generation is current and this stream is not reserved for adoption. */
   public isLegacyAdmissionGenerationCurrent(adminStreamId: string, generation: number): boolean {
-    return (
-      generation === this.legacyAdmissionGeneration &&
-      !this.legacyAdoptionReservedStreams.has(adminStreamId)
-    );
+    return generation === this.legacyAdmissionGeneration && !this.legacyAdoptionReservedStreams.has(adminStreamId);
   }
 
   /** Generation bound to an authenticated legacy source after its lookup passes the global fence. */
@@ -827,10 +816,7 @@ export class StreamOrchestrator {
       }
       this.managedSources.set(attempt.streamId, {
         record,
-        current:
-          record.state === 'claimed' || record.state === 'live'
-            ? (record.source ?? undefined)
-            : undefined,
+        current: record.state === 'claimed' || record.state === 'live' ? record.source ?? undefined : undefined,
         mediatype: record.mediaType,
         lastProgressPts: record.lastProgressPts ?? undefined,
         deadline: this.clock.now() + remainingManagedDeadline(record, this.wallClock()),
@@ -985,10 +971,7 @@ export class StreamOrchestrator {
     return { requestId: record.claimRequestId, expectedRevision: record.revision, needsClaim: true };
   }
 
-  private hasManagedRunWriters(
-    streamId: string,
-    expectedRenditions: readonly ManagedExpectedRendition[],
-  ): boolean {
+  private hasManagedRunWriters(streamId: string, expectedRenditions: readonly ManagedExpectedRendition[]): boolean {
     const trackIds = [streamId, ...expectedRenditions.map((rendition) => `${streamId}_${rendition.name}`)];
     return trackIds.some((trackId) => this.activeStreams.has(trackId) || this.drainPromises.has(trackId));
   }
@@ -1232,10 +1215,7 @@ export class StreamOrchestrator {
     const remaining = remainingManagedDeadline(record, this.wallClock());
     const state: ManagedSourceState = {
       record,
-      current:
-        record.state === 'claimed' || record.state === 'live'
-          ? (record.source ?? undefined)
-          : undefined,
+      current: record.state === 'claimed' || record.state === 'live' ? record.source ?? undefined : undefined,
       mediatype: record.mediaType,
       lastProgressPts: record.lastProgressPts ?? undefined,
       deadline: this.clock.now() + remaining,
@@ -1296,12 +1276,16 @@ export class StreamOrchestrator {
     if (state.finalizationRetry) {
       return;
     }
-    state.finalizationRetry = this.clock.setTimer(() => {
-      state.finalizationRetry = undefined;
-      if (this.managedSources.get(streamId) === state && state.record.state === 'vod') {
-        this.persistRestoredManagedVod(streamId, state);
-      }
-    }, MANAGED_HEARTBEAT_MS, { unref: true });
+    state.finalizationRetry = this.clock.setTimer(
+      () => {
+        state.finalizationRetry = undefined;
+        if (this.managedSources.get(streamId) === state && state.record.state === 'vod') {
+          this.persistRestoredManagedVod(streamId, state);
+        }
+      },
+      MANAGED_HEARTBEAT_MS,
+      { unref: true },
+    );
   }
 
   /** Restore every durable managed admission before legacy media recovery or callback routing starts. */
@@ -1332,8 +1316,7 @@ export class StreamOrchestrator {
         throw new Error(`Managed claim is unresolved: ${streamId}`);
       }
       const state: ManagedLifecycleSummaryState = record.state;
-      const permission: 'open' | 'claimed' | 'closed' =
-        state === 'closed' || state === 'vod' ? 'closed' : 'claimed';
+      const permission: 'open' | 'claimed' | 'closed' = state === 'closed' || state === 'vod' ? 'closed' : 'claimed';
       const runtime = this.managedSources.get(streamId);
       const runtimeLastObservedAt =
         runtime?.record.adminStreamId === record.adminStreamId &&
@@ -1344,11 +1327,7 @@ export class StreamOrchestrator {
       const lastObservedAt =
         runtimeLastObservedAt ?? record.lastObservedAt ?? new Date(record.deadlineRecordedAtWallMs).toISOString();
       const closeReason =
-        record.closeReason ??
-        [...record.pendingReports]
-          .reverse()
-          .find((report) => report.state === 'closed')
-          ?.reason;
+        record.closeReason ?? [...record.pendingReports].reverse().find((report) => report.state === 'closed')?.reason;
       const common = {
         streamId: record.streamId,
         adminStreamId: record.adminStreamId,
@@ -1404,11 +1383,7 @@ export class StreamOrchestrator {
           failure: `Checkpoint preparation refused: ${getErrorMessage(error)}`.slice(0, 500),
         };
       }
-      await adminApi.reportManagedContinuationPreparation(
-        operation.streamId,
-        operation.operationId,
-        preparation,
-      );
+      await adminApi.reportManagedContinuationPreparation(operation.streamId, operation.operationId, preparation);
     }
     await this.pollLegacyAdoptions(uploaderId);
   }
@@ -1432,10 +1407,7 @@ export class StreamOrchestrator {
     if (changedStreams.size > 0) {
       this.legacyAdmissionGeneration += 1;
       for (const streamId of changedStreams) {
-        this.legacyStreamAdmissionGenerations.set(
-          streamId,
-          this.captureLegacyStreamAdmissionGeneration(streamId) + 1,
-        );
+        this.legacyStreamAdmissionGenerations.set(streamId, this.captureLegacyStreamAdmissionGeneration(streamId) + 1);
       }
     }
     this.legacyAdoptionReservedStreams = reservedStreams;
@@ -1447,11 +1419,13 @@ export class StreamOrchestrator {
           this.pendingLegacyRecordingTopics(),
           this.legacyAdoptionExpectedRenditions(operation),
         );
-        const mediaTopics = operation.candidate.renditions.length === 0
-          ? [operation.candidate.topic]
-          : operation.candidate.renditions.map((rendition) => rendition.topic);
-        const pendingAfterInspection = this.pendingLegacyRecordingTopics()
-          .filter((topic) => mediaTopics.includes(topic));
+        const mediaTopics =
+          operation.candidate.renditions.length === 0
+            ? [operation.candidate.topic]
+            : operation.candidate.renditions.map((rendition) => rendition.topic);
+        const pendingAfterInspection = this.pendingLegacyRecordingTopics().filter((topic) =>
+          mediaTopics.includes(topic),
+        );
         if (pendingAfterInspection.length > 0) {
           throw new LegacyAdoptionPendingError(
             `Legacy recording gained pending writes during inspection for ${pendingAfterInspection.join(', ')}`,
@@ -1491,10 +1465,7 @@ export class StreamOrchestrator {
       } catch (error) {
         if (!(error instanceof LegacyAdoptionValidationError)) {
           if (!(error instanceof LegacyAdoptionPendingError)) {
-            this.logger.error(
-              `[StreamOrchestrator] Legacy adoption ${operation.operationId} remains pending:`,
-              error,
-            );
+            this.logger.error(`[StreamOrchestrator] Legacy adoption ${operation.operationId} remains pending:`, error);
           }
           continue;
         }
@@ -1530,13 +1501,12 @@ export class StreamOrchestrator {
     return [...topics];
   }
 
-  private legacyAdoptionExpectedRenditions(
-    operation: LegacyAdoptionOperation,
-  ): readonly ManagedExpectedRendition[] {
+  private legacyAdoptionExpectedRenditions(operation: LegacyAdoptionOperation): readonly ManagedExpectedRendition[] {
     if (operation.mediaType === MEDIA_TYPE_AUDIO || !this.config.ladder) {
       return [];
     }
-    return this.config.ladder.rungs()
+    return this.config.ladder
+      .rungs()
       .map((rung) => ({
         name: rung.name,
         topic: rungTopicFor(operation.topic, rung.name),
@@ -1735,9 +1705,7 @@ export class StreamOrchestrator {
       try {
         streamIds = [
           ...new Set([
-            ...store
-              .listRun(state.record.adminStreamId, state.record.runNumber)
-              .map((record) => record.streamId),
+            ...store.listRun(state.record.adminStreamId, state.record.runNumber).map((record) => record.streamId),
             ...store
               .listTrackStates(state.record.adminStreamId, state.record.runNumber)
               .map((journal) => journal.streamId),
@@ -1767,17 +1735,13 @@ export class StreamOrchestrator {
           continue;
         }
 
-        this.spawnUploader(
-          streamId,
-          state.record.mediaType,
-          ANONYMOUS_CLAIMANT,
-          { id: state.record.adminStreamId, topic: state.record.topic },
-        );
+        this.spawnUploader(streamId, state.record.mediaType, ANONYMOUS_CLAIMANT, {
+          id: state.record.adminStreamId,
+          topic: state.record.topic,
+        });
         const result = this.enqueuePendingManagedTrack(state, streamId);
         if (!result.accepted) {
-          this.logger.error(
-            `[StreamOrchestrator] Refused pending managed media for ${streamId}: ${result.reason}`,
-          );
+          this.logger.error(`[StreamOrchestrator] Refused pending managed media for ${streamId}: ${result.reason}`);
           continue;
         }
         recovered.push(streamId);
@@ -1935,15 +1899,7 @@ export class StreamOrchestrator {
     }
 
     if (state.current && sameSource(state.current, identity)) {
-      const existing = this.findManagedMedia(
-        state,
-        streamId,
-        identity,
-        segmentIndex,
-        duration,
-        data,
-        discontinuity,
-      );
+      const existing = this.findManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
       if (existing === 'duplicate') {
         return { accepted: true };
       }
@@ -2089,15 +2045,7 @@ export class StreamOrchestrator {
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
     }
-    const existing = this.findManagedMedia(
-      state,
-      streamId,
-      identity,
-      segmentIndex,
-      duration,
-      data,
-      discontinuity,
-    );
+    const existing = this.findManagedMedia(state, streamId, identity, segmentIndex, duration, data, discontinuity);
     if (existing === 'duplicate') {
       return { accepted: true };
     }
@@ -2279,7 +2227,9 @@ export class StreamOrchestrator {
     const sourceMatches =
       (state?.current && sameSource(state.current, source)) ||
       (state?.candidate && sameSource(state.candidate.identity, source));
-    return Boolean(sourceMatches && (streamId === managedStreamId || this.streamBases.get(streamId) === managedStreamId));
+    return Boolean(
+      sourceMatches && (streamId === managedStreamId || this.streamBases.get(streamId) === managedStreamId),
+    );
   }
 
   private expectedManagedFormat(
@@ -2317,10 +2267,7 @@ export class StreamOrchestrator {
     }
     const expected = state.record.expectedRenditions.find((candidate) => candidate.name === rendition);
     return Boolean(
-      expected &&
-        video.length === 1 &&
-        video[0].width === expected.width &&
-        video[0].height === expected.height,
+      expected && video.length === 1 && video[0].width === expected.width && video[0].height === expected.height,
     );
   }
 
@@ -2354,7 +2301,9 @@ export class StreamOrchestrator {
         data,
       );
       if (accepted.kind === 'conflict') {
-        this.logger.error(`[StreamOrchestrator] Refused conflicting managed media identity for ${streamId}:${sequence}`);
+        this.logger.error(
+          `[StreamOrchestrator] Refused conflicting managed media identity for ${streamId}:${sequence}`,
+        );
         return null;
       }
       return accepted;
@@ -2419,15 +2368,7 @@ export class StreamOrchestrator {
       return { accepted: true };
     }
     this.managedQueuedMedia.add(record.token);
-    const result = this.enqueueSegment(
-      streamId,
-      segmentIndex,
-      duration,
-      data,
-      discontinuity,
-      sourceGeneration,
-      record,
-    );
+    const result = this.enqueueSegment(streamId, segmentIndex, duration, data, discontinuity, sourceGeneration, record);
     if (!result.accepted) {
       this.managedQueuedMedia.delete(record.token);
     }
@@ -2531,7 +2472,7 @@ export class StreamOrchestrator {
     if (!isCurrent && (!candidate || !sameSource(candidate.identity, identity))) {
       return { accepted: false, reason: REJECT_STALE_SOURCE };
     }
-    const mediatype = isCurrent ? (state.mediatype ?? MEDIA_TYPE_VIDEO) : (candidate as ManagedSourceCandidate).mediatype;
+    const mediatype = isCurrent ? state.mediatype ?? MEDIA_TYPE_VIDEO : (candidate as ManagedSourceCandidate).mediatype;
     const inspected = this.inspectManagedMedia(streamId, mediatype, duration, data, state.lastProgressPts);
     if ('reason' in inspected) {
       return { accepted: false, reason: inspected.reason };
@@ -2567,14 +2508,17 @@ export class StreamOrchestrator {
 
     const remaining = Math.max(0, (state.deadline ?? this.clock.now()) - this.clock.now());
     const wallNow = this.wallClock();
-    const record = this.appendManagedReport({
-      ...state.record,
-      state: 'waiting',
-      deadlineRecordedAtWallMs: wallNow,
-      deadlineRemainingMs: remaining,
-      source: identity,
-      lastObservedAt: new Date(wallNow).toISOString(),
-    }, { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() });
+    const record = this.appendManagedReport(
+      {
+        ...state.record,
+        state: 'waiting',
+        deadlineRecordedAtWallMs: wallNow,
+        deadlineRemainingMs: remaining,
+        source: identity,
+        lastObservedAt: new Date(wallNow).toISOString(),
+      },
+      { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() },
+    );
     try {
       this.config.managedRunStore?.save(record);
     } catch (error) {
@@ -2750,7 +2694,9 @@ export class StreamOrchestrator {
     rendition: string | null,
   ): MediaFormatFingerprint | undefined {
     const store = this.config.managedFormatStore;
-    if (!store) {return undefined;}
+    if (!store) {
+      return undefined;
+    }
     const expected = rendition
       ? state.record.expectedRenditions.find((candidate) => candidate.name === rendition)
       : undefined;
@@ -2776,10 +2722,7 @@ export class StreamOrchestrator {
     }
     if (state.record.state === 'vod') {
       const checkpoint = store.read(state.record.checkpointReference);
-      if (
-        checkpoint?.completedRecording &&
-        sameManagedMediaReference(checkpoint.completedRecording.master, master)
-      ) {
+      if (checkpoint?.completedRecording && sameManagedMediaReference(checkpoint.completedRecording.master, master)) {
         return;
       }
       throw new Error(`Managed run ${managedStreamId} was already finalized with a different recording`);
@@ -2826,30 +2769,34 @@ export class StreamOrchestrator {
       state.heartbeat = undefined;
       return;
     }
-    state.heartbeat = this.clock.setTimer(() => {
-      state.heartbeat = undefined;
-      if (this.managedSources.get(streamId) !== state || state.closed) {
-        return;
-      }
-      if (state.record.pendingReports.length === 0) {
-        const event: ManagedReportEvent =
-          state.record.state === 'waiting'
-            ? { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() }
-            : { state: 'live' };
-        const record = this.appendManagedReport(state.record, event);
-        try {
-          this.config.managedRunStore?.save(record);
-          state.record = record;
-        } catch (error) {
-          this.logger.error(`[StreamOrchestrator] Failed to persist managed heartbeat ${streamId}:`, error);
+    state.heartbeat = this.clock.setTimer(
+      () => {
+        state.heartbeat = undefined;
+        if (this.managedSources.get(streamId) !== state || state.closed) {
+          return;
         }
-      }
-      if (state.runtimeLastObservedAt !== undefined) {
-        state.runtimeLastObservedAt = new Date(this.wallClock()).toISOString();
-      }
-      void this.flushManagedReports(streamId, state);
-      this.armManagedHeartbeat(streamId, state);
-    }, MANAGED_HEARTBEAT_MS, { unref: true });
+        if (state.record.pendingReports.length === 0) {
+          const event: ManagedReportEvent =
+            state.record.state === 'waiting'
+              ? { state: 'waiting', reconnectDeadline: new Date(state.record.deadlineWallMs).toISOString() }
+              : { state: 'live' };
+          const record = this.appendManagedReport(state.record, event);
+          try {
+            this.config.managedRunStore?.save(record);
+            state.record = record;
+          } catch (error) {
+            this.logger.error(`[StreamOrchestrator] Failed to persist managed heartbeat ${streamId}:`, error);
+          }
+        }
+        if (state.runtimeLastObservedAt !== undefined) {
+          state.runtimeLastObservedAt = new Date(this.wallClock()).toISOString();
+        }
+        void this.flushManagedReports(streamId, state);
+        this.armManagedHeartbeat(streamId, state);
+      },
+      MANAGED_HEARTBEAT_MS,
+      { unref: true },
+    );
   }
 
   private async flushManagedReports(streamId: string, state: ManagedSourceState): Promise<void> {
@@ -2896,12 +2843,16 @@ export class StreamOrchestrator {
     if (state.reportRetry || state.record.pendingReports.length === 0) {
       return;
     }
-    state.reportRetry = this.clock.setTimer(() => {
-      state.reportRetry = undefined;
-      if (this.managedSources.get(streamId) === state) {
-        void this.flushManagedReports(streamId, state);
-      }
-    }, MANAGED_HEARTBEAT_MS, { unref: true });
+    state.reportRetry = this.clock.setTimer(
+      () => {
+        state.reportRetry = undefined;
+        if (this.managedSources.get(streamId) === state) {
+          void this.flushManagedReports(streamId, state);
+        }
+      },
+      MANAGED_HEARTBEAT_MS,
+      { unref: true },
+    );
   }
 
   private armManagedSourceDeadline(streamId: string, state: ManagedSourceState): void {
@@ -2956,23 +2907,22 @@ export class StreamOrchestrator {
     return true;
   }
 
-  private persistManagedClosure(
-    streamId: string,
-    state: ManagedSourceState,
-    reason: ManagedClosureReason,
-  ): boolean {
+  private persistManagedClosure(streamId: string, state: ManagedSourceState, reason: ManagedClosureReason): boolean {
     state.closingSource ??= state.current;
     const wallNow = this.wallClock();
-    const record = this.appendManagedReport({
-      ...state.record,
-      state: 'closed',
-      deadlineWallMs: Math.min(state.record.deadlineWallMs, wallNow),
-      deadlineRecordedAtWallMs: wallNow,
-      deadlineRemainingMs: 0,
-      source: state.current ?? state.closingSource ?? state.record.source,
-      closeReason: reason,
-      lastObservedAt: new Date(wallNow).toISOString(),
-    }, { state: 'closed', reason });
+    const record = this.appendManagedReport(
+      {
+        ...state.record,
+        state: 'closed',
+        deadlineWallMs: Math.min(state.record.deadlineWallMs, wallNow),
+        deadlineRecordedAtWallMs: wallNow,
+        deadlineRemainingMs: 0,
+        source: state.current ?? state.closingSource ?? state.record.source,
+        closeReason: reason,
+        lastObservedAt: new Date(wallNow).toISOString(),
+      },
+      { state: 'closed', reason },
+    );
     try {
       this.config.managedRunStore?.save(record);
     } catch (error) {
@@ -3000,25 +2950,25 @@ export class StreamOrchestrator {
     return true;
   }
 
-  private armManagedClosureRetry(
-    streamId: string,
-    state: ManagedSourceState,
-    reason: ManagedClosureReason,
-  ): void {
+  private armManagedClosureRetry(streamId: string, state: ManagedSourceState, reason: ManagedClosureReason): void {
     if (state.closureRetry) {
       return;
     }
-    state.closureRetry = this.clock.setTimer(() => {
-      state.closureRetry = undefined;
-      if (this.managedSources.get(streamId) !== state || state.record.state === 'closed') {
-        return;
-      }
-      if (reason === 'cancelled') {
-        void this.stopStream(streamId);
-      } else {
-        this.finishManagedClosure(streamId, state, reason);
-      }
-    }, MANAGED_HEARTBEAT_MS, { unref: true });
+    state.closureRetry = this.clock.setTimer(
+      () => {
+        state.closureRetry = undefined;
+        if (this.managedSources.get(streamId) !== state || state.record.state === 'closed') {
+          return;
+        }
+        if (reason === 'cancelled') {
+          void this.stopStream(streamId);
+        } else {
+          this.finishManagedClosure(streamId, state, reason);
+        }
+      },
+      MANAGED_HEARTBEAT_MS,
+      { unref: true },
+    );
   }
 
   private cancelManagedStallReaper(streamId: string): void {
@@ -3307,15 +3257,14 @@ export class StreamOrchestrator {
           ladder?.rung.name ?? null,
         )
       : null;
-    const managedRun =
-      managedState?.record.claimId
-        ? {
-            runNumber: managedState.record.runNumber,
-            uploaderId: managedState.record.uploaderId,
-            claimId: managedState.record.claimId,
-            expectedRenditions: managedState.record.expectedRenditions,
-          }
-        : undefined;
+    const managedRun = managedState?.record.claimId
+      ? {
+          runNumber: managedState.record.runNumber,
+          uploaderId: managedState.record.uploaderId,
+          claimId: managedState.record.claimId,
+          expectedRenditions: managedState.record.expectedRenditions,
+        }
+      : undefined;
     if (managedRestore) {
       streamTopic = managedRestore.streamRawTopic;
       anchor = managedRestore.anchor ?? anchor;
@@ -3337,31 +3286,32 @@ export class StreamOrchestrator {
       restoreState: managedRestore ?? undefined,
       metrics: this.metrics,
       admin: this.adminReportingFor(admin?.id),
-      managedLifecycle: managedState && managedRun
-        ? {
-            run: managedRun,
-            onLivePublished: (sourceGeneration) =>
-              this.markManagedManifestPublished(managedStreamId, sourceGeneration),
-            onSegmentUploaded: this.config.managedMediaStore
-              ? (token, reference, trackState) =>
-                  this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
-              : undefined,
-            onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
-            onTrackStateChanged: this.config.managedMediaStore
-              ? (trackState) =>
-                  this.config.managedMediaStore!.saveTrackState(
-                    managedState.record.adminStreamId,
-                    managedState.record.runNumber,
-                    streamId,
-                    ladder?.rung.name ?? null,
-                    trackState,
-                  )
-              : undefined,
-            onTrackFinalized: (manifest, trackState) =>
-              this.checkpointManagedTrack(managedStreamId, streamId, trackState, manifest),
-            onMasterFinalized: (manifest) => this.completeManagedCheckpoint(managedStreamId, manifest),
-          }
-        : undefined,
+      managedLifecycle:
+        managedState && managedRun
+          ? {
+              run: managedRun,
+              onLivePublished: (sourceGeneration) =>
+                this.markManagedManifestPublished(managedStreamId, sourceGeneration),
+              onSegmentUploaded: this.config.managedMediaStore
+                ? (token, reference, trackState) =>
+                    this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
+                : undefined,
+              onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
+              onTrackStateChanged: this.config.managedMediaStore
+                ? (trackState) =>
+                    this.config.managedMediaStore!.saveTrackState(
+                      managedState.record.adminStreamId,
+                      managedState.record.runNumber,
+                      streamId,
+                      ladder?.rung.name ?? null,
+                      trackState,
+                    )
+                : undefined,
+              onTrackFinalized: (manifest, trackState) =>
+                this.checkpointManagedTrack(managedStreamId, streamId, trackState, manifest),
+              onMasterFinalized: (manifest) => this.completeManagedCheckpoint(managedStreamId, manifest),
+            }
+          : undefined,
       predecessorDrained,
     });
 
@@ -4034,19 +3984,16 @@ export class StreamOrchestrator {
       if (this.activeStreams.has(streamId)) {
         return streamId;
       }
-      throw new Error(
-        `Refused legacy recovery for managed track ${streamId} without its managed-media journal`,
-      );
+      throw new Error(`Refused legacy recovery for managed track ${streamId} without its managed-media journal`);
     }
-    const managedRun =
-      managedState?.record.claimId
-        ? {
-            runNumber: managedState.record.runNumber,
-            uploaderId: managedState.record.uploaderId,
-            claimId: managedState.record.claimId,
-            expectedRenditions: managedState.record.expectedRenditions,
-          }
-        : undefined;
+    const managedRun = managedState?.record.claimId
+      ? {
+          runNumber: managedState.record.runNumber,
+          uploaderId: managedState.record.uploaderId,
+          claimId: managedState.record.claimId,
+          expectedRenditions: managedState.record.expectedRenditions,
+        }
+      : undefined;
 
     if (state.ladder && base !== null) {
       // Written back to disk rather than only read into memory. The recovery entry and the group
@@ -4105,31 +4052,32 @@ export class StreamOrchestrator {
       // this is the only surviving record of which declaration it belongs to. Absent on an entry
       // written before admin mode, and on every entry written outside it.
       admin: this.adminReportingFor(state.adminStreamId),
-      managedLifecycle: managedState && managedRun
-        ? {
-            run: managedRun,
-            onLivePublished: (sourceGeneration) =>
-              this.markManagedManifestPublished(managedStreamId, sourceGeneration),
-            onSegmentUploaded: this.config.managedMediaStore
-              ? (token, reference, trackState) =>
-                  this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
-              : undefined,
-            onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
-            onTrackStateChanged: this.config.managedMediaStore
-              ? (trackState) =>
-                  this.config.managedMediaStore!.saveTrackState(
-                    managedState.record.adminStreamId,
-                    managedState.record.runNumber,
-                    streamId,
-                    state.ladder?.rung.name ?? null,
-                    trackState,
-                  )
-              : undefined,
-            onTrackFinalized: (manifest, trackState) =>
-              this.checkpointManagedTrack(managedStreamId, streamId, trackState, manifest),
-            onMasterFinalized: (manifest) => this.completeManagedCheckpoint(managedStreamId, manifest),
-          }
-        : undefined,
+      managedLifecycle:
+        managedState && managedRun
+          ? {
+              run: managedRun,
+              onLivePublished: (sourceGeneration) =>
+                this.markManagedManifestPublished(managedStreamId, sourceGeneration),
+              onSegmentUploaded: this.config.managedMediaStore
+                ? (token, reference, trackState) =>
+                    this.config.managedMediaStore!.commitUploaded(token, reference, trackState)
+                : undefined,
+              onSegmentSettled: (token) => this.managedQueuedMedia.delete(token),
+              onTrackStateChanged: this.config.managedMediaStore
+                ? (trackState) =>
+                    this.config.managedMediaStore!.saveTrackState(
+                      managedState.record.adminStreamId,
+                      managedState.record.runNumber,
+                      streamId,
+                      state.ladder?.rung.name ?? null,
+                      trackState,
+                    )
+                : undefined,
+              onTrackFinalized: (manifest, trackState) =>
+                this.checkpointManagedTrack(managedStreamId, streamId, trackState, manifest),
+              onMasterFinalized: (manifest) => this.completeManagedCheckpoint(managedStreamId, manifest),
+            }
+          : undefined,
     });
 
     if (state.ladder || (state.adminStreamId && this.config.adminApi)) {

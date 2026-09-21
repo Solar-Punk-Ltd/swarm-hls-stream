@@ -4,11 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 
-import {
-  AdminApiClient,
-  LegacyAdoptionOperation,
-  LegacyAdoptionPreparation,
-} from '../src/libs/AdminApiClient.js';
+import { AdminApiClient, LegacyAdoptionOperation, LegacyAdoptionPreparation } from '../src/libs/AdminApiClient.js';
 import { LegacyRecordingAdopter } from '../src/libs/LegacyRecordingAdopter.js';
 import { ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
 import { MediaFormatFingerprint } from '../src/libs/MediaFormatProbe.js';
@@ -21,17 +17,19 @@ const SEGMENT = 'a'.repeat(64);
 const VIDEO_FORMAT: MediaFormatFingerprint = {
   version: 1,
   container: 'mpegts',
-  tracks: [{
-    kind: 'video',
-    codec: 'h264',
-    profile: 'High',
-    level: 40,
-    width: 1280,
-    height: 720,
-    pixelFormat: 'yuv420p',
-    chromaLocation: 'left',
-    bitsPerRawSample: 8,
-  }],
+  tracks: [
+    {
+      kind: 'video',
+      codec: 'h264',
+      profile: 'High',
+      level: 40,
+      width: 1280,
+      height: 720,
+      pixelFormat: 'yuv420p',
+      chromaLocation: 'left',
+      bitsPerRawSample: 8,
+    },
+  ],
 };
 
 const OPERATION: LegacyAdoptionOperation = {
@@ -62,7 +60,10 @@ describe('legacy adoption polling', () => {
     const adminApi = {
       listManagedContinuations: async () => [],
       listLegacyAdoptions: async () => [OPERATION],
-      reportLegacyAdoptionPreparation: async (_operation: LegacyAdoptionOperation, preparation: LegacyAdoptionPreparation) => {
+      reportLegacyAdoptionPreparation: async (
+        _operation: LegacyAdoptionOperation,
+        preparation: LegacyAdoptionPreparation,
+      ) => {
         preparations.push(preparation);
       },
     } as unknown as AdminApiClient;
@@ -90,7 +91,10 @@ describe('legacy adoption polling', () => {
       assert.equal(preparations[0].status, 'ready');
       assert.equal(checkpoints.findRun(STREAM_ID, 1)?.status, 'complete');
       if (preparations[0].status === 'ready') {
-        assert.equal(preparations[0].completedRecording.checkpointReference, checkpoints.findRun(STREAM_ID, 1)?.checkpointReference);
+        assert.equal(
+          preparations[0].completedRecording.checkpointReference,
+          checkpoints.findRun(STREAM_ID, 1)?.checkpointReference,
+        );
         assert.deepEqual(preparations[0].validation.tracks, [{ topic: TOPIC, formatFingerprint: VIDEO_FORMAT }]);
       }
     } finally {
@@ -158,8 +162,12 @@ describe('legacy adoption polling', () => {
     let assigned: readonly LegacyAdoptionOperation[] = [OPERATION];
     let releaseRead!: () => void;
     let signalRead!: () => void;
-    const readStarted = new Promise<void>((resolve) => {signalRead = resolve;});
-    const readReleased = new Promise<void>((resolve) => {releaseRead = resolve;});
+    const readStarted = new Promise<void>((resolve) => {
+      signalRead = resolve;
+    });
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
     const adminApi = {
       listManagedContinuations: async () => [],
       listLegacyAdoptions: async () => assigned,

@@ -328,7 +328,11 @@ export class AdminLadderRegistry implements LadderRegistry {
    * behind a queue. The whole of the ⛔⛔⛔ account of why this exists at all — a rung dying is not an
    * announce, so the announce path never asks — is on `StreamCatalog.republishIfLadderShapeChanged`.
    */
-  private republishIfLadderShapeChanged(group: string, liveRungs: readonly string[], publishGroup: string = group): void {
+  private republishIfLadderShapeChanged(
+    group: string,
+    liveRungs: readonly string[],
+    publishGroup: string = group,
+  ): void {
     if (!this.merged.has(group)) {
       // Nothing has announced this ladder yet, so there is no master to correct and no ladder to write
       // one from. The first announce publishes the right shape anyway.
@@ -353,15 +357,16 @@ export class AdminLadderRegistry implements LadderRegistry {
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
       const advertised = advertisableRenditions(this.merged.get(group) ?? [], this.livenessOf(group));
       const managed = this.managedMasterContexts.get(group);
-      const published = managed && this.managedMasterStore
-        ? await this.masterWriter.publishManaged(
-            publishGroup,
-            advertised,
-            `rendition:${managed.renditionRevision}:shape:${shape}`,
-            managed.binding,
-            this.managedMasterStore,
-          )
-        : await this.masterWriter.publish(publishGroup, advertised);
+      const published =
+        managed && this.managedMasterStore
+          ? await this.masterWriter.publishManaged(
+              publishGroup,
+              advertised,
+              `rendition:${managed.renditionRevision}:shape:${shape}`,
+              managed.binding,
+              this.managedMasterStore,
+            )
+          : await this.masterWriter.publish(publishGroup, advertised);
       if (published) {
         this.logger.log(
           `[AdminLadderRegistry] Ladder ${group} now produces ${advertised.length} rung(s), master rewritten`,

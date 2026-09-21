@@ -124,7 +124,10 @@ describe('MediaFormatProbe', () => {
       ],
     });
 
-    assert.deepEqual(fingerprint?.tracks.map((track) => track.codec), ['mp3', 'aac']);
+    assert.deepEqual(
+      fingerprint?.tracks.map((track) => track.codec),
+      ['mp3', 'aac'],
+    );
   });
 
   it('refuses missing compatibility fields instead of guessing them', () => {
@@ -273,7 +276,6 @@ printf '%s' '{"streams":[{"codec_type":"audio","codec_name":"aac","profile":"LC"
 
     const timeoutBound = new MediaFormatProbe({ executable: executable('sleep 1'), timeoutMs: 20 });
     assert.deepEqual(await timeoutBound.inspect(Buffer.from('x')), { kind: 'failed', reason: 'timeout' });
-
   });
 
   it('refuses excess work without retaining queued input buffers', async () => {

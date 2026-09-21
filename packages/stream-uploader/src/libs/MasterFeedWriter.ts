@@ -7,11 +7,7 @@ import { retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { BeePublisherPool } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
-import {
-  ManagedMasterBinding,
-  ManagedMasterIntent,
-  ManagedMasterPersistence,
-} from './ManagedMasterStore.js';
+import { ManagedMasterBinding, ManagedMasterIntent, ManagedMasterPersistence } from './ManagedMasterStore.js';
 import { buildMasterPlaylist } from './MasterPlaylist.js';
 
 const MASTER_RETRY_WINDOW_MS = 10_000;
@@ -122,9 +118,10 @@ export class MasterFeedWriter {
       } else {
         const probed = await this.nextIndex(group, topic);
         const durableFloor = store.latestCommittedIndex(group);
-        index = durableFloor !== null && probed.toBigInt() <= BigInt(durableFloor)
-          ? FeedIndex.fromBigInt(BigInt(durableFloor)).next()
-          : probed;
+        index =
+          durableFloor !== null && probed.toBigInt() <= BigInt(durableFloor)
+            ? FeedIndex.fromBigInt(BigInt(durableFloor)).next()
+            : probed;
       }
       const intent = store.prepare({
         ...binding,

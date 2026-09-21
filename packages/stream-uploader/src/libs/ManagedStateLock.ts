@@ -47,10 +47,7 @@ const runFlock: ManagedStateLockRunner = (fd) => {
 export class ManagedStateLock {
   private released = false;
 
-  private constructor(
-    private readonly fd: number,
-    private readonly fileOps: ManagedStateLockFileOps,
-  ) {}
+  private constructor(private readonly fd: number, private readonly fileOps: ManagedStateLockFileOps) {}
 
   public static acquire(
     stateDir: string,

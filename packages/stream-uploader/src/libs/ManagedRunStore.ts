@@ -153,7 +153,9 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 function isSource(value: unknown): value is SourceConnectionIdentity {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const source = value as Partial<SourceConnectionIdentity>;
   return (
     typeof source.serverId === 'string' &&
@@ -167,7 +169,9 @@ function isSource(value: unknown): value is SourceConnectionIdentity {
 }
 
 function isConnection(value: unknown): value is Omit<SourceConnectionIdentity, 'generation'> {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const connection = value as Partial<SourceConnectionIdentity>;
   return (
     typeof connection.serverId === 'string' &&
@@ -180,7 +184,9 @@ function isConnection(value: unknown): value is Omit<SourceConnectionIdentity, '
 }
 
 function isRungConnection(value: unknown): value is ManagedRungConnectionRecord {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const connection = value as Partial<ManagedRungConnectionRecord>;
   return (
     typeof connection.streamId === 'string' &&
@@ -191,7 +197,9 @@ function isRungConnection(value: unknown): value is ManagedRungConnectionRecord 
 }
 
 function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const record = value as Partial<ManagedRunRecord>;
   const eventSequence = record.eventSequence;
   const pendingReports = record.pendingReports;
@@ -229,14 +237,15 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     record.rungConnections.every(isRungConnection) &&
     new Set(record.rungConnections.map((connection) => connection.streamId)).size === record.rungConnections.length &&
     Array.isArray(pendingReports) &&
-    pendingReports.every((report) =>
-      isManagedRunReport(report) &&
-      report.runNumber === record.runNumber &&
-      report.uploaderId === record.uploaderId &&
-      report.claimId === record.claimId,
+    pendingReports.every(
+      (report) =>
+        isManagedRunReport(report) &&
+        report.runNumber === record.runNumber &&
+        report.uploaderId === record.uploaderId &&
+        report.claimId === record.claimId,
     ) &&
-    pendingReports.every((report, index) =>
-      report.eventSequence === eventSequence - pendingReports.length + index + 1,
+    pendingReports.every(
+      (report, index) => report.eventSequence === eventSequence - pendingReports.length + index + 1,
     ) &&
     (record.lastObservedAt === undefined ||
       (typeof record.lastObservedAt === 'string' && Number.isFinite(Date.parse(record.lastObservedAt)))) &&
@@ -258,7 +267,9 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
 }
 
 function isExpectedRendition(value: unknown): value is ManagedExpectedRendition {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const rendition = value as Partial<ManagedExpectedRendition>;
   return (
     typeof rendition.name === 'string' &&
@@ -273,7 +284,9 @@ function isExpectedRendition(value: unknown): value is ManagedExpectedRendition 
 }
 
 function isManagedRunReport(value: unknown): value is ManagedRunReportRecord {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const report = value as Partial<ManagedRunReportRecord>;
   return (
     report.lifecycleVersion === 1 &&
@@ -308,10 +321,7 @@ export function remainingManagedDeadline(record: ManagedRunRecord, nowWallMs: nu
 }
 
 export class ManagedRunStore implements ManagedRunPersistence {
-  constructor(
-    private readonly stateDir: string,
-    private readonly fileOps: DurableFileOps = nodeFileOps,
-  ) {
+  constructor(private readonly stateDir: string, private readonly fileOps: DurableFileOps = nodeFileOps) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
       this.flushDirectory(path.dirname(stateDir));
@@ -363,7 +373,9 @@ export class ManagedRunStore implements ManagedRunPersistence {
   }
 
   public list(): string[] {
-    if (!this.fileOps.existsSync(this.stateDir)) {return [];}
+    if (!this.fileOps.existsSync(this.stateDir)) {
+      return [];
+    }
     return this.fileOps
       .readdirSync(this.stateDir)
       .filter((name) => name.endsWith('.json'))

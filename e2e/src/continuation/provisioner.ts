@@ -4,14 +4,10 @@ import { join } from 'node:path';
 
 import { type FixturePlan, FixtureRefusal, ResourceJournal } from './fixture.js';
 import type { GuardedResourceTracker } from './guardedResources.js';
-import type {
-  CreateHeldUploaderProfileInput,
-  HeldUploaderProfile,
-  StartHeldUploaderInput,
-} from './managerProfile.js';
+import type { CreateHeldUploaderProfileInput, HeldUploaderProfile, StartHeldUploaderInput } from './managerProfile.js';
 import { managerUploaderProfileName } from './managerProfile.js';
 import type { GuardedReleaseObservation } from './readinessTransport.js';
-import { type ContinuationTopology,createContinuationTopology } from './topology.js';
+import { type ContinuationTopology, createContinuationTopology } from './topology.js';
 
 const SAFE_PROFILE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SAFE_USERNAME = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -116,7 +112,9 @@ export class SpawnBoundedProcess implements BoundedProcess {
       child.on('close', (code, signal) => {
         clearTimeout(timer);
         if (timedOut) {
-          reject(new FixtureRefusal(`bounded process timed out (stdout ${stdoutBytes} bytes, stderr ${stderrBytes} bytes)`));
+          reject(
+            new FixtureRefusal(`bounded process timed out (stdout ${stdoutBytes} bytes, stderr ${stderrBytes} bytes)`),
+          );
           return;
         }
         if (exceeded) {
@@ -128,11 +126,13 @@ export class SpawnBoundedProcess implements BoundedProcess {
           return;
         }
         if (code !== 0) {
-          reject(new FixtureRefusal(
-            `bounded process failed with exit ${code === null ? 'unknown' : code}${
-              signal === null ? '' : ` and signal ${signal}`
-            } (stdout ${stdoutBytes} bytes, stderr ${stderrBytes} bytes)`,
-          ));
+          reject(
+            new FixtureRefusal(
+              `bounded process failed with exit ${code === null ? 'unknown' : code}${
+                signal === null ? '' : ` and signal ${signal}`
+              } (stdout ${stdoutBytes} bytes, stderr ${stderrBytes} bytes)`,
+            ),
+          );
           return;
         }
         resolve({
@@ -309,10 +309,14 @@ export class GuardedApplicationProvisioner {
       file: this.guard,
       args: [
         role,
-        '--state-root', this.stateRoot,
-        '--candidate-root', candidateRoot(this.options.plan, candidateRole),
-        '--work-root', join(this.guardRoot, `work/${role}-${slotId}`),
-        '--admin-url', this.adminUrl,
+        '--state-root',
+        this.stateRoot,
+        '--candidate-root',
+        candidateRoot(this.options.plan, candidateRole),
+        '--work-root',
+        join(this.guardRoot, `work/${role}-${slotId}`),
+        '--admin-url',
+        this.adminUrl,
         ...extraArguments,
       ],
       environment,
@@ -324,10 +328,14 @@ export class GuardedApplicationProvisioner {
     const result = await this.run('manager API container lookup', {
       file: 'docker',
       args: [
-        'ps', '--quiet',
-        '--filter', `label=com.docker.compose.project=${this.options.targets.manager.projectName}`,
-        '--filter', 'label=com.docker.compose.service=api',
-        '--filter', 'label=com.docker.compose.oneoff=False',
+        'ps',
+        '--quiet',
+        '--filter',
+        `label=com.docker.compose.project=${this.options.targets.manager.projectName}`,
+        '--filter',
+        'label=com.docker.compose.service=api',
+        '--filter',
+        'label=com.docker.compose.oneoff=False',
       ],
     });
     const ids = result.stdout.trim() === '' ? [] : result.stdout.trim().split(/\s+/);
@@ -337,8 +345,15 @@ export class GuardedApplicationProvisioner {
     await this.run('manager fixture operator creation', {
       file: 'docker',
       args: [
-        'exec', '-i', ids[0], 'node', 'dist/cli.js',
-        'user:add', this.options.managerUsername, '--password-stdin', '--admin',
+        'exec',
+        '-i',
+        ids[0],
+        'node',
+        'dist/cli.js',
+        'user:add',
+        this.options.managerUsername,
+        '--password-stdin',
+        '--admin',
       ],
       stdin: `${this.options.managerPassword}\n`,
       timeoutMs: 30_000,
@@ -350,10 +365,13 @@ export class GuardedApplicationProvisioner {
       file: this.guard,
       args: [
         'retry',
-        '--state-root', this.stateRoot,
-        '--role', role,
+        '--state-root',
+        this.stateRoot,
+        '--role',
+        role,
         ...(role === 'uploader' ? ['--slot-id', slotId] : []),
-        '--admin-url', this.adminUrl,
+        '--admin-url',
+        this.adminUrl,
       ],
       timeoutMs: 30_000,
     });
@@ -419,22 +437,38 @@ export class GuardedApplicationProvisioner {
 
 function installerArguments(plan: FixturePlan, targets: ReleaseFixtureTargets): string[] {
   return [
-    '--manager-mode', 'isolated',
-    '--manager-project-name', targets.manager.projectName,
-    '--manager-postgres-volume-name', targets.manager.postgresVolumeName,
-    '--manager-postgres-port', String(targets.manager.postgresPort),
-    '--manager-web-port', String(targets.manager.webPort),
-    '--admin-project-name', targets.admin.projectName,
-    '--admin-postgres-volume-name', targets.admin.postgresVolumeName,
-    '--admin-web-port', String(targets.admin.webPort),
-    '--uploader-profile', targets.uploader.profile,
-    '--uploader-port-slot', String(targets.uploader.portSlot),
-    '--uploader-services', targets.uploader.services.join(','),
-    '--viewer-profile', targets.viewer.profile,
-    '--viewer-port-slot', String(targets.viewer.portSlot),
-    '--viewer-services', targets.viewer.services.join(','),
-    '--fixture-network-name', plan.network.name,
-    '--fixture-id', plan.fixtureId,
+    '--manager-mode',
+    'isolated',
+    '--manager-project-name',
+    targets.manager.projectName,
+    '--manager-postgres-volume-name',
+    targets.manager.postgresVolumeName,
+    '--manager-postgres-port',
+    String(targets.manager.postgresPort),
+    '--manager-web-port',
+    String(targets.manager.webPort),
+    '--admin-project-name',
+    targets.admin.projectName,
+    '--admin-postgres-volume-name',
+    targets.admin.postgresVolumeName,
+    '--admin-web-port',
+    String(targets.admin.webPort),
+    '--uploader-profile',
+    targets.uploader.profile,
+    '--uploader-port-slot',
+    String(targets.uploader.portSlot),
+    '--uploader-services',
+    targets.uploader.services.join(','),
+    '--viewer-profile',
+    targets.viewer.profile,
+    '--viewer-port-slot',
+    String(targets.viewer.portSlot),
+    '--viewer-services',
+    targets.viewer.services.join(','),
+    '--fixture-network-name',
+    plan.network.name,
+    '--fixture-id',
+    plan.fixtureId,
   ];
 }
 
@@ -444,7 +478,9 @@ function managerCandidate(plan: FixturePlan, relative: string): string {
 
 function candidateRoot(plan: FixturePlan, role: 'manager' | 'admin' | 'stack'): string {
   const candidate = plan.candidates.find((entry) => entry.role === role);
-  if (!candidate) {throw new FixtureRefusal(`${role} candidate is missing`);}
+  if (!candidate) {
+    throw new FixtureRefusal(`${role} candidate is missing`);
+  }
   return candidate.root;
 }
 

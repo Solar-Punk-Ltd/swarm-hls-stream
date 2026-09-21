@@ -181,9 +181,7 @@ export interface GuardedActivation {
   serviceBindings: readonly GuardedServiceBinding[];
   fixtureNetwork?: FixtureNetworkBinding;
   startsEnrollmentDisabled?: true;
-  runtime?:
-    | { managedLifecycleVersion: null; uploaderId: null }
-    | { managedLifecycleVersion: 1; uploaderId: string };
+  runtime?: { managedLifecycleVersion: null; uploaderId: null } | { managedLifecycleVersion: 1; uploaderId: string };
   expectedReceiptGeneration?: number;
 }
 
@@ -1158,21 +1156,9 @@ export async function inspectContinuationReadiness(
     falseCodec: {
       attemptedCodec: boundedString('falseCodec', 'attemptedCodec', falseCodec.attemptedCodec),
       supported: booleanField('falseCodec', 'supported', falseCodec.supported),
-      sourceBufferAttempted: booleanField(
-        'falseCodec',
-        'sourceBufferAttempted',
-        falseCodec.sourceBufferAttempted,
-      ),
-      sourceBufferAccepted: booleanField(
-        'falseCodec',
-        'sourceBufferAccepted',
-        falseCodec.sourceBufferAccepted,
-      ),
-      sourceBufferRefused: booleanField(
-        'falseCodec',
-        'sourceBufferRefused',
-        falseCodec.sourceBufferRefused,
-      ),
+      sourceBufferAttempted: booleanField('falseCodec', 'sourceBufferAttempted', falseCodec.sourceBufferAttempted),
+      sourceBufferAccepted: booleanField('falseCodec', 'sourceBufferAccepted', falseCodec.sourceBufferAccepted),
+      sourceBufferRefused: booleanField('falseCodec', 'sourceBufferRefused', falseCodec.sourceBufferRefused),
       loadedMetadata: booleanField('falseCodec', 'loadedMetadata', falseCodec.loadedMetadata),
     },
     capacityAvailable: booleanField('capacity', 'available', capacity.available),

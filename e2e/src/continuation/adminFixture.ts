@@ -46,8 +46,15 @@ export async function provisionManagedFixtureStream(
     await dependencies.process.run({
       file: 'docker',
       args: [
-        'exec', '-i', input.apiContainerId, 'node', 'dist/cli.js',
-        'user:add', input.username, '--password-stdin', '--admin',
+        'exec',
+        '-i',
+        input.apiContainerId,
+        'node',
+        'dist/cli.js',
+        'user:add',
+        input.username,
+        '--password-stdin',
+        '--admin',
       ],
       stdin: `${input.password}\n`,
       timeoutMs: 30_000,
@@ -57,11 +64,17 @@ export async function provisionManagedFixtureStream(
     throw new FixtureRefusal('admin fixture owner creation failed without exposing child output');
   }
 
-  const login = await request(fetchImpl, baseUrl, '/api/auth/login', {
-    method: 'POST',
-    headers: writeHeaders(),
-    body: JSON.stringify({ username: input.username, password: input.password }),
-  }, new Set([200]));
+  const login = await request(
+    fetchImpl,
+    baseUrl,
+    '/api/auth/login',
+    {
+      method: 'POST',
+      headers: writeHeaders(),
+      body: JSON.stringify({ username: input.username, password: input.password }),
+    },
+    new Set([200]),
+  );
   const ownerCookie = sessionCookie(login.response);
   if (ownerCookie === null) {
     throw new FixtureRefusal('admin fixture login did not set a bounded session cookie');
@@ -69,17 +82,25 @@ export async function provisionManagedFixtureStream(
 
   const scheduledStartTime = new Date((input.now ?? Date.now)() + 60_000).toISOString();
   const created = objectBody(
-    (await request(fetchImpl, baseUrl, '/api/streams', {
-      method: 'POST',
-      headers: ownerHeaders(ownerCookie, true),
-      body: JSON.stringify({
-        title: `Continuation fixture ${suffix}`,
-        description: 'Isolated continuation acceptance fixture',
-        tags: ['continuation-fixture'],
-        mediaType: 'video',
-        scheduledStartTime,
-      }),
-    }, new Set([201]))).body,
+    (
+      await request(
+        fetchImpl,
+        baseUrl,
+        '/api/streams',
+        {
+          method: 'POST',
+          headers: ownerHeaders(ownerCookie, true),
+          body: JSON.stringify({
+            title: `Continuation fixture ${suffix}`,
+            description: 'Isolated continuation acceptance fixture',
+            tags: ['continuation-fixture'],
+            mediaType: 'video',
+            scheduledStartTime,
+          }),
+        },
+        new Set([201]),
+      )
+    ).body,
     'admin fixture stream create',
   );
   const stream = streamIdentity(created, 'admin fixture stream create');
@@ -88,10 +109,18 @@ export async function provisionManagedFixtureStream(
   }
 
   const published = objectBody(
-    (await request(fetchImpl, baseUrl, `/api/streams/${stream.id}/publish`, {
-      method: 'POST',
-      headers: ownerHeaders(ownerCookie, true),
-    }, new Set([200]))).body,
+    (
+      await request(
+        fetchImpl,
+        baseUrl,
+        `/api/streams/${stream.id}/publish`,
+        {
+          method: 'POST',
+          headers: ownerHeaders(ownerCookie, true),
+        },
+        new Set([200]),
+      )
+    ).body,
     'admin fixture stream publish',
   );
   const publishedStream = objectBody(published.stream, 'admin fixture published stream');
@@ -104,10 +133,18 @@ export async function provisionManagedFixtureStream(
     throw new FixtureRefusal('admin fixture publish result changed the stream identity');
   }
   const ownerView = objectBody(
-    (await request(fetchImpl, baseUrl, `/api/streams/${stream.id}`, {
-      method: 'GET',
-      headers: ownerHeaders(ownerCookie, false),
-    }, new Set([200]))).body,
+    (
+      await request(
+        fetchImpl,
+        baseUrl,
+        `/api/streams/${stream.id}`,
+        {
+          method: 'GET',
+          headers: ownerHeaders(ownerCookie, false),
+        },
+        new Set([200]),
+      )
+    ).body,
     'admin fixture managed owner read',
   );
   const ownerIdentity = streamIdentity(ownerView, 'admin fixture managed owner read');
@@ -125,13 +162,25 @@ export async function provisionManagedFixtureStream(
   }
 
   const ingest = objectBody(
-    (await request(fetchImpl, baseUrl, `/api/streams/${stream.id}/ingest`, {
-      method: 'GET',
-      headers: ownerHeaders(ownerCookie, false),
-    }, new Set([200]))).body,
+    (
+      await request(
+        fetchImpl,
+        baseUrl,
+        `/api/streams/${stream.id}/ingest`,
+        {
+          method: 'GET',
+          headers: ownerHeaders(ownerCookie, false),
+        },
+        new Set([200]),
+      )
+    ).body,
     'admin fixture ingest details',
   );
-  if (ingest.streamId !== `video/${stream.topic}` || typeof ingest.publishKey !== 'string' || !PUBLISH_KEY.test(ingest.publishKey)) {
+  if (
+    ingest.streamId !== `video/${stream.topic}` ||
+    typeof ingest.publishKey !== 'string' ||
+    !PUBLISH_KEY.test(ingest.publishKey)
+  ) {
     throw new FixtureRefusal('admin fixture ingest details do not match the managed stream');
   }
   return {
@@ -230,7 +279,12 @@ function sessionCookie(response: Response): string | null {
   const fallback = response.headers.get('set-cookie');
   for (const header of fallback === null ? values : [...values, fallback]) {
     const pair = header.split(';', 1)[0]?.trim() ?? '';
-    if (pair.startsWith(SESSION_COOKIE) && pair.length > SESSION_COOKIE.length && pair.length <= 4096 && !/[\r\n]/.test(pair)) {
+    if (
+      pair.startsWith(SESSION_COOKIE) &&
+      pair.length > SESSION_COOKIE.length &&
+      pair.length <= 4096 &&
+      !/[\r\n]/.test(pair)
+    ) {
       return pair;
     }
   }
@@ -257,7 +311,12 @@ function objectBody(value: unknown, label: string): Record<string, unknown> {
 }
 
 function streamIdentity(value: Record<string, unknown>, label: string): { id: string; topic: string } {
-  if (typeof value.id !== 'string' || !UUID.test(value.id) || typeof value.topic !== 'string' || !UUID.test(value.topic)) {
+  if (
+    typeof value.id !== 'string' ||
+    !UUID.test(value.id) ||
+    typeof value.topic !== 'string' ||
+    !UUID.test(value.topic)
+  ) {
     throw new FixtureRefusal(`${label} identity is malformed`);
   }
   return { id: value.id, topic: value.topic };

@@ -3,10 +3,7 @@ import path from 'node:path';
 
 import { Rendition } from '../types.js';
 
-import {
-  ManagedRenditionReport,
-  managedRenditionReportDigest,
-} from './AdminApiClient.js';
+import { ManagedRenditionReport, managedRenditionReportDigest } from './AdminApiClient.js';
 import { DurableFileOps } from './ManagedRunStore.js';
 
 export interface ManagedRenditionBinding {
@@ -65,7 +62,8 @@ function isRendition(value: unknown): value is Rendition {
     positiveInteger(rendition.height) &&
     positiveInteger(rendition.bandwidth) &&
     positiveInteger(rendition.avgBandwidth) &&
-    (!final || (nonNegativeInteger(rendition.index) && typeof rendition.duration === 'number' && rendition.duration >= 0))
+    (!final ||
+      (nonNegativeInteger(rendition.index) && typeof rendition.duration === 'number' && rendition.duration >= 0))
   );
 }
 
@@ -117,21 +115,14 @@ function entryName(binding: ManagedRenditionBinding, rung: string): string {
 
 /** Durable exact-body outbox for lifecycle-v1 run-scoped rendition reports. */
 export class ManagedRenditionStore {
-  constructor(
-    private readonly stateDir: string,
-    private readonly fileOps: DurableFileOps = nodeFileOps,
-  ) {
+  constructor(private readonly stateDir: string, private readonly fileOps: DurableFileOps = nodeFileOps) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
     }
     this.flushDirectory(path.dirname(stateDir));
   }
 
-  public prepare(
-    binding: ManagedRenditionBinding,
-    rendition: Rendition,
-    observedAt: string,
-  ): PreparedManagedRendition {
+  public prepare(binding: ManagedRenditionBinding, rendition: Rendition, observedAt: string): PreparedManagedRendition {
     const existing = this.read(binding, rendition.name);
     if (existing) {
       this.flushDirectory(this.stateDir);

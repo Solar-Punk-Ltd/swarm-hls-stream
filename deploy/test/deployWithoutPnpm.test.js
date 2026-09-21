@@ -55,11 +55,10 @@ describe('a deploy on a host without pnpm', () => {
       chmodSync(join(sharedBin, 'pnpm'), 0o755);
 
       const sandbox = makeSandbox({ config: ALL_REMOTE, pnpm: false, hostPath: sharedBin });
-      const output = execFileSync(
-        'bash',
-        ['-c', 'if command -v pnpm >/dev/null; then exit 2; fi\nessential-tool'],
-        { encoding: 'utf8', env: { PATH: sandbox.path } },
-      );
+      const output = execFileSync('bash', ['-c', 'if command -v pnpm >/dev/null; then exit 2; fi\nessential-tool'], {
+        encoding: 'utf8',
+        env: { PATH: sandbox.path },
+      });
 
       assert.equal(output.trim(), 'available');
     } finally {

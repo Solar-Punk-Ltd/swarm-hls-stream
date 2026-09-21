@@ -137,9 +137,11 @@ describe('continuation fixture topology', () => {
     assert.equal(plan.internalEndpoints.srs, `http://${FIXTURE_ID}-srs:10019`);
     assert.equal(plan.internalEndpoints.uploader, `http://${FIXTURE_ID}-uploader:10010`);
     assert.deepEqual(
-      Object.fromEntries(service(plan, 'srs').environment
-        .filter(({ name }) => name.startsWith('SRS_'))
-        .map(({ name, value }) => [name, value.kind === 'literal' ? value.value : value.kind])),
+      Object.fromEntries(
+        service(plan, 'srs')
+          .environment.filter(({ name }) => name.startsWith('SRS_'))
+          .map(({ name, value }) => [name, value.kind === 'literal' ? value.value : value.kind]),
+      ),
       {
         SRS_ADAPTER_HOST: 'uploader',
         SRS_ADAPTER_PORT: '10010',
@@ -318,9 +320,7 @@ describe('continuation fixture topology', () => {
       },
     ]);
     assert.deepEqual(
-      initial.bootstrap
-        .filter((step) => step.kind === 'activate-guarded-release')
-        .map((step) => [step.id, step.after]),
+      initial.bootstrap.filter((step) => step.kind === 'activate-guarded-release').map((step) => [step.id, step.after]),
       [
         ['activate-admin-bootstrap', ['provision-postage']],
         ['activate-manager', ['activate-admin-bootstrap']],
@@ -488,10 +488,7 @@ describe('continuation readiness inspection', () => {
     const plan = correctedPlan();
     const topology = createContinuationTopology(plan, UPLOADER_ID);
 
-    assert.throws(
-      () => createContinuationTopology(plan, 'fixture-srs-uploader'),
-      /manager profile instance/i,
-    );
+    assert.throws(() => createContinuationTopology(plan, 'fixture-srs-uploader'), /manager profile instance/i);
     const transport = new FakeProbeTransport(readyAnswers());
     const external = {
       ...topology,

@@ -7,15 +7,8 @@ import { describe, it } from 'node:test';
 
 import { createSrsEngine } from '../src/engines/srs.js';
 import { AbrLadder } from '../src/libs/AbrLadder.js';
-import {
-  AdminApiClient,
-  LegacyAdoptionOperation,
-  ManagedClaimRequest,
-} from '../src/libs/AdminApiClient.js';
-import {
-  LegacyAdoptionPendingError,
-  LegacyRecordingAdopter,
-} from '../src/libs/LegacyRecordingAdopter.js';
+import { AdminApiClient, LegacyAdoptionOperation, ManagedClaimRequest } from '../src/libs/AdminApiClient.js';
+import { LegacyAdoptionPendingError, LegacyRecordingAdopter } from '../src/libs/LegacyRecordingAdopter.js';
 import { ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
 import { ManagedMasterStore } from '../src/libs/ManagedMasterStore.js';
 import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
@@ -43,17 +36,19 @@ const ADOPTION_SEGMENT = 'b'.repeat(64);
 const ADOPTION_FORMAT: MediaFormatFingerprint = {
   version: 1,
   container: 'mpegts',
-  tracks: [{
-    kind: 'video',
-    codec: 'h264',
-    profile: 'High',
-    level: 40,
-    width: 640,
-    height: 360,
-    pixelFormat: 'yuv420p',
-    chromaLocation: 'left',
-    bitsPerRawSample: 8,
-  }],
+  tracks: [
+    {
+      kind: 'video',
+      codec: 'h264',
+      profile: 'High',
+      level: 40,
+      width: 640,
+      height: 360,
+      pixelFormat: 'yuv420p',
+      chromaLocation: 'left',
+      bitsPerRawSample: 8,
+    },
+  ],
 };
 
 function adoptionOperation(): LegacyAdoptionOperation {
@@ -74,16 +69,18 @@ function adoptionOperation(): LegacyAdoptionOperation {
       topic: ADOPTION_TOPIC,
       mediaType: 'video',
       master: { topic: ADOPTION_TOPIC, index: 12, duration: 2 },
-      renditions: [{
-        name: '360p',
-        topic: ADOPTION_RUNG_TOPIC,
-        width: 640,
-        height: 360,
-        bandwidth: 700_000,
-        avgBandwidth: 700_000,
-        index: 4,
-        duration: 2,
-      }],
+      renditions: [
+        {
+          name: '360p',
+          topic: ADOPTION_RUNG_TOPIC,
+          width: 640,
+          height: 360,
+          bandwidth: 700_000,
+          avgBandwidth: 700_000,
+          index: 4,
+          duration: 2,
+        },
+      ],
     },
   };
 }
@@ -193,11 +190,7 @@ async function withManagedSrs(
       calls.completed.push(claim);
       return true;
     },
-    provisionManagedSource: (
-      _streamId: string,
-      _mediaType: string,
-      identity: SourceConnectionIdentity,
-    ) => {
+    provisionManagedSource: (_streamId: string, _mediaType: string, identity: SourceConnectionIdentity) => {
       calls.provisioned.push(identity);
       return provision(identity);
     },
@@ -229,11 +222,7 @@ async function withManagedSrs(
       calls.managedRenditionSegments.push({ streamId, sourceClientId: source.clientId, segmentIndex });
       return { accepted: true };
     },
-    handleManagedSegment: (
-      streamId: string,
-      source: SourceConnectionIdentity,
-      segmentIndex: number,
-    ) => {
+    handleManagedSegment: (streamId: string, source: SourceConnectionIdentity, segmentIndex: number) => {
       calls.managedSourceSegments.push({ streamId, sourceClientId: source.clientId, segmentIndex });
       return options.managedSegmentAccepted === false
         ? { accepted: false, reason: 'durability_failed' }
@@ -264,7 +253,10 @@ async function withManagedSrs(
     apiUrl: 'http://srs.test:1985',
     fetcher: async (input, init) => {
       calls.deletes.push(`${init?.method} ${String(input)}`);
-      return new Response(JSON.stringify({ code: 0 }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ code: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
     },
   });
   const app = express();
@@ -343,32 +335,41 @@ async function openManagedSrsRouter(
 
 describe('SRS managed lifecycle callbacks', () => {
   it('claims durably and provisions the callback as a provisional source', async () => {
-    await withManagedSrs(() => true, async (post, calls) => {
-      assert.equal(await post(callback('client-a')), 0);
-      assert.equal(calls.legacyStarts.length, 0);
-      assert.equal(calls.attempts[0].streamId, STREAM_ID);
-      assert.equal(calls.requests[0].requestId, '33333333-3333-4333-8333-333333333333');
-      assert.equal(calls.completed[0].claimId, CLAIM_ID);
-      assert.deepEqual(calls.provisioned[0], {
-        serverId: 'server-a',
-        serviceId: 'service-a',
-        clientId: 'client-a',
-        generation: 1,
-      });
-    });
+    await withManagedSrs(
+      () => true,
+      async (post, calls) => {
+        assert.equal(await post(callback('client-a')), 0);
+        assert.equal(calls.legacyStarts.length, 0);
+        assert.equal(calls.attempts[0].streamId, STREAM_ID);
+        assert.equal(calls.requests[0].requestId, '33333333-3333-4333-8333-333333333333');
+        assert.equal(calls.completed[0].claimId, CLAIM_ID);
+        assert.deepEqual(calls.provisioned[0], {
+          serverId: 'server-a',
+          serviceId: 'service-a',
+          clientId: 'client-a',
+          generation: 1,
+        });
+      },
+    );
   });
 
   it('ignores the unpublish of a busy-refused provisional source', async () => {
-    await withManagedSrs((identity) => identity.clientId === 'client-a', async (post, calls) => {
-      assert.equal(await post(callback('client-a')), 0);
-      assert.equal(await post(callback('client-b')), 1);
-      assert.equal(await post(callback('client-b', 'on_unpublish')), 0);
-      assert.equal(calls.unpublished.length, 0);
-      assert.equal(calls.requests.length, 1);
+    await withManagedSrs(
+      (identity) => identity.clientId === 'client-a',
+      async (post, calls) => {
+        assert.equal(await post(callback('client-a')), 0);
+        assert.equal(await post(callback('client-b')), 1);
+        assert.equal(await post(callback('client-b', 'on_unpublish')), 0);
+        assert.equal(calls.unpublished.length, 0);
+        assert.equal(calls.requests.length, 1);
 
-      assert.equal(await post(callback('client-a', 'on_unpublish')), 0);
-      assert.deepEqual(calls.unpublished.map((identity) => identity.clientId), ['client-a']);
-    });
+        assert.equal(await post(callback('client-a', 'on_unpublish')), 0);
+        assert.deepEqual(
+          calls.unpublished.map((identity) => identity.clientId),
+          ['client-a'],
+        );
+      },
+    );
   });
 
   it('keeps continued-run rung authorization when an old source unpublishes late', async () => {
@@ -377,7 +378,10 @@ describe('SRS managed lifecycle callbacks', () => {
       async (post, calls) => {
         assert.equal(await post(callback('source-a')), 0);
         assert.equal(await post(callback('source-b')), 0);
-        assert.deepEqual(calls.attempts.map(({ runNumber }) => runNumber), [2, 3]);
+        assert.deepEqual(
+          calls.attempts.map(({ runNumber }) => runNumber),
+          [2, 3],
+        );
 
         assert.equal(await post(callback('source-a', 'on_unpublish')), 0);
         assert.equal(await post(callback('source-a', 'on_unpublish')), 0);
@@ -386,7 +390,10 @@ describe('SRS managed lifecycle callbacks', () => {
 
         assert.equal(await post(callback('source-b', 'on_unpublish')), 0);
         assert.equal(await post(rungCallback('on_publish', 'rung-after-b')), 1);
-        assert.deepEqual(calls.unpublished.map(({ clientId }) => clientId), ['source-a', 'source-b']);
+        assert.deepEqual(
+          calls.unpublished.map(({ clientId }) => clientId),
+          ['source-a', 'source-b'],
+        );
       },
       {
         abr: true,
@@ -397,20 +404,26 @@ describe('SRS managed lifecycle callbacks', () => {
   });
 
   it('refuses managed callbacks that omit SRS connection identity', async () => {
-    await withManagedSrs(() => true, async (post, calls) => {
-      const body = callback('client-a');
-      delete body.client_id;
-      assert.equal(await post(body), 1);
-      assert.equal(calls.provisioned.length, 0);
-    });
+    await withManagedSrs(
+      () => true,
+      async (post, calls) => {
+        const body = callback('client-a');
+        delete body.client_id;
+        assert.equal(await post(body), 1);
+        assert.equal(calls.provisioned.length, 0);
+      },
+    );
   });
 
   it('deletes the attached SRS client selected by the cutoff', async () => {
-    await withManagedSrs(() => true, async (_post, calls) => {
-      calls.disconnect?.({ serverId: 'server-a', serviceId: 'service-a', clientId: 'client-a', generation: 1 });
-      await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(calls.deletes, ['DELETE http://srs.test:1985/api/v1/clients/client-a']);
-    });
+    await withManagedSrs(
+      () => true,
+      async (_post, calls) => {
+        calls.disconnect?.({ serverId: 'server-a', serviceId: 'service-a', clientId: 'client-a', generation: 1 });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.deepEqual(calls.deletes, ['DELETE http://srs.test:1985/api/v1/clients/client-a']);
+      },
+    );
   });
 
   it('rejects a managed callback whose durable acceptance failed and retains its file', async () => {
@@ -437,7 +450,10 @@ describe('SRS managed lifecycle callbacks', () => {
             1,
           );
           assert.equal(fs.existsSync(segmentPath), true);
-          assert.deepEqual(calls.failedManagedSources.map((source) => source.clientId), ['source-a']);
+          assert.deepEqual(
+            calls.failedManagedSources.map((source) => source.clientId),
+            ['source-a'],
+          );
         },
         { mediaRoot, managedSegmentAccepted: false },
       );
@@ -564,14 +580,7 @@ describe('SRS managed lifecycle callbacks', () => {
       true,
     );
     assert.deepEqual(
-      first.handleManagedRenditionSegment(
-        `${STREAM_ID}_360p`,
-        STREAM_ID,
-        source,
-        0,
-        0.1,
-        videoSegment(4, 0),
-      ),
+      first.handleManagedRenditionSegment(`${STREAM_ID}_360p`, STREAM_ID, source, 0, 0.1, videoSegment(4, 0)),
       { accepted: true },
     );
     const firstRungUploader = (
@@ -774,8 +783,12 @@ describe('SRS managed lifecycle callbacks', () => {
     let assigned: readonly LegacyAdoptionOperation[] = [operation];
     let signalRead!: () => void;
     let releaseRead!: () => void;
-    const readStarted = new Promise<void>((resolve) => {signalRead = resolve;});
-    const readReleased = new Promise<void>((resolve) => {releaseRead = resolve;});
+    const readStarted = new Promise<void>((resolve) => {
+      signalRead = resolve;
+    });
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
     const adminApi = {
       describe: () => 'http://admin.test',
       lookupByIngestId: async () => ({
@@ -794,32 +807,36 @@ describe('SRS managed lifecycle callbacks', () => {
       reportLegacyAdoptionPreparation: async () => undefined,
     } as unknown as AdminApiClient;
     const recoveryStore = new RecoveryStore(path.join(root, 'recovery'));
-    const target = makeTestOrchestrator({
-      adminApi,
-      ladder,
-      managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
-      managedMasterStore: new ManagedMasterStore(path.join(root, 'masters')),
-      legacyRecordingAdopter: new LegacyRecordingAdopter(
-        {
-          owner,
-          readFeed: async (_topic, _index, rendition) => {
-            signalRead();
-            await readReleased;
-            return rendition === null
-              ? {
-                  playlist: buildMasterPlaylist(owner, operation.candidate.renditions),
-                  reference: 'd'.repeat(64),
-                }
-              : {
-                  playlist: `#EXTM3U\n#EXTINF:2,\n${ADOPTION_SEGMENT}\n#EXT-X-ENDLIST\n`,
-                  reference: 'e'.repeat(64),
-                };
+    const target = makeTestOrchestrator(
+      {
+        adminApi,
+        ladder,
+        managedCheckpointStore: new ManagedCheckpointStore(path.join(root, 'checkpoints')),
+        managedMasterStore: new ManagedMasterStore(path.join(root, 'masters')),
+        legacyRecordingAdopter: new LegacyRecordingAdopter(
+          {
+            owner,
+            readFeed: async (_topic, _index, rendition) => {
+              signalRead();
+              await readReleased;
+              return rendition === null
+                ? {
+                    playlist: buildMasterPlaylist(owner, operation.candidate.renditions),
+                    reference: 'd'.repeat(64),
+                  }
+                : {
+                    playlist: `#EXTM3U\n#EXTINF:2,\n${ADOPTION_SEGMENT}\n#EXT-X-ENDLIST\n`,
+                    reference: 'e'.repeat(64),
+                  };
+            },
+            readSegment: async () => Buffer.from('mpeg-ts'),
           },
-          readSegment: async () => Buffer.from('mpeg-ts'),
-        },
-        { inspect: async () => ({ kind: 'valid', fingerprint: ADOPTION_FORMAT }) },
-      ),
-    }, {}, recoveryStore);
+          { inspect: async () => ({ kind: 'valid', fingerprint: ADOPTION_FORMAT }) },
+        ),
+      },
+      {},
+      recoveryStore,
+    );
     const router = await openManagedSrsRouter(target, adminApi, ladder);
 
     try {
@@ -848,8 +865,12 @@ describe('SRS managed lifecycle callbacks', () => {
     let assigned: readonly LegacyAdoptionOperation[] = [];
     let signalLookup!: () => void;
     let releaseLookup!: () => void;
-    const lookupStarted = new Promise<void>((resolve) => {signalLookup = resolve;});
-    const lookupReleased = new Promise<void>((resolve) => {releaseLookup = resolve;});
+    const lookupStarted = new Promise<void>((resolve) => {
+      signalLookup = resolve;
+    });
+    const lookupReleased = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
     let lookupCount = 0;
     const draft = {
       id: ADMIN_ID,

@@ -10,8 +10,5 @@
     "eventSequence": 2
   },
   "canonicalUtf8": "{\"claimId\":\"44444444-4444-4444-8444-444444444444\",\"eventSequence\":2,\"lifecycleVersion\":1,\"observedAt\":\"2026-09-20T10:10:00.000Z\",\"reconnectDeadline\":\"2026-09-20T10:11:00.000Z\",\"runNumber\":2,\"state\":\"waiting\",\"uploaderId\":\"srs-157-90-34-105\"}",
-  "sha256HexParts": [
-    "3f6a1f43112f23b65d964d231adae191",
-    "bb7798ac72bc5bd1affb91bc60b807ef"
-  ]
+  "sha256HexParts": ["3f6a1f43112f23b65d964d231adae191", "bb7798ac72bc5bd1affb91bc60b807ef"]
 }

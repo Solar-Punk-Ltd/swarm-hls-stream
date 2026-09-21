@@ -23,7 +23,9 @@ export interface ManagedMasterIntent extends ManagedMasterBinding {
 export interface ManagedMasterPersistence {
   read(binding: ManagedMasterBinding): ManagedMasterIntent | null;
   latestCommittedIndex(group: string): number | null;
-  seedCommitted(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status'> & { readonly reference: string }): ManagedMasterIntent;
+  seedCommitted(
+    intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status'> & { readonly reference: string },
+  ): ManagedMasterIntent;
   prepare(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status' | 'reference'>): ManagedMasterIntent;
   commit(intent: ManagedMasterIntent, reference: string): ManagedMasterIntent;
 }
@@ -64,7 +66,8 @@ function isIntent(value: unknown): value is ManagedMasterIntent {
     typeof intent.playlist === 'string' &&
     intent.playlist.length > 0 &&
     (intent.status === 'pending' || intent.status === 'committed') &&
-    (intent.status === 'pending' || (typeof intent.reference === 'string' && /^[0-9a-f]{64,128}$/i.test(intent.reference)))
+    (intent.status === 'pending' ||
+      (typeof intent.reference === 'string' && /^[0-9a-f]{64,128}$/i.test(intent.reference)))
   );
 }
 
@@ -84,10 +87,7 @@ function entryName(binding: ManagedMasterBinding): string {
 
 /** Exact master write intent retained across Bee acknowledgement and process restart. */
 export class ManagedMasterStore implements ManagedMasterPersistence {
-  constructor(
-    private readonly stateDir: string,
-    private readonly fileOps: DurableFileOps = nodeFileOps,
-  ) {
+  constructor(private readonly stateDir: string, private readonly fileOps: DurableFileOps = nodeFileOps) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
     }
@@ -161,9 +161,7 @@ export class ManagedMasterStore implements ManagedMasterPersistence {
     return committed;
   }
 
-  public prepare(
-    intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status' | 'reference'>,
-  ): ManagedMasterIntent {
+  public prepare(intent: Omit<ManagedMasterIntent, 'lifecycleVersion' | 'status' | 'reference'>): ManagedMasterIntent {
     const existing = this.read(intent);
     if (existing?.eventId === intent.eventId) {
       if (existing.index !== intent.index || existing.playlist !== intent.playlist) {
@@ -181,7 +179,12 @@ export class ManagedMasterStore implements ManagedMasterPersistence {
 
   public commit(intent: ManagedMasterIntent, reference: string): ManagedMasterIntent {
     const existing = this.read(intent);
-    if (!existing || existing.eventId !== intent.eventId || existing.index !== intent.index || existing.playlist !== intent.playlist) {
+    if (
+      !existing ||
+      existing.eventId !== intent.eventId ||
+      existing.index !== intent.index ||
+      existing.playlist !== intent.playlist
+    ) {
       throw new Error(`Managed master event ${intent.eventId} does not match its durable intent`);
     }
     if (existing.status === 'committed') {

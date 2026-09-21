@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
 
 import { LegacyAdoptionOperation } from '../src/libs/AdminApiClient.js';
-import {
-  LegacyAdoptionMediaReader,
-  LegacyRecordingAdopter,
-} from '../src/libs/LegacyRecordingAdopter.js';
+import { LegacyAdoptionMediaReader, LegacyRecordingAdopter } from '../src/libs/LegacyRecordingAdopter.js';
 import { ManifestManager } from '../src/libs/ManifestManager.js';
 import { buildMasterPlaylist } from '../src/libs/MasterPlaylist.js';
 import { MediaFormatFingerprint, MediaFormatInspector } from '../src/libs/MediaFormatProbe.js';
@@ -18,17 +15,19 @@ const MANIFEST_REFERENCE = 'b'.repeat(64);
 const VIDEO_FORMAT: MediaFormatFingerprint = {
   version: 1,
   container: 'mpegts',
-  tracks: [{
-    kind: 'video',
-    codec: 'h264',
-    profile: 'High',
-    level: 40,
-    width: 1280,
-    height: 720,
-    pixelFormat: 'yuv420p',
-    chromaLocation: 'left',
-    bitsPerRawSample: 8,
-  }],
+  tracks: [
+    {
+      kind: 'video',
+      codec: 'h264',
+      profile: 'High',
+      level: 40,
+      width: 1280,
+      height: 720,
+      pixelFormat: 'yuv420p',
+      chromaLocation: 'left',
+      bitsPerRawSample: 8,
+    },
+  ],
 };
 
 function operation(): LegacyAdoptionOperation {
@@ -90,12 +89,14 @@ describe('LegacyRecordingAdopter', () => {
       reference: MANIFEST_REFERENCE,
       duration: 2,
     });
-    assert.deepEqual(result.checkpoint.tracks[0].state.segments, [{
-      index: 7,
-      sequence: 7,
-      duration: 2,
-      ref: SEGMENT,
-    }]);
+    assert.deepEqual(result.checkpoint.tracks[0].state.segments, [
+      {
+        index: 7,
+        sequence: 7,
+        duration: 2,
+        ref: SEGMENT,
+      },
+    ]);
     assert.equal(result.checkpoint.tracks[0].state.updatedAt, 1234);
   });
 
@@ -131,12 +132,24 @@ describe('LegacyRecordingAdopter', () => {
     const topic720 = rungTopicFor(group, '720p');
     const candidateRenditions = [
       {
-        name: '360p', topic: topic360, index: 8, duration: 2,
-        width: 640, height: 360, bandwidth: 810_000, avgBandwidth: 710_000,
+        name: '360p',
+        topic: topic360,
+        index: 8,
+        duration: 2,
+        width: 640,
+        height: 360,
+        bandwidth: 810_000,
+        avgBandwidth: 710_000,
       },
       {
-        name: '720p', topic: topic720, index: 9, duration: 2,
-        width: 1280, height: 720, bandwidth: 2_910_000, avgBandwidth: 2_610_000,
+        name: '720p',
+        topic: topic720,
+        index: 9,
+        duration: 2,
+        width: 1280,
+        height: 720,
+        bandwidth: 2_910_000,
+        avgBandwidth: 2_610_000,
       },
     ];
     const assigned: LegacyAdoptionOperation = {
@@ -156,9 +169,13 @@ describe('LegacyRecordingAdopter', () => {
     const adopter = new LegacyRecordingAdopter(
       {
         owner,
-        readFeed: async (topic, _index, rendition) => rendition === null
-          ? { playlist: buildMasterPlaylist(owner, candidateRenditions), reference: 'b'.repeat(64) }
-          : { playlist: mediaPlaylist(rendition === '360p' ? 'c'.repeat(64) : 'd'.repeat(64)), reference: 'e'.repeat(64) },
+        readFeed: async (topic, _index, rendition) =>
+          rendition === null
+            ? { playlist: buildMasterPlaylist(owner, candidateRenditions), reference: 'b'.repeat(64) }
+            : {
+                playlist: mediaPlaylist(rendition === '360p' ? 'c'.repeat(64) : 'd'.repeat(64)),
+                reference: 'e'.repeat(64),
+              },
         readSegment: async (_reference, rendition) => Buffer.from(rendition ?? ''),
       },
       {
@@ -166,11 +183,13 @@ describe('LegacyRecordingAdopter', () => {
           kind: 'valid',
           fingerprint: {
             ...VIDEO_FORMAT,
-            tracks: [{
-              ...VIDEO_FORMAT.tracks[0],
-              width: data.toString() === '360p' ? 640 : 1280,
-              height: data.toString() === '360p' ? 360 : 720,
-            }],
+            tracks: [
+              {
+                ...VIDEO_FORMAT.tracks[0],
+                width: data.toString() === '360p' ? 640 : 1280,
+                height: data.toString() === '360p' ? 360 : 720,
+              },
+            ],
           },
         }),
       },
@@ -183,7 +202,10 @@ describe('LegacyRecordingAdopter', () => {
     assert.ok(result.checkpoint.tracks[1].manifest && 'bandwidth' in result.checkpoint.tracks[1].manifest);
     assert.equal(result.checkpoint.tracks[0].manifest.bandwidth, 810_000);
     assert.equal(result.checkpoint.tracks[1].manifest.bandwidth, 2_910_000);
-    assert.deepEqual(result.validation.tracks.map(({ topic }) => topic), [topic360, topic720].sort());
+    assert.deepEqual(
+      result.validation.tracks.map(({ topic }) => topic),
+      [topic360, topic720].sort(),
+    );
   });
 
   it('preserves an internal gap duration and following discontinuity in cumulative playback state', async () => {
@@ -223,10 +245,13 @@ describe('LegacyRecordingAdopter', () => {
     const state = result.checkpoint.tracks[0].state;
     assert.equal(state.anchor?.fragmentSeconds, 2);
     assert.equal(state.anchor?.startedAtMs, Date.parse('2026-09-20T09:59:50.000Z'));
-    assert.deepEqual(state.segments.map(({ sequence, discontinuity }) => ({ sequence, discontinuity })), [
-      { sequence: 5, discontinuity: undefined },
-      { sequence: 7, discontinuity: true },
-    ]);
+    assert.deepEqual(
+      state.segments.map(({ sequence, discontinuity }) => ({ sequence, discontinuity })),
+      [
+        { sequence: 5, discontinuity: undefined },
+        { sequence: 7, discontinuity: true },
+      ],
+    );
 
     const manifest = new ManifestManager(state.anchor!);
     manifest.restoreState(state.segments, state.hlsHeaders);

@@ -85,7 +85,11 @@ export class FetchManagerProfileClient {
     this.username = credential(options.username, 'manager username');
     this.password = credential(options.password, 'manager password');
     this.fetch = options.fetch ?? fetch;
-    this.wait = options.wait ?? (async (milliseconds) => { await waitFor(milliseconds); });
+    this.wait =
+      options.wait ??
+      (async (milliseconds) => {
+        await waitFor(milliseconds);
+      });
     this.pollIntervalMs = boundedInteger(options.pollIntervalMs ?? 1_000, 1, 10_000, 'profile poll interval');
     this.maximumPolls = boundedInteger(options.maximumPolls ?? 600, 1, 1_200, 'profile poll count');
   }
@@ -98,17 +102,21 @@ export class FetchManagerProfileClient {
     const sessionCookie = await this.login();
 
     const created = profileFrom(
-      await this.jsonRequest('/profiles', {
-        method: 'POST',
-        headers: authenticatedHeaders(sessionCookie, true),
-        body: JSON.stringify({
-          name,
-          kind: 'custom',
-          components: EXPECTED_COMPONENTS,
-          bee_url: beeUrl,
-          private_key: privateKey,
-        }),
-      }, new Set([202])),
+      await this.jsonRequest(
+        '/profiles',
+        {
+          method: 'POST',
+          headers: authenticatedHeaders(sessionCookie, true),
+          body: JSON.stringify({
+            name,
+            kind: 'custom',
+            components: EXPECTED_COMPONENTS,
+            bee_url: beeUrl,
+            private_key: privateKey,
+          }),
+        },
+        new Set([202]),
+      ),
       'manager profile create',
     );
     assertProfileIdentity(created, name, portSlot);
@@ -118,10 +126,14 @@ export class FetchManagerProfileClient {
         await this.wait(this.pollIntervalMs);
       }
       const current = profileFrom(
-        await this.jsonRequest(`/profiles/${encodeURIComponent(name)}`, {
-          method: 'GET',
-          headers: authenticatedHeaders(sessionCookie, false),
-        }, new Set([200])),
+        await this.jsonRequest(
+          `/profiles/${encodeURIComponent(name)}`,
+          {
+            method: 'GET',
+            headers: authenticatedHeaders(sessionCookie, false),
+          },
+          new Set([200]),
+        ),
         'manager profile readback',
       );
       assertProfileIdentity(current, name, portSlot, created.instanceId);
@@ -153,11 +165,15 @@ export class FetchManagerProfileClient {
     const sessionCookie = await this.login();
     const encodedName = encodeURIComponent(profile.name);
     const stamped = profileFrom(
-      await this.jsonRequest(`/profiles/${encodedName}/stamp/set`, {
-        method: 'POST',
-        headers: authenticatedHeaders(sessionCookie, true),
-        body: JSON.stringify({ stamp_id: input.postageBatchId }),
-      }, new Set([200])),
+      await this.jsonRequest(
+        `/profiles/${encodedName}/stamp/set`,
+        {
+          method: 'POST',
+          headers: authenticatedHeaders(sessionCookie, true),
+          body: JSON.stringify({ stamp_id: input.postageBatchId }),
+        },
+        new Set([200]),
+      ),
       'manager stamp set',
     );
     assertProfileIdentity(stamped, profile.name, profile.portSlot, profile.instanceId);
@@ -177,10 +193,14 @@ export class FetchManagerProfileClient {
     await requireSuccessfulDeployStream(deploy);
 
     const current = profileFrom(
-      await this.jsonRequest(`/profiles/${encodedName}`, {
-        method: 'GET',
-        headers: authenticatedHeaders(sessionCookie, false),
-      }, new Set([200])),
+      await this.jsonRequest(
+        `/profiles/${encodedName}`,
+        {
+          method: 'GET',
+          headers: authenticatedHeaders(sessionCookie, false),
+        },
+        new Set([200]),
+      ),
       'manager uploader readback',
     );
     assertProfileIdentity(current, profile.name, profile.portSlot, profile.instanceId);

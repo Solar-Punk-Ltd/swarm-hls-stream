@@ -457,11 +457,15 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 function asExpectedRenditions(value: unknown): readonly ManagedExpectedRendition[] | null {
-  if (!Array.isArray(value)) {return null;}
+  if (!Array.isArray(value)) {
+    return null;
+  }
   const names = new Set<string>();
   let previousName: string | undefined;
   for (const entry of value) {
-    if (!entry || typeof entry !== 'object') {return null;}
+    if (!entry || typeof entry !== 'object') {
+      return null;
+    }
     const rendition = entry as Record<string, unknown>;
     if (
       typeof rendition.name !== 'string' ||
@@ -484,7 +488,9 @@ function asExpectedRenditions(value: unknown): readonly ManagedExpectedRendition
 }
 
 function asManagedContinuation(value: unknown, uploaderId: string): ManagedContinuationOperation | null {
-  if (!value || typeof value !== 'object') {return null;}
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
   const candidate = value as Record<string, unknown>;
   if (
     candidate.lifecycleVersion !== 1 ||
@@ -514,7 +520,9 @@ function isFiniteNonNegative(value: unknown): value is number {
 }
 
 function asLegacyRecordingCandidate(value: unknown): LegacyRecordingCandidate | null {
-  if (!value || typeof value !== 'object') {return null;}
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
   const candidate = value as Record<string, unknown>;
   const master = candidate.master;
   if (
@@ -536,7 +544,9 @@ function asLegacyRecordingCandidate(value: unknown): LegacyRecordingCandidate | 
   const topics = new Set<string>();
   let previousName: string | undefined;
   for (const raw of candidate.renditions) {
-    if (!raw || typeof raw !== 'object') {return null;}
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
     const rendition = raw as Record<string, unknown>;
     if (
       typeof rendition.name !== 'string' ||
@@ -566,16 +576,16 @@ function legacyCandidateDigest(candidate: LegacyRecordingCandidate): string {
   const normalized = {
     ...candidate,
     renditions: [...candidate.renditions].sort((left, right) =>
-      left.name === right.name
-        ? compareCodeUnits(left.topic, right.topic)
-        : compareCodeUnits(left.name, right.name),
+      left.name === right.name ? compareCodeUnits(left.topic, right.topic) : compareCodeUnits(left.name, right.name),
     ),
   };
   return createHash('sha256').update(canonicalJson(normalized)).digest('hex');
 }
 
 function asLegacyAdoption(value: unknown, uploaderId: string): LegacyAdoptionOperation | null {
-  if (!value || typeof value !== 'object') {return null;}
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
   const candidate = value as Record<string, unknown>;
   const recording = asLegacyRecordingCandidate(candidate.candidate);
   if (
@@ -607,7 +617,9 @@ function asLegacyAdoption(value: unknown, uploaderId: string): LegacyAdoptionOpe
 }
 
 function validLegacyValidation(value: unknown): value is LegacyAdoptionValidation {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const validation = value as Record<string, unknown>;
   if (
     validation.version !== 1 ||
@@ -620,7 +632,9 @@ function validLegacyValidation(value: unknown): value is LegacyAdoptionValidatio
   let previousTopic: string | undefined;
   const topics = new Set<string>();
   for (const raw of validation.tracks) {
-    if (!raw || typeof raw !== 'object') {return false;}
+    if (!raw || typeof raw !== 'object') {
+      return false;
+    }
     const track = raw as Record<string, unknown>;
     if (
       typeof track.topic !== 'string' ||
@@ -924,7 +938,9 @@ function asManagedRenditionReport(
     typeof state.finished !== 'boolean' ||
     typeof state.flippedToFinished !== 'boolean' ||
     (state.duration !== null && (typeof state.duration !== 'number' || !Number.isFinite(state.duration))) ||
-    (state.finished ? state.duration === null || !candidate.renditions.every((item) => item.index !== undefined) : state.duration !== null)
+    (state.finished
+      ? state.duration === null || !candidate.renditions.every((item) => item.index !== undefined)
+      : state.duration !== null)
   ) {
     return null;
   }
@@ -936,7 +952,9 @@ function asUploaderCapabilityReceipt(
   uploaderId: string,
   capability: UploaderCapabilities,
 ): UploaderCapabilityReceipt | null {
-  if (!body || typeof body !== 'object') {return null;}
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
   const candidate = body as Record<string, unknown>;
   const receivedAt = typeof candidate.receivedAt === 'string' ? Date.parse(candidate.receivedAt) : Number.NaN;
   const freshUntil = typeof candidate.freshUntil === 'string' ? Date.parse(candidate.freshUntil) : Number.NaN;
@@ -954,7 +972,9 @@ function asUploaderCapabilityReceipt(
   const expectedMediaTypes = new Set(capability.profiles.map(({ mediaType }) => mediaType));
   const receivedMediaTypes = new Set<MediaType>();
   for (const entry of candidate.profileDigests) {
-    if (!entry || typeof entry !== 'object') {return null;}
+    if (!entry || typeof entry !== 'object') {
+      return null;
+    }
     const digest = entry as Record<string, unknown>;
     if (
       (digest.mediaType !== MEDIA_TYPE_VIDEO && digest.mediaType !== MEDIA_TYPE_AUDIO) ||
@@ -1083,7 +1103,11 @@ export class AdminApiClient {
   }
 
   /** Atomically claim the exact run returned by a negotiated managed lookup. */
-  public async claimManagedRun(id: string, runNumber: number, request: ManagedClaimRequest): Promise<ManagedClaimedRun> {
+  public async claimManagedRun(
+    id: string,
+    runNumber: number,
+    request: ManagedClaimRequest,
+  ): Promise<ManagedClaimedRun> {
     const url = `${this.baseUrl}/api/internal/streams/${encodeURIComponent(id)}/runs/${runNumber}/claims`;
     const response = await this.send(
       url,
@@ -1274,11 +1298,7 @@ export class AdminApiClient {
   }
 
   /** Report a persisted managed event. Every retry sends the caller's exact body unchanged. */
-  public async reportManagedRun(
-    id: string,
-    runNumber: number,
-    report: ManagedRunReport,
-  ): Promise<StateReportOutcome> {
+  public async reportManagedRun(id: string, runNumber: number, report: ManagedRunReport): Promise<StateReportOutcome> {
     const url = `${this.baseUrl}/api/internal/streams/${encodeURIComponent(id)}/runs/${runNumber}/reports`;
     const body = JSON.stringify(report);
 
@@ -1331,7 +1351,9 @@ export class AdminApiClient {
         );
       } catch (error) {
         this.logger.warn(
-          `[Admin] Managed rendition ${report.rendition.name} did not complete on attempt ${attempt}: ${getErrorMessage(error)}`,
+          `[Admin] Managed rendition ${report.rendition.name} did not complete on attempt ${attempt}: ${getErrorMessage(
+            error,
+          )}`,
         );
       }
       const wait = STATE_REPORT_BACKOFF_MS[attempt - 1];
@@ -1362,7 +1384,9 @@ export class AdminApiClient {
       if (response.status === 409) {
         const conflictBody = await this.readJson(response);
         const conflict =
-          conflictBody && typeof conflictBody === 'object' && typeof (conflictBody as Record<string, unknown>).error === 'string'
+          conflictBody &&
+          typeof conflictBody === 'object' &&
+          typeof (conflictBody as Record<string, unknown>).error === 'string'
             ? ((conflictBody as Record<string, unknown>).error as string)
             : null;
         if (!conflict || !MANAGED_CONFLICTS.has(conflict)) {

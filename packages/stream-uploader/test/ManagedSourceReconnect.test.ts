@@ -187,7 +187,7 @@ describe('managed SRS source reconnect foundation', () => {
     await orchestrator.cleanup();
   });
 
-  it('keeps one uploader and its history when B returns with media inside A\'s grace window', async () => {
+  it("keeps one uploader and its history when B returns with media inside A's grace window", async () => {
     const clock = new FakeClock();
     const published: { state?: string }[] = [];
     const saved: StreamState[] = [];
@@ -430,10 +430,9 @@ describe('managed SRS source reconnect foundation', () => {
     const orchestrator = makeManagedOrchestrator(clock, [], [], 100, MEDIA_TYPE_AUDIO);
 
     assert.equal(provision(orchestrator, SOURCE_A, MEDIA_TYPE_AUDIO), true);
-    assert.deepEqual(
-      orchestrator.handleManagedSegment(STREAM_ID, SOURCE_A, 0, 0.1, audioOnlySegment(4, 0)),
-      { accepted: true },
-    );
+    assert.deepEqual(orchestrator.handleManagedSegment(STREAM_ID, SOURCE_A, 0, 0.1, audioOnlySegment(4, 0)), {
+      accepted: true,
+    });
     assert.deepEqual(
       orchestrator.handleManagedSegment(STREAM_ID, SOURCE_A, 1, 0.1, audioOnlySegment(4, 4 * FRAME_TICKS)),
       { accepted: true },
@@ -589,11 +588,20 @@ describe('managed SRS source reconnect foundation', () => {
     const clockA = new FakeClock();
     const runs = new MemoryManagedRuns();
     const storeA = new ManagedMediaStore(root);
-    const processA = makeManagedOrchestrator(clockA, [], [], 100, MEDIA_TYPE_VIDEO, storeA, {
-      uploadData: async () => {
-        throw { status: 400, message: 'refused' };
+    const processA = makeManagedOrchestrator(
+      clockA,
+      [],
+      [],
+      100,
+      MEDIA_TYPE_VIDEO,
+      storeA,
+      {
+        uploadData: async () => {
+          throw { status: 400, message: 'refused' };
+        },
       },
-    }, runs);
+      runs,
+    );
 
     const uploaded: string[] = [];
     let reference = 0;
@@ -711,11 +719,10 @@ describe('managed SRS source reconnect foundation', () => {
 
       const history = storeC.readTrackState(ADMIN_SESSION.id, 2, STREAM_ID, null)?.segments;
       assert.equal(history?.length, 3);
-      assert.deepEqual(history?.map((segment) => segment.ref), [
-        '1'.padStart(64, '0'),
-        '2'.padStart(64, '0'),
-        '3'.padStart(64, '0'),
-      ]);
+      assert.deepEqual(
+        history?.map((segment) => segment.ref),
+        ['1'.padStart(64, '0'), '2'.padStart(64, '0'), '3'.padStart(64, '0')],
+      );
       assert.equal(history?.[1].discontinuity, true);
       assert.equal(history?.[2].discontinuity, true);
     } finally {

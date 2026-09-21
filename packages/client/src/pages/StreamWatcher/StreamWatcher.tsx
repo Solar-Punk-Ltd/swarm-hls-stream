@@ -123,8 +123,7 @@ export function StreamWatcher() {
    * never finish loading. Only an entry the catalog says is scheduled takes this path: a deep link
    * to a topic this catalog does not list still plays, because nothing here knows better.
    */
-  const isScheduled =
-    stream?.state === STREAM_STATUS_SCHEDULED && stream.completedRecording === undefined;
+  const isScheduled = stream?.state === STREAM_STATUS_SCHEDULED && stream.completedRecording === undefined;
   const startsAt = scheduledStartLabel(stream?.scheduledStartTime);
 
   return (

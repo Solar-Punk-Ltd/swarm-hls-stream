@@ -89,9 +89,7 @@ function nullableNonNegativeInteger(value: unknown): number | null {
 }
 
 function canonicalTrackKey(track: MediaFormatTrack): string {
-  return JSON.stringify(
-    Object.fromEntries(Object.entries(track).sort(([left], [right]) => left.localeCompare(right))),
-  );
+  return JSON.stringify(Object.fromEntries(Object.entries(track).sort(([left], [right]) => left.localeCompare(right))));
 }
 
 function normalizeFingerprint(fingerprint: MediaFormatFingerprint): MediaFormatFingerprint | null {
@@ -128,7 +126,9 @@ function hasExactKeys(value: object, keys: readonly string[]): boolean {
 }
 
 export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFingerprint {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const fingerprint = value as Partial<MediaFormatFingerprint>;
   if (
     !hasExactKeys(value, ['version', 'container', 'tracks']) ||
@@ -139,7 +139,9 @@ export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFi
     return false;
   }
   for (const track of fingerprint.tracks) {
-    if (!track || typeof track !== 'object' || !('kind' in track)) {return false;}
+    if (!track || typeof track !== 'object' || !('kind' in track)) {
+      return false;
+    }
     const exact =
       track.kind === 'video'
         ? hasExactKeys(track, [
@@ -154,18 +156,17 @@ export function isMediaFormatFingerprint(value: unknown): value is MediaFormatFi
             'bitsPerRawSample',
           ])
         : track.kind === 'audio'
-          ? hasExactKeys(track, ['kind', 'codec', 'profile', 'sampleRate', 'channels', 'channelLayout'])
-          : false;
-    if (!exact) {return false;}
+        ? hasExactKeys(track, ['kind', 'codec', 'profile', 'sampleRate', 'channels', 'channelLayout'])
+        : false;
+    if (!exact) {
+      return false;
+    }
   }
   const normalized = normalizeFingerprint(fingerprint as MediaFormatFingerprint);
   return normalized !== null;
 }
 
-export function sameMediaFormatFingerprint(
-  left: MediaFormatFingerprint,
-  right: MediaFormatFingerprint,
-): boolean {
+export function sameMediaFormatFingerprint(left: MediaFormatFingerprint, right: MediaFormatFingerprint): boolean {
   const normalizedLeft = normalizeFingerprint(left);
   const normalizedRight = normalizeFingerprint(right);
   return (
@@ -226,7 +227,9 @@ export function mediaFormatFingerprintFromFfprobe(value: unknown): MediaFormatFi
   }
   tracks.sort((left, right) => {
     const kindOrder = left.kind.localeCompare(right.kind);
-    if (kindOrder !== 0) {return kindOrder;}
+    if (kindOrder !== 0) {
+      return kindOrder;
+    }
     const leftKey = canonicalTrackKey(left);
     const rightKey = canonicalTrackKey(right);
     return leftKey.localeCompare(rightKey);
@@ -327,15 +330,21 @@ export class MediaFormatProbe {
       timer.unref();
       child.stdout.on('data', (chunk: Buffer) => {
         const next = append(stdout, chunk);
-        if (next) {stdout = next;}
+        if (next) {
+          stdout = next;
+        }
       });
       child.stderr.on('data', (chunk: Buffer) => {
         const next = append(stderr, chunk);
-        if (next) {stderr = next;}
+        if (next) {
+          stderr = next;
+        }
       });
       child.on('error', (error) => finish({ kind: 'failed', reason: `spawn:${error.message}` }));
       child.on('close', (code) => {
-        if (settled) {return;}
+        if (settled) {
+          return;
+        }
         if (terminalFailure) {
           finish({ kind: 'failed', reason: terminalFailure });
           return;

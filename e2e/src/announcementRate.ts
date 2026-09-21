@@ -95,10 +95,14 @@ function namedBlock(text: string, declaration: string): string | null {
   const opening = text.indexOf('{', start);
   let depth = 0;
   for (let index = opening; index < text.length; index += 1) {
-    if (text[index] === '{') {depth += 1;}
+    if (text[index] === '{') {
+      depth += 1;
+    }
     if (text[index] === '}') {
       depth -= 1;
-      if (depth === 0) {return text.slice(start, index + 1);}
+      if (depth === 0) {
+        return text.slice(start, index + 1);
+      }
     }
   }
   return null;

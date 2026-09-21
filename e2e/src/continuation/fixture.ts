@@ -556,11 +556,7 @@ export class ResourceJournal {
   completeManagerProfile(name: string, portSlot: number, instanceId: string): void {
     const document = this.read();
     const current = document.managerProfile;
-    if (
-      current?.status !== 'creating' ||
-      current.name !== name ||
-      current.portSlot !== portSlot
-    ) {
+    if (current?.status !== 'creating' || current.name !== name || current.portSlot !== portSlot) {
       throw new FixtureRefusal('manager profile creation marker does not match its result');
     }
     document.managerProfile = { status: 'created', name, portSlot, instanceId };

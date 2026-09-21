@@ -44,7 +44,9 @@ const VIDEO_FORMAT: MediaFormatFingerprint = {
 };
 
 afterEach(() => {
-  for (const root of roots.splice(0)) {fs.rmSync(root, { recursive: true, force: true });}
+  for (const root of roots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function tempRoot(): string {
@@ -205,13 +207,15 @@ describe('ManagedCheckpointStore', () => {
       topic: TOPIC,
       mediaType: 'video',
       expectedRenditions: [],
-      tracks: [{
-        streamId: firstState.streamId,
-        rendition: null,
-        state: firstState,
-        manifest: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
-        formatFingerprint: VIDEO_FORMAT,
-      }],
+      tracks: [
+        {
+          streamId: firstState.streamId,
+          rendition: null,
+          state: firstState,
+          manifest: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
+          formatFingerprint: VIDEO_FORMAT,
+        },
+      ],
       master: { topic: TOPIC, index: 12, reference: REFERENCES[1], duration: 2 },
     });
     const nextState = trackState(1, firstState, REFERENCES[3]);
@@ -222,13 +226,15 @@ describe('ManagedCheckpointStore', () => {
       topic: TOPIC,
       mediaType: 'video',
       expectedRenditions: [],
-      tracks: [{
-        streamId: nextState.streamId,
-        rendition: null,
-        state: { ...nextState, streamRawTopic: TOPIC },
-        manifest: { topic: TOPIC, index: 13, reference: REFERENCES[4], duration: 4 },
-        formatFingerprint: VIDEO_FORMAT,
-      }],
+      tracks: [
+        {
+          streamId: nextState.streamId,
+          rendition: null,
+          state: { ...nextState, streamRawTopic: TOPIC },
+          manifest: { topic: TOPIC, index: 13, reference: REFERENCES[4], duration: 4 },
+          formatFingerprint: VIDEO_FORMAT,
+        },
+      ],
       master: { topic: TOPIC, index: 13, reference: REFERENCES[4], duration: 4 },
     });
 
@@ -295,7 +301,9 @@ describe('ManagedCheckpointStore', () => {
     });
 
     assert.deepEqual(
-      new ManagedCheckpointStore(root).read(checkpointC.checkpointReference)?.tracks[0].state.segments.map((s) => s.ref),
+      new ManagedCheckpointStore(root)
+        .read(checkpointC.checkpointReference)
+        ?.tracks[0].state.segments.map((s) => s.ref),
       [REFERENCES[0], REFERENCES[3], REFERENCES[4]],
     );
     assert.equal(recordingC.runNumber, 3);
@@ -386,7 +394,8 @@ describe('ManagedCheckpointStore', () => {
     store.createRun(input);
 
     assert.throws(
-      () => store.createRun({ ...input, expectedRenditions: [{ ...input.expectedRenditions[0], topic: 'c'.repeat(64) }] }),
+      () =>
+        store.createRun({ ...input, expectedRenditions: [{ ...input.expectedRenditions[0], topic: 'c'.repeat(64) }] }),
       /different immutable input/i,
     );
   });
@@ -594,7 +603,9 @@ describe('ManagedCheckpointStore', () => {
     });
     const empty = first.sealEmpty(run1.checkpointReference, 0);
 
-    const run2 = new ManagedCheckpointStore(root, undefined, () => ids.shift()!).prepare(operation(1, undefined, empty));
+    const run2 = new ManagedCheckpointStore(root, undefined, () => ids.shift()!).prepare(
+      operation(1, undefined, empty),
+    );
 
     assert.equal(run2.runNumber, 2);
     assert.equal(run2.previousCheckpointReference, run1.checkpointReference);
@@ -632,7 +643,10 @@ describe('ManagedCheckpointStore', () => {
     );
 
     assert.equal(runC.previousCheckpointReference, runB.checkpointReference);
-    assert.deepEqual(runC.tracks[0].state.segments.map((segment) => segment.ref), [REFERENCES[0]]);
+    assert.deepEqual(
+      runC.tracks[0].state.segments.map((segment) => segment.ref),
+      [REFERENCES[0]],
+    );
     assert.deepEqual(runC.retainedRecording, recordingA);
   });
 
@@ -711,10 +725,14 @@ function directoryFlushFault(stateDir: string): { ops: ManagedCheckpointFileOps;
       },
       renameSync: (from, to) => {
         fs.renameSync(from, to);
-        if (to.endsWith('.index')) {indexRenamed = true;}
+        if (to.endsWith('.index')) {
+          indexRenamed = true;
+        }
       },
     },
-    clear: () => {enabled = false;},
+    clear: () => {
+      enabled = false;
+    },
   };
 }
 
@@ -734,7 +752,9 @@ function parentDirectoryFlushFault(parent: string): { ops: ManagedCheckpointFile
       },
       writeFileSync: (fd, data) => fs.writeFileSync(fd, data),
       fsyncSync: (fd) => {
-        if (enabled && opened.get(fd) === parent) {throw new Error('injected parent flush failure');}
+        if (enabled && opened.get(fd) === parent) {
+          throw new Error('injected parent flush failure');
+        }
         fs.fsyncSync(fd);
       },
       closeSync: (fd) => {
@@ -743,6 +763,8 @@ function parentDirectoryFlushFault(parent: string): { ops: ManagedCheckpointFile
       },
       renameSync: (from, to) => fs.renameSync(from, to),
     },
-    clear: () => {enabled = false;},
+    clear: () => {
+      enabled = false;
+    },
   };
 }

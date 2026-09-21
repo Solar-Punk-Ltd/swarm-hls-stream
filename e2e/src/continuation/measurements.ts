@@ -18,13 +18,35 @@ export type ManagerMeasurementRole = 'manager-postgres' | 'manager-api' | 'manag
 export type MeasurementContainerRole = TopologyServiceRole | ManagerMeasurementRole;
 
 const EXPECTED_ROLES: readonly MeasurementContainerRole[] = [
-  'blockchain', 'bee-queen', 'bee-worker-1', 'bee-worker-2', 'bee-worker-3', 'bee-worker-4',
-  'postgres', 'admin-api', 'admin-web', 'srs', 'uploader', 'viewer', 'browser', 'media-sender',
-  'manager-postgres', 'manager-api', 'manager-web',
+  'blockchain',
+  'bee-queen',
+  'bee-worker-1',
+  'bee-worker-2',
+  'bee-worker-3',
+  'bee-worker-4',
+  'postgres',
+  'admin-api',
+  'admin-web',
+  'srs',
+  'uploader',
+  'viewer',
+  'browser',
+  'media-sender',
+  'manager-postgres',
+  'manager-api',
+  'manager-web',
 ];
 const ROLES_WITHOUT_SERVICE_METRICS: readonly MeasurementContainerRole[] = [
-  'blockchain', 'postgres', 'admin-api', 'admin-web', 'viewer', 'browser', 'media-sender',
-  'manager-postgres', 'manager-api', 'manager-web',
+  'blockchain',
+  'postgres',
+  'admin-api',
+  'admin-web',
+  'viewer',
+  'browser',
+  'media-sender',
+  'manager-postgres',
+  'manager-api',
+  'manager-web',
 ];
 
 const HTTP_TEXT_SCRIPT = `
@@ -58,10 +80,7 @@ export interface ContinuationMeasurementFailure {
 }
 
 export class IncompleteContinuationMeasurements extends FixtureRefusal {
-  constructor(
-    readonly snapshotPath: string,
-    readonly failedSurfaces: readonly string[],
-  ) {
+  constructor(readonly snapshotPath: string, readonly failedSurfaces: readonly string[]) {
     super('continuation measurement snapshot is incomplete');
     this.name = 'IncompleteContinuationMeasurements';
   }
@@ -85,16 +104,24 @@ export async function captureContinuationMeasurements(
     ['srs', 'http://srs:10019/api/v1/summaries'],
   ]);
   for (const [name, url] of metricEndpoints) {
-    const result = await captureSurface(failures, `serviceMetrics.${name}`, () => command.run('docker', [
-      'exec', input.probeContainerId, 'node', '-e', HTTP_TEXT_SCRIPT, url, String(SERVICE_METRIC_MAX_BYTES),
-    ]));
+    const result = await captureSurface(failures, `serviceMetrics.${name}`, () =>
+      command.run('docker', [
+        'exec',
+        input.probeContainerId,
+        'node',
+        '-e',
+        HTTP_TEXT_SCRIPT,
+        url,
+        String(SERVICE_METRIC_MAX_BYTES),
+      ]),
+    );
     if (result) {
       serviceMetrics[name] = result.stdout;
     }
   }
-  const uploaderMetrics = await captureSurface(failures, 'serviceMetrics.uploader', () => command.run('docker', [
-    'exec', uploader.id, 'node', '-e', uploaderMetricsScript(),
-  ]));
+  const uploaderMetrics = await captureSurface(failures, 'serviceMetrics.uploader', () =>
+    command.run('docker', ['exec', uploader.id, 'node', '-e', uploaderMetricsScript()]),
+  );
   if (uploaderMetrics) {
     serviceMetrics.uploader = uploaderMetrics.stdout;
   }
@@ -102,7 +129,10 @@ export async function captureContinuationMeasurements(
   const ids = EXPECTED_ROLES.map((role) => containers.get(role)!.id);
   const stats = await captureSurface(failures, 'exactContainerStats', async () => {
     const result = await command.run('docker', [
-      'stats', '--no-stream', '--no-trunc', '--format',
+      'stats',
+      '--no-stream',
+      '--no-trunc',
+      '--format',
       '{"id":{{json .ID}},"name":{{json .Name}},"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}},"pids":{{json .PIDs}},"net":{{json .NetIO}},"block":{{json .BlockIO}}}',
       ...ids,
     ]);
@@ -114,7 +144,8 @@ export async function captureContinuationMeasurements(
     const binding = containers.get(role)!;
     const result = await captureSurface(failures, `exactContainerLimits.${role}`, async () => {
       const observed = await command.run('docker', [
-        'inspect', '--format',
+        'inspect',
+        '--format',
         '{"id":{{json .Id}},"nanoCpus":{{json .HostConfig.NanoCpus}},"memory":{{json .HostConfig.Memory}},"pids":{{json .HostConfig.PidsLimit}}}',
         binding.id,
       ]);
@@ -125,28 +156,44 @@ export async function captureContinuationMeasurements(
       limits[role] = result.stdout;
     }
   }
-  const coTenancy = await captureSurface(failures, 'coTenancy', () => command.run('docker', [
-    'ps', '--no-trunc', '--format', '{"id":{{json .ID}},"name":{{json .Names}},"image":{{json .Image}}}',
-  ]));
+  const coTenancy = await captureSurface(failures, 'coTenancy', () =>
+    command.run('docker', [
+      'ps',
+      '--no-trunc',
+      '--format',
+      '{"id":{{json .ID}},"name":{{json .Names}},"image":{{json .Image}}}',
+    ]),
+  );
 
   const directory = join(input.outputRoot, 'measurements');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, `${input.phase}.json`);
-  writeFileSync(path, `${JSON.stringify({
-    schemaVersion: 1,
-    fixtureId: input.fixtureId,
-    phase: input.phase,
-    capturedAt: new Date().toISOString(),
-    complete: failures.length === 0,
-    failures,
-    serviceMetrics,
-    rolesWithoutServiceMetrics: ROLES_WITHOUT_SERVICE_METRICS,
-    exactContainerStats: stats?.stdout ?? null,
-    exactContainerLimits: limits,
-    coTenancy: coTenancy?.stdout ?? null,
-  }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        fixtureId: input.fixtureId,
+        phase: input.phase,
+        capturedAt: new Date().toISOString(),
+        complete: failures.length === 0,
+        failures,
+        serviceMetrics,
+        rolesWithoutServiceMetrics: ROLES_WITHOUT_SERVICE_METRICS,
+        exactContainerStats: stats?.stdout ?? null,
+        exactContainerLimits: limits,
+        coTenancy: coTenancy?.stdout ?? null,
+      },
+      null,
+      2,
+    )}\n`,
+    { encoding: 'utf8', mode: 0o600 },
+  );
   if (failures.length > 0) {
-    throw new IncompleteContinuationMeasurements(path, failures.map(({ surface }) => surface));
+    throw new IncompleteContinuationMeasurements(
+      path,
+      failures.map(({ surface }) => surface),
+    );
   }
   return path;
 }

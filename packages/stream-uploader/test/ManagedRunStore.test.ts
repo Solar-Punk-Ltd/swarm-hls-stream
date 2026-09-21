@@ -76,15 +76,21 @@ function faultingOps(fault: 'write' | 'file-flush' | 'directory-flush', calls: s
     },
     writeFileSync: (fd, data) => {
       calls.push('write');
-      if (fault === 'write') {throw new Error('injected write failure');}
+      if (fault === 'write') {
+        throw new Error('injected write failure');
+      }
       fs.writeFileSync(fd, data);
     },
     fsyncSync: (fd) => {
       const target = opened.get(fd) ?? '';
       const directory = path.extname(target) === '';
       calls.push(directory ? 'flush-directory' : 'flush-file');
-      if (fault === 'file-flush' && !directory) {throw new Error('injected file flush failure');}
-      if (fault === 'directory-flush' && directory) {throw new Error('injected directory flush failure');}
+      if (fault === 'file-flush' && !directory) {
+        throw new Error('injected file flush failure');
+      }
+      if (fault === 'directory-flush' && directory) {
+        throw new Error('injected directory flush failure');
+      }
       fs.fsyncSync(fd);
     },
     closeSync: (fd) => {
@@ -123,7 +129,11 @@ describe('ManagedRunStore durability', () => {
     const ops = faultingOps('directory-flush', calls);
 
     assert.throws(() => new ManagedRunStore(stateDir, ops), /directory flush failure/);
-    assert.deepEqual(calls.slice(-3), [`open:${path.basename(parent)}`, 'flush-directory', `close:${path.basename(parent)}`]);
+    assert.deepEqual(calls.slice(-3), [
+      `open:${path.basename(parent)}`,
+      'flush-directory',
+      `close:${path.basename(parent)}`,
+    ]);
     assert.equal(calls.includes('write'), false, 'a run could be saved before its store directory was durable');
   });
 

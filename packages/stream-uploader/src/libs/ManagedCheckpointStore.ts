@@ -172,7 +172,9 @@ function finiteNonNegative(value: unknown): value is number {
 }
 
 function validStreamState(value: unknown): value is StreamState {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const state = value as Partial<StreamState>;
   return (
     typeof state.streamId === 'string' &&
@@ -268,7 +270,9 @@ function sameExpectedRenditions(
 }
 
 function validExpectedRendition(value: unknown): value is ManagedExpectedRendition {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const rendition = value as Partial<ManagedExpectedRendition>;
   return (
     typeof rendition.name === 'string' &&
@@ -283,7 +287,9 @@ function validExpectedRendition(value: unknown): value is ManagedExpectedRenditi
 }
 
 function validTrack(value: unknown): value is ManagedTrackCheckpoint {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const track = value as Partial<ManagedTrackCheckpoint>;
   return (
     typeof track.streamId === 'string' &&
@@ -297,7 +303,9 @@ function validTrack(value: unknown): value is ManagedTrackCheckpoint {
 }
 
 function validCompletedRecording(value: unknown): value is ManagedCompletedRecording {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const recording = value as Partial<ManagedCompletedRecording>;
   return (
     safePositiveInteger(recording.runNumber) &&
@@ -309,14 +317,15 @@ function validCompletedRecording(value: unknown): value is ManagedCompletedRecor
     recording.expectedRenditions.every((name) => typeof name === 'string' && name.length > 0) &&
     Array.isArray(recording.renditions) &&
     recording.renditions.every(
-      (rendition) =>
-        validMediaReference(rendition) && typeof rendition.name === 'string' && rendition.name.length > 0,
+      (rendition) => validMediaReference(rendition) && typeof rendition.name === 'string' && rendition.name.length > 0,
     )
   );
 }
 
 function validEmptyOutcome(value: unknown): value is ManagedEmptyOutcome {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const outcome = value as Partial<ManagedEmptyOutcome>;
   return (
     safePositiveInteger(outcome.runNumber) &&
@@ -353,7 +362,9 @@ export class ManagedCheckpointStore {
       return existing;
     }
     const checkpointReference = this.makeReference();
-    if (!UUID.test(checkpointReference)) {throw new Error('Checkpoint reference generator returned an invalid UUID');}
+    if (!UUID.test(checkpointReference)) {
+      throw new Error('Checkpoint reference generator returned an invalid UUID');
+    }
     const record: ManagedCheckpointRecord = {
       lifecycleVersion: 1,
       checkpointReference,
@@ -407,7 +418,9 @@ export class ManagedCheckpointStore {
     }
     const existing = this.findRun(operation.streamId, operation.nextRunNumber);
     if (existing) {
-      if (existing.operationId !== operation.operationId) {throw new Error('Continuation run is already prepared differently');}
+      if (existing.operationId !== operation.operationId) {
+        throw new Error('Continuation run is already prepared differently');
+      }
       return existing;
     }
     const immediateEmpty = this.validatePreviousEmpty(operation);
@@ -426,10 +439,14 @@ export class ManagedCheckpointStore {
       }
     }
     const replay = retainedCheckpoint ?? immediateEmpty;
-    if (!replay) {throw new Error('Continuation has no retained or verified-empty checkpoint');}
+    if (!replay) {
+      throw new Error('Continuation has no retained or verified-empty checkpoint');
+    }
 
     const checkpointReference = this.makeReference();
-    if (!UUID.test(checkpointReference)) {throw new Error('Checkpoint reference generator returned an invalid UUID');}
+    if (!UUID.test(checkpointReference)) {
+      throw new Error('Checkpoint reference generator returned an invalid UUID');
+    }
     const record: ManagedCheckpointRecord = {
       lifecycleVersion: 1,
       checkpointReference,
@@ -460,7 +477,9 @@ export class ManagedCheckpointStore {
     const key = track.rendition ?? '';
     const previous = record.tracks.find((candidate) => (candidate.rendition ?? '') === key);
     if (record.status === 'complete') {
-      if (previous && sameValue(previous, track)) {return record;}
+      if (previous && sameValue(previous, track)) {
+        return record;
+      }
       throw new Error('Managed checkpoint is complete and cannot accept another track finalization');
     }
     if (record.status === 'empty') {
@@ -475,10 +494,7 @@ export class ManagedCheckpointStore {
     return updated;
   }
 
-  public complete(
-    checkpointReference: string,
-    master: ManagedImmutableMediaReference,
-  ): ManagedCompletedRecording {
+  public complete(checkpointReference: string, master: ManagedImmutableMediaReference): ManagedCompletedRecording {
     const record = this.require(checkpointReference);
     if (record.status === 'complete') {
       if (record.completedRecording && sameValue(record.completedRecording.master, master)) {
@@ -494,7 +510,9 @@ export class ManagedCheckpointStore {
     }
     const renditions = record.expectedRenditions.map((expected) => {
       const track = record.tracks.find((candidate) => candidate.rendition === expected.name);
-      if (!track?.manifest) {throw new Error(`Managed recording is missing expected rendition ${expected.name}`);}
+      if (!track?.manifest) {
+        throw new Error(`Managed recording is missing expected rendition ${expected.name}`);
+      }
       const actual = track.manifest as ManagedImmutableRenditionReference;
       if (!sameExpectedRendition(expected, actual)) {
         throw new Error(`Managed recording rendition ${expected.name} does not match its frozen checkpoint`);
@@ -503,7 +521,9 @@ export class ManagedCheckpointStore {
     });
     if (record.expectedRenditions.length === 0) {
       const single = record.tracks.find((track) => track.rendition === null);
-      if (!single?.manifest) {throw new Error('Managed recording is missing its single track');}
+      if (!single?.manifest) {
+        throw new Error('Managed recording is missing its single track');
+      }
       if (!sameValue(single.manifest, master)) {
         throw new Error('Managed recording master does not match its finalized single track');
       }
@@ -528,7 +548,9 @@ export class ManagedCheckpointStore {
       throw new Error('Managed checkpoint is complete and cannot be sealed empty');
     }
     if (record.status === 'empty') {
-      if (record.emptyOutcome) {return record.emptyOutcome;}
+      if (record.emptyOutcome) {
+        return record.emptyOutcome;
+      }
       throw new Error('Managed empty checkpoint is missing its outcome');
     }
     if (record.tracks.some((track) => track.manifest !== undefined)) {
@@ -545,7 +567,9 @@ export class ManagedCheckpointStore {
 
   public read(checkpointReference: string): ManagedCheckpointRecord | null {
     const filePath = this.filePath(checkpointReference);
-    if (!this.fileOps.existsSync(filePath)) {return null;}
+    if (!this.fileOps.existsSync(filePath)) {
+      return null;
+    }
     try {
       const value = JSON.parse(this.fileOps.readFileSync(filePath).toString('utf8')) as ManagedCheckpointRecord;
       return this.validRecord(value) && value.checkpointReference === checkpointReference ? value : null;
@@ -570,9 +594,13 @@ export class ManagedCheckpointStore {
     }
     for (const name of this.fileOps.readdirSync(this.stateDir)) {
       const match = /^([0-9a-f-]{36})\.json$/i.exec(name);
-      if (!match) {continue;}
+      if (!match) {
+        continue;
+      }
       const record = this.read(match[1]);
-      if (!record) {throw new Error(`Managed checkpoint ${match[1]} is missing or unreadable`);}
+      if (!record) {
+        throw new Error(`Managed checkpoint ${match[1]} is missing or unreadable`);
+      }
       if (record.adminStreamId === adminStreamId && record.runNumber === runNumber) {
         this.saveRunIndex(record);
         return record;
@@ -583,7 +611,9 @@ export class ManagedCheckpointStore {
 
   private require(checkpointReference: string): ManagedCheckpointRecord {
     const record = this.read(checkpointReference);
-    if (!record) {throw new Error(`Managed checkpoint ${checkpointReference} is missing or unreadable`);}
+    if (!record) {
+      throw new Error(`Managed checkpoint ${checkpointReference} is missing or unreadable`);
+    }
     return record;
   }
 
@@ -602,7 +632,9 @@ export class ManagedCheckpointStore {
 
   private validatePreviousEmpty(operation: ManagedContinuationOperation): ManagedCheckpointRecord | null {
     const outcome = operation.previousEmptyOutcome;
-    if (!outcome) {return null;}
+    if (!outcome) {
+      return null;
+    }
     if (!validEmptyOutcome(outcome) || outcome.runNumber !== operation.previousRunNumber) {
       throw new Error('Continuation empty outcome does not name the immediate predecessor');
     }
@@ -623,7 +655,9 @@ export class ManagedCheckpointStore {
 
   private validateRetainedRecording(operation: ManagedContinuationOperation): ManagedCheckpointRecord | null {
     const retained = operation.retainedRecording;
-    if (!retained) {return null;}
+    if (!retained) {
+      return null;
+    }
     const checkpoint = this.require(retained.checkpointReference);
     if (
       checkpoint.status !== 'complete' ||

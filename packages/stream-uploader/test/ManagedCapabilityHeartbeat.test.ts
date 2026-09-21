@@ -2,11 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { AbrLadder } from '../src/libs/AbrLadder.js';
-import {
-  AdminApiClient,
-  UploaderCapabilities,
-  UploaderCapabilityReceipt,
-} from '../src/libs/AdminApiClient.js';
+import { AdminApiClient, UploaderCapabilities, UploaderCapabilityReceipt } from '../src/libs/AdminApiClient.js';
 import { buildUploaderCapabilities } from '../src/libs/UploaderCapabilities.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
@@ -30,23 +26,20 @@ function tick(): Promise<void> {
 
 describe('managed uploader capability heartbeat', () => {
   it('builds one stable profile per supported media type from the effective ladder', () => {
-    assert.deepEqual(
-      buildUploaderCapabilities(AbrLadder.parse('720p:1280:720:2800 360p:640:360:700')),
-      {
-        lifecycleVersion: 1,
-        capabilities: { durableCheckpointStore: 1, legacyRecordingAdoption: 1 },
-        profiles: [
-          {
-            mediaType: 'video',
-            renditions: [
-              { name: '360p', width: 640, height: 360, bandwidth: 700_000, avgBandwidth: 700_000 },
-              { name: '720p', width: 1280, height: 720, bandwidth: 2_800_000, avgBandwidth: 2_800_000 },
-            ],
-          },
-          { mediaType: 'audio', renditions: [] },
-        ],
-      },
-    );
+    assert.deepEqual(buildUploaderCapabilities(AbrLadder.parse('720p:1280:720:2800 360p:640:360:700')), {
+      lifecycleVersion: 1,
+      capabilities: { durableCheckpointStore: 1, legacyRecordingAdoption: 1 },
+      profiles: [
+        {
+          mediaType: 'video',
+          renditions: [
+            { name: '360p', width: 640, height: 360, bandwidth: 700_000, avgBandwidth: 700_000 },
+            { name: '720p', width: 1280, height: 720, bandwidth: 2_800_000, avgBandwidth: 2_800_000 },
+          ],
+        },
+        { mediaType: 'audio', renditions: [] },
+      ],
+    });
     assert.deepEqual(buildUploaderCapabilities(), {
       lifecycleVersion: 1,
       capabilities: { durableCheckpointStore: 1, legacyRecordingAdoption: 1 },
@@ -99,7 +92,9 @@ describe('managed uploader capability heartbeat', () => {
     const admin = {
       reportUploaderCapabilities: async () => {
         calls += 1;
-        if (calls === 1) {throw new Error('admin unavailable');}
+        if (calls === 1) {
+          throw new Error('admin unavailable');
+        }
         return RECEIPT;
       },
     } as AdminApiClient;

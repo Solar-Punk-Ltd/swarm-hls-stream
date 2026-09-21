@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
@@ -28,7 +21,9 @@ function installGuard(home, mode, protectedProfiles = ['default']) {
   mkdirSync(state, { recursive: true });
   const guard = join(bin, 'streaming-release-guard');
   const protectedCase = protectedProfiles.map((profile) => `${profile}) exit 1 ;;`).join('\n    ');
-  writeFileSync(guard, `#!/bin/bash
+  writeFileSync(
+    guard,
+    `#!/bin/bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$HOME/guard-calls.log"
 case "\${1:-}" in
@@ -48,7 +43,8 @@ case "\${1:-}" in
   finish-stack-legacy) printf '%s\\n' 'legacy stack deployment lease released' ;;
   *) exit 1 ;;
 esac
-`);
+`,
+  );
   chmodSync(guard, 0o700);
   writeFileSync(join(home, 'guard-calls.log'), '');
 }
@@ -61,7 +57,9 @@ function installContainerBoundGuard(sandbox, mode, protectedProfiles = ['default
   mkdirSync(stateRoot, { recursive: true });
   const guard = join(codeRoot, 'streaming-release-guard');
   const protectedCase = protectedProfiles.map((profile) => `${profile}) exit 1 ;;`).join('\n    ');
-  writeFileSync(guard, `#!/bin/bash
+  writeFileSync(
+    guard,
+    `#!/bin/bash
 set -euo pipefail
 printf '%s\\n' "$*" >> ${JSON.stringify(log)}
 case "\${1:-}" in
@@ -81,17 +79,15 @@ case "\${1:-}" in
   finish-stack-legacy) printf '%s\\n' 'legacy stack deployment lease released' ;;
   *) exit 1 ;;
 esac
-`);
+`,
+  );
   chmodSync(guard, 0o555);
   writeFileSync(join(codeRoot, 'container-binding.json'), `${JSON.stringify({ schemaVersion: 1, stateRoot })}\n`, {
     mode: 0o444,
   });
   writeFileSync(log, '');
   const releaseMode = sandbox.scriptPath('release-mode.sh');
-  writeFileSync(
-    releaseMode,
-    readFileSync(releaseMode, 'utf8').replaceAll('/opt/streaming-release-guard', codeRoot),
-  );
+  writeFileSync(releaseMode, readFileSync(releaseMode, 'utf8').replaceAll('/opt/streaming-release-guard', codeRoot));
   return { codeRoot, stateRoot, log };
 }
 
@@ -120,12 +116,7 @@ describe('the supported stack deployment entry', () => {
   it('keeps the default no-argument legacy deployment path', async () => {
     const sandbox = makeSandbox();
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      [],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', [], { ...FAST_WATCH, HOME: sandbox.root });
 
     assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
     assert.ok(sandbox.calls().some((call) => call.includes('compose')));
@@ -134,22 +125,16 @@ describe('the supported stack deployment entry', () => {
   it('refuses lifecycle activation before an external guard is installed', async () => {
     const sandbox = makeSandbox({
       envFiles: {
-        '.env': [
-          'STAMP=stamp',
-          'STREAM_KEY=key',
-          'SRS_LIFECYCLE_VERSION=1',
-          'SRS_UPLOADER_ID=srs-uploader-a',
-          '',
-        ].join('\n'),
+        '.env': ['STAMP=stamp', 'STREAM_KEY=key', 'SRS_LIFECYCLE_VERSION=1', 'SRS_UPLOADER_ID=srs-uploader-a', ''].join(
+          '\n',
+        ),
       },
     });
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['srs', 'stream-uploader'],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', ['srs', 'stream-uploader'], {
+      ...FAST_WATCH,
+      HOME: sandbox.root,
+    });
 
     assert.notEqual(result.exitCode, 0);
     assert.match(`${result.stdout}${result.stderr}`, /external release guard|managed lifecycle/i);
@@ -167,12 +152,10 @@ describe('the supported stack deployment entry', () => {
     });
     installGuard(sandbox.root, 'managed', ['release-a']);
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['--profile=release-a', 'srs', 'stream-uploader'],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', ['--profile=release-a', 'srs', 'stream-uploader'], {
+      ...FAST_WATCH,
+      HOME: sandbox.root,
+    });
 
     assert.notEqual(result.exitCode, 0);
     assert.match(`${result.stdout}${result.stderr}`, /installed release guard refused/i);
@@ -189,17 +172,21 @@ describe('the supported stack deployment entry', () => {
     });
     installGuard(sandbox.root, 'managed', ['release-a']);
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['--profile=release-b', 'srs'],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', ['--profile=release-b', 'srs'], {
+      ...FAST_WATCH,
+      HOME: sandbox.root,
+    });
 
     assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
     assert.ok(sandbox.calls().some((call) => call.includes('compose')));
-    assert.match(readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8'), /begin-stack-legacy .*--profile release-b/);
-    assert.match(readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8'), /finish-stack-legacy .*--owner-token 22222222/);
+    assert.match(
+      readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8'),
+      /begin-stack-legacy .*--profile release-b/,
+    );
+    assert.match(
+      readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8'),
+      /finish-stack-legacy .*--owner-token 22222222/,
+    );
   });
 
   it('uses the fixed installed guard binding from an API process with a different home', async () => {
@@ -215,12 +202,10 @@ describe('the supported stack deployment entry', () => {
     const apiHome = join(sandbox.root, 'api-home');
     mkdirSync(apiHome);
 
-    const unrelated = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['--profile=release-b', 'srs'],
-      { ...FAST_WATCH, HOME: apiHome },
-    );
+    const unrelated = await runScript(sandbox, 'deploy.sh', ['--profile=release-b', 'srs'], {
+      ...FAST_WATCH,
+      HOME: apiHome,
+    });
     assert.equal(unrelated.exitCode, 0, `${unrelated.stdout}${unrelated.stderr}`);
     const guardCalls = readFileSync(installed.log, 'utf8');
     assert.match(guardCalls, new RegExp(`begin-legacy --state-root ${installed.stateRoot}`));
@@ -228,12 +213,10 @@ describe('the supported stack deployment entry', () => {
     assert.equal(existsSync(join(apiHome, '.local/state/streaming-release-bootstrap.lock')), false);
 
     const callsBeforeProtected = sandbox.calls().length;
-    const protectedResult = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['--profile=release-a', 'srs'],
-      { ...FAST_WATCH, HOME: apiHome },
-    );
+    const protectedResult = await runScript(sandbox, 'deploy.sh', ['--profile=release-a', 'srs'], {
+      ...FAST_WATCH,
+      HOME: apiHome,
+    });
     assert.notEqual(protectedResult.exitCode, 0);
     assert.match(`${protectedResult.stdout}${protectedResult.stderr}`, /installed release guard refused/i);
     assert.equal(sandbox.calls().length, callsBeforeProtected);
@@ -274,12 +257,10 @@ describe('the supported stack deployment entry', () => {
     writeFileSync(sandbox.scriptPath('deploy-standalone.sh'), '#!/bin/bash\nexit 42\n');
     chmodSync(sandbox.scriptPath('deploy-standalone.sh'), 0o700);
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['--profile=release-b', 'srs'],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', ['--profile=release-b', 'srs'], {
+      ...FAST_WATCH,
+      HOME: sandbox.root,
+    });
 
     assert.equal(result.exitCode, 42);
     const guardCalls = readFileSync(join(sandbox.root, 'guard-calls.log'), 'utf8');
@@ -291,12 +272,7 @@ describe('the supported stack deployment entry', () => {
     const sandbox = makeSandbox();
     installGuard(sandbox.root, 'legacy:11111111-1111-4111-8111-111111111111');
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['srs'],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', ['srs'], { ...FAST_WATCH, HOME: sandbox.root });
 
     assert.equal(result.exitCode, 0, `${result.stdout}${result.stderr}`);
     assert.ok(sandbox.calls().some((call) => call.includes('compose')));
@@ -307,18 +283,10 @@ describe('the supported stack deployment entry', () => {
     writeFileSync(sandbox.scriptPath('deploy-standalone.sh'), '#!/bin/bash\nexit 42\n');
     chmodSync(sandbox.scriptPath('deploy-standalone.sh'), 0o700);
 
-    const result = await runScript(
-      sandbox,
-      'deploy.sh',
-      ['srs'],
-      { ...FAST_WATCH, HOME: sandbox.root },
-    );
+    const result = await runScript(sandbox, 'deploy.sh', ['srs'], { ...FAST_WATCH, HOME: sandbox.root });
 
     assert.equal(result.exitCode, 42);
-    assert.equal(
-      existsSync(join(sandbox.root, '.local/state/streaming-release-bootstrap.lock/owner')),
-      true,
-    );
+    assert.equal(existsSync(join(sandbox.root, '.local/state/streaming-release-bootstrap.lock/owner')), true);
   });
 
   it('does not let a delayed duplicate finish release a successor lease', async (t) => {
@@ -333,21 +301,23 @@ describe('the supported stack deployment entry', () => {
     mkdirSync(wrappers);
     for (const command of ['ln', 'rm']) {
       const commandPath = join(wrappers, command);
-      writeFileSync(commandPath, `#!/bin/bash
+      writeFileSync(
+        commandPath,
+        `#!/bin/bash
 set -euo pipefail
 if [ ! -e '${ready}' ]; then
   /usr/bin/touch '${ready}'
   while [ ! -e '${resume}' ]; do /bin/sleep 0.01; done
 fi
 exec /bin/${command} "$@"
-`);
+`,
+      );
       chmodSync(commandPath, 0o700);
     }
-    const delayed = spawn(
-      '/bin/bash',
-      [sandbox.scriptPath('release-mode.sh'), 'finish-bootstrap', firstOwner],
-      { env: { HOME: home, PATH: `${wrappers}:${sandbox.path}` }, stdio: 'ignore' },
-    );
+    const delayed = spawn('/bin/bash', [sandbox.scriptPath('release-mode.sh'), 'finish-bootstrap', firstOwner], {
+      env: { HOME: home, PATH: `${wrappers}:${sandbox.path}` },
+      stdio: 'ignore',
+    });
     t.after(() => {
       if (delayed.exitCode === null) {
         delayed.kill('SIGKILL');
@@ -355,12 +325,7 @@ exec /bin/${command} "$@"
     });
     await waitForPath(ready);
 
-    const firstFinish = await runScript(
-      sandbox,
-      'release-mode.sh',
-      ['finish-bootstrap', firstOwner],
-      { HOME: home },
-    );
+    const firstFinish = await runScript(sandbox, 'release-mode.sh', ['finish-bootstrap', firstOwner], { HOME: home });
     assert.equal(firstFinish.exitCode, 0, `${firstFinish.stdout}${firstFinish.stderr}`);
     const successor = await runScript(sandbox, 'release-mode.sh', ['begin'], { HOME: home });
     assert.equal(successor.exitCode, 0, `${successor.stdout}${successor.stderr}`);
@@ -373,12 +338,9 @@ exec /bin/${command} "$@"
       readFileSync(join(home, '.local/state/streaming-release-bootstrap.lock/owner'), 'utf8').trim(),
       successorOwner,
     );
-    const successorFinish = await runScript(
-      sandbox,
-      'release-mode.sh',
-      ['finish-bootstrap', successorOwner],
-      { HOME: home },
-    );
+    const successorFinish = await runScript(sandbox, 'release-mode.sh', ['finish-bootstrap', successorOwner], {
+      HOME: home,
+    });
     assert.equal(successorFinish.exitCode, 0, `${successorFinish.stdout}${successorFinish.stderr}`);
   });
 });

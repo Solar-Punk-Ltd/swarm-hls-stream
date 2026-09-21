@@ -1,12 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 
-import {
-  type CandidateRole,
-  FIXTURE_LABEL,
-  type FixturePlan,
-  FixtureRefusal,
-  MANAGED_LABEL,
-} from './fixture.js';
+import { type CandidateRole, FIXTURE_LABEL, type FixturePlan, FixtureRefusal, MANAGED_LABEL } from './fixture.js';
 import {
   type ContinuationTopology,
   type ReadinessProbe,
@@ -134,7 +128,9 @@ function parseBytes(id: ReadinessProbeId, bytes: Uint8Array, bound: number): Rec
   try {
     return object(id, JSON.parse(decoder.decode(bytes)));
   } catch (error) {
-    if (error instanceof FixtureRefusal) {throw error;}
+    if (error instanceof FixtureRefusal) {
+      throw error;
+    }
     throw new FixtureRefusal(`${id} readiness response is not valid JSON`);
   }
 }
@@ -173,13 +169,17 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
   }
 
   private async http(probe: ReadinessProbe, rpcMethod?: string): Promise<Record<string, unknown>> {
-    const body = rpcMethod === undefined
-      ? undefined
-      : encoder.encode(JSON.stringify({ jsonrpc: '2.0', id: 1, method: rpcMethod, params: [] }));
+    const body =
+      rpcMethod === undefined
+        ? undefined
+        : encoder.encode(JSON.stringify({ jsonrpc: '2.0', id: 1, method: rpcMethod, params: [] }));
     const response = await this.source.request({
       url: probe.url,
       method: body === undefined ? 'GET' : 'POST',
-      headers: body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
+      headers:
+        body === undefined
+          ? { accept: 'application/json' }
+          : { accept: 'application/json', 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body }),
       maxResponseBytes: probe.maxResponseBytes,
     });
@@ -191,7 +191,9 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
 
   private async container(role: TopologyServiceRole): Promise<ContainerReadinessObservation> {
     const expected = this.topology.services.find((service) => service.role === role);
-    if (!expected) {throw new FixtureRefusal(`${role} readiness service is absent from topology`);}
+    if (!expected) {
+      throw new FixtureRefusal(`${role} readiness service is absent from topology`);
+    }
     const observed = await this.source.inspectContainer(role);
     if (
       observed.role !== role ||
@@ -237,7 +239,9 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
       services.length < 1 ||
       services.length > 32 ||
       services.join(',') !== [...new Set(services)].sort().join(',') ||
-      observed.artifact.images.some(({ service, imageId }) => service.length < 1 || service.length > 100 || !IMAGE_ID.test(imageId))
+      observed.artifact.images.some(
+        ({ service, imageId }) => service.length < 1 || service.length > 100 || !IMAGE_ID.test(imageId),
+      )
     ) {
       throw new FixtureRefusal(`${role} readiness guard artifact is malformed`);
     }
@@ -278,8 +282,8 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
       observed.profileDigests.length < 1 ||
       observed.profileDigests.length > 2 ||
       new Set(mediaTypes).size !== mediaTypes.length ||
-      observed.profileDigests.some(({ mediaType, digest }) =>
-        (mediaType !== 'audio' && mediaType !== 'video') || !DIGEST.test(digest),
+      observed.profileDigests.some(
+        ({ mediaType, digest }) => (mediaType !== 'audio' && mediaType !== 'video') || !DIGEST.test(digest),
       ) ||
       !Number.isFinite(receivedAt) ||
       !Number.isFinite(freshUntil) ||
@@ -294,15 +298,16 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
   }
 
   private async chain(probe: ReadinessProbe): Promise<unknown> {
-    const [response, container] = await Promise.all([
-      this.http(probe, 'eth_chainId'),
-      this.container('blockchain'),
-    ]);
-    if (container.configuredImage !== this.topology.services.find(({ role }) => role === 'blockchain')?.container.image) {
+    const [response, container] = await Promise.all([this.http(probe, 'eth_chainId'), this.container('blockchain')]);
+    if (
+      container.configuredImage !== this.topology.services.find(({ role }) => role === 'blockchain')?.container.image
+    ) {
       throw new FixtureRefusal('chain readiness image does not match');
     }
     const result = stringField('chain', 'result', response.result);
-    if (!/^0x[0-9a-f]+$/.test(result)) {throw new FixtureRefusal('chain readiness result is malformed');}
+    if (!/^0x[0-9a-f]+$/.test(result)) {
+      throw new FixtureRefusal('chain readiness result is malformed');
+    }
     return { chainId: Number.parseInt(result.slice(2), 16), owner: container.labels[FIXTURE_LABEL] };
   }
 
@@ -311,18 +316,24 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
       this.http(probe, 'web3_clientVersion'),
       this.container('blockchain'),
     ]);
-    if (container.configuredImage !== this.topology.services.find(({ role }) => role === 'blockchain')?.container.image) {
+    if (
+      container.configuredImage !== this.topology.services.find(({ role }) => role === 'blockchain')?.container.image
+    ) {
       throw new FixtureRefusal('blockchain readiness image does not match');
     }
     const version = stringField('blockchain', 'clientVersion', response.result);
     const match = /^anvil\/v?(.+)$/i.exec(version);
-    if (!match) {throw new FixtureRefusal('blockchain readiness client identity does not match');}
+    if (!match) {
+      throw new FixtureRefusal('blockchain readiness client identity does not match');
+    }
     return { ready: true, identity: 'anvil', version: match[1] };
   }
 
   private async bee(probe: ReadinessProbe): Promise<unknown> {
     const [response, container] = await Promise.all([this.http(probe), this.container('bee-queen')]);
-    if (container.configuredImage !== this.topology.services.find(({ role }) => role === 'bee-queen')?.container.image) {
+    if (
+      container.configuredImage !== this.topology.services.find(({ role }) => role === 'bee-queen')?.container.image
+    ) {
       throw new FixtureRefusal('bee readiness image does not match');
     }
     const status = stringField('bee', 'status', response.status);
@@ -335,12 +346,11 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
   }
 
   private async srs(probe: ReadinessProbe): Promise<unknown> {
-    const [response] = await Promise.all([
-      this.http(probe),
-      this.guardedContainer('srs', 'srs', 'uploader', 'srs'),
-    ]);
+    const [response] = await Promise.all([this.http(probe), this.guardedContainer('srs', 'srs', 'uploader', 'srs')]);
     const data = object('srs', response.data);
-    if (response.code !== 0) {throw new FixtureRefusal('srs readiness endpoint is not ready');}
+    if (response.code !== 0) {
+      throw new FixtureRefusal('srs readiness endpoint is not ready');
+    }
     return { ready: true, identity: 'srs', version: stringField('srs', 'version', data.version) };
   }
 
@@ -404,7 +414,9 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
     );
     switch (probe.id) {
       case 'storage':
-        if (result.source !== 'bee-upload-read-control') {throw new FixtureRefusal('storage readiness source does not match');}
+        if (result.source !== 'bee-upload-read-control') {
+          throw new FixtureRefusal('storage readiness source does not match');
+        }
         return {
           batchIdHash: stringField('storage', 'batchIdHash', result.batchIdHash),
           usable: booleanField('storage', 'usable', result.usable),
@@ -413,23 +425,31 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
           controlRoundTrip: result.uploadStatus === 201 && result.readStatus === 200 && result.bytesMatch === true,
         };
       case 'callbacks':
-        if (result.source !== 'srs-callback-control') {throw new FixtureRefusal('callbacks readiness source does not match');}
+        if (result.source !== 'srs-callback-control') {
+          throw new FixtureRefusal('callbacks readiness source does not match');
+        }
         return {
           reachedUploader:
             integerField('callbacks', 'callbacksAfter', result.callbacksAfter) >
             integerField('callbacks', 'callbacksBefore', result.callbacksBefore),
         };
       case 'openingFormat':
-        if (result.source !== 'ffprobe') {throw new FixtureRefusal('openingFormat readiness source does not match');}
+        if (result.source !== 'ffprobe') {
+          throw new FixtureRefusal('openingFormat readiness source does not match');
+        }
         return {
           verified: result.exitCode === 0 && result.formatName === 'mpegts',
           tool: 'ffprobe',
           container: stringField('openingFormat', 'formatName', result.formatName),
         };
       case 'browserDecode': {
-        if (result.source !== 'browser-media-control') {throw new FixtureRefusal('browserDecode readiness source does not match');}
+        if (result.source !== 'browser-media-control') {
+          throw new FixtureRefusal('browserDecode readiness source does not match');
+        }
         const codecs = result.codecs;
-        if (!Array.isArray(codecs)) {throw new FixtureRefusal('browserDecode readiness codecs are malformed');}
+        if (!Array.isArray(codecs)) {
+          throw new FixtureRefusal('browserDecode readiness codecs are malformed');
+        }
         const decodedFramesBefore = integerField('browserDecode', 'decodedFramesBefore', result.decodedFramesBefore);
         const decodedFramesAfter = integerField('browserDecode', 'decodedFramesAfter', result.decodedFramesAfter);
         const decodedAudioBytesBefore = integerField(
@@ -460,32 +480,18 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
         };
       }
       case 'falseCodec': {
-        if (result.source !== 'browser-false-codec-control') {throw new FixtureRefusal('falseCodec readiness source does not match');}
+        if (result.source !== 'browser-false-codec-control') {
+          throw new FixtureRefusal('falseCodec readiness source does not match');
+        }
         const attemptedCodec = stringField('falseCodec', 'attemptedCodec', result.attemptedCodec);
         const supported = booleanField('falseCodec', 'supported', result.supported);
-        const sourceBufferAttempted = booleanField(
-          'falseCodec',
-          'sourceBufferAttempted',
-          result.sourceBufferAttempted,
-        );
-        const sourceBufferAccepted = booleanField(
-          'falseCodec',
-          'sourceBufferAccepted',
-          result.sourceBufferAccepted,
-        );
-        const sourceBufferRefused = booleanField(
-          'falseCodec',
-          'sourceBufferRefused',
-          result.sourceBufferRefused,
-        );
+        const sourceBufferAttempted = booleanField('falseCodec', 'sourceBufferAttempted', result.sourceBufferAttempted);
+        const sourceBufferAccepted = booleanField('falseCodec', 'sourceBufferAccepted', result.sourceBufferAccepted);
+        const sourceBufferRefused = booleanField('falseCodec', 'sourceBufferRefused', result.sourceBufferRefused);
         const loadedMetadata = booleanField('falseCodec', 'loadedMetadata', result.loadedMetadata);
         return {
           refused:
-            !supported &&
-            sourceBufferAttempted &&
-            !sourceBufferAccepted &&
-            sourceBufferRefused &&
-            !loadedMetadata,
+            !supported && sourceBufferAttempted && !sourceBufferAccepted && sourceBufferRefused && !loadedMetadata,
           attemptedCodec,
           supported,
           sourceBufferAttempted,
@@ -495,7 +501,11 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
         };
       }
       case 'capacity': {
-        if (result.source !== 'fixture-capacity-control' || !Array.isArray(result.services) || result.services.length < 1) {
+        if (
+          result.source !== 'fixture-capacity-control' ||
+          !Array.isArray(result.services) ||
+          result.services.length < 1
+        ) {
           throw new FixtureRefusal('capacity readiness source does not match');
         }
         const availableDisk = integerField('capacity', 'availableDiskBytes', result.availableDiskBytes);
@@ -516,11 +526,9 @@ export class ObservedReadinessTransport implements ReadinessProbeTransport {
             throw new FixtureRefusal('capacity readiness planned limits are malformed');
           }
           return (
-            integerField('capacity', 'memoryCurrentBytes', service.memoryCurrentBytes) <
-              expected.memoryBytes &&
+            integerField('capacity', 'memoryCurrentBytes', service.memoryCurrentBytes) < expected.memoryBytes &&
             integerField('capacity', 'memoryLimitBytes', service.memoryLimitBytes) === expected.memoryBytes &&
-            integerField('capacity', 'pidsCurrent', service.pidsCurrent) <
-              expected.pidsLimit &&
+            integerField('capacity', 'pidsCurrent', service.pidsCurrent) < expected.pidsLimit &&
             integerField('capacity', 'pidsLimit', service.pidsLimit) === expected.pidsLimit &&
             numberField('capacity', 'cpuLimit', service.cpuLimit) === expected.cpus &&
             integerField('capacity', 'cpuThrottledDelta', service.cpuThrottledDelta) === 0

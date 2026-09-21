@@ -4,11 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import {
-  ManagedMediaFileOps,
-  ManagedMediaInput,
-  ManagedMediaStore,
-} from '../src/libs/ManagedMediaStore.js';
+import { ManagedMediaFileOps, ManagedMediaInput, ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import { StreamState } from '../src/types.js';
 
 const roots: string[] = [];
@@ -128,7 +124,9 @@ describe('ManagedMediaStore durability', () => {
     const root = tempRoot();
     const accepted = new ManagedMediaStore(root).accept(input(), Buffer.from('segment-a'));
     assert.equal(accepted.kind, 'accepted');
-    if (accepted.kind !== 'accepted') {return;}
+    if (accepted.kind !== 'accepted') {
+      return;
+    }
 
     const recovered = new ManagedMediaStore(root);
     assert.deepEqual(recovered.readBytes(accepted.record.token), Buffer.from('segment-a'));
@@ -149,7 +147,9 @@ describe('ManagedMediaStore durability', () => {
     const store = new ManagedMediaStore(root);
     const accepted = store.accept(input(), Buffer.from('segment-a'));
     assert.equal(accepted.kind, 'accepted');
-    if (accepted.kind !== 'accepted') {return;}
+    if (accepted.kind !== 'accepted') {
+      return;
+    }
 
     assert.equal(store.accept(input(), Buffer.from('segment-a')).kind, 'duplicate');
     assert.equal(store.accept(input(), Buffer.from('segment-b')).kind, 'conflict');
@@ -178,12 +178,17 @@ describe('ManagedMediaStore durability', () => {
     const newRun = store.accept(input({ runNumber: 3 }), Buffer.from('new'));
     assert.equal(oldRun.kind, 'accepted');
     assert.equal(newRun.kind, 'accepted');
-    if (oldRun.kind !== 'accepted' || newRun.kind !== 'accepted') {return;}
+    if (oldRun.kind !== 'accepted' || newRun.kind !== 'accepted') {
+      return;
+    }
 
     store.commitUploaded(oldRun.record.token, 'a'.repeat(64), state('a'.repeat(64)));
 
     assert.equal(store.listPending(ADMIN_STREAM_ID, 2).length, 0);
-    assert.deepEqual(store.listPending(ADMIN_STREAM_ID, 3).map((record) => record.token), [newRun.record.token]);
+    assert.deepEqual(
+      store.listPending(ADMIN_STREAM_ID, 3).map((record) => record.token),
+      [newRun.record.token],
+    );
   });
 
   it('keeps committed history when the process dies before raw cleanup', () => {
@@ -191,7 +196,9 @@ describe('ManagedMediaStore durability', () => {
     const store = new ManagedMediaStore(root, faultingOps('raw-cleanup'));
     const accepted = store.accept(input(), Buffer.from('segment-a'));
     assert.equal(accepted.kind, 'accepted');
-    if (accepted.kind !== 'accepted') {return;}
+    if (accepted.kind !== 'accepted') {
+      return;
+    }
 
     store.commitUploaded(accepted.record.token, 'a'.repeat(64), state());
 
@@ -209,7 +216,9 @@ describe('ManagedMediaStore durability', () => {
     const store = new ManagedMediaStore(root, faultingOps('commit-metadata-replace'));
     const accepted = store.accept(input(), Buffer.from('segment-a'));
     assert.equal(accepted.kind, 'accepted');
-    if (accepted.kind !== 'accepted') {return;}
+    if (accepted.kind !== 'accepted') {
+      return;
+    }
 
     assert.throws(
       () => store.commitUploaded(accepted.record.token, 'a'.repeat(64), state()),
@@ -225,7 +234,10 @@ describe('ManagedMediaStore durability', () => {
   it('loads run ordinals once instead of rescanning every segment on acceptance', () => {
     const root = tempRoot();
     let directoryReads = 0;
-    const store = new ManagedMediaStore(root, countingOps(() => directoryReads++));
+    const store = new ManagedMediaStore(
+      root,
+      countingOps(() => directoryReads++),
+    );
 
     for (let sequence = 0; sequence < 20; sequence++) {
       assert.equal(store.accept(input({ sequence }), Buffer.from(`segment-${sequence}`)).kind, 'accepted');
@@ -241,14 +253,20 @@ describe('ManagedMediaStore durability', () => {
     const persist = (sequence: number): void => {
       const accepted = store.accept(input({ sequence }), Buffer.from(`segment-${sequence}`));
       assert.equal(accepted.kind, 'accepted');
-      if (accepted.kind !== 'accepted') {return;}
+      if (accepted.kind !== 'accepted') {
+        return;
+      }
       const reference = sequence.toString(16).padStart(64, '0');
       store.commitUploaded(accepted.record.token, reference, cumulativeState(sequence + 1));
     };
 
-    for (let sequence = 0; sequence < 20; sequence++) {persist(sequence);}
+    for (let sequence = 0; sequence < 20; sequence++) {
+      persist(sequence);
+    }
     const bytesAtTwenty = retainedJsonBytes(root);
-    for (let sequence = 20; sequence < 40; sequence++) {persist(sequence);}
+    for (let sequence = 20; sequence < 40; sequence++) {
+      persist(sequence);
+    }
     const bytesAtForty = retainedJsonBytes(root);
 
     assert.ok(bytesAtForty < bytesAtTwenty * 2.4, `${bytesAtTwenty} bytes grew to ${bytesAtForty}`);
@@ -328,7 +346,9 @@ function faultingOps(
       }
       if (fault === 'commit-metadata-replace' && /^[0-9a-f]{64}\.json\.tmp$/i.test(path.basename(from))) {
         segmentMetadataReplaces++;
-        if (segmentMetadataReplaces === 2) {throw new Error('injected committed metadata replace failure');}
+        if (segmentMetadataReplaces === 2) {
+          throw new Error('injected committed metadata replace failure');
+        }
       }
       fs.renameSync(from, to);
     },

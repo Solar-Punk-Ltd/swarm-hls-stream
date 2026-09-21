@@ -65,7 +65,12 @@ export interface ManagedMediaPersistence {
   listPending(adminStreamId: string, runNumber: number): ManagedMediaRecord[];
   listRun(adminStreamId: string, runNumber: number): ManagedMediaRecord[];
   listTrackStates(adminStreamId: string, runNumber: number): ManagedTrackJournal[];
-  readTrackState(adminStreamId: string, runNumber: number, streamId: string, rendition: string | null): StreamState | null;
+  readTrackState(
+    adminStreamId: string,
+    runNumber: number,
+    streamId: string,
+    rendition: string | null,
+  ): StreamState | null;
   saveTrackState(
     adminStreamId: string,
     runNumber: number,
@@ -118,7 +123,9 @@ function finiteNonNegative(value: unknown): value is number {
 }
 
 function isSource(value: unknown): value is SourceConnectionIdentity {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const source = value as Partial<SourceConnectionIdentity>;
   return (
     typeof source.serverId === 'string' &&
@@ -132,7 +139,9 @@ function isSource(value: unknown): value is SourceConnectionIdentity {
 }
 
 function isInput(value: unknown): value is ManagedMediaInput {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const input = value as Partial<ManagedMediaInput>;
   return (
     input.lifecycleVersion === 1 &&
@@ -150,7 +159,9 @@ function isInput(value: unknown): value is ManagedMediaInput {
 }
 
 function isStreamState(value: unknown): value is StreamState {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const state = value as Partial<StreamState>;
   return (
     typeof state.streamId === 'string' &&
@@ -168,7 +179,9 @@ function isStreamState(value: unknown): value is StreamState {
 }
 
 function isRecord(value: unknown): value is ManagedMediaRecord {
-  if (!isInput(value)) {return false;}
+  if (!isInput(value)) {
+    return false;
+  }
   const record = value as Partial<ManagedMediaRecord>;
   return (
     typeof record.token === 'string' &&
@@ -178,13 +191,14 @@ function isRecord(value: unknown): value is ManagedMediaRecord {
     /^[0-9a-f]{64}$/.test(record.digest) &&
     nonNegativeInteger(record.byteLength) &&
     (record.status === 'pending' || record.status === 'committed') &&
-    (record.status === 'pending' ||
-      (typeof record.reference === 'string' && HEX_REFERENCE.test(record.reference)))
+    (record.status === 'pending' || (typeof record.reference === 'string' && HEX_REFERENCE.test(record.reference)))
   );
 }
 
 function isTrackJournal(value: unknown): value is ManagedTrackJournal {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const journal = value as Partial<ManagedTrackJournal>;
   return (
     journal.lifecycleVersion === 1 &&
@@ -229,7 +243,9 @@ function sameAcceptedPayload(record: ManagedMediaRecord, input: ManagedMediaInpu
 }
 
 function canonicalValue(value: unknown): unknown {
-  if (Array.isArray(value)) {return value.map(canonicalValue);}
+  if (Array.isArray(value)) {
+    return value.map(canonicalValue);
+  }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
@@ -249,10 +265,7 @@ function sameValue(left: unknown, right: unknown): boolean {
 export class ManagedMediaStore implements ManagedMediaPersistence {
   private readonly nextOrdinals = new Map<string, number>();
 
-  constructor(
-    private readonly stateDir: string,
-    private readonly fileOps: ManagedMediaFileOps = nodeFileOps,
-  ) {
+  constructor(private readonly stateDir: string, private readonly fileOps: ManagedMediaFileOps = nodeFileOps) {
     if (!this.fileOps.existsSync(stateDir)) {
       this.fileOps.mkdirSync(stateDir, { recursive: true });
       this.flushDirectory(path.dirname(stateDir));
@@ -344,7 +357,9 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
     if (existing) {
       this.observeOrdinal(existing);
       this.flushDirectory(this.stateDir);
-      return sameAcceptedPayload(existing, input, data) ? { kind: 'duplicate', record: existing } : { kind: 'conflict' };
+      return sameAcceptedPayload(existing, input, data)
+        ? { kind: 'duplicate', record: existing }
+        : { kind: 'conflict' };
     }
 
     const runKey = this.runKey(input.adminStreamId, input.runNumber);
@@ -420,7 +435,9 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
 
   public readBytes(token: string): Buffer | null {
     const record = this.requireRecord(token);
-    if (record.status === 'committed') {return null;}
+    if (record.status === 'committed') {
+      return null;
+    }
     const filePath = this.bytesPath(token);
     if (!this.fileOps.existsSync(filePath)) {
       throw new Error(`Managed media ${token} is pending but its bytes are missing`);
@@ -486,7 +503,12 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
   ): void {
     const identity = { adminStreamId, runNumber, streamId, rendition };
     const journal = this.readTrackJournal(identity);
-    if (!journal || !isStreamState(state) || state.streamId !== streamId || !isPrefix(journal.state.segments, state.segments)) {
+    if (
+      !journal ||
+      !isStreamState(state) ||
+      state.streamId !== streamId ||
+      !isPrefix(journal.state.segments, state.segments)
+    ) {
       throw new Error(`Refused invalid managed track state update for ${streamId}`);
     }
     this.replaceDurably(this.trackPath(identity), JSON.stringify({ ...journal, state }));
@@ -494,16 +516,22 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
 
   private requireRecord(token: string): ManagedMediaRecord {
     const record = this.readRecord(token);
-    if (!record) {throw new Error(`Managed media record ${token} is missing or unreadable`);}
+    if (!record) {
+      throw new Error(`Managed media record ${token} is missing or unreadable`);
+    }
     return record;
   }
 
   private readRecord(token: string): ManagedMediaRecord | null {
     const filePath = this.metadataPath(token);
-    if (!this.fileOps.existsSync(filePath)) {return null;}
+    if (!this.fileOps.existsSync(filePath)) {
+      return null;
+    }
     try {
       const value: unknown = JSON.parse(this.fileOps.readFileSync(filePath).toString('utf8'));
-      if (!isRecord(value) || value.token !== token) {return null;}
+      if (!isRecord(value) || value.token !== token) {
+        return null;
+      }
       return this.reconcileCommitted(value);
     } catch {
       return null;
@@ -511,13 +539,19 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
   }
 
   private reconcileCommitted(record: ManagedMediaRecord): ManagedMediaRecord {
-    if (record.status === 'committed') {return record;}
+    if (record.status === 'committed') {
+      return record;
+    }
     const journal = this.readTrackJournal(record);
-    if (journal?.lastToken !== record.token) {return record;}
+    if (journal?.lastToken !== record.token) {
+      return record;
+    }
     const placed = journal.state.segments.some(
       (segment) => segment.index === record.sequence && segment.ref === journal.lastReference,
     );
-    if (!placed) {return record;}
+    if (!placed) {
+      return record;
+    }
     const committed: ManagedMediaRecord = {
       ...record,
       status: 'committed',
@@ -531,10 +565,14 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
   private loadOrdinals(): void {
     this.nextOrdinals.clear();
     for (const name of this.fileOps.readdirSync(this.stateDir)) {
-      if (!/^[0-9a-f]{64}\.json$/i.test(name)) {continue;}
+      if (!/^[0-9a-f]{64}\.json$/i.test(name)) {
+        continue;
+      }
       const token = name.slice(0, -'.json'.length);
       const record = this.readRecord(token);
-      if (!record) {throw new Error(`Managed media record ${token} is missing or unreadable`);}
+      if (!record) {
+        throw new Error(`Managed media record ${token} is missing or unreadable`);
+      }
       this.observeOrdinal(record);
     }
   }
@@ -551,7 +589,9 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
     rendition: string | null;
   }): ManagedTrackJournal | null {
     const filePath = this.trackPath(identity);
-    if (!this.fileOps.existsSync(filePath)) {return null;}
+    if (!this.fileOps.existsSync(filePath)) {
+      return null;
+    }
     try {
       const value: unknown = JSON.parse(this.fileOps.readFileSync(filePath).toString('utf8'));
       return isTrackJournal(value) &&
@@ -631,5 +671,8 @@ export class ManagedMediaStore implements ManagedMediaPersistence {
 }
 
 function isPrefix(previous: readonly unknown[], next: readonly unknown[]): boolean {
-  return previous.length <= next.length && previous.every((value, index) => JSON.stringify(value) === JSON.stringify(next[index]));
+  return (
+    previous.length <= next.length &&
+    previous.every((value, index) => JSON.stringify(value) === JSON.stringify(next[index]))
+  );
 }

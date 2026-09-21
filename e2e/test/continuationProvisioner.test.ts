@@ -97,16 +97,24 @@ class RemovalTrackingDocker implements FixtureDocker {
 
   constructor(private readonly resource: InspectedResource) {}
 
-  async findExact(): Promise<InspectedResource | null> {return this.resource;}
+  async findExact(): Promise<InspectedResource | null> {
+    return this.resource;
+  }
   async create(
     _kind: ResourceKind,
     _name: string,
     _labels: Readonly<Record<string, string>>,
     _plan?: FixtureResourcePlan,
-  ): Promise<InspectedResource> {return this.resource;}
+  ): Promise<InspectedResource> {
+    return this.resource;
+  }
   async startContainer(): Promise<void> {}
-  async inspect(): Promise<InspectedResource | null> {return this.resource;}
-  async remove(_kind: ResourceKind, id: string): Promise<void> {this.removed.push(id);}
+  async inspect(): Promise<InspectedResource | null> {
+    return this.resource;
+  }
+  async remove(_kind: ResourceKind, id: string): Promise<void> {
+    this.removed.push(id);
+  }
 }
 
 class ProfileClient {
@@ -116,7 +124,9 @@ class ProfileClient {
 
   async createHeldUploaderProfile(): Promise<HeldUploaderProfile> {
     this.calls += 1;
-    if (this.fail) {throw new Error('synthetic lost reply');}
+    if (this.fail) {
+      throw new Error('synthetic lost reply');
+    }
     return { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 };
   }
 
@@ -136,7 +146,12 @@ class ReceiptVerifier {
       generation: 1,
       stateDigest: 'a'.repeat(64),
       artifact: { treeDigest: 'b'.repeat(64), images: [] },
-      candidate: { role: role === 'admin' ? 'admin' : role === 'manager' ? 'manager' : 'stack', root: '/candidate', commit: 'c'.repeat(40), treeDigest: 'b'.repeat(64) },
+      candidate: {
+        role: role === 'admin' ? 'admin' : role === 'manager' ? 'manager' : 'stack',
+        root: '/candidate',
+        commit: 'c'.repeat(40),
+        treeDigest: 'b'.repeat(64),
+      },
     };
   }
 }
@@ -187,30 +202,34 @@ describe('GuardedApplicationProvisioner', () => {
 
     assert.equal(topology.guardedActivations.at(-1)?.slot.id, INSTANCE_ID);
     assert.equal(profiles.calls, 1);
-    assert.deepEqual(profiles.startCalls, [{
-      profile: { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 },
-      postageBatchId: POSTAGE_BATCH_ID,
-    }]);
+    assert.deepEqual(profiles.startCalls, [
+      {
+        profile: { name: PROFILE_NAME, instanceId: INSTANCE_ID, portSlot: 1 },
+        postageBatchId: POSTAGE_BATCH_ID,
+      },
+    ]);
     const installer = process.calls[0];
     assert.equal(installer.file, '/candidates/manager/deploy/install-release-guard.sh');
     assert.deepEqual(installer.args.slice(-4), [
-      '--fixture-network-name', `${FIXTURE_ID}-network`,
-      '--fixture-id', FIXTURE_ID,
+      '--fixture-network-name',
+      `${FIXTURE_ID}-network`,
+      '--fixture-id',
+      FIXTURE_ID,
     ]);
     assert.equal(process.calls.filter((call) => call.file.endsWith('/install-release-guard.sh')).length, 1);
 
     const guardCalls = process.calls.filter((call) => call.file.endsWith('/bin/streaming-release-guard'));
-    assert.deepEqual(guardCalls.map((call) => call.args[0]), [
-      'admin',
-      'manager',
-      'admin',
-      'viewer',
-    ]);
-    assert.equal(guardCalls[0]?.args.includes('--managed-lifecycle-version'), false);
     assert.deepEqual(
-      guardCalls[2]?.args.slice(-4),
-      ['--managed-lifecycle-version', '1', '--managed-uploader-id', INSTANCE_ID],
+      guardCalls.map((call) => call.args[0]),
+      ['admin', 'manager', 'admin', 'viewer'],
     );
+    assert.equal(guardCalls[0]?.args.includes('--managed-lifecycle-version'), false);
+    assert.deepEqual(guardCalls[2]?.args.slice(-4), [
+      '--managed-lifecycle-version',
+      '1',
+      '--managed-uploader-id',
+      INSTANCE_ID,
+    ]);
     assert.deepEqual(receipts.calls, ['manager', 'admin', 'viewer', 'uploader']);
     assert.deepEqual(resources.calls, [
       'admin-bootstrap',
@@ -224,8 +243,15 @@ describe('GuardedApplicationProvisioner', () => {
     const userAdd = process.calls.find((call) => call.file === 'docker' && call.args[0] === 'exec');
     assert.ok(userAdd);
     assert.deepEqual(userAdd.args, [
-      'exec', '-i', 'manager-api-container', 'node', 'dist/cli.js',
-      'user:add', 'srs-a1b2c3d4-operator', '--password-stdin', '--admin',
+      'exec',
+      '-i',
+      'manager-api-container',
+      'node',
+      'dist/cli.js',
+      'user:add',
+      'srs-a1b2c3d4-operator',
+      '--password-stdin',
+      '--admin',
     ]);
     assert.equal(userAdd.stdin, 'synthetic-manager-password\n');
     for (const call of process.calls) {
@@ -392,7 +418,10 @@ describe('SpawnBoundedProcess', () => {
     await assert.rejects(
       subject.run({
         file: process.execPath,
-        args: ['-e', 'process.stdin.pipe(process.stdout);process.stdin.on(\'end\',()=>{process.stderr.write(process.env.FIXTURE_SENTINEL ?? \'\');process.exitCode=7})'],
+        args: [
+          '-e',
+          "process.stdin.pipe(process.stdout);process.stdin.on('end',()=>{process.stderr.write(process.env.FIXTURE_SENTINEL ?? '');process.exitCode=7})",
+        ],
         stdin: sentinel,
         environment: { FIXTURE_SENTINEL: sentinel },
         timeoutMs: 2_000,

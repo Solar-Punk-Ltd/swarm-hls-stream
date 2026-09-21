@@ -252,12 +252,15 @@ describe('guarded resource inventory', () => {
     await cleanupFixture(journal, docker);
 
     assert.deepEqual(new Set(docker.removed), new Set(survivingResources.map(({ id }) => id)));
-    const removedKinds = docker.removed.map(
-      (id) => survivingResources.find((resource) => resource.id === id)?.kind,
+    const removedKinds = docker.removed.map((id) => survivingResources.find((resource) => resource.id === id)?.kind);
+    assert.deepEqual(
+      removedKinds,
+      [...removedKinds].sort(
+        (left, right) =>
+          ['container', 'volume', 'network'].indexOf(left ?? '') -
+          ['container', 'volume', 'network'].indexOf(right ?? ''),
+      ),
     );
-    assert.deepEqual(removedKinds, [...removedKinds].sort((left, right) =>
-      ['container', 'volume', 'network'].indexOf(left ?? '') - ['container', 'volume', 'network'].indexOf(right ?? ''),
-    ));
   });
 
   it('leaves write-ahead intents unresolved when a guarded mutation outcome is ambiguous', async () => {

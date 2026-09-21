@@ -40,20 +40,29 @@ export async function withFixtureOperationLease<T>(
     throw new FixtureRefusal('fixture operation lease could not be created');
   }
   const identity = fstatSync(descriptor);
-  writeFileSync(descriptor, `${JSON.stringify({
-    schemaVersion: 1,
-    fixtureId: input.fixtureId,
-    operation: input.operation,
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-  })}\n`, 'utf8');
+  writeFileSync(
+    descriptor,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      fixtureId: input.fixtureId,
+      operation: input.operation,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    })}\n`,
+    'utf8',
+  );
   fsyncSync(descriptor);
   let release = false;
   let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
-    outcome = { ok: true, value: await action({
-      releaseWhenComplete: () => { release = true; },
-    }) };
+    outcome = {
+      ok: true,
+      value: await action({
+        releaseWhenComplete: () => {
+          release = true;
+        },
+      }),
+    };
   } catch (error) {
     outcome = { ok: false, error };
   }

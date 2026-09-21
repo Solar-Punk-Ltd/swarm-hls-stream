@@ -292,11 +292,13 @@ describe('StreamWatcher playback selection', () => {
 
   it('shows an existing replay while the catalogue still marks the next run as scheduled', () => {
     watchPage.isStreamListLoaded = true;
-    watchPage.streamList = [{
-      ...managedStream('vod'),
-      state: 'scheduled',
-      lifecycle: { version: 1, revision: 10, runNumber: 5, state: 'ready' },
-    }];
+    watchPage.streamList = [
+      {
+        ...managedStream('vod'),
+        state: 'scheduled',
+        lifecycle: { version: 1, revision: 10, runNumber: 5, state: 'ready' },
+      },
+    ];
 
     const html = renderWatchPage();
 

@@ -4,10 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import {
-  ManagedRenditionBinding,
-  ManagedRenditionStore,
-} from '../src/libs/ManagedRenditionStore.js';
+import { ManagedRenditionBinding, ManagedRenditionStore } from '../src/libs/ManagedRenditionStore.js';
 import { DurableFileOps } from '../src/libs/ManagedRunStore.js';
 import { Rendition } from '../src/types.js';
 
@@ -123,10 +120,7 @@ describe('ManagedRenditionStore', () => {
     const root = makeRoot();
     const store = new ManagedRenditionStore(root, failDirectoryFlushOnce(root));
 
-    assert.throws(
-      () => store.prepare(BINDING, LIVE, '2026-09-20T10:00:00.000Z'),
-      /injected directory fsync failure/,
-    );
+    assert.throws(() => store.prepare(BINDING, LIVE, '2026-09-20T10:00:00.000Z'), /injected directory fsync failure/);
     const retried = store.prepare(BINDING, LIVE, '2026-09-20T10:01:00.000Z');
     assert.equal(retried.report.observedAt, '2026-09-20T10:00:00.000Z');
     assert.equal(retried.report.renditionSequence, 1);
@@ -139,9 +133,6 @@ describe('ManagedRenditionStore', () => {
 
     assert.throws(() => new ManagedRenditionStore(root, fileOps), /injected directory fsync failure/);
     const reopened = new ManagedRenditionStore(root, fileOps);
-    assert.equal(
-      reopened.prepare(BINDING, LIVE, '2026-09-20T10:00:00.000Z').report.renditionSequence,
-      1,
-    );
+    assert.equal(reopened.prepare(BINDING, LIVE, '2026-09-20T10:00:00.000Z').report.renditionSequence, 1);
   });
 });

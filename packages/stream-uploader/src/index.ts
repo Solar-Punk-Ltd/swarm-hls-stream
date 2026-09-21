@@ -177,10 +177,7 @@ async function start() {
     const mediaFormatInspector = config.srsLifecycle ? new MediaFormatProbe() : undefined;
     const legacyRecordingAdopter =
       config.srsLifecycle && mediaFormatInspector
-        ? new LegacyRecordingAdopter(
-            new BeeLegacyAdoptionMediaReader(publishers, signerOwner),
-            mediaFormatInspector,
-          )
+        ? new LegacyRecordingAdopter(new BeeLegacyAdoptionMediaReader(publishers, signerOwner), mediaFormatInspector)
         : undefined;
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.

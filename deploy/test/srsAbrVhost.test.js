@@ -127,10 +127,14 @@ function childBlock(parent, name) {
 
   let depth = 0;
   for (let i = parent.indexOf('{', start); i < parent.length; i += 1) {
-    if (parent[i] === '{') {depth += 1;}
+    if (parent[i] === '{') {
+      depth += 1;
+    }
     if (parent[i] === '}') {
       depth -= 1;
-      if (depth === 0) {return parent.slice(start, i + 1);}
+      if (depth === 0) {
+        return parent.slice(start, i + 1);
+      }
     }
   }
   assert.fail(`the '${name}' block is never closed`);

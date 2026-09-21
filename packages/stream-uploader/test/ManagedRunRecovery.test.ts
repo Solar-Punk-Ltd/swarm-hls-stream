@@ -13,10 +13,7 @@ import {
   StateReportOutcome,
 } from '../src/libs/AdminApiClient.js';
 import { LadderIdentity, LadderRegistry } from '../src/libs/LadderRegistry.js';
-import {
-  ManagedCheckpointPersistence,
-  ManagedCheckpointStore,
-} from '../src/libs/ManagedCheckpointStore.js';
+import { ManagedCheckpointPersistence, ManagedCheckpointStore } from '../src/libs/ManagedCheckpointStore.js';
 import { ManagedMediaStore } from '../src/libs/ManagedMediaStore.js';
 import {
   MANAGED_RUN_LOADED,
@@ -133,20 +130,20 @@ function orchestrator(
     managedCheckpointStore = new MemoryManagedCheckpoints();
     checkpointsByRunStore.set(store, managedCheckpointStore);
   }
-  return makeTestOrchestrator({
-    clock,
-    wallClock: wallNow,
-    managedSourceReconnectMs: RECONNECT_MS,
-    managedRunStore: store,
-    managedCheckpointStore,
-    adminApi,
-  }, uploads);
+  return makeTestOrchestrator(
+    {
+      clock,
+      wallClock: wallNow,
+      managedSourceReconnectMs: RECONNECT_MS,
+      managedRunStore: store,
+      managedCheckpointStore,
+      adminApi,
+    },
+    uploads,
+  );
 }
 
-function reportingAdmin(
-  reports: ManagedRunReport[],
-  outcome: StateReportOutcome,
-): AdminApiClient {
+function reportingAdmin(reports: ManagedRunReport[], outcome: StateReportOutcome): AdminApiClient {
   return {
     reportManagedRun: async (_streamId: string, _runNumber: number, report: ManagedRunReport) => {
       reports.push(structuredClone(report));
@@ -175,13 +172,7 @@ function provision(target: StreamOrchestrator, source: SourceConnectionIdentity)
 }
 
 function media(target: StreamOrchestrator, source: SourceConnectionIdentity, index = 0) {
-  return target.handleManagedSegment(
-    STREAM_ID,
-    source,
-    index,
-    0.1,
-    videoSegment(4, index * 4 * FRAME_TICKS),
-  );
+  return target.handleManagedSegment(STREAM_ID, source, index, 0.1, videoSegment(4, index * 4 * FRAME_TICKS));
 }
 
 describe('managed run recovery', () => {
@@ -428,17 +419,20 @@ describe('managed run recovery', () => {
       assert.equal(runs.records.get(STREAM_ID)?.runNumber, attemptB.runNumber);
       assert.equal(runs.records.get(STREAM_ID)?.checkpointReference, preparedB.checkpointReference);
       assert.deepEqual(media(first, SOURCE_A, 1), { accepted: false, reason: 'stale_source' });
-      assert.equal(first.completeManagedClaim(STREAM_ID, {
-        lifecycleVersion: 1,
-        streamId: CLAIM.adminStreamId,
-        revision: 22,
-        runNumber: attemptB.runNumber,
-        uploaderId: CLAIM.uploaderId,
-        claimId: '77777777-7777-4777-8777-777777777777',
-        expectedRenditions: CLAIM.expectedRenditions,
-        state: 'claimed',
-        permission: 'claimed',
-      }), true);
+      assert.equal(
+        first.completeManagedClaim(STREAM_ID, {
+          lifecycleVersion: 1,
+          streamId: CLAIM.adminStreamId,
+          revision: 22,
+          runNumber: attemptB.runNumber,
+          uploaderId: CLAIM.uploaderId,
+          claimId: '77777777-7777-4777-8777-777777777777',
+          expectedRenditions: CLAIM.expectedRenditions,
+          state: 'claimed',
+          permission: 'claimed',
+        }),
+        true,
+      );
       assert.equal(provision(first, SOURCE_B), true);
       assert.deepEqual(media(first, SOURCE_A, 1), { accepted: false, reason: 'stale_source' });
       assert.deepEqual(media(first, SOURCE_B), { accepted: true });
@@ -450,10 +444,7 @@ describe('managed run recovery', () => {
 
       const recordingB = checkpoints.findRun(CLAIM.adminStreamId, attemptB.runNumber)?.completedRecording;
       assert.ok(recordingB);
-      assert.equal(
-        checkpoints.findRun(CLAIM.adminStreamId, attemptB.runNumber)?.tracks[0]?.state.segments.length,
-        2,
-      );
+      assert.equal(checkpoints.findRun(CLAIM.adminStreamId, attemptB.runNumber)?.tracks[0]?.state.segments.length, 2);
       await first.cleanup();
 
       const restarted = makeTestOrchestrator(
@@ -684,10 +675,10 @@ describe('managed run recovery', () => {
 
     target.restoreManagedRuns();
 
-    assert.deepEqual(
-      target.handleSegment(STREAM_ID, 0, 0.1, videoSegment(4, 0)),
-      { accepted: false, reason: 'stale_source' },
-    );
+    assert.deepEqual(target.handleSegment(STREAM_ID, 0, 0.1, videoSegment(4, 0)), {
+      accepted: false,
+      reason: 'stale_source',
+    });
   });
 
   it('does not rebuild a legacy uploader for an unreadable reserved managed run', async () => {
@@ -781,7 +772,10 @@ describe('managed run recovery', () => {
       const run = runs.records.get(STREAM_ID);
       const checkpoint = checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber);
       assert.equal(checkpoint?.status, 'complete');
-      assert.deepEqual(run?.pendingReports.map((report) => report.state), ['waiting', 'closed', 'vod']);
+      assert.deepEqual(
+        run?.pendingReports.map((report) => report.state),
+        ['waiting', 'closed', 'vod'],
+      );
       const completed = run?.pendingReports.at(-1)?.completedRecording as
         | { master: { topic: string; index: number; reference: string } }
         | undefined;
@@ -931,18 +925,16 @@ describe('managed run recovery', () => {
     try {
       assert.equal(target.prepareManagedRun({ ...CLAIM, expectedRenditions }), true);
       assert.equal(provision(target, SOURCE_A), true);
-      assert.deepEqual(
-        target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),
-        { accepted: true },
-      );
+      assert.deepEqual(target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)), {
+        accepted: true,
+      });
       assert.equal(
         target.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_A, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
         true,
       );
-      assert.deepEqual(
-        target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
-        { accepted: true },
-      );
+      assert.deepEqual(target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)), {
+        accepted: true,
+      });
       await activeUploader(target, RUNG_ID)!.segmentQueue.onIdle();
 
       await clock.advance(RECONNECT_MS);
@@ -966,9 +958,10 @@ describe('managed run recovery', () => {
       });
       assert.ok(announcedRenditions.length > 0);
       assert.ok(
-        announcedRenditions.every((rendition) =>
-          rendition.bandwidth === expectedRenditions[0].bandwidth &&
-          rendition.avgBandwidth === expectedRenditions[0].avgBandwidth
+        announcedRenditions.every(
+          (rendition) =>
+            rendition.bandwidth === expectedRenditions[0].bandwidth &&
+            rendition.avgBandwidth === expectedRenditions[0].avgBandwidth,
         ),
       );
     } finally {
@@ -1038,18 +1031,16 @@ describe('managed run recovery', () => {
     try {
       assert.equal(first.prepareManagedRun({ ...CLAIM, expectedRenditions }), true);
       assert.equal(provision(first, SOURCE_A), true);
-      assert.deepEqual(
-        first.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),
-        { accepted: true },
-      );
+      assert.deepEqual(first.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)), {
+        accepted: true,
+      });
       assert.equal(
         first.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_A, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
         true,
       );
-      assert.deepEqual(
-        first.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
-        { accepted: true },
-      );
+      assert.deepEqual(first.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)), {
+        accepted: true,
+      });
       await activeUploader(first, RUNG_ID)!.segmentQueue.onIdle();
 
       runs.failVodSaves = 2;
@@ -1092,10 +1083,7 @@ describe('managed run recovery', () => {
       await restartedClock.advance(10_000);
       await waitFor(() => runs.records.get(STREAM_ID)?.state === 'vod');
       await waitFor(() => sent.some((report) => report.state === 'vod'));
-      assert.deepEqual(
-        sent.find((report) => report.state === 'vod')?.completedRecording,
-        completedBeforeRestart,
-      );
+      assert.deepEqual(sent.find((report) => report.state === 'vod')?.completedRecording, completedBeforeRestart);
       assert.deepEqual(
         checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.completedRecording,
         completedBeforeRestart,
@@ -1137,11 +1125,15 @@ describe('managed run recovery', () => {
       await waitFor(() => activeUploader(target) === undefined);
 
       assert.equal(runs.records.get(STREAM_ID)?.state, 'closed');
-      assert.equal(runs.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'vod'), false);
+      assert.equal(
+        runs.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'vod'),
+        false,
+      );
       assert.equal(checkpoints.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status, 'prepared');
-      assert.deepEqual(mediaStore.listRun(CLAIM.adminStreamId, CLAIM.runNumber).map((record) => record.status), [
-        'pending',
-      ]);
+      assert.deepEqual(
+        mediaStore.listRun(CLAIM.adminStreamId, CLAIM.runNumber).map((record) => record.status),
+        ['pending'],
+      );
     } finally {
       await target.cleanup();
       fs.rmSync(root, { recursive: true, force: true });
@@ -1194,7 +1186,10 @@ describe('managed run recovery', () => {
       await waitFor(() => activeUploader(target) === undefined);
 
       assert.equal(runs.records.get(STREAM_ID)?.state, 'closed');
-      assert.equal(runs.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'vod'), false);
+      assert.equal(
+        runs.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'vod'),
+        false,
+      );
       assert.equal(durable.findRun(CLAIM.adminStreamId, CLAIM.runNumber)?.status, 'prepared');
       assert.equal(removeRecovery.mock.callCount(), 0);
     } finally {
@@ -1207,12 +1202,7 @@ describe('managed run recovery', () => {
     const clock = new FakeClock();
     const store = new MemoryManagedRuns();
     const sent: ManagedRunReport[] = [];
-    const first = orchestrator(
-      clock,
-      () => WALL_START + clock.now(),
-      store,
-      reportingAdmin(sent, STATE_REPORT_FAILED),
-    );
+    const first = orchestrator(clock, () => WALL_START + clock.now(), store, reportingAdmin(sent, STATE_REPORT_FAILED));
     assert.equal(first.prepareManagedRun(CLAIM), true);
     assert.equal(provision(first, SOURCE_A), true);
     assert.deepEqual(media(first, SOURCE_A), { accepted: true });
@@ -1311,7 +1301,10 @@ describe('managed run recovery', () => {
     await activeUploader(target)?.segmentQueue.onIdle();
     await settleReports();
 
-    assert.deepEqual(sent.slice(-2).map((report) => report.state), ['waiting', 'live']);
+    assert.deepEqual(
+      sent.slice(-2).map((report) => report.state),
+      ['waiting', 'live'],
+    );
     assert.equal(store.records.get(STREAM_ID)?.source?.clientId, SOURCE_B.clientId);
   });
 
@@ -1322,8 +1315,12 @@ describe('managed run recovery', () => {
     let releaseA: (value: unknown) => void = () => undefined;
     let releaseB: (value: unknown) => void = () => undefined;
     const manifests = [
-      new Promise((resolve) => { releaseA = resolve; }),
-      new Promise((resolve) => { releaseB = resolve; }),
+      new Promise((resolve) => {
+        releaseA = resolve;
+      }),
+      new Promise((resolve) => {
+        releaseB = resolve;
+      }),
     ];
     let manifest = 0;
     const target = orchestrator(
@@ -1344,7 +1341,10 @@ describe('managed run recovery', () => {
 
     releaseA({ reference: { toHex: () => 'manifest-a' } });
     await settleReports();
-    assert.equal(sent.some((report) => report.state === 'live'), false);
+    assert.equal(
+      sent.some((report) => report.state === 'live'),
+      false,
+    );
 
     releaseB({ reference: { toHex: () => 'manifest-b' } });
     await settleReports();
@@ -1375,18 +1375,16 @@ describe('managed run recovery', () => {
     });
     assert.equal(target.prepareManagedRun({ ...CLAIM, expectedRenditions }), true);
     assert.equal(provision(target, SOURCE_A), true);
-    assert.deepEqual(
-      target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)),
-      { accepted: true },
-    );
+    assert.deepEqual(target.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0)), {
+      accepted: true,
+    });
     assert.equal(
       target.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_A, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
       true,
     );
-    assert.deepEqual(
-      target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
-      { accepted: true },
-    );
+    assert.deepEqual(target.handleManagedRenditionSegment(RUNG_ID, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)), {
+      accepted: true,
+    });
     const uploader = activeUploader(target, RUNG_ID);
     assert.ok(uploader);
     const notifyStop = mock.method(uploader, 'notifyStop');
@@ -1396,10 +1394,9 @@ describe('managed run recovery', () => {
     await settleReports();
     assert.equal(notifyStop.mock.callCount(), 0, 'the generic rung reaper finalized inside reconnect grace');
     assert.equal(provision(target, SOURCE_B), true);
-    assert.deepEqual(
-      target.handleManagedSourceProgress(STREAM_ID, SOURCE_B, 0.1, videoSegment(4, 4 * FRAME_TICKS)),
-      { accepted: true },
-    );
+    assert.deepEqual(target.handleManagedSourceProgress(STREAM_ID, SOURCE_B, 0.1, videoSegment(4, 4 * FRAME_TICKS)), {
+      accepted: true,
+    });
     assert.equal(
       target.provisionManagedRendition(RUNG_ID, STREAM_ID, SOURCE_B, MEDIA_TYPE_VIDEO, CLAIMANT, ADMIN),
       true,
@@ -1496,12 +1493,18 @@ describe('managed run recovery', () => {
     await clock.advance(RECONNECT_MS);
     await settleReports();
     assert.equal(store.records.get(STREAM_ID)?.state, 'closed');
-    assert.equal(store.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'closed'), true);
+    assert.equal(
+      store.records.get(STREAM_ID)?.pendingReports.some((report) => report.state === 'closed'),
+      true,
+    );
 
     online = true;
     await clock.advance(MANAGED_REPORT_RETRY_MS);
     await settleReports();
-    assert.equal(sent.some((report) => report.state === 'closed'), true);
+    assert.equal(
+      sent.some((report) => report.state === 'closed'),
+      true,
+    );
     assert.deepEqual(store.records.get(STREAM_ID)?.pendingReports, []);
   });
 });

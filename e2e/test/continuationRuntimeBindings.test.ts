@@ -58,9 +58,17 @@ class DockerObservations implements BoundedCommand {
     this.calls.push([...args]);
     if (args[0] === 'ps') {
       assert.ok(args.includes('--no-trunc'));
-      const project = args.find((value) => value.startsWith('label=com.docker.compose.project='))?.split('=').at(-1);
-      const service = args.find((value) => value.startsWith('label=com.docker.compose.service='))?.split('=').at(-1);
-      const matched = this.containers.filter((container) => container.project === project && container.service === service);
+      const project = args
+        .find((value) => value.startsWith('label=com.docker.compose.project='))
+        ?.split('=')
+        .at(-1);
+      const service = args
+        .find((value) => value.startsWith('label=com.docker.compose.service='))
+        ?.split('=')
+        .at(-1);
+      const matched = this.containers.filter(
+        (container) => container.project === project && container.service === service,
+      );
       return { stdout: matched.map(({ id }) => id).join('\n'), stderr: '' };
     }
     if (args[0] === 'exec' && args[2] === 'printenv') {
@@ -76,7 +84,11 @@ class DockerObservations implements BoundedCommand {
         'stream-uploader': { API_PORT: '10010' },
       };
       return {
-        stdout: args.slice(3).map((name) => values[container.service]?.[name]).join('\n') + '\n',
+        stdout:
+          args
+            .slice(3)
+            .map((name) => values[container.service]?.[name])
+            .join('\n') + '\n',
         stderr: '',
       };
     }
@@ -231,9 +243,22 @@ describe('resolveFixtureRuntime', () => {
     assert.deepEqual(
       [...runtime.measurements.containers.entries()].filter(([role]) => role.startsWith('manager-')),
       [
-        ['manager-postgres', { id: 'manager-postgres-id', name: 'manager-project-postgres-1', configuredImage: 'fixture/postgres:candidate' }],
-        ['manager-api', { id: 'manager-api-id', name: 'manager-project-api-1', configuredImage: 'fixture/api:candidate' }],
-        ['manager-web', { id: 'manager-web-id', name: 'manager-project-web-1', configuredImage: 'fixture/web:candidate' }],
+        [
+          'manager-postgres',
+          {
+            id: 'manager-postgres-id',
+            name: 'manager-project-postgres-1',
+            configuredImage: 'fixture/postgres:candidate',
+          },
+        ],
+        [
+          'manager-api',
+          { id: 'manager-api-id', name: 'manager-project-api-1', configuredImage: 'fixture/api:candidate' },
+        ],
+        [
+          'manager-web',
+          { id: 'manager-web-id', name: 'manager-project-web-1', configuredImage: 'fixture/web:candidate' },
+        ],
       ],
     );
     assert.equal(runtime.measurements.containers.size, 17);
@@ -293,7 +318,9 @@ describe('resolveFixtureRuntime', () => {
   it('refuses a missing or foreign manager runtime identity', async () => {
     const plan = fixturePlan();
     const topology = createContinuationTopology(plan, UPLOADER_ID);
-    const missing = guardedContainers().filter(({ service, project }) => !(project === 'manager-project' && service === 'api'));
+    const missing = guardedContainers().filter(
+      ({ service, project }) => !(project === 'manager-project' && service === 'api'),
+    );
     await assert.rejects(
       resolveFixtureRuntime(new DockerObservations(missing), {
         plan,

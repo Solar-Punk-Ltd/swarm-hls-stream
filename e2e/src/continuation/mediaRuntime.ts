@@ -34,7 +34,11 @@ export class LoopbackMediaScenarioFetch implements MediaScenarioFetch {
   async fetch(request: MediaScenarioFetchRequest): Promise<MediaScenarioFetchResponse> {
     const url = loopbackUrl(request.url);
     const cookie = secret(this.options.secrets, request.authReference);
-    if (!Number.isSafeInteger(request.maxResponseBytes) || request.maxResponseBytes < 1 || request.maxResponseBytes > MAX_REQUEST_BYTES) {
+    if (
+      !Number.isSafeInteger(request.maxResponseBytes) ||
+      request.maxResponseBytes < 1 ||
+      request.maxResponseBytes > MAX_REQUEST_BYTES
+    ) {
       throw new FixtureRefusal('media control response bound is invalid');
     }
     let body: string | undefined;
@@ -128,7 +132,9 @@ export class NodeInteractiveProcessLauncher implements InteractiveProcessLaunche
       child.on('close', (code, signal) => {
         clearTimeout(timer);
         if (timedOut || exceeded) {
-          reject(new FixtureRefusal(timedOut ? 'media process timed out' : 'media process exceeded its output byte bound'));
+          reject(
+            new FixtureRefusal(timedOut ? 'media process timed out' : 'media process exceeded its output byte bound'),
+          );
           return;
         }
         resolve({
@@ -316,22 +322,26 @@ export class DockerMediaScenarioSpawn implements MediaScenarioSpawn {
 
 function ffmpegShellScript(invocation: MediaScenarioProcessInvocation, references: readonly string[]): string {
   const reads = references.map((_, index) => `IFS= read -r secret_${index} || exit 90`).join('\n');
-  const args = invocation.args.map((argument) => {
-    if (typeof argument === 'string') {
-      return shellQuoted(argument);
-    }
-    const value = argument.segments.map((segment) => {
-      if (segment.kind === 'literal') {
-        return doubleQuotedPart(segment.value);
+  const args = invocation.args
+    .map((argument) => {
+      if (typeof argument === 'string') {
+        return shellQuoted(argument);
       }
-      const index = references.indexOf(segment.reference);
-      if (index < 0) {
-        throw new FixtureRefusal('media process secret reference is unresolved');
-      }
-      return `\${secret_${index}}`;
-    }).join('');
-    return `"${value}"`;
-  }).join(' ');
+      const value = argument.segments
+        .map((segment) => {
+          if (segment.kind === 'literal') {
+            return doubleQuotedPart(segment.value);
+          }
+          const index = references.indexOf(segment.reference);
+          if (index < 0) {
+            throw new FixtureRefusal('media process secret reference is unresolved');
+          }
+          return `\${secret_${index}}`;
+        })
+        .join('');
+      return `"${value}"`;
+    })
+    .join(' ');
   return `${reads}${reads === '' ? '' : '\n'}exec /usr/bin/ffmpeg ${args}`;
 }
 

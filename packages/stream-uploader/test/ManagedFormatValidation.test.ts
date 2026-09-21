@@ -111,19 +111,22 @@ function create(inspector: MediaFormatInspector, clock = new FakeClock(), maxOpe
     managedFormatStore: formatStore,
     mediaFormatInspector: inspector,
   });
-  assert.equal(orchestrator.prepareManagedRun({
-    lifecycleVersion: 1,
-    streamId: STREAM_ID,
-    adminStreamId: ADMIN_STREAM_ID,
-    topic: 'managed-format-topic',
-    mediaType: MEDIA_TYPE_VIDEO,
-    revision: 1,
-    runNumber: 1,
-    uploaderId: 'uploader-a',
-    claimId: '22222222-2222-4222-8222-222222222222',
-    eventSequence: 1,
-    expectedRenditions: [],
-  }), true);
+  assert.equal(
+    orchestrator.prepareManagedRun({
+      lifecycleVersion: 1,
+      streamId: STREAM_ID,
+      adminStreamId: ADMIN_STREAM_ID,
+      topic: 'managed-format-topic',
+      mediaType: MEDIA_TYPE_VIDEO,
+      revision: 1,
+      runNumber: 1,
+      uploaderId: 'uploader-a',
+      claimId: '22222222-2222-4222-8222-222222222222',
+      eventSequence: 1,
+      expectedRenditions: [],
+    }),
+    true,
+  );
   return { orchestrator, formatStore, clock };
 }
 
@@ -291,31 +294,35 @@ describe('managed actual opening format validation', () => {
       ladder: AbrLadder.parse('360p:640:360:700'),
     });
     const topic = 'managed-format-topic';
-    assert.equal(orchestrator.prepareManagedRun({
-      lifecycleVersion: 1,
-      streamId: STREAM_ID,
-      adminStreamId: ADMIN_STREAM_ID,
-      topic,
-      mediaType: MEDIA_TYPE_VIDEO,
-      revision: 1,
-      runNumber: 1,
-      uploaderId: 'uploader-a',
-      claimId: '22222222-2222-4222-8222-222222222222',
-      eventSequence: 1,
-      expectedRenditions: [{
-        name: '360p',
-        topic: rungTopicFor(topic, '360p'),
-        width: 640,
-        height: 360,
-        bandwidth: 700_000,
-        avgBandwidth: 700_000,
-      }],
-    }), true);
-    assert.equal(provision(orchestrator, SOURCE_A), true);
-    assert.deepEqual(
-      await orchestrator.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0), 0),
-      { accepted: true },
+    assert.equal(
+      orchestrator.prepareManagedRun({
+        lifecycleVersion: 1,
+        streamId: STREAM_ID,
+        adminStreamId: ADMIN_STREAM_ID,
+        topic,
+        mediaType: MEDIA_TYPE_VIDEO,
+        revision: 1,
+        runNumber: 1,
+        uploaderId: 'uploader-a',
+        claimId: '22222222-2222-4222-8222-222222222222',
+        eventSequence: 1,
+        expectedRenditions: [
+          {
+            name: '360p',
+            topic: rungTopicFor(topic, '360p'),
+            width: 640,
+            height: 360,
+            bandwidth: 700_000,
+            avgBandwidth: 700_000,
+          },
+        ],
+      }),
+      true,
     );
+    assert.equal(provision(orchestrator, SOURCE_A), true);
+    assert.deepEqual(await orchestrator.handleManagedSourceProgress(STREAM_ID, SOURCE_A, 0.1, videoSegment(4, 0), 0), {
+      accepted: true,
+    });
     const rungId = `${STREAM_ID}_360p`;
     assert.equal(
       orchestrator.provisionManagedRendition(
@@ -329,14 +336,7 @@ describe('managed actual opening format validation', () => {
       true,
     );
     assert.deepEqual(
-      await orchestrator.handleManagedRenditionSegment(
-        rungId,
-        STREAM_ID,
-        SOURCE_A,
-        0,
-        0.1,
-        videoSegment(4, 0),
-      ),
+      await orchestrator.handleManagedRenditionSegment(rungId, STREAM_ID, SOURCE_A, 0, 0.1, videoSegment(4, 0)),
       { accepted: false, reason: 'unverified_source_media' },
     );
     await orchestrator.cleanup();

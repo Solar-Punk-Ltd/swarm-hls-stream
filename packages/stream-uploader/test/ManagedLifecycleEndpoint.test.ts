@@ -191,10 +191,7 @@ describe('managed lifecycle status', () => {
 
     const enabled = await startTestApi(orchestrator, [], undefined, undefined, { version: 1 });
     servers.push(enabled);
-    assert.equal(
-      (await enabled.request('/stream/lifecycle', { headers: NO_AUTH_HEADER })).status,
-      401,
-    );
+    assert.equal((await enabled.request('/stream/lifecycle', { headers: NO_AUTH_HEADER })).status, 401);
     const accepted = await enabled.request('/stream/lifecycle');
     assert.equal(accepted.status, 200);
     assert.deepEqual(accepted.body, response);

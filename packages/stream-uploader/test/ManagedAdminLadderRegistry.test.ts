@@ -5,11 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import {
-  AdminApiClient,
-  ManagedRenditionReport,
-  ManagedRenditionReportResponse,
-} from '../src/libs/AdminApiClient.js';
+import { AdminApiClient, ManagedRenditionReport, ManagedRenditionReportResponse } from '../src/libs/AdminApiClient.js';
 import { AdminLadderRegistry } from '../src/libs/AdminLadderRegistry.js';
 import { BeePublisherPool } from '../src/libs/BeePublisherPool.js';
 import { LadderLiveness, RUNG_DEATH_LAG_SEGMENTS } from '../src/libs/LadderLiveness.js';
@@ -90,7 +86,10 @@ interface Harness {
 
 function makeHarness(
   root: string,
-  answer: (request: ManagedRenditionReport, call: number) => ManagedRenditionReportResponse | Promise<ManagedRenditionReportResponse>,
+  answer: (
+    request: ManagedRenditionReport,
+    call: number,
+  ) => ManagedRenditionReportResponse | Promise<ManagedRenditionReportResponse>,
   failMasterWrite: () => boolean = () => false,
 ): Harness {
   const reports: ManagedRenditionReport[] = [];
@@ -157,10 +156,7 @@ describe('managed AdminLadderRegistry', () => {
     const restarted = makeHarness(root, (report) => response(report, 2, CLAIM_A, 1, [report.rendition]));
     await restarted.registry.upsertRendition(identity(2, CLAIM_A), expected[0]);
 
-    assert.equal(
-      first.urls[0],
-      `${ADMIN_URL}/api/internal/streams/${STREAM_ID}/runs/2/renditions/360p`,
-    );
+    assert.equal(first.urls[0], `${ADMIN_URL}/api/internal/streams/${STREAM_ID}/runs/2/renditions/360p`);
     assert.deepEqual(restarted.reports[0], first.reports[0]);
     assert.equal(first.reports[0].observedAt, OBSERVED_AT);
     assert.equal(first.reports[0].renditionSequence, 1);
@@ -228,10 +224,7 @@ describe('managed AdminLadderRegistry', () => {
       }
     ).liveness.set(managedKey, tracker);
 
-    await assert.rejects(
-      harness.registry.upsertRendition(identity(2, CLAIM_A), expected[0]),
-      /master write refused/,
-    );
+    await assert.rejects(harness.registry.upsertRendition(identity(2, CLAIM_A), expected[0]), /master write refused/);
     failMasterWrite = false;
     for (let delivered = 0; delivered < RUNG_DEATH_LAG_SEGMENTS; delivered++) {
       tracker.recordDelivered('360p');

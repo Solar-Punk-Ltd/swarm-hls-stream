@@ -1,16 +1,8 @@
 import type { BoundedCommand } from './dockerCli.js';
 import { FIXTURE_LABEL, type FixturePlan, FixtureRefusal, MANAGED_LABEL } from './fixture.js';
 import type { MeasurementContainerRole } from './measurements.js';
-import type {
-  GuardCandidateBinding,
-  RuntimeContainerBinding,
-  RuntimeReadinessBindings,
-} from './readinessSource.js';
-import type {
-  ContinuationTopology,
-  ReleaseGuardRole,
-  TopologyServiceRole,
-} from './topology.js';
+import type { GuardCandidateBinding, RuntimeContainerBinding, RuntimeReadinessBindings } from './readinessSource.js';
+import type { ContinuationTopology, ReleaseGuardRole, TopologyServiceRole } from './topology.js';
 
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,200}$/;
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
@@ -149,9 +141,8 @@ export async function resolveFixtureRuntime(
       if (!network || network.networkId !== input.fixtureNetworkId) {
         throw new FixtureRefusal(`${expected.role} is outside the exact fixture network`);
       }
-      const requiredAlias = expected.requiredAlias === 'fixture-admin-api'
-        ? `${input.plan.fixtureId}-admin-api`
-        : expected.requiredAlias;
+      const requiredAlias =
+        expected.requiredAlias === 'fixture-admin-api' ? `${input.plan.fixtureId}-admin-api` : expected.requiredAlias;
       if (requiredAlias && !network.aliases.includes(requiredAlias)) {
         throw new FixtureRefusal(`${expected.role} runtime alias does not match`);
       }
@@ -186,7 +177,13 @@ export async function resolveFixtureRuntime(
   const measurementContainers = new Map<MeasurementContainerRole, RuntimeContainerBinding>(containers);
   const managerProject = checkedName(input.projects.manager, 'manager project');
   for (const expected of MANAGER_MEASUREMENT_CONTAINERS) {
-    const id = await exactComposeContainer(command, input.plan.fixtureId, managerProject, expected.service, expected.role);
+    const id = await exactComposeContainer(
+      command,
+      input.plan.fixtureId,
+      managerProject,
+      expected.service,
+      expected.role,
+    );
     const inspection = await inspectContainer(command, id, input.plan.fixtureId);
     if (
       inspection.labels['com.docker.compose.project'] !== managerProject ||
@@ -257,12 +254,19 @@ async function exactComposeContainer(
   diagnosticRole: string,
 ): Promise<string> {
   const result = await command.run('docker', [
-    'ps', '--quiet', '--no-trunc',
-    '--filter', `label=com.docker.compose.project=${project}`,
-    '--filter', `label=com.docker.compose.service=${service}`,
-    '--filter', 'label=com.docker.compose.oneoff=False',
-    '--filter', `label=${FIXTURE_LABEL}=${fixtureId}`,
-    '--filter', `label=${MANAGED_LABEL}=true`,
+    'ps',
+    '--quiet',
+    '--no-trunc',
+    '--filter',
+    `label=com.docker.compose.project=${project}`,
+    '--filter',
+    `label=com.docker.compose.service=${service}`,
+    '--filter',
+    'label=com.docker.compose.oneoff=False',
+    '--filter',
+    `label=${FIXTURE_LABEL}=${fixtureId}`,
+    '--filter',
+    `label=${MANAGED_LABEL}=true`,
   ]);
   const ids = result.stdout.trim() === '' ? [] : result.stdout.trim().split(/\s+/);
   if (ids.length !== 1 || !SAFE_NAME.test(ids[0] ?? '')) {
@@ -279,7 +283,10 @@ async function requirePortEnvironment(
 ): Promise<void> {
   const names = Object.keys(expected);
   const result = await command.run('docker', [
-    'exec', checkedName(containerId, `${role} container id`), 'printenv', ...names,
+    'exec',
+    checkedName(containerId, `${role} container id`),
+    'printenv',
+    ...names,
   ]);
   const values = result.stdout.replace(/\n$/, '').split('\n');
   if (values.length !== names.length || names.some((name, index) => values[index] !== expected[name])) {
@@ -287,13 +294,11 @@ async function requirePortEnvironment(
   }
 }
 
-async function inspectContainer(
-  command: BoundedCommand,
-  id: string,
-  fixtureId: string,
-): Promise<ContainerInspection> {
+async function inspectContainer(command: BoundedCommand, id: string, fixtureId: string): Promise<ContainerInspection> {
   const result = await command.run('docker', [
-    'container', 'inspect', '--format',
+    'container',
+    'inspect',
+    '--format',
     '{"id":{{json .Id}},"name":{{json .Name}},"configuredImage":{{json .Config.Image}},"imageId":{{json .Image}},"labels":{{json .Config.Labels}},"networks":{{json .NetworkSettings.Networks}},"exposedPorts":{{json .Config.ExposedPorts}}}',
     checkedName(id, 'container id'),
   ]);

@@ -525,14 +525,14 @@ export class StreamUploader {
     recordSegment(this.bitrate, data.length, duration);
     void this.segmentQueue
       .add(async () => {
-      try {
-        await this.uploadSegment(segmentIndex, duration, data, sourceGeneration, managedMediaToken);
-      } finally {
-        this.queuedSeconds -= duration;
-        if (managedMediaToken) {
-          this.managedLifecycle?.onSegmentSettled?.(managedMediaToken);
+        try {
+          await this.uploadSegment(segmentIndex, duration, data, sourceGeneration, managedMediaToken);
+        } finally {
+          this.queuedSeconds -= duration;
+          if (managedMediaToken) {
+            this.managedLifecycle?.onSegmentSettled?.(managedMediaToken);
+          }
         }
-      }
       })
       .catch((error) => this.errorHandler.handleError(error, 'StreamUploader.handleSegment'));
   }
@@ -812,11 +812,7 @@ export class StreamUploader {
           index: vodIndex,
           duration: this.manifestManager.getTotalDuration(),
         });
-        if (
-          announced?.flippedToFinished &&
-          announced.masterIndex !== null &&
-          announced.masterReference
-        ) {
+        if (announced?.flippedToFinished && announced.masterIndex !== null && announced.masterReference) {
           this.managedLifecycle.onMasterFinalized?.({
             topic: this.ladder.group,
             index: announced.masterIndex,
@@ -1498,7 +1494,11 @@ export class StreamUploader {
 
     this.managedLifecycle?.onTrackStateChanged?.(this.getStreamState());
 
-    if (this.managedLifecycle && sourceGeneration !== undefined && (!this.ladder || this.readiness === READINESS_ANNOUNCED)) {
+    if (
+      this.managedLifecycle &&
+      sourceGeneration !== undefined &&
+      (!this.ladder || this.readiness === READINESS_ANNOUNCED)
+    ) {
       this.managedLifecycle.onLivePublished(sourceGeneration);
     }
 

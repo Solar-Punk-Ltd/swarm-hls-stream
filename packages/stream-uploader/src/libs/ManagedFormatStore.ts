@@ -5,11 +5,7 @@ import path from 'node:path';
 import { SourceConnectionIdentity } from '../types.js';
 
 import { DurableFileOps } from './ManagedRunStore.js';
-import {
-  isMediaFormatFingerprint,
-  MediaFormatFingerprint,
-  sameMediaFormatFingerprint,
-} from './MediaFormatProbe.js';
+import { isMediaFormatFingerprint, MediaFormatFingerprint, sameMediaFormatFingerprint } from './MediaFormatProbe.js';
 
 export interface ManagedFormatInput {
   readonly adminStreamId: string;
@@ -87,7 +83,9 @@ function sameSource(left: SourceConnectionIdentity, right: SourceConnectionIdent
 }
 
 function validSource(value: unknown): value is SourceConnectionIdentity {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const source = value as Partial<SourceConnectionIdentity>;
   return (
     typeof source.serverId === 'string' &&
@@ -102,7 +100,9 @@ function validSource(value: unknown): value is SourceConnectionIdentity {
 }
 
 function validRecord(value: unknown): value is ManagedFormatRecord {
-  if (!value || typeof value !== 'object') {return false;}
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const record = value as Partial<ManagedFormatRecord>;
   if (
     record.lifecycleVersion !== 1 ||
@@ -252,11 +252,15 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
 
   public read(input: Omit<ManagedFormatInput, 'sequence' | 'source'>): ManagedFormatRecord | null {
     const filePath = path.join(this.stateDir, fileName(input));
-    if (!this.fileOps.existsSync(filePath)) {return null;}
+    if (!this.fileOps.existsSync(filePath)) {
+      return null;
+    }
     this.flushDirectory(this.stateDir);
     try {
       const parsed: unknown = JSON.parse(this.fileOps.readFileSync(filePath, 'utf8'));
-      if (!validRecord(parsed)) {throw new Error('invalid record');}
+      if (!validRecord(parsed)) {
+        throw new Error('invalid record');
+      }
       return parsed;
     } catch {
       throw new Error(`Managed format record ${filePath} is unreadable`);
@@ -264,7 +268,9 @@ export class ManagedFormatStore implements ManagedFormatPersistence {
   }
 
   private save(record: ManagedFormatRecord): void {
-    if (!validRecord(record)) {throw new Error('Refused invalid managed format record');}
+    if (!validRecord(record)) {
+      throw new Error('Refused invalid managed format record');
+    }
     const filePath = path.join(this.stateDir, fileName(record));
     const temporaryPath = `${filePath}.tmp`;
     const file = this.fileOps.openSync(temporaryPath, 'w', 0o600);

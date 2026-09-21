@@ -6,10 +6,7 @@ import { describe, it } from 'node:test';
 
 import type { BoundedCommand, CommandResult } from '../src/continuation/dockerCli.js';
 import { FixtureRefusal } from '../src/continuation/fixture.js';
-import {
-  captureContinuationMeasurements,
-  type MeasurementContainerRole,
-} from '../src/continuation/measurements.js';
+import { captureContinuationMeasurements, type MeasurementContainerRole } from '../src/continuation/measurements.js';
 import type { RuntimeContainerBinding } from '../src/continuation/readinessSource.js';
 
 const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
@@ -32,9 +29,13 @@ class RecordingCommand implements BoundedCommand {
     }
     if (args[0] === 'stats') {
       return {
-        stdout: args.slice(args.indexOf('--format') + 2)
-          .map((id) => JSON.stringify({ id, cpu: '0.1%', memory: '1MiB / 1GiB', pids: '1', net: '0B / 0B', block: '0B / 0B' }))
-          .join('\n') + '\n',
+        stdout:
+          args
+            .slice(args.indexOf('--format') + 2)
+            .map((id) =>
+              JSON.stringify({ id, cpu: '0.1%', memory: '1MiB / 1GiB', pids: '1', net: '0B / 0B', block: '0B / 0B' }),
+            )
+            .join('\n') + '\n',
         stderr: '',
       };
     }
@@ -144,13 +145,13 @@ describe('continuation measurement snapshots', () => {
     const statsCall = command.calls.find(({ args }) => args[0] === 'stats');
     assert.ok(statsCall);
     assert.ok(statsCall.args.includes('--no-trunc'));
-    const savedStats = String(saved.exactContainerStats).trim().split('\n').map((row) => JSON.parse(row) as { id: string });
+    const savedStats = String(saved.exactContainerStats)
+      .trim()
+      .split('\n')
+      .map((row) => JSON.parse(row) as { id: string });
     assert.equal(savedStats.length, 17);
     assert.equal(new Set(savedStats.map(({ id }) => id)).size, 17);
-    assert.deepEqual(
-      new Set(savedStats.map(({ id }) => id)),
-      new Set([...containers().values()].map(({ id }) => id)),
-    );
+    assert.deepEqual(new Set(savedStats.map(({ id }) => id)), new Set([...containers().values()].map(({ id }) => id)));
     assert.ok(command.calls.every(({ args }) => !args.includes('env')));
     assert.ok(command.calls.every(({ args }) => !args.includes('logs')));
   });

@@ -17,10 +17,14 @@ export class MemoryManagedCheckpoints implements ManagedCheckpointPersistence {
   private nextReference = 1;
 
   public createRun(input: CreateManagedRun): ManagedCheckpointRecord {
-    if (this.failCreate) {throw new Error('injected checkpoint create failure');}
+    if (this.failCreate) {
+      throw new Error('injected checkpoint create failure');
+    }
     const key = this.key(input.adminStreamId, input.runNumber);
     const existing = this.runs.get(key);
-    if (existing) {return structuredClone(existing);}
+    if (existing) {
+      return structuredClone(existing);
+    }
     const reference = `00000000-0000-4000-8000-${String(this.nextReference++).padStart(12, '0')}`;
     const record: ManagedCheckpointRecord = {
       lifecycleVersion: 1,
@@ -47,25 +51,25 @@ export class MemoryManagedCheckpoints implements ManagedCheckpointPersistence {
 
   public saveTrack(checkpointReference: string, track: ManagedTrackFinalization): ManagedCheckpointRecord {
     const [key, existing] = this.entry(checkpointReference);
-    if (existing.status !== 'prepared') {throw new Error('memory checkpoint is already sealed');}
+    if (existing.status !== 'prepared') {
+      throw new Error('memory checkpoint is already sealed');
+    }
     const record: ManagedCheckpointRecord = {
       ...existing,
-      tracks: [
-        ...existing.tracks.filter((candidate) => candidate.streamId !== track.streamId),
-        structuredClone(track),
-      ],
+      tracks: [...existing.tracks.filter((candidate) => candidate.streamId !== track.streamId), structuredClone(track)],
     };
     this.runs.set(key, structuredClone(record));
     return record;
   }
 
-  public complete(
-    checkpointReference: string,
-    master: ManagedImmutableMediaReference,
-  ): ManagedCompletedRecording {
+  public complete(checkpointReference: string, master: ManagedImmutableMediaReference): ManagedCompletedRecording {
     const [key, existing] = this.entry(checkpointReference);
-    if (existing.completedRecording) {return structuredClone(existing.completedRecording);}
-    if (existing.status !== 'prepared') {throw new Error('memory checkpoint is already sealed');}
+    if (existing.completedRecording) {
+      return structuredClone(existing.completedRecording);
+    }
+    if (existing.status !== 'prepared') {
+      throw new Error('memory checkpoint is already sealed');
+    }
     const completedRecording: ManagedCompletedRecording = {
       runNumber: existing.runNumber,
       checkpointReference,
@@ -103,7 +107,9 @@ export class MemoryManagedCheckpoints implements ManagedCheckpointPersistence {
 
   private entry(checkpointReference: string): [string, ManagedCheckpointRecord] {
     const entry = [...this.runs.entries()].find(([, record]) => record.checkpointReference === checkpointReference);
-    if (!entry) {throw new Error('memory checkpoint does not exist');}
+    if (!entry) {
+      throw new Error('memory checkpoint does not exist');
+    }
     return entry;
   }
 }

@@ -13,33 +13,30 @@ describe('continuation fixture operation lease', () => {
     const parent = mkdtempSync(join(tmpdir(), 'continuation-lease-'));
     const outputRoot = join(parent, FIXTURE_ID);
     let allowFinish!: () => void;
-    const held = new Promise<void>((resolve) => { allowFinish = resolve; });
+    const held = new Promise<void>((resolve) => {
+      allowFinish = resolve;
+    });
     let mutations = 0;
-    const active = withFixtureOperationLease(
-      { fixtureId: FIXTURE_ID, outputRoot, operation: 'run' },
-      async (lease) => {
-        mutations += 1;
-        await held;
-        lease.releaseWhenComplete();
-      },
-    );
+    const active = withFixtureOperationLease({ fixtureId: FIXTURE_ID, outputRoot, operation: 'run' }, async (lease) => {
+      mutations += 1;
+      await held;
+      lease.releaseWhenComplete();
+    });
     await new Promise((resolve) => setImmediate(resolve));
 
     await assert.rejects(
-      withFixtureOperationLease(
-        { fixtureId: FIXTURE_ID, outputRoot, operation: 'cleanup' },
-        async () => { mutations += 1; },
-      ),
+      withFixtureOperationLease({ fixtureId: FIXTURE_ID, outputRoot, operation: 'cleanup' }, async () => {
+        mutations += 1;
+      }),
       /operation lease/i,
     );
     assert.equal(mutations, 1);
 
     allowFinish();
     await active;
-    await withFixtureOperationLease(
-      { fixtureId: FIXTURE_ID, outputRoot, operation: 'cleanup' },
-      async (lease) => { lease.releaseWhenComplete(); },
-    );
+    await withFixtureOperationLease({ fixtureId: FIXTURE_ID, outputRoot, operation: 'cleanup' }, async (lease) => {
+      lease.releaseWhenComplete();
+    });
   });
 
   it('retains the lease when owned process reaping is unresolved', async () => {
@@ -47,19 +44,15 @@ describe('continuation fixture operation lease', () => {
     const outputRoot = join(parent, FIXTURE_ID);
 
     await assert.rejects(
-      withFixtureOperationLease(
-        { fixtureId: FIXTURE_ID, outputRoot, operation: 'run' },
-        async () => { throw new Error('synthetic reaping refusal'); },
-      ),
+      withFixtureOperationLease({ fixtureId: FIXTURE_ID, outputRoot, operation: 'run' }, async () => {
+        throw new Error('synthetic reaping refusal');
+      }),
       /synthetic reaping refusal/,
     );
 
     assert.equal(existsSync(`${outputRoot}.operation.lock`), true);
     await assert.rejects(
-      withFixtureOperationLease(
-        { fixtureId: FIXTURE_ID, outputRoot, operation: 'cleanup' },
-        async () => {},
-      ),
+      withFixtureOperationLease({ fixtureId: FIXTURE_ID, outputRoot, operation: 'cleanup' }, async () => {}),
       /operation lease/i,
     );
   });

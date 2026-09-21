@@ -17,8 +17,5 @@
     }
   },
   "canonicalUtf8": "{\"claimId\":\"22222222-2222-4222-8222-222222222222\",\"lifecycleVersion\":1,\"observedAt\":\"2026-09-20T10:00:00.000Z\",\"rendition\":{\"avgBandwidth\":700000,\"bandwidth\":800000,\"duration\":61,\"height\":360,\"index\":12,\"name\":\"360p\",\"topic\":\"33333333-3333-4333-8333-333333333333\",\"width\":640},\"renditionSequence\":3,\"uploaderId\":\"srs-uploader-a\"}",
-  "sha256HexParts": [
-    "4e6fb5259e22fa27a4d2ca1f2139af80",
-    "90237619dec4c27ba2a2337a1f0cc798"
-  ]
+  "sha256HexParts": ["4e6fb5259e22fa27a4d2ca1f2139af80", "90237619dec4c27ba2a2337a1f0cc798"]
 }

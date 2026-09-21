@@ -27,10 +27,7 @@ const RETRY_AFTER_SECONDS = '2';
 /** Handed back by `POST /stream/stop`, so a caller does not have to know the route to poll. */
 const STATUS_PATH = '/stream/status';
 
-export function createStreamRouter(
-  streamOrchestrator: StreamOrchestrator,
-  managedLifecycle?: { version: 1 },
-): Router {
+export function createStreamRouter(streamOrchestrator: StreamOrchestrator, managedLifecycle?: { version: 1 }): Router {
   const router = Router();
 
   if (managedLifecycle) {

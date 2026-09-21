@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { FixtureRefusal } from '../src/continuation/fixture.js';
-import {
-  FetchManagerProfileClient,
-  managerUploaderProfileName,
-} from '../src/continuation/managerProfile.js';
+import { FetchManagerProfileClient, managerUploaderProfileName } from '../src/continuation/managerProfile.js';
 
 const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
@@ -75,12 +72,15 @@ describe('FetchManagerProfileClient', () => {
       instanceId: INSTANCE_ID,
       portSlot: 1,
     });
-    assert.deepEqual(calls.map((call) => [new URL(call.url).pathname, call.init?.method ?? 'GET']), [
-      ['/api/auth/login', 'POST'],
-      ['/api/profiles', 'POST'],
-      [`/api/profiles/${PROFILE_NAME}`, 'GET'],
-      [`/api/profiles/${PROFILE_NAME}`, 'GET'],
-    ]);
+    assert.deepEqual(
+      calls.map((call) => [new URL(call.url).pathname, call.init?.method ?? 'GET']),
+      [
+        ['/api/auth/login', 'POST'],
+        ['/api/profiles', 'POST'],
+        [`/api/profiles/${PROFILE_NAME}`, 'GET'],
+        [`/api/profiles/${PROFILE_NAME}`, 'GET'],
+      ],
+    );
     const submitted = JSON.parse(String(calls[1]?.init?.body)) as Record<string, unknown>;
     assert.deepEqual(submitted, {
       name: PROFILE_NAME,
@@ -90,10 +90,7 @@ describe('FetchManagerProfileClient', () => {
       private_key: PRIVATE_KEY,
     });
     assert.equal((calls[1]?.init?.headers as Record<string, string>).cookie, 'sim_session=synthetic-session');
-    assert.equal(
-      (calls[1]?.init?.headers as Record<string, string>)['x-requested-with'],
-      'streaming-infra-manager',
-    );
+    assert.equal((calls[1]?.init?.headers as Record<string, string>)['x-requested-with'], 'streaming-infra-manager');
   });
 
   it('sets the existing postage batch, starts uploader through manager, and verifies readback', async () => {
@@ -104,18 +101,18 @@ describe('FetchManagerProfileClient', () => {
         headers: { 'set-cookie': 'sim_session=synthetic-session; Path=/; HttpOnly; SameSite=Lax' },
       }),
       jsonResponse(profile({ pendingStamp: false })),
-      new Response([
-        'event: start',
-        'data: {"script":"deploy.sh"}',
-        '',
-        'event: done',
-        'data: {"code":0,"signal":null}',
-        '',
-      ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-      jsonResponse(profile({
-        pendingStamp: false,
-        containers: [{ service: 'srs' }, { service: 'stream-uploader' }],
-      })),
+      new Response(
+        ['event: start', 'data: {"script":"deploy.sh"}', '', 'event: done', 'data: {"code":0,"signal":null}', ''].join(
+          '\n',
+        ),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      ),
+      jsonResponse(
+        profile({
+          pendingStamp: false,
+          containers: [{ service: 'srs' }, { service: 'stream-uploader' }],
+        }),
+      ),
     ];
     const client = new FetchManagerProfileClient({
       baseUrl: 'http://127.0.0.1:9876/api',
@@ -132,12 +129,15 @@ describe('FetchManagerProfileClient', () => {
       postageBatchId: POSTAGE_BATCH_ID,
     });
 
-    assert.deepEqual(calls.map((call) => [new URL(call.url).pathname, call.init?.method ?? 'GET']), [
-      ['/api/auth/login', 'POST'],
-      [`/api/profiles/${PROFILE_NAME}/stamp/set`, 'POST'],
-      [`/api/profiles/${PROFILE_NAME}/deploy-uploader`, 'POST'],
-      [`/api/profiles/${PROFILE_NAME}`, 'GET'],
-    ]);
+    assert.deepEqual(
+      calls.map((call) => [new URL(call.url).pathname, call.init?.method ?? 'GET']),
+      [
+        ['/api/auth/login', 'POST'],
+        [`/api/profiles/${PROFILE_NAME}/stamp/set`, 'POST'],
+        [`/api/profiles/${PROFILE_NAME}/deploy-uploader`, 'POST'],
+        [`/api/profiles/${PROFILE_NAME}`, 'GET'],
+      ],
+    );
     assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), { stamp_id: POSTAGE_BATCH_ID });
   });
 
@@ -227,11 +227,12 @@ describe('FetchManagerProfileClient', () => {
 
   it('refuses non-loopback manager origins and oversized responses', async () => {
     assert.throws(
-      () => new FetchManagerProfileClient({
-        baseUrl: 'http://manager.example/api',
-        username: 'fixture-operator',
-        password: 'synthetic-password',
-      }),
+      () =>
+        new FetchManagerProfileClient({
+          baseUrl: 'http://manager.example/api',
+          username: 'fixture-operator',
+          password: 'synthetic-password',
+        }),
       /loopback/i,
     );
 

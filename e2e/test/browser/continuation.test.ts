@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { type ChildProcessWithoutNullStreams,spawn } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -7,7 +7,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { type Browser, chromium, type Locator } from 'playwright-core';
 
-import type { ContinuationPlayerTest, ContinuationWatchTest } from '../../../packages/client/test/fixtures/browser-continuation/window.js';
+import type {
+  ContinuationPlayerTest,
+  ContinuationWatchTest,
+} from '../../../packages/client/test/fixtures/browser-continuation/window.js';
 
 const E2E_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const REPOSITORY_ROOT = dirname(E2E_ROOT);
@@ -24,7 +27,14 @@ type CatalogEntry = {
   timestamp: number;
   mediatype: 'video';
   title: string;
-  renditions: Array<{ name: string; width: number; height: number; topic: string; bandwidth: number; avgBandwidth: number }>;
+  renditions: Array<{
+    name: string;
+    width: number;
+    height: number;
+    topic: string;
+    bandwidth: number;
+    avgBandwidth: number;
+  }>;
   lifecycle: { version: 1; revision: number; runNumber: number; state: 'live' | 'vod' };
   completedRecording?: {
     runNumber: number;
@@ -125,16 +135,20 @@ function startFixture(port: number): {
   let stdout = '';
   let stderr = '';
   let spawnError: Error | null = null;
-  const vite = spawn(VITE, ['--config', join(FIXTURE_ROOT, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)], {
-    cwd: REPOSITORY_ROOT,
-    env: {
-      ...process.env,
-      VITE_APP_OWNER: '0xfixture',
-      VITE_APP_RAW_TOPIC: 'fixture-catalog-topic',
-      VITE_READER_BEE_URL: 'http://127.0.0.1:1633',
+  const vite = spawn(
+    VITE,
+    ['--config', join(FIXTURE_ROOT, 'vite.config.ts'), '--host', '127.0.0.1', '--port', String(port)],
+    {
+      cwd: REPOSITORY_ROOT,
+      env: {
+        ...process.env,
+        VITE_APP_OWNER: '0xfixture',
+        VITE_APP_RAW_TOPIC: 'fixture-catalog-topic',
+        VITE_READER_BEE_URL: 'http://127.0.0.1:1633',
+      },
+      stdio: 'pipe',
     },
-    stdio: 'pipe',
-  });
+  );
   vite.stdout.on('data', (chunk: Buffer) => {
     stdout = appendDiagnostic(stdout, chunk);
   });
@@ -169,7 +183,9 @@ async function waitForFixture(
       throw new Error(`fixture stopped before it started at ${url}\n${fixture.diagnostics()}`);
     }
     try {
-      if ((await fetch(url)).ok) {return;}
+      if ((await fetch(url)).ok) {
+        return;
+      }
     } catch {
       // Vite has not accepted connections yet.
     }
@@ -179,7 +195,9 @@ async function waitForFixture(
 }
 
 async function stopFixture(vite: ChildProcessWithoutNullStreams): Promise<void> {
-  if (vite.exitCode !== null) {return;}
+  if (vite.exitCode !== null) {
+    return;
+  }
   vite.kill('SIGTERM');
   await Promise.race([once(vite, 'exit'), new Promise((resolve) => setTimeout(resolve, 5_000))]);
   if (vite.exitCode === null) {
@@ -196,7 +214,9 @@ async function launchBrowser(fixture: { diagnostics: () => string }): Promise<Br
       args: process.getuid?.() === 0 ? ['--no-sandbox'] : [],
     });
   } catch (error) {
-    throw new Error(`could not launch Chromium at ${CHROME_PATH}: ${(error as Error).message}\n${fixture.diagnostics()}`);
+    throw new Error(
+      `could not launch Chromium at ${CHROME_PATH}: ${(error as Error).message}\n${fixture.diagnostics()}`,
+    );
   }
 }
 
@@ -271,7 +291,10 @@ test('keeps live run A mounted through closure and run B until Watch live is sel
       (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
     });
 
-    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 5, recording(5)));
+    await page.evaluate(
+      (entry) => window.__continuationWatchTest!.setStreams([entry]),
+      catalog('vod', 5, recording(5)),
+    );
     await expectAttribute(player, 'data-pinned-master-reference', MASTER_REFERENCE);
     assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 2, destroyed: 1 });
@@ -293,7 +316,10 @@ test('keeps replay A mounted until the viewer selects completed replay B', async
     browser = await launchBrowser(fixture);
     const page = await browser.newPage();
     await page.goto(`${fixtureUrl}/watch/video/0xviewer/stable-master-topic`, { waitUntil: 'networkidle' });
-    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 4, recording(4)));
+    await page.evaluate(
+      (entry) => window.__continuationWatchTest!.setStreams([entry]),
+      catalog('vod', 4, recording(4)),
+    );
     const player = page.getByTestId('continuation-player');
     await player.waitFor({ state: 'attached' });
     await expectAttribute(player, 'data-replay-run', '4');
@@ -301,7 +327,10 @@ test('keeps replay A mounted until the viewer selects completed replay B', async
       (document.querySelector('[data-testid="continuation-player"]') as HTMLVideoElement).currentTime = 41;
     });
 
-    await page.evaluate((entry) => window.__continuationWatchTest!.setStreams([entry]), catalog('vod', 5, recording(5)));
+    await page.evaluate(
+      (entry) => window.__continuationWatchTest!.setStreams([entry]),
+      catalog('vod', 5, recording(5)),
+    );
     await expectAttribute(player, 'data-replay-run', '4');
     assert.equal(await player.evaluate((element: HTMLVideoElement) => element.currentTime), 41);
     assert.deepEqual(await page.evaluate(() => window.__continuationPlayerTest), { created: 1, destroyed: 0 });
@@ -315,10 +344,6 @@ test('keeps replay A mounted until the viewer selects completed replay B', async
   }
 });
 
-async function expectAttribute(
-  locator: Locator,
-  attribute: string,
-  value: string,
-): Promise<void> {
+async function expectAttribute(locator: Locator, attribute: string, value: string): Promise<void> {
   assert.equal(await locator.getAttribute(attribute), value);
 }

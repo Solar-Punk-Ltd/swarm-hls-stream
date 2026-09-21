@@ -560,11 +560,7 @@ async function handleStreams(
         const managedRung = managedLifecycle && key ? managedRungConnections.get(key) : undefined;
         const legacyRung = managedLifecycle && key ? legacyRungConnections.get(key) : undefined;
         if (managedLifecycle && (managedRung || legacyRung || managedBases.has(role.baseStreamId))) {
-          if (
-            managedRung &&
-            managedRung.streamId === streamId &&
-            managedRung.baseStreamId === role.baseStreamId
-          ) {
+          if (managedRung && managedRung.streamId === streamId && managedRung.baseStreamId === role.baseStreamId) {
             managedRungConnections.delete(key as string);
           }
           if (legacyRung === streamId) {
@@ -725,11 +721,11 @@ async function handleStreams(
         }
       } else {
         const legacyGeneration = legacyBaseGenerations.get(role.baseStreamId);
-        accepted = !managedLifecycle || (
-          admin !== undefined &&
-          legacyGeneration !== undefined &&
-          streamOrchestrator.isLegacyStreamAdmissionGenerationCurrent(admin.id, legacyGeneration)
-        );
+        accepted =
+          !managedLifecycle ||
+          (admin !== undefined &&
+            legacyGeneration !== undefined &&
+            streamOrchestrator.isLegacyStreamAdmissionGenerationCurrent(admin.id, legacyGeneration));
         if (accepted) {
           accepted = streamOrchestrator.startStream(
             streamId,
@@ -788,7 +784,9 @@ async function handleStreams(
         }
         const key = connectionKey(payload);
         if (!key) {
-          logger.error(`[SRS] Refused managed publish ${streamId}: callback omitted server_id, service_id or client_id`);
+          logger.error(
+            `[SRS] Refused managed publish ${streamId}: callback omitted server_id, service_id or client_id`,
+          );
           srsResponse(res, SRS_REJECT);
           return;
         }
@@ -847,10 +845,7 @@ async function handleStreams(
       if (
         managedLifecycle &&
         (legacyAdmissionGeneration === undefined ||
-          !streamOrchestrator.isLegacyAdmissionGenerationCurrent(
-            verdict.session.id,
-            legacyAdmissionGeneration,
-          ))
+          !streamOrchestrator.isLegacyAdmissionGenerationCurrent(verdict.session.id, legacyAdmissionGeneration))
       ) {
         srsResponse(res, SRS_REJECT);
         return;
@@ -1003,11 +998,7 @@ async function handleHls(
 
     const key = connectionKey(payload);
     const recovered =
-      managedLifecycle &&
-      key &&
-      role.kind !== 'rung' &&
-      role.kind !== 'stray' &&
-      !managedConnections.has(key)
+      managedLifecycle && key && role.kind !== 'rung' && role.kind !== 'stray' && !managedConnections.has(key)
         ? streamOrchestrator.recoverManagedSourceConnection(streamId, {
             serverId: payload.server_id as string,
             serviceId: payload.service_id as string,
@@ -1093,15 +1084,15 @@ async function handleHls(
             segmentData,
           )
       : managedRungSource && role.kind === 'rung'
-        ? streamOrchestrator.handleManagedRenditionSegment(
-            streamId,
-            role.baseStreamId,
-            managedRungSource,
-            payload.seq_no,
-            payload.duration,
-            segmentData,
-          )
-        : streamOrchestrator.handleSegment(streamId, payload.seq_no, payload.duration, segmentData));
+      ? streamOrchestrator.handleManagedRenditionSegment(
+          streamId,
+          role.baseStreamId,
+          managedRungSource,
+          payload.seq_no,
+          payload.duration,
+          segmentData,
+        )
+      : streamOrchestrator.handleSegment(streamId, payload.seq_no, payload.duration, segmentData));
 
     if (result.accepted) {
       fs.rmSync(segmentPath, { force: true });

@@ -4,10 +4,7 @@ import { feedSlotReference } from '@swarm-hls-stream/shared';
 import { parseMediaPlaylist } from '../engines/ome/utils.js';
 import { SegmentEntry, StreamState } from '../types.js';
 
-import {
-  LegacyAdoptionOperation,
-  LegacyAdoptionValidation,
-} from './AdminApiClient.js';
+import { LegacyAdoptionOperation, LegacyAdoptionValidation } from './AdminApiClient.js';
 import { BeePublisherPool } from './BeePublisherPool.js';
 import {
   AdoptLegacyRecording,
@@ -27,7 +24,11 @@ export class LegacyAdoptionPendingError extends Error {}
 
 export interface LegacyAdoptionMediaReader {
   readonly owner: string;
-  readFeed(topic: string, index: number, rendition: string | null): Promise<{
+  readFeed(
+    topic: string,
+    index: number,
+    rendition: string | null,
+  ): Promise<{
     readonly playlist: string;
     readonly reference: string;
   }>;
@@ -53,36 +54,33 @@ export class LegacyRecordingAdopter {
     pendingTopics: readonly string[],
     expectedRenditions: readonly ManagedExpectedRendition[] = operation.candidate.renditions,
   ): Promise<LegacyAdoptionInspection> {
-    const mediaTopics = operation.candidate.renditions.length === 0
-      ? [operation.candidate.topic]
-      : operation.candidate.renditions.map((rendition) => rendition.topic);
+    const mediaTopics =
+      operation.candidate.renditions.length === 0
+        ? [operation.candidate.topic]
+        : operation.candidate.renditions.map((rendition) => rendition.topic);
     const pending = mediaTopics.filter((topic) => pendingTopics.includes(topic));
     if (pending.length > 0) {
       throw new LegacyAdoptionPendingError(`Legacy recording has pending writes for ${pending.join(', ')}`);
     }
     this.validateExpectedRenditions(operation, expectedRenditions);
 
-    const master = await this.reader.readFeed(
-      operation.candidate.master.topic,
-      operation.candidate.master.index,
-      null,
-    );
+    const master = await this.reader.readFeed(operation.candidate.master.topic, operation.candidate.master.index, null);
     if (operation.candidate.renditions.length > 0) {
       const expectedMaster = buildMasterPlaylist(this.reader.owner, operation.candidate.renditions);
       if (normalizePlaylist(master.playlist) !== normalizePlaylist(expectedMaster)) {
-      throw new LegacyAdoptionValidationError('Legacy master playlist does not match the frozen rendition set');
+        throw new LegacyAdoptionValidationError('Legacy master playlist does not match the frozen rendition set');
       }
     }
 
-    const candidates = operation.candidate.renditions.length === 0
-      ? [{ ...operation.candidate.master, name: null }]
-      : operation.candidate.renditions.map((rendition) => ({ ...rendition, name: rendition.name }));
+    const candidates =
+      operation.candidate.renditions.length === 0
+        ? [{ ...operation.candidate.master, name: null }]
+        : operation.candidate.renditions.map((rendition) => ({ ...rendition, name: rendition.name }));
     const tracks: ManagedTrackFinalization[] = [];
     const validationTracks: LegacyAdoptionValidation['tracks'][number][] = [];
     for (const candidate of candidates) {
-      const feed = candidate.name === null
-        ? master
-        : await this.reader.readFeed(candidate.topic, candidate.index, candidate.name);
+      const feed =
+        candidate.name === null ? master : await this.reader.readFeed(candidate.topic, candidate.index, candidate.name);
       const inspected = await this.inspectTrack(
         operation,
         candidate.name,
@@ -159,7 +157,9 @@ export class LegacyRecordingAdopter {
     const opening: Buffer[] = [];
     let openingBytes = 0;
     for (const entry of entries) {
-      if (gaps.has(entry.uri)) {continue;}
+      if (gaps.has(entry.uri)) {
+        continue;
+      }
       if (!REFERENCE.test(entry.uri)) {
         throw new LegacyAdoptionValidationError(
           `Legacy media playlist ${topic} contains a non-immutable segment reference`,
@@ -194,9 +194,10 @@ export class LegacyRecordingAdopter {
     }
     validateFingerprint(operation, rendition, probe.fingerprint);
 
-    const streamId = rendition === null
-      ? `${operation.mediaType}/${operation.topic}`
-      : `${operation.mediaType}/${operation.topic}_${rendition}`;
+    const streamId =
+      rendition === null
+        ? `${operation.mediaType}/${operation.topic}`
+        : `${operation.mediaType}/${operation.topic}_${rendition}`;
     const state: StreamState = {
       streamId,
       streamRawTopic: topic,
@@ -212,8 +213,7 @@ export class LegacyRecordingAdopter {
         ? {
             anchor: {
               startedAtMs:
-                (segments[0].presentedAtMs ?? this.wallClock())
-                - segments[0].sequence! * gapDurations[0] * 1_000,
+                (segments[0].presentedAtMs ?? this.wallClock()) - segments[0].sequence! * gapDurations[0] * 1_000,
               fragmentSeconds: gapDurations[0],
             },
           }
@@ -250,9 +250,7 @@ export class LegacyRecordingAdopter {
   ): void {
     const candidates = operation.candidate.renditions;
     if (candidates.length !== expected.length) {
-      throw new LegacyAdoptionValidationError(
-        'Legacy candidate does not match the configured managed rendition set',
-      );
+      throw new LegacyAdoptionValidationError('Legacy candidate does not match the configured managed rendition set');
     }
     for (const target of expected) {
       const candidate = candidates.find((entry) => entry.name === target.name);
@@ -262,9 +260,7 @@ export class LegacyRecordingAdopter {
         candidate.width !== target.width ||
         candidate.height !== target.height
       ) {
-        throw new LegacyAdoptionValidationError(
-          'Legacy candidate does not match the configured managed rendition set',
-        );
+        throw new LegacyAdoptionValidationError('Legacy candidate does not match the configured managed rendition set');
       }
     }
   }
@@ -272,18 +268,13 @@ export class LegacyRecordingAdopter {
 
 /** Production Bee reader for exact feed slots and immutable media chunks. */
 export class BeeLegacyAdoptionMediaReader implements LegacyAdoptionMediaReader {
-  constructor(
-    private readonly publishers: BeePublisherPool,
-    public readonly owner: string,
-  ) {}
+  constructor(private readonly publishers: BeePublisherPool, public readonly owner: string) {}
 
   public async readFeed(topic: string, index: number, rendition: string | null) {
     const publisher = rendition === null ? this.publishers.coordinator() : this.publishers.forRung(rendition);
     const feedTopic = Topic.fromString(topic);
     const feedIndex = FeedIndex.fromBigInt(BigInt(index));
-    const result = await publisher.bee
-      .makeFeedReader(feedTopic, this.owner)
-      .downloadPayload({ index: feedIndex });
+    const result = await publisher.bee.makeFeedReader(feedTopic, this.owner).downloadPayload({ index: feedIndex });
     return {
       playlist: result.payload.toUtf8(),
       reference: feedSlotReference(this.owner, feedTopic, feedIndex).toHex(),
@@ -305,7 +296,9 @@ function gapUris(playlist: string): Set<string> {
     if (line === '#EXT-X-GAP') {
       gap = true;
     } else if (line && !line.startsWith('#')) {
-      if (gap) {gaps.add(line);}
+      if (gap) {
+        gaps.add(line);
+      }
       gap = false;
     }
   }

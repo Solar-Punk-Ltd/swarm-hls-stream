@@ -66,9 +66,10 @@ describe('continuation admin fixture bootstrap', () => {
           assert.ok(body);
           return new Response(JSON.stringify(body), {
             status: statuses.shift(),
-            headers: httpCalls.length === 1
-              ? { 'content-type': 'application/json', 'set-cookie': `${COOKIE}; HttpOnly; SameSite=Lax; Path=/` }
-              : { 'content-type': 'application/json' },
+            headers:
+              httpCalls.length === 1
+                ? { 'content-type': 'application/json', 'set-cookie': `${COOKIE}; HttpOnly; SameSite=Lax; Path=/` }
+                : { 'content-type': 'application/json' },
           });
         },
       },
@@ -79,8 +80,15 @@ describe('continuation admin fixture bootstrap', () => {
     assert.equal(result.ownerCookie, COOKIE);
     assert.equal(result.publishKey, PUBLISH_KEY);
     assert.deepEqual(processCalls[0]?.args, [
-      'exec', '-i', 'admin-api-container-id', 'node', 'dist/cli.js',
-      'user:add', 'srs-a1b2c3d4-owner', '--password-stdin', '--admin',
+      'exec',
+      '-i',
+      'admin-api-container-id',
+      'node',
+      'dist/cli.js',
+      'user:add',
+      'srs-a1b2c3d4-owner',
+      '--password-stdin',
+      '--admin',
     ]);
     assert.equal(processCalls[0]?.stdin, `${PASSWORD}\n`);
     assert.doesNotMatch(JSON.stringify(processCalls[0]?.args), new RegExp(PASSWORD));

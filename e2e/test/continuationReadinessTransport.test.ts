@@ -170,10 +170,7 @@ class FakeObservationSource implements ReadinessObservationSource {
     ],
   ]);
 
-  constructor(
-    readonly plan: FixturePlan,
-    readonly topology: ContinuationTopology,
-  ) {
+  constructor(readonly plan: FixturePlan, readonly topology: ContinuationTopology) {
     this.controls.set(
       'capacity',
       encoder.encode(
@@ -237,19 +234,28 @@ class FakeObservationSource implements ReadinessObservationSource {
 
   async request(request: BoundedHttpRequest): Promise<BoundedHttpResponse> {
     this.requests.push(structuredClone(request));
-    const method = request.body === undefined
-      ? null
-      : (JSON.parse(new TextDecoder().decode(request.body)) as { method?: string }).method;
-    if (method === 'eth_chainId') {return json({ jsonrpc: '2.0', id: 1, result: '0x539' });}
-    if (method === 'web3_clientVersion') {return json({ jsonrpc: '2.0', id: 1, result: 'anvil/v1.4.0' });}
+    const method =
+      request.body === undefined
+        ? null
+        : (JSON.parse(new TextDecoder().decode(request.body)) as { method?: string }).method;
+    if (method === 'eth_chainId') {
+      return json({ jsonrpc: '2.0', id: 1, result: '0x539' });
+    }
+    if (method === 'web3_clientVersion') {
+      return json({ jsonrpc: '2.0', id: 1, result: 'anvil/v1.4.0' });
+    }
     if (request.url.endsWith('/health') && request.url.includes('bee-queen')) {
       return json({ status: 'ok', version: '2.8.2', apiVersion: '7.3.0' });
     }
     if (request.url.endsWith('/api/v1/versions')) {
       return json({ code: 0, data: { version: '6.0.170' } });
     }
-    if (request.url.endsWith('/health')) {return json({ status: 'ok', reasons: [] });}
-    if (request.url.endsWith('/api/health')) {return json({ status: 'ok' });}
+    if (request.url.endsWith('/health')) {
+      return json({ status: 'ok', reasons: [] });
+    }
+    if (request.url.endsWith('/api/health')) {
+      return json({ status: 'ok' });
+    }
     if (request.url.endsWith('/build-stamp.json')) {
       return json({ head: STACK_COMMIT, dirty: false, clientTree: 'tree', sharedTree: 'shared' });
     }
@@ -258,13 +264,17 @@ class FakeObservationSource implements ReadinessObservationSource {
 
   async inspectContainer(role: TopologyServiceRole): Promise<ContainerReadinessObservation> {
     const observation = this.containers.get(role);
-    if (!observation) {throw new Error(`missing test container ${role}`);}
+    if (!observation) {
+      throw new Error(`missing test container ${role}`);
+    }
     return structuredClone(observation);
   }
 
   async inspectGuard(role: ReleaseGuardRole): Promise<GuardedReleaseObservation> {
     const observation = this.guards.get(role);
-    if (!observation) {throw new Error(`missing test guard ${role}`);}
+    if (!observation) {
+      throw new Error(`missing test guard ${role}`);
+    }
     return structuredClone(observation);
   }
 
@@ -275,7 +285,9 @@ class FakeObservationSource implements ReadinessObservationSource {
   async runControl(probeId: ReadinessProbeId): Promise<Uint8Array> {
     this.controlRequests.push(probeId);
     const observation = this.controls.get(probeId);
-    if (!observation) {throw new Error(`missing test control ${probeId}`);}
+    if (!observation) {
+      throw new Error(`missing test control ${probeId}`);
+    }
     return observation.slice();
   }
 }
@@ -346,11 +358,7 @@ describe('observed continuation readiness transport', () => {
         : original(request);
 
     await assert.rejects(
-      inspectContinuationReadiness(
-        plan,
-        topology,
-        new ObservedReadinessTransport(plan, topology, source),
-      ),
+      inspectContinuationReadiness(plan, topology, new ObservedReadinessTransport(plan, topology, source)),
       (error: unknown) => {
         assert.ok(error instanceof FixtureRefusal);
         assert.match(error.message, /bee.*bound/i);
@@ -367,11 +375,7 @@ describe('observed continuation readiness transport', () => {
     source.containers.get('uploader')!.imageId = `sha256:${'9'.repeat(64)}`;
 
     await assert.rejects(
-      inspectContinuationReadiness(
-        plan,
-        topology,
-        new ObservedReadinessTransport(plan, topology, source),
-      ),
+      inspectContinuationReadiness(plan, topology, new ObservedReadinessTransport(plan, topology, source)),
       /uploader.*image/i,
     );
   });
@@ -383,11 +387,7 @@ describe('observed continuation readiness transport', () => {
     source.containers.get('admin-api')!.activeArtifact!.generation = 2;
 
     await assert.rejects(
-      inspectContinuationReadiness(
-        plan,
-        topology,
-        new ObservedReadinessTransport(plan, topology, source),
-      ),
+      inspectContinuationReadiness(plan, topology, new ObservedReadinessTransport(plan, topology, source)),
       /admin.*active artifact/i,
     );
   });
@@ -399,11 +399,7 @@ describe('observed continuation readiness transport', () => {
     source.capability = { ...source.capability, serverNow: source.capability.freshUntil };
 
     await assert.rejects(
-      inspectContinuationReadiness(
-        plan,
-        topology,
-        new ObservedReadinessTransport(plan, topology, source),
-      ),
+      inspectContinuationReadiness(plan, topology, new ObservedReadinessTransport(plan, topology, source)),
       /capability.*fresh/i,
     );
   });
@@ -417,10 +413,7 @@ describe('observed continuation readiness transport', () => {
     await inspectContinuationReadiness(plan, topology, transport);
     source.capability = { ...source.capability, serverNow: source.capability.freshUntil };
 
-    await assert.rejects(
-      inspectContinuationReadiness(plan, topology, transport),
-      /capability.*fresh/i,
-    );
+    await assert.rejects(inspectContinuationReadiness(plan, topology, transport), /capability.*fresh/i);
   });
 
   it('refuses capacity evidence that omits a required Bee service', async () => {

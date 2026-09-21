@@ -266,9 +266,13 @@ describe('the admin API client, negotiating lifecycle v1', () => {
 
   it('accepts an explicit negotiated legacy row', async () => {
     const legacy = { ...DRAFT, lifecycleVersion: 1 as const, mode: 'legacy' as const };
-    await withAdmin(always(200, legacy), async ({ client }) => {
-      assert.deepEqual(await client.lookupByIngestId(STREAM_ID), legacy);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, legacy),
+      async ({ client }) => {
+        assert.deepEqual(await client.lookupByIngestId(STREAM_ID), legacy);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   for (const [name, body] of [
@@ -277,9 +281,13 @@ describe('the admin API client, negotiating lifecycle v1', () => {
     ['malformed managed lifecycle', { ...managed, lifecycle: { ...managed.lifecycle, runNumber: 0 } }],
   ] as const) {
     it(`refuses a ${name}`, async () => {
-      await withAdmin(always(200, body), async ({ client }) => {
-        await assert.rejects(() => client.lookupByIngestId(STREAM_ID), /lifecycle/);
-      }, { lifecycleVersion: 1 });
+      await withAdmin(
+        always(200, body),
+        async ({ client }) => {
+          await assert.rejects(() => client.lookupByIngestId(STREAM_ID), /lifecycle/);
+        },
+        { lifecycleVersion: 1 },
+      );
     });
   }
 
@@ -300,9 +308,13 @@ describe('the admin API client, negotiating lifecycle v1', () => {
       ],
     };
 
-    await withAdmin(always(200, body), async ({ client }) => {
-      await assert.rejects(() => client.lookupByIngestId(STREAM_ID), /lifecycle/);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, body),
+      async ({ client }) => {
+        await assert.rejects(() => client.lookupByIngestId(STREAM_ID), /lifecycle/);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   it('claims the exact run and validates the returned binding', async () => {
@@ -323,11 +335,15 @@ describe('the admin API client, negotiating lifecycle v1', () => {
       state: 'claimed' as const,
       permission: 'claimed' as const,
     };
-    await withAdmin(always(200, claimed), async ({ client, received }) => {
-      assert.deepEqual(await client.claimManagedRun(DRAFT.id, 2, request), claimed);
-      assert.equal(received[0].url, `/api/internal/streams/${DRAFT.id}/runs/2/claims`);
-      assert.deepEqual(received[0].body, request);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, claimed),
+      async ({ client, received }) => {
+        assert.deepEqual(await client.claimManagedRun(DRAFT.id, 2, request), claimed);
+        assert.equal(received[0].url, `/api/internal/streams/${DRAFT.id}/runs/2/claims`);
+        assert.deepEqual(received[0].body, request);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   it('refuses a claim response bound to another stream', async () => {
@@ -485,7 +501,10 @@ describe('the admin API client, negotiating lifecycle v1', () => {
         },
         async ({ client, received }) => {
           assert.equal(await client.reportManagedRun(DRAFT.id, 2, report), STATE_REPORT_FAILED);
-          assert.deepEqual(received.map((request) => request.method), ['POST', 'GET']);
+          assert.deepEqual(
+            received.map((request) => request.method),
+            ['POST', 'GET'],
+          );
         },
         { lifecycleVersion: 1 },
       );
@@ -888,29 +907,34 @@ describe('the admin API client, reporting a managed run rendition', () => {
   };
 
   it('matches the shared canonical digest vector', () => {
-    assert.equal(
-      managedRenditionReportDigest(REPORT),
-      managedRenditionDigestFixture.sha256HexParts.join(''),
-    );
+    assert.equal(managedRenditionReportDigest(REPORT), managedRenditionDigestFixture.sha256HexParts.join(''));
   });
 
   it('posts the exact persisted event to the run-scoped rung route', async () => {
-    await withAdmin(always(200, RESPONSE), async ({ client, received }) => {
-      assert.deepEqual(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), RESPONSE);
-      assert.equal(
-        received[0].url,
-        `/api/internal/streams/${ADMIN_STREAM_ID}/runs/2/renditions/${REPORT.rendition.name}`,
-      );
-      assert.deepEqual(received[0].body, REPORT);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, RESPONSE),
+      async ({ client, received }) => {
+        assert.deepEqual(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), RESPONSE);
+        assert.equal(
+          received[0].url,
+          `/api/internal/streams/${ADMIN_STREAM_ID}/runs/2/renditions/${REPORT.rendition.name}`,
+        );
+        assert.deepEqual(received[0].body, REPORT);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   it('retries the identical event body after a transient failure', async () => {
     await withAdmin(
-      (_req, res, call) => call === 1 ? res.status(503).json({ error: 'unavailable' }) : res.status(200).json(RESPONSE),
+      (_req, res, call) =>
+        call === 1 ? res.status(503).json({ error: 'unavailable' }) : res.status(200).json(RESPONSE),
       async ({ client, received, sleeps }) => {
         assert.deepEqual(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), RESPONSE);
-        assert.deepEqual(received.map(({ body }) => body), [REPORT, REPORT]);
+        assert.deepEqual(
+          received.map(({ body }) => body),
+          [REPORT, REPORT],
+        );
         assert.deepEqual(sleeps, [STATE_REPORT_BACKOFF_MS[0]]);
       },
       { lifecycleVersion: 1 },
@@ -918,17 +942,25 @@ describe('the admin API client, reporting a managed run rendition', () => {
   });
 
   it('refuses a successful response bound to another run', async () => {
-    await withAdmin(always(200, { ...RESPONSE, runNumber: 3 }), async ({ client }) => {
-      assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, { ...RESPONSE, runNumber: 3 }),
+      async ({ client }) => {
+        assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   it('does not treat a managed conflict as a successful rendition event', async () => {
-    await withAdmin(always(409, { error: 'event_conflict' }), async ({ client, received, sleeps }) => {
-      assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
-      assert.equal(received.length, 1);
-      assert.deepEqual(sleeps, []);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(409, { error: 'event_conflict' }),
+      async ({ client, received, sleeps }) => {
+        assert.equal(await client.reportManagedRendition(ADMIN_STREAM_ID, 2, REPORT), null);
+        assert.equal(received.length, 1);
+        assert.deepEqual(sleeps, []);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 });
 
@@ -940,9 +972,7 @@ describe('the admin API client, reporting uploader capabilities', () => {
     profiles: [
       {
         mediaType: 'video',
-        renditions: [
-          { name: '360p', width: 640, height: 360, bandwidth: 700_000, avgBandwidth: 700_000 },
-        ],
+        renditions: [{ name: '360p', width: 640, height: 360, bandwidth: 700_000, avgBandwidth: 700_000 }],
       },
       { mediaType: 'audio', renditions: [] },
     ],
@@ -959,21 +989,29 @@ describe('the admin API client, reporting uploader capabilities', () => {
   };
 
   it('posts the exact profile under the configured uploader identity', async () => {
-    await withAdmin(always(200, receipt), async ({ client, received }) => {
-      assert.deepEqual(await client.reportUploaderCapabilities(uploaderId, capability), receipt);
-      assert.equal(received[0].url, `/api/internal/uploaders/${uploaderId}/capabilities`);
-      assert.equal(received[0].authorization, `Bearer ${TOKEN}`);
-      assert.deepEqual(received[0].body, capability);
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, receipt),
+      async ({ client, received }) => {
+        assert.deepEqual(await client.reportUploaderCapabilities(uploaderId, capability), receipt);
+        assert.equal(received[0].url, `/api/internal/uploaders/${uploaderId}/capabilities`);
+        assert.equal(received[0].authorization, `Bearer ${TOKEN}`);
+        assert.deepEqual(received[0].body, capability);
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 
   it('refuses a receipt bound to another uploader', async () => {
-    await withAdmin(always(200, { ...receipt, uploaderId: 'another-uploader' }), async ({ client }) => {
-      await assert.rejects(
-        () => client.reportUploaderCapabilities(uploaderId, capability),
-        /another uploader capability/,
-      );
-    }, { lifecycleVersion: 1 });
+    await withAdmin(
+      always(200, { ...receipt, uploaderId: 'another-uploader' }),
+      async ({ client }) => {
+        await assert.rejects(
+          () => client.reportUploaderCapabilities(uploaderId, capability),
+          /another uploader capability/,
+        );
+      },
+      { lifecycleVersion: 1 },
+    );
   });
 });
 

@@ -197,7 +197,9 @@ describe('feedSlotReference', () => {
   });
 
   it('addresses and decodes the wrapped payload format used above 4096 bytes', async () => {
-    await assertSdkReadsSlotPayload(new TextEncoder().encode(`#EXTM3U\n${'#EXT-X-STREAM-INF:BANDWIDTH=1\n'.repeat(150)}`));
+    await assertSdkReadsSlotPayload(
+      new TextEncoder().encode(`#EXTM3U\n${'#EXT-X-STREAM-INF:BANDWIDTH=1\n'.repeat(150)}`),
+    );
   });
 });
 

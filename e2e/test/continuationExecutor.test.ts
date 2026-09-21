@@ -20,20 +20,40 @@ function outputRoot(): string {
 
 function steps(events: string[], settle = true): ContinuationFixtureRunSteps {
   return {
-    preflight: async () => { events.push('preflight'); },
-    initializeJournal: async () => { events.push('initialize-journal'); },
-    provisionPrivateChain: async () => { events.push('private-chain'); },
-    provisionApplications: async () => { events.push('applications'); },
-    resolveRuntime: async () => { events.push('runtime'); },
-    provisionManagedStream: async () => { events.push('managed-stream'); },
-    inspectReadiness: async () => { events.push('readiness'); },
-    captureMeasurements: async (phase) => { events.push(`measure-${phase}`); },
-    startMediaSender: async () => { events.push('start-sender'); },
+    preflight: async () => {
+      events.push('preflight');
+    },
+    initializeJournal: async () => {
+      events.push('initialize-journal');
+    },
+    provisionPrivateChain: async () => {
+      events.push('private-chain');
+    },
+    provisionApplications: async () => {
+      events.push('applications');
+    },
+    resolveRuntime: async () => {
+      events.push('runtime');
+    },
+    provisionManagedStream: async () => {
+      events.push('managed-stream');
+    },
+    inspectReadiness: async () => {
+      events.push('readiness');
+    },
+    captureMeasurements: async (phase) => {
+      events.push(`measure-${phase}`);
+    },
+    startMediaSender: async () => {
+      events.push('start-sender');
+    },
     runMediaScenario: async () => {
       events.push('media');
       return { evidenceKind: 'synthetic-test-evidence' };
     },
-    writeEvidence: async () => { events.push('evidence'); },
+    writeEvidence: async () => {
+      events.push('evidence');
+    },
     settleOwnedProcesses: async () => {
       events.push('settle');
       return settle;
@@ -49,7 +69,10 @@ describe('callable continuation fixture executor', () => {
     runSteps.preflight = async () => {
       events.push('preflight');
       await assert.rejects(
-        withFixtureOperationLease({ fixtureId: FIXTURE_ID, outputRoot: root, operation: 'cleanup' }, async () => undefined),
+        withFixtureOperationLease(
+          { fixtureId: FIXTURE_ID, outputRoot: root, operation: 'cleanup' },
+          async () => undefined,
+        ),
         FixtureRefusal,
       );
     };

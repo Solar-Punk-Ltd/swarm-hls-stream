@@ -447,11 +447,7 @@ describe('the isolated continuation fixture plan', () => {
       const journal = new ResourceJournal(fixturePlan.outputRoot);
       journal.beginManagerProfile('srs-a1b2c3d4-uploader', 1);
       if (state === 'created') {
-        journal.completeManagerProfile(
-          'srs-a1b2c3d4-uploader',
-          1,
-          '11111111-1111-4111-8111-111111111111',
-        );
+        journal.completeManagerProfile('srs-a1b2c3d4-uploader', 1, '11111111-1111-4111-8111-111111111111');
       }
 
       await assert.rejects(cleanupFixture(journal, fixture.docker), /provisioning is unresolved/i);

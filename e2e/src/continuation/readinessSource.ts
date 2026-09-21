@@ -13,11 +13,7 @@ import type {
   GuardedReleaseObservation,
   ReadinessObservationSource,
 } from './readinessTransport.js';
-import type {
-  ReadinessProbeId,
-  ReleaseGuardRole,
-  TopologyServiceRole,
-} from './topology.js';
+import type { ReadinessProbeId, ReleaseGuardRole, TopologyServiceRole } from './topology.js';
 
 const SAFE_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -91,7 +87,9 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
   ) {
     checkedId(bindings.probeContainerId, 'probe container');
     checkedId(bindings.postgresContainerId, 'postgres container');
-    for (const origin of bindings.allowedHttpOrigins) {internalHttpUrl(origin);}
+    for (const origin of bindings.allowedHttpOrigins) {
+      internalHttpUrl(origin);
+    }
   }
 
   async request(request: BoundedHttpRequest): Promise<BoundedHttpResponse> {
@@ -104,21 +102,22 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
     }
     const headers = Object.entries(request.headers);
     if (
-      headers.some(([name, value]) =>
-        !['accept', 'content-type'].includes(name.toLowerCase()) ||
-        typeof value !== 'string' ||
-        value.length > 100,
+      headers.some(
+        ([name, value]) =>
+          !['accept', 'content-type'].includes(name.toLowerCase()) || typeof value !== 'string' || value.length > 100,
       )
     ) {
       throw new FixtureRefusal('readiness HTTP headers are not allowed');
     }
-    const input = Buffer.from(JSON.stringify({
-      url: url.toString(),
-      method: request.method,
-      headers: request.headers,
-      body: request.body === undefined ? null : Buffer.from(request.body).toString('base64'),
-      maximum: request.maxResponseBytes,
-    })).toString('base64');
+    const input = Buffer.from(
+      JSON.stringify({
+        url: url.toString(),
+        method: request.method,
+        headers: request.headers,
+        body: request.body === undefined ? null : Buffer.from(request.body).toString('base64'),
+        maximum: request.maxResponseBytes,
+      }),
+    ).toString('base64');
     const result = await this.command.run('docker', [
       'exec',
       checkedId(this.bindings.probeContainerId, 'probe container'),
@@ -143,7 +142,9 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
 
   async inspectContainer(role: TopologyServiceRole): Promise<ContainerReadinessObservation> {
     const binding = this.bindings.containers.get(role);
-    if (!binding) {throw new FixtureRefusal(`${role} runtime container binding is missing`);}
+    if (!binding) {
+      throw new FixtureRefusal(`${role} runtime container binding is missing`);
+    }
     const result = await this.command.run('docker', [
       'container',
       'inspect',
@@ -163,9 +164,7 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
     ) {
       throw new FixtureRefusal(`${role} runtime container identity is malformed`);
     }
-    const activeArtifact = role === 'admin-api'
-      ? readActiveArtifact(raw.mounts)
-      : undefined;
+    const activeArtifact = role === 'admin-api' ? readActiveArtifact(raw.mounts) : undefined;
     return {
       role,
       name,
@@ -188,11 +187,7 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
     if (!slotId || !SAFE_ID.test(slotId)) {
       throw new FixtureRefusal(`${role} guard slot binding is missing`);
     }
-    const stored = parseStoredGuardReceipt(
-      await this.databaseJson(guardReceiptQuery(role, slotId)),
-      role,
-      slotId,
-    );
+    const stored = parseStoredGuardReceipt(await this.databaseJson(guardReceiptQuery(role, slotId)), role, slotId);
     const generation = Number(stored.generation);
     return {
       slot: { role, id: slotId },
@@ -211,7 +206,9 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
   }
 
   async readUploaderCapability(uploaderId: string): Promise<CapabilityReadObservation> {
-    if (!SAFE_ID.test(uploaderId)) {throw new FixtureRefusal('uploader capability identity is malformed');}
+    if (!SAFE_ID.test(uploaderId)) {
+      throw new FixtureRefusal('uploader capability identity is malformed');
+    }
     const stored = parseStoredCapability(await this.databaseJson(capabilityQuery(uploaderId)));
     if (!Array.isArray(stored.profiles)) {
       throw new FixtureRefusal('uploader capability profiles are malformed');
@@ -252,7 +249,9 @@ export class DockerReadinessObservationSource implements ReadinessObservationSou
 }
 
 function guardReceiptQuery(role: ReleaseGuardRole, slotId: string): string {
-  if (!SAFE_ID.test(slotId)) {throw new FixtureRefusal('guard receipt slot is malformed');}
+  if (!SAFE_ID.test(slotId)) {
+    throw new FixtureRefusal('guard receipt slot is malformed');
+  }
   return `SELECT json_build_object('schemaVersion', 1, 'installationId', installation_id::text, 'generation', generation::text, 'stateDigest', state_digest, 'role', role, 'slotId', slot_id, 'minimumSrsLifecycle', minimum_srs_lifecycle, 'treeDigest', tree_digest, 'images', images)::text FROM release_guard_receipts WHERE role = '${role}' AND slot_id = '${slotId}'`;
 }
 
@@ -264,39 +263,41 @@ function profileDigest(raw: unknown): { mediaType: 'audio' | 'video'; digest: st
   if (!isRecord(raw) || (raw.mediaType !== 'audio' && raw.mediaType !== 'video') || !Array.isArray(raw.renditions)) {
     throw new FixtureRefusal('uploader capability profile is malformed');
   }
-  const renditions = raw.renditions.map((rendition) => {
-    if (
-      !isRecord(rendition) ||
-      typeof rendition.name !== 'string' ||
-      typeof rendition.width !== 'number' ||
-      !Number.isSafeInteger(rendition.width) ||
-      typeof rendition.height !== 'number' ||
-      !Number.isSafeInteger(rendition.height) ||
-      typeof rendition.bandwidth !== 'number' ||
-      !Number.isSafeInteger(rendition.bandwidth) ||
-      typeof rendition.avgBandwidth !== 'number' ||
-      !Number.isSafeInteger(rendition.avgBandwidth)
-    ) {
-      throw new FixtureRefusal('uploader capability rendition is malformed');
-    }
-    if (
-      rendition.name.length < 1 ||
-      rendition.name.length > 100 ||
-      rendition.width < 1 ||
-      rendition.height < 1 ||
-      rendition.bandwidth < 1 ||
-      rendition.avgBandwidth < 1
-    ) {
-      throw new FixtureRefusal('uploader capability rendition is malformed');
-    }
-    return {
-      name: rendition.name,
-      width: rendition.width,
-      height: rendition.height,
-      bandwidth: rendition.bandwidth,
-      avgBandwidth: rendition.avgBandwidth,
-    };
-  }).sort((left, right) => String(left.name).localeCompare(String(right.name)));
+  const renditions = raw.renditions
+    .map((rendition) => {
+      if (
+        !isRecord(rendition) ||
+        typeof rendition.name !== 'string' ||
+        typeof rendition.width !== 'number' ||
+        !Number.isSafeInteger(rendition.width) ||
+        typeof rendition.height !== 'number' ||
+        !Number.isSafeInteger(rendition.height) ||
+        typeof rendition.bandwidth !== 'number' ||
+        !Number.isSafeInteger(rendition.bandwidth) ||
+        typeof rendition.avgBandwidth !== 'number' ||
+        !Number.isSafeInteger(rendition.avgBandwidth)
+      ) {
+        throw new FixtureRefusal('uploader capability rendition is malformed');
+      }
+      if (
+        rendition.name.length < 1 ||
+        rendition.name.length > 100 ||
+        rendition.width < 1 ||
+        rendition.height < 1 ||
+        rendition.bandwidth < 1 ||
+        rendition.avgBandwidth < 1
+      ) {
+        throw new FixtureRefusal('uploader capability rendition is malformed');
+      }
+      return {
+        name: rendition.name,
+        width: rendition.width,
+        height: rendition.height,
+        bandwidth: rendition.bandwidth,
+        avgBandwidth: rendition.avgBandwidth,
+      };
+    })
+    .sort((left, right) => String(left.name).localeCompare(String(right.name)));
   if (new Set(renditions.map(({ name }) => name)).size !== renditions.length) {
     throw new FixtureRefusal('uploader capability rendition is malformed');
   }
@@ -308,7 +309,9 @@ function profileDigest(raw: unknown): { mediaType: 'audio' | 'video'; digest: st
 }
 
 function parseImages(raw: unknown): Array<{ service: string; imageId: string }> {
-  if (!Array.isArray(raw)) {throw new FixtureRefusal('guard receipt images are malformed');}
+  if (!Array.isArray(raw)) {
+    throw new FixtureRefusal('guard receipt images are malformed');
+  }
   return raw.map((image) => {
     if (!isRecord(image) || typeof image.service !== 'string' || typeof image.imageId !== 'string') {
       throw new FixtureRefusal('guard receipt images are malformed');
@@ -321,10 +324,12 @@ function readActiveArtifact(mounts: unknown): ContainerReadinessObservation['act
   if (!Array.isArray(mounts)) {
     throw new FixtureRefusal('admin active artifact mount is malformed');
   }
-  const matching = mounts.filter((mount) =>
-    isRecord(mount) && mount.Destination === '/run/streaming-release/active-artifact.json',
+  const matching = mounts.filter(
+    (mount) => isRecord(mount) && mount.Destination === '/run/streaming-release/active-artifact.json',
   );
-  if (matching.length !== 1) {throw new FixtureRefusal('admin active artifact mount is malformed');}
+  if (matching.length !== 1) {
+    throw new FixtureRefusal('admin active artifact mount is malformed');
+  }
   const mount = matching[0];
   const path = mount.Source;
   if (mount.Type !== 'bind' || typeof path !== 'string' || !isAbsolute(path) || mount.RW !== false) {
@@ -339,7 +344,9 @@ function readActiveArtifact(mounts: unknown): ContainerReadinessObservation['act
   );
 }
 
-function parseActiveArtifact(raw: Record<string, unknown>): NonNullable<ContainerReadinessObservation['activeArtifact']> {
+function parseActiveArtifact(
+  raw: Record<string, unknown>,
+): NonNullable<ContainerReadinessObservation['activeArtifact']> {
   if (
     raw.schemaVersion !== 1 ||
     typeof raw.installationId !== 'string' ||
@@ -431,7 +438,9 @@ function parseJsonObject(name: string, body: string, maximumBytes: number): Reco
   }
   try {
     const value: unknown = JSON.parse(body);
-    if (!isRecord(value)) {throw new Error('not object');}
+    if (!isRecord(value)) {
+      throw new Error('not object');
+    }
     return value;
   } catch {
     throw new FixtureRefusal(`${name} is malformed`);
@@ -445,14 +454,22 @@ function internalHttpUrl(value: string): URL {
   } catch {
     throw new FixtureRefusal('readiness HTTP URL is malformed');
   }
-  if (url.protocol !== 'http:' || url.username !== '' || url.password !== '' || url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+  if (
+    url.protocol !== 'http:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.hostname === 'localhost' ||
+    url.hostname === '127.0.0.1'
+  ) {
     throw new FixtureRefusal('readiness HTTP URL is not an internal fixture endpoint');
   }
   return url;
 }
 
 function checkedId(value: string, name: string): string {
-  if (!SAFE_ID.test(value)) {throw new FixtureRefusal(`${name} identity is malformed`);}
+  if (!SAFE_ID.test(value)) {
+    throw new FixtureRefusal(`${name} identity is malformed`);
+  }
   return value;
 }
 
@@ -465,7 +482,9 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 }
 
 function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {return `[${value.map(canonicalJson).join(',')}]`;}
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
   if (isRecord(value)) {
     return `{${Object.entries(value)
       .sort(([left], [right]) => left.localeCompare(right))
@@ -473,7 +492,9 @@ function canonicalJson(value: unknown): string {
       .join(',')}}`;
   }
   const encoded = JSON.stringify(value);
-  if (encoded === undefined) {throw new FixtureRefusal('canonical readiness value is unsupported');}
+  if (encoded === undefined) {
+    throw new FixtureRefusal('canonical readiness value is unsupported');
+  }
   return encoded;
 }
 
@@ -494,7 +515,9 @@ async function digestCandidateRoot(supplied: string): Promise<string> {
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
     for (const entry of entries) {
-      if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === '.scratch') {continue;}
+      if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === '.scratch') {
+        continue;
+      }
       const path = join(directory, entry.name);
       const name = relative(root, path).split(sep).join('/');
       const stat = await lstat(path);
@@ -504,7 +527,9 @@ async function digestCandidateRoot(supplied: string): Promise<string> {
       } else if (stat.isSymbolicLink()) {
         const target = await readlink(path);
         bytes += Buffer.byteLength(target);
-        if (bytes > MAX_TREE_BYTES) {throw new FixtureRefusal('readiness candidate tree is oversized');}
+        if (bytes > MAX_TREE_BYTES) {
+          throw new FixtureRefusal('readiness candidate tree is oversized');
+        }
         hash.update(`symlink\0${name}\0${target}\0`);
       } else if (stat.isFile()) {
         files += 1;
@@ -529,7 +554,8 @@ async function digestCandidateRoot(supplied: string): Promise<string> {
   return hash.digest('hex');
 }
 
-const CONTAINER_INSPECT_FORMAT = '{"id":{{json .Id}},"name":{{json .Name}},"imageId":{{json .Image}},"state":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}""{{end}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}';
+const CONTAINER_INSPECT_FORMAT =
+  '{"id":{{json .Id}},"name":{{json .Name}},"imageId":{{json .Image}},"state":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}""{{end}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}';
 
 const HTTP_PROBE_SCRIPT = String.raw`
 const input = JSON.parse(Buffer.from(process.argv[1], 'base64').toString('utf8'));

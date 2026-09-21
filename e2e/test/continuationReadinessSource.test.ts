@@ -44,16 +44,19 @@ function candidateRoot(): string {
 
 function activeArtifact(root: string): string {
   const path = join(root, 'active-artifact.json');
-  writeFileSync(path, JSON.stringify({
-    schemaVersion: 1,
-    installationId: INSTALLATION_ID,
-    generation: 7,
-    slot: { role: 'admin', id: 'default' },
-    artifact: {
-      treeDigest: TREE_DIGEST,
-      images: [{ service: 'admin-api', imageId: IMAGE_ID }],
-    },
-  }));
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      installationId: INSTALLATION_ID,
+      generation: 7,
+      slot: { role: 'admin', id: 'default' },
+      artifact: {
+        treeDigest: TREE_DIGEST,
+        images: [{ service: 'admin-api', imageId: IMAGE_ID }],
+      },
+    }),
+  );
   return path;
 }
 
@@ -88,12 +91,14 @@ function inspectBody(path: string, id = 'admin-id'): string {
       'org.solarpunk.srs-continuation.fixture': FIXTURE_ID,
       'org.solarpunk.srs-continuation.managed': 'true',
     },
-    mounts: [{
-      Type: 'bind',
-      Source: path,
-      Destination: '/run/streaming-release/active-artifact.json',
-      RW: false,
-    }],
+    mounts: [
+      {
+        Type: 'bind',
+        Source: path,
+        Destination: '/run/streaming-release/active-artifact.json',
+        RW: false,
+      },
+    ],
   });
 }
 
@@ -136,7 +141,9 @@ describe('DockerReadinessObservationSource', () => {
     const artifact = activeArtifact(root);
     const command = new FakeCommand(() => ({ stdout: inspectBody(artifact), stderr: '' }));
     const source = new DockerReadinessObservationSource(command, bindings(root), {
-      async run() { return new Uint8Array(); },
+      async run() {
+        return new Uint8Array();
+      },
     });
 
     const observed = await source.inspectContainer('admin-api');
@@ -153,7 +160,9 @@ describe('DockerReadinessObservationSource', () => {
     const artifact = activeArtifact(root);
     const command = new FakeCommand(() => ({ stdout: inspectBody(artifact, 'different-id'), stderr: '' }));
     const source = new DockerReadinessObservationSource(command, bindings(root), {
-      async run() { return new Uint8Array(); },
+      async run() {
+        return new Uint8Array();
+      },
     });
 
     await assert.rejects(source.inspectContainer('admin-api'), FixtureRefusal);
@@ -166,7 +175,9 @@ describe('DockerReadinessObservationSource', () => {
       stderr: '',
     }));
     const source = new DockerReadinessObservationSource(command, bindings(root), {
-      async run() { return new Uint8Array(); },
+      async run() {
+        return new Uint8Array();
+      },
     });
 
     const response = await source.request({
@@ -196,7 +207,9 @@ describe('DockerReadinessObservationSource', () => {
       return { stdout: databaseAnswer(query), stderr: '' };
     });
     const source = new DockerReadinessObservationSource(command, bindings(root), {
-      async run() { return new Uint8Array(); },
+      async run() {
+        return new Uint8Array();
+      },
     });
 
     const receipt = await source.inspectGuard('uploader');
@@ -209,14 +222,26 @@ describe('DockerReadinessObservationSource', () => {
     const root = candidateRoot();
     const command = new FakeCommand((call) => ({ stdout: databaseAnswer(call.args.at(-1) ?? ''), stderr: '' }));
     const source = new DockerReadinessObservationSource(command, bindings(root), {
-      async run() { return new Uint8Array(); },
+      async run() {
+        return new Uint8Array();
+      },
     });
 
     const capability = await source.readUploaderCapability(UPLOADER_ID);
 
     assert.deepEqual(capability.profileDigests, [
-      { mediaType: 'video', digest: ['b5f18ec2', 'be5380fb', '5014b079', '5cda418a', '6df8e9fb', '3d8842e0', 'c0ad898e', '9ffbab72'].join('') },
-      { mediaType: 'audio', digest: ['3a48ea6b', '29b48ede', '10d8fb96', '6b6787c9', '6f69ac8f', '6afd2894', 'e692652f', '90ed15a4'].join('') },
+      {
+        mediaType: 'video',
+        digest: ['b5f18ec2', 'be5380fb', '5014b079', '5cda418a', '6df8e9fb', '3d8842e0', 'c0ad898e', '9ffbab72'].join(
+          '',
+        ),
+      },
+      {
+        mediaType: 'audio',
+        digest: ['3a48ea6b', '29b48ede', '10d8fb96', '6b6787c9', '6f69ac8f', '6afd2894', 'e692652f', '90ed15a4'].join(
+          '',
+        ),
+      },
     ]);
     assert.equal(capability.serverNow, '2026-09-21T00:00:10.000Z');
   });
