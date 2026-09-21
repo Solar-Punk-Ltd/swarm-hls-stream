@@ -18,7 +18,12 @@ import {
 import { FetchManagerProfileClient } from './managerProfile.js';
 import { captureContinuationMeasurements } from './measurements.js';
 import { DockerMediaScenarioSpawn, LoopbackMediaScenarioFetch } from './mediaRuntime.js';
-import { type MediaScenarioEvidence, runContinuationMediaScenario } from './mediaScenario.js';
+import {
+  type MediaScenarioEvidence,
+  type ReconnectAcceptanceEvidence,
+  runContinuationMediaScenario,
+  runReconnectAcceptanceScenario,
+} from './mediaScenario.js';
 import { type PrivateChainProvisioningResult, provisionPrivateChain } from './privateChain.js';
 import {
   GuardedApplicationProvisioner,
@@ -45,7 +50,26 @@ import {
 
 const POSTAGE_BATCH_ID = /^(?:0x)?[0-9a-fA-F]{64}$/;
 
+export type ContinuationScenario = 'cumulative' | 'reconnect';
+
+export type ScenarioEvidenceMetadata =
+  | { evidenceScope: 'cumulative-media-observation' }
+  | {
+      evidenceScope: 'reconnect-controller-observation';
+      remainingWitness: 'srs_on_publish_response_code_1';
+    };
+
+export function scenarioEvidenceMetadata(scenario: ContinuationScenario): ScenarioEvidenceMetadata {
+  return scenario === 'reconnect'
+    ? {
+        evidenceScope: 'reconnect-controller-observation',
+        remainingWitness: 'srs_on_publish_response_code_1',
+      }
+    : { evidenceScope: 'cumulative-media-observation' };
+}
+
 export interface ContinuationFixtureRuntimeConfiguration {
+  scenario: ContinuationScenario;
   plan: FixturePlan;
   targets: ReleaseFixtureTargets;
   managerUsername: string;
@@ -65,7 +89,7 @@ export interface FixtureControlFactoryInput {
   topology: ContinuationTopology;
   runtime: ResolvedFixtureRuntime;
   postageBatchId: string;
-  readinessStreamId: string;
+  readinessStreamTopic: string;
 }
 
 export type FixtureControlFactory = (input: FixtureControlFactoryInput) => ReadinessControlExecutor;
@@ -214,7 +238,7 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
       topology,
       runtime,
       postageBatchId: this.postageBatchId(),
-      readinessStreamId: stream.stream.id,
+      readinessStreamTopic: stream.stream.topic,
     });
     const source = new DockerReadinessObservationSource(this.command, runtime.readiness, controls);
     const transport = new ObservedReadinessTransport(this.configuration.plan, topology, source);
@@ -238,7 +262,7 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
     await this.docker.startContainer(this.requireRawContainer('media-sender').id);
   }
 
-  async runMediaScenario(): Promise<MediaScenarioEvidence> {
+  async runMediaScenario(): Promise<MediaScenarioEvidence | ReconnectAcceptanceEvidence> {
     const runtime = this.requireRuntime();
     const stream = this.requireStream();
     const sender = this.requireRawContainer('media-sender');
@@ -251,29 +275,33 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
       [passphraseReference, this.secrets.srtPassphrase],
     ]);
     this.mediaSpawn = new DockerMediaScenarioSpawn({ senderContainerId: sender.id, secrets, command: this.command });
-    return runContinuationMediaScenario(
-      {
-        fixtureId: this.configuration.plan.fixtureId,
-        srs: runtime.endpoints.srs,
-        viewer: {
-          controlBaseUrl: loopbackUrl(this.configuration.plan, 'viewer'),
-          mediaBaseUrl: runtime.endpoints.viewerMediaBaseUrl,
-        },
-        adminBaseUrl: loopbackUrl(this.configuration.plan, 'admin'),
-        stream: stream.stream,
-        uploaderId: stream.uploaderId,
-        authReferences: {
-          owner: ownerReference,
-          publishKey: publishReference,
-          srtPassphrase: passphraseReference,
-        },
+    const input = {
+      fixtureId: this.configuration.plan.fixtureId,
+      srs: runtime.endpoints.srs,
+      viewer: {
+        controlBaseUrl: loopbackUrl(this.configuration.plan, 'viewer'),
+        mediaBaseUrl: runtime.endpoints.viewerMediaBaseUrl,
       },
-      {
-        fetch: new LoopbackMediaScenarioFetch({ secrets }),
-        spawn: this.mediaSpawn,
-        clock: { now: Date.now, sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) },
+      adminBaseUrl: loopbackUrl(this.configuration.plan, 'admin'),
+      stream: stream.stream,
+      uploaderId: stream.uploaderId,
+      authReferences: {
+        owner: ownerReference,
+        publishKey: publishReference,
+        srtPassphrase: passphraseReference,
       },
-    );
+    } as const;
+    const deps = {
+      fetch: new LoopbackMediaScenarioFetch({ secrets }),
+      spawn: this.mediaSpawn,
+      clock: {
+        now: Date.now,
+        sleep: (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
+      },
+    };
+    return this.configuration.scenario === 'reconnect'
+      ? runReconnectAcceptanceScenario(input, deps)
+      : runContinuationMediaScenario(input, deps);
   }
 
   async writeEvidence(evidence: unknown): Promise<void> {
@@ -286,6 +314,8 @@ export class ContinuationFixtureRuntime implements ContinuationFixtureRunSteps {
         {
           schemaVersion: 1,
           fixtureId: this.configuration.plan.fixtureId,
+          scenario: this.configuration.scenario,
+          ...scenarioEvidenceMetadata(this.configuration.scenario),
           readiness: this.readiness,
           media: evidence,
         },

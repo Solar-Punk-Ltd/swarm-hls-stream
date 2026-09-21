@@ -96,6 +96,7 @@ describe('concrete continuation fixture runtime', () => {
     const command = new PreflightCommand(true);
     const runtime = new ContinuationFixtureRuntime(
       {
+        scenario: 'cumulative',
         plan: plan(),
         targets: targets(),
         managerUsername: 'fixture-manager',
@@ -120,6 +121,7 @@ describe('concrete continuation fixture runtime', () => {
       () =>
         new ContinuationFixtureRuntime(
           {
+            scenario: 'cumulative',
             plan: plan(),
             targets: targets(),
             managerUsername: 'fixture-manager',
@@ -140,6 +142,7 @@ describe('concrete continuation fixture runtime', () => {
     const command = new PreflightCommand(false, occupiedProject);
     const runtime = new ContinuationFixtureRuntime(
       {
+        scenario: 'cumulative',
         plan: plan(),
         targets: targets(),
         managerUsername: 'fixture-manager',
@@ -164,6 +167,7 @@ describe('concrete continuation fixture runtime', () => {
       () =>
         new ContinuationFixtureRuntime(
           {
+            scenario: 'cumulative',
             plan: plan(),
             targets: {
               ...targets(),

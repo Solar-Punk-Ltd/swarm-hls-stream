@@ -78,7 +78,7 @@ describe('continuation fixture CLI', () => {
     const observed: unknown[] = [];
 
     const result = await runContinuationCli(
-      ['run', '--scenario', 'cumulative', '--config', path],
+      ['--', 'run', '--scenario', 'cumulative', '--config', path],
       environment,
       async (configuration, secrets, scenario) => {
         observed.push(configuration, secrets, scenario);
@@ -89,8 +89,9 @@ describe('continuation fixture CLI', () => {
       schemaVersion: 1,
       fixtureId: FIXTURE_ID,
       scenario: 'cumulative',
-      status: 'passed',
+      status: 'completed',
       evidencePath: join(value.plan.outputRoot, 'scenario-evidence.json'),
+      evidenceScope: 'cumulative-media-observation',
     });
     assert.equal(observed.length, 3);
     assert.deepEqual(observed[1], {
@@ -134,6 +135,9 @@ describe('continuation fixture CLI', () => {
 
     assert.equal(selected, 'reconnect');
     assert.equal(result.scenario, 'reconnect');
+    assert.equal(result.status, 'completed');
+    assert.equal(result.evidenceScope, 'reconnect-controller-observation');
+    assert.equal(result.remainingWitness, 'srs_on_publish_response_code_1');
   });
 
   it('withholds configuration and environment values from malformed-input failures', async () => {

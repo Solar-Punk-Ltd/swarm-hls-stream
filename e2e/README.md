@@ -15,6 +15,59 @@ Three things live here, and they run at different times:
 `pnpm test` runs only the first, so the repo-wide `pnpm test` never tries to reach a host. The
 suites and the bench are opt-in, and they publish a real stream and spend real postage.
 
+## Isolated reconnect and continuation fixture
+
+The continuation fixture provisions its private chain, guarded applications, readiness probes,
+measurements, and one media scenario under a single fixture lease. Its JSON configuration contains
+only frozen candidate commits, immutable image IDs, fixture-derived target names, ports, and
+usernames. Credentials are required as process environment variables and are refused if they appear
+anywhere in the JSON file.
+
+Run the cumulative A, B, and C recording scenario with:
+
+```bash
+op run --env-file <fixture-role-reference-file> -- pnpm --filter @swarm-hls-stream/e2e fixture:continuation -- run --scenario cumulative --config /absolute/path/to/fixture.json
+```
+
+Run the reconnect cutoff scenario on its own fresh fixture by changing the selector to
+`--scenario reconnect`. A successful command reports `status: "completed"`. This says the requested
+orchestration and observations completed. The reconnect result remains a controller observation
+until runtime evidence includes the sanitized SRS `on_publish` response-code-1 witness named in
+`remainingWitness`.
+
+The process environment must route `SRS_FIXTURE_BEE_PASSWORD`, `SRS_FIXTURE_MANAGER_PASSWORD`,
+`SRS_FIXTURE_ADMIN_PASSWORD`, `FEED_PRIVATE_KEY`, and `INGEST_SRT_PASSPHRASE`. The command never
+accepts these values in arguments or the configuration file. It writes `scenario-evidence.json`
+below the fixture output directory and prints only bounded result metadata.
+
+## Isolated reconnect and continuation fixture
+
+The continuation fixture provisions its private chain, guarded applications, readiness probes,
+measurements, and one media scenario under a single fixture lease. Its JSON configuration contains
+only frozen candidate commits, immutable image IDs, fixture-derived target names, ports, and
+usernames. Credentials are required as process environment variables and are refused if they appear
+anywhere in the JSON file.
+
+Run the cumulative A, B, and C recording scenario with:
+
+```bash
+op run --env-file <fixture-role-reference-file> -- pnpm --filter @swarm-hls-stream/e2e fixture:continuation -- run --scenario cumulative --config /absolute/path/to/fixture.json
+```
+
+Run the reconnect cutoff scenario on its own fresh fixture by changing the selector to
+`--scenario reconnect`. A successful command reports `status: "completed"`. This says the requested
+orchestration and observations completed. The reconnect result remains a controller observation
+until runtime evidence includes the sanitized SRS `on_publish` response-code-1 witness named in
+`remainingWitness`.
+
+The process environment must route `SRS_FIXTURE_BEE_PASSWORD`, `SRS_FIXTURE_MANAGER_PASSWORD`,
+`SRS_FIXTURE_ADMIN_PASSWORD`, `FEED_PRIVATE_KEY`, and `INGEST_SRT_PASSPHRASE`. The command never
+accepts these values in arguments or the configuration file. It writes `scenario-evidence.json`
+below the fixture output directory and prints only bounded result metadata.
+
+Cleanup is not exposed by this command yet. Guarded application resource IDs are still being added
+to the fixture journal so exact-ID cleanup can cover both raw and guarded resources.
+
 ## Pointing it at a deployment
 
 The suite resolves a deployment the same way `deploy/scripts/deploy.sh` does, from the same files.
