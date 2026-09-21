@@ -227,7 +227,7 @@ export interface StreamOrchestratorConfig {
   ladderRegistry?: LadderRegistry;
 }
 
-export type ManagedLifecycleSummaryState = 'ready' | 'claimed' | 'live' | 'waiting' | 'closed' | 'vod';
+export type ManagedLifecycleSummaryState = Exclude<ManagedRunRecord['state'], 'claiming'>;
 
 export interface ManagedLifecycleSummary {
   readonly lifecycleVersion: 1;
@@ -1332,7 +1332,7 @@ export class StreamOrchestrator {
       }
       const state: ManagedLifecycleSummaryState = record.state;
       const permission: 'open' | 'claimed' | 'closed' =
-        state === 'ready' ? 'open' : state === 'closed' || state === 'vod' ? 'closed' : 'claimed';
+        state === 'closed' || state === 'vod' ? 'closed' : 'claimed';
       const runtime = this.managedSources.get(streamId);
       const runtimeLastObservedAt =
         runtime?.record.adminStreamId === record.adminStreamId &&
