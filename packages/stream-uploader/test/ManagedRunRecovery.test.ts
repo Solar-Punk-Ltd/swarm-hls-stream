@@ -40,6 +40,11 @@ import {
 import { MemoryManagedCheckpoints } from './helpers/managedCheckpoint.js';
 import { FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 
+/** `Array.prototype.findLast` is only declared from lib ES2023, and this package targets ES2020. */
+function lastMatching<T>(items: readonly T[], matches: (item: T) => boolean): T | undefined {
+  return [...items].reverse().find(matches);
+}
+
 const STREAM_ID = 'video/11111111-1111-4111-8111-111111111111';
 const RUNG_ID = `${STREAM_ID}_360p`;
 const RECONNECT_MS = 60_000;
@@ -1294,7 +1299,7 @@ describe('managed run recovery', () => {
     assert.deepEqual(media(target, SOURCE_A), { accepted: true });
     await activeUploader(target)?.segmentQueue.onIdle();
     await settleReports();
-    assert.equal(sent.findLast((report) => report.state === 'live')?.state, 'live');
+    assert.equal(lastMatching(sent, (report) => report.state === 'live')?.state, 'live');
 
     assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
     assert.equal(provision(target, SOURCE_B), true);
@@ -1349,7 +1354,7 @@ describe('managed run recovery', () => {
 
     releaseB({ reference: { toHex: () => 'manifest-b' } });
     await settleReports();
-    assert.equal(sent.findLast((report) => report.state === 'live')?.state, 'live');
+    assert.equal(lastMatching(sent, (report) => report.state === 'live')?.state, 'live');
   });
 
   it('keeps managed ABR rung uploaders through reconnect grace and finalizes them at cutoff', async () => {
@@ -1445,7 +1450,7 @@ describe('managed run recovery', () => {
 
     assert.equal(target.markManagedSourceUnpublished(STREAM_ID, SOURCE_A), true);
     await settleReports();
-    const waiting = sent.findLast((report) => report.state === 'waiting');
+    const waiting = lastMatching(sent, (report) => report.state === 'waiting');
     assert.equal(waiting?.state, 'waiting');
     if (waiting?.state === 'waiting') {
       assert.equal(waiting.reconnectDeadline, new Date(mediaDeadline as number).toISOString());
