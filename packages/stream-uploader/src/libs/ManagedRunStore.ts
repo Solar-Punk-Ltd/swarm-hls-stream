@@ -193,6 +193,8 @@ function isRungConnection(value: unknown): value is ManagedRungConnectionRecord 
 function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
   if (!value || typeof value !== 'object') {return false;}
   const record = value as Partial<ManagedRunRecord>;
+  const eventSequence = record.eventSequence;
+  const pendingReports = record.pendingReports;
   return (
     record.lifecycleVersion === 1 &&
     typeof record.streamId === 'string' &&
@@ -209,7 +211,7 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     (record.claimId === null || (typeof record.claimId === 'string' && UUID.test(record.claimId))) &&
     typeof record.claimRequestId === 'string' &&
     UUID.test(record.claimRequestId) &&
-    isNonNegativeInteger(record.eventSequence) &&
+    isNonNegativeInteger(eventSequence) &&
     Array.isArray(record.expectedRenditions) &&
     record.expectedRenditions.every(isExpectedRendition) &&
     new Set(record.expectedRenditions.map((rendition) => rendition.name)).size === record.expectedRenditions.length &&
@@ -226,15 +228,15 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
     Array.isArray(record.rungConnections) &&
     record.rungConnections.every(isRungConnection) &&
     new Set(record.rungConnections.map((connection) => connection.streamId)).size === record.rungConnections.length &&
-    Array.isArray(record.pendingReports) &&
-    record.pendingReports.every((report) =>
+    Array.isArray(pendingReports) &&
+    pendingReports.every((report) =>
       isManagedRunReport(report) &&
       report.runNumber === record.runNumber &&
       report.uploaderId === record.uploaderId &&
       report.claimId === record.claimId,
     ) &&
-    record.pendingReports.every((report, index) =>
-      report.eventSequence === record.eventSequence - record.pendingReports.length + index + 1,
+    pendingReports.every((report, index) =>
+      report.eventSequence === eventSequence - pendingReports.length + index + 1,
     ) &&
     (record.lastObservedAt === undefined ||
       (typeof record.lastObservedAt === 'string' && Number.isFinite(Date.parse(record.lastObservedAt)))) &&
@@ -250,7 +252,7 @@ function isManagedRunRecord(value: unknown): value is ManagedRunRecord {
         record.deadlineRemainingMs === 0 &&
         record.source === null &&
         record.rungConnections.length === 0 &&
-        record.pendingReports.length === 0) ||
+        pendingReports.length === 0) ||
       (record.state !== 'claiming' && record.claimId !== null))
   );
 }
