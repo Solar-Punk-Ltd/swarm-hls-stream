@@ -137,7 +137,7 @@ function makeManagedOrchestrator(
 function provision(
   orchestrator: StreamOrchestrator,
   source: SourceConnectionIdentity,
-  mediatype = MEDIA_TYPE_VIDEO,
+  mediatype: MediaType = MEDIA_TYPE_VIDEO,
 ): boolean {
   return orchestrator.provisionManagedSource(STREAM_ID, mediatype, source, CLAIMANT, ADMIN_SESSION);
 }
