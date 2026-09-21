@@ -599,9 +599,10 @@ async function handleStreams(
         const isLegacy = key ? legacyConnections.has(key) : false;
         srsResponse(res, SRS_ACCEPT);
         if (identity) {
+          const currentBase = managedBases.get(streamId);
           streamOrchestrator.markManagedSourceUnpublished(streamId, identity);
           managedConnections.delete(key as string);
-          if (role.kind === 'source') {
+          if (role.kind === 'source' && currentBase && sameSourceConnection(currentBase, identity)) {
             authenticatedBases.delete(streamId);
             legacyBaseGenerations.delete(streamId);
           }
