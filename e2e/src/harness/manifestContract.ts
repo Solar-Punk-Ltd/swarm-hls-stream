@@ -81,6 +81,22 @@ export function mediaSequenceOf(text: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/**
+ * The `#EXT-X-DISCONTINUITY-SEQUENCE` a playlist declares, or 0 where it declares none.
+ *
+ * ⛔ Zero rather than null, because an absent tag is not a missing reading: RFC 8216 §4.3.3.3 gives
+ * it a default of 0, and a playlist that starts at the beginning of its own timeline is right to
+ * leave it out.
+ */
+export function discontinuitySequenceOf(text: string): number {
+  const line = parseManifest(text).headers.find((header) => header.startsWith('#EXT-X-DISCONTINUITY-SEQUENCE:'));
+  if (line === undefined) {
+    return 0;
+  }
+  const value = Number.parseInt(line.slice(line.indexOf(':') + 1), 10);
+  return Number.isFinite(value) ? value : 0;
+}
+
 /** Every segment's `#EXT-X-PROGRAM-DATE-TIME` as epoch milliseconds, or null where it carries none. */
 export function programDateTimesOf(text: string): (number | null)[] {
   return parseManifest(text).segments.map(stampOf);
@@ -131,13 +147,31 @@ function wallClockFailures(segments: Segment[]): string[] {
   ];
 }
 
+/**
+ * Whether the playlist's numbering is where the contract says it should be.
+ *
+ * ⛔ **A playlist declaring `#EXT-X-DISCONTINUITY-SEQUENCE` above zero is exempt from the
+ * sequence-zero rule, because the two statements contradict each other.** That header says breaks ran
+ * in front of this playlist's own first entry, which is a playlist that does not begin where the
+ * broadcast does — so demanding it declare 0 is demanding it lie. The case it is written for is a
+ * recording glued onto the live window a session that was killed left behind: only that window
+ * survived on the feed, so the recording legitimately starts at that window's numbers, its first
+ * entry is an inherited one carrying no seam, and nothing else in the playlist can say so. Both
+ * numbers then propagate through every later glue on that rung's feed, so without this the false
+ * positive would be permanent for the rung rather than one-off.
+ *
+ * ⛔ **Zero is still demanded of every playlist that declares no such header**, which is the
+ * numbering defect this check exists for and which no recording of a broadcast that started on this
+ * feed can now excuse: recordings are glued, so a recording of four sessions starts at the first
+ * one's number, which is 0.
+ */
 function mediaSequenceFailures(text: string, contract: ManifestContract): string[] {
   const sequence = mediaSequenceOf(text);
 
   if (sequence === null) {
     return ['the playlist carries no #EXT-X-MEDIA-SEQUENCE, so nothing says where its window starts'];
   }
-  if (contract.firstOfBroadcast && sequence !== 0) {
+  if (contract.firstOfBroadcast && sequence !== 0 && discontinuitySequenceOf(text) === 0) {
     return [
       `the first playlist of the broadcast declares #EXT-X-MEDIA-SEQUENCE:${sequence} rather than 0. ` +
         "That is the engine's own counter, which runs on across broadcasts, and a player that requires " +

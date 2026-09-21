@@ -705,6 +705,53 @@ describe('a recording glued across several sessions of one broadcast', () => {
   });
 
   /**
+   * ⛔⛔ The false positive a re-review found on 2026-09-21. A session whose predecessor was killed
+   * inherits only the live WINDOW that predecessor left at the head, so its recording starts at that
+   * window's numbers rather than at the broadcast's, and its first entry is an inherited one with no
+   * seam on it — the seam is further down. Held to sequence 0 as an ordinary recording, such a
+   * playlist is refused for being exactly what it should be, and because both numbers propagate
+   * through every later glue the refusal would be permanent for that rung's feed rather than one-off.
+   */
+  it('is accepted when it was glued onto the window a killed session left, which starts above zero', () => {
+    const recording = gluedRecording([1, 12], { mediaSequence: 40, discontinuitySequence: 3 });
+    const reading = readingOf(FEED, recording, FIRST_PLAYLIST);
+
+    assert.deepEqual(reading.failures, []);
+    assert.equal(reading.mediaSequence, 40, 'the window it inherited is where this recording starts');
+    assert.equal(reading.discontinuitySequence, 3, 'and its header is what says that is not the broadcast′s start');
+  });
+
+  /**
+   * ⛔ The rule is not loosened for an ordinary recording. A recording of a broadcast that began on
+   * this feed starts at 0 however many times the broadcaster restarted, because the gluing is what
+   * makes that true, and one declaring otherwise with nothing in front of it is the numbering defect
+   * this contract exists to catch.
+   */
+  it('is refused at the same media sequence when it declares no discontinuity sequence', () => {
+    const recording = gluedRecording([1, 12], { mediaSequence: 40 });
+
+    assert.match(readingOf(FEED, recording, FIRST_PLAYLIST).failures[0], /rather than 0/);
+  });
+
+  /**
+   * Both numbers propagate: the third session inherits the second's glued recording, keeping its
+   * media sequence and its declared count, and is accepted for the same reason the second was.
+   */
+  it('is still accepted at the third generation of glue onto that same window', () => {
+    const third = gluedRecording([1, 12, 9], { mediaSequence: 40, discontinuitySequence: 3 });
+    const reading = readingOf(FEED, third, FIRST_PLAYLIST);
+
+    assert.deepEqual(reading.failures, []);
+    assert.equal(reading.discontinuities, 2, 'two joins inside it, on top of the three behind it');
+    assert.equal(reading.discontinuitySequence, 3);
+  });
+
+  /** A recording of a broadcast that began on this feed declares no such header, and starts at 0. */
+  it('declares no discontinuity sequence when the broadcast began on this feed', () => {
+    assert.equal(readingOf(FEED, gluedRecording([14, 16]), FIRST_PLAYLIST).discontinuitySequence, 0);
+  });
+
+  /**
    * The live playlists are unchanged by the gluing: a window over the last session's own segments,
    * numbered on from the head it opened over, with the seam on its own first entry. That is the
    * continuation the judge already allows above zero, and the recording above is what a viewer plays

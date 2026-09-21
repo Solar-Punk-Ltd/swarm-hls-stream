@@ -1426,6 +1426,9 @@ export class StreamUploader {
     this.socIndex = nextIndex;
 
     if (needsCatalogAnnounce(this.readiness)) {
+      // ⛔ Both of these are below the `feedPositionSettled` refusal above, and that ordering is what
+      // stops the admin being told a stream is `live` while no recovery entry exists to flip it back.
+      // See {@link persistState}.
       this.persistState();
       await this.announceToCatalog();
     }
@@ -1498,10 +1501,22 @@ export class StreamUploader {
    * from a number viewers had already been handed and finalized a recording that silently dropped
    * every earlier session.
    *
-   * Nothing is lost by waiting. {@link commitManifest} refuses every publish until the same two facts
-   * are settled, so a session that has not settled them has told no viewer anything, and there is no
-   * published history for a recovery to have to keep faith with. The segments it uploaded are in
-   * Swarm and unnamed, which is exactly what they would be had the process died one moment earlier.
+   * Nothing is lost by waiting, and the ordering is what makes that true rather than luck.
+   * {@link commitManifest} refuses every publish until the same two facts are settled, so a session
+   * that has not settled them has told no viewer anything and there is no published history for a
+   * recovery to keep faith with. The segments it uploaded are in Swarm and unnamed, which is exactly
+   * what they would be had the process died one moment earlier.
+   *
+   * ⛔⛔ **That includes the admin, and it is load bearing rather than incidental.** The `live` report
+   * is `notifyStart`'s, `notifyStart` has exactly one caller in `announceToCatalog`, and
+   * `announceToCatalog` has exactly one caller in {@link commitManifest} — BELOW its
+   * `feedPositionSettled` refusal, and one line below a `persistState` of its own. So the admin
+   * cannot be told a stream is `live` while no recovery entry exists: by the time anything reports it,
+   * the position is settled and the entry is written. Were the announce ever moved in front of that
+   * gate, this refusal would strand an admin row at `live` with nothing left on the uploader side to
+   * flip it, because the entry the next boot would have recovered from was never written. Keep the
+   * announce behind the gate.
+   *
    * A standalone single-rendition stream settles trivially — its topic is fresh per session — so it
    * persists from its first segment exactly as it always did.
    */

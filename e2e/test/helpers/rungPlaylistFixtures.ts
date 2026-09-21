@@ -19,6 +19,7 @@ import {
   buildExtinf,
   buildProgramDateTime,
   HLS_DISCONTINUITY,
+  HLS_DISCONTINUITY_SEQUENCE,
   HLS_ENDLIST,
   HLS_GAP,
   HLS_M3U,
@@ -120,19 +121,32 @@ const FIXTURE_RESTART_GAP_MS = 41_500;
  * ⛔ The wall clock jumps at each seam by the time the broadcaster was away, not by a fragment, which
  * is what a real restart does and what the break is there to excuse.
  *
+ * ⛔ `inherited` is the other shape this produces: a recording glued onto the live WINDOW a session
+ * that was killed left behind. Only that window survived on the feed, so the recording starts at its
+ * numbers rather than at the broadcast's, and it declares its `#EXT-X-DISCONTINUITY-SEQUENCE` because
+ * the breaks earlier in that broadcast really did run in front of it. Its first entry is an inherited
+ * one and carries no seam, which is what makes the header the only thing that can say so.
+ *
  * @param sessions how many media entries each session of the broadcast contributed, oldest first
+ * @param inherited what a killed predecessor's window declared, where the recording is glued onto one
  */
-export function gluedRecording(sessions: readonly number[]): string {
+export function gluedRecording(
+  sessions: readonly number[],
+  inherited: { mediaSequence?: number; discontinuitySequence?: number } = {},
+): string {
+  const mediaSequence = inherited.mediaSequence ?? 0;
+  const discontinuitySequence = inherited.discontinuitySequence ?? 0;
   const lines: string[] = [
     HLS_M3U,
     `${HLS_VERSION}:3`,
     `${HLS_TARGET_DURATION}:${FIXTURE_FRAGMENT_SECONDS}`,
     HLS_PLAYLIST_TYPE_VOD,
-    `${HLS_MEDIA_SEQUENCE}:0`,
+    `${HLS_MEDIA_SEQUENCE}:${mediaSequence}`,
+    ...(discontinuitySequence > 0 ? [`${HLS_DISCONTINUITY_SEQUENCE}:${discontinuitySequence}`] : []),
     '',
   ];
 
-  let sequence = 0;
+  let sequence = mediaSequence;
   let atMs = FIXTURE_ANCHOR_MS;
   sessions.forEach((entries, session) => {
     if (session > 0) {

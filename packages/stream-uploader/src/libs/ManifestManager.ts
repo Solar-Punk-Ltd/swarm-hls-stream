@@ -955,10 +955,21 @@ export class ManifestManager {
    * of them names, so a hole reads the same in the playlist a viewer is following and in the one they
    * are handed afterwards.
    *
+   * ⚠️ **What a head naming media under no `#EXT-X-MEDIA-SEQUENCE` leaves, said outright.**
+   * `continuesFrom` answers null for such a head, so nothing offsets the numbering and {@link isSeam}
+   * is never armed, while {@link inheritedTimeline} still reads its media and the recording still
+   * glues it. The session's live playlists then carry no seam and no
+   * `#EXT-X-DISCONTINUITY-SEQUENCE`, numbering from 0; its recording writes the one seam between the
+   * prefix and this media. Each playlist is self-consistent — the live ones describe a session that
+   * knows of no predecessor, the recording describes the join it actually contains — and the pair is
+   * the best either can be from a head that declared no numbering. No playlist this deployment
+   * publishes is such a head: every builder here writes a media sequence, so this is the shape of a
+   * foreign or truncated head rather than of anything upstream of us.
+   *
    * @param behindASeam the caller has just written an `#EXT-X-DISCONTINUITY` in front of these lines,
    *   so the first of them declares none of its own. Positional rather than derived from
-   *   {@link isSeam}, which a head carrying no `#EXT-X-MEDIA-SEQUENCE` would leave unarmed while the
-   *   prefix path wrote the seam anyway.
+   *   {@link isSeam}, which is exactly the case above: unarmed, while the prefix path writes the seam
+   *   anyway.
    */
   private timelineLines(held: readonly SegmentEntry[], behindASeam = false): string[] {
     return held.flatMap((seg, position) =>

@@ -299,6 +299,38 @@ describe('the feed index a declared topic resumes from', () => {
   });
 
   /**
+   * ⛔⛔ The half of the persist gate that could have cost something. A `live` the admin was told
+   * while no recovery entry existed would strand that row: nothing on the uploader side would survive
+   * a crash to flip it, because the entry the next boot recovers from was never written. It cannot
+   * happen, because the report is `notifyStart`'s, which is reached only through `announceToCatalog`,
+   * which `commitManifest` calls BELOW its `feedPositionSettled` refusal. Pinned here so moving the
+   * announce in front of that gate fails rather than strands a row.
+   */
+  it('never reports live to the admin before a recovery entry exists', async () => {
+    let release: (() => void) | null = null;
+    const session = newSession({
+      feedHead: () => ({ index: 7, manifest: PREVIOUS_ON_THIS_FEED }),
+      predecessorDrained: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(session.saved.length, 0, 'the entry is deliberately withheld while the position is unsettled');
+    assert.equal(session.reports.length, 0, 'so nothing may have told the admin the stream is live either');
+
+    release!();
+    await feedOneSegment(session.uploader, 1);
+
+    assert.ok(session.saved.length > 0);
+    assert.ok(
+      session.reports.some((report) => report.state === ADMIN_STATE_LIVE),
+      'and both happen once it settles, in that order',
+    );
+  });
+
+  /**
    * ⛔ The standalone deployment is untouched by that. Its topic is a fresh uuid per session, so its
    * feed position is settled by construction and it persists from its first segment exactly as it
    * always did.
