@@ -97,7 +97,7 @@ describe('managed uploader capability heartbeat', () => {
         }
         return RECEIPT;
       },
-    } as AdminApiClient;
+    } as unknown as AdminApiClient;
     const orchestrator = makeTestOrchestrator({ clock, adminApi: admin });
 
     orchestrator.startManagedCapabilityHeartbeat(UPLOADER_ID, buildUploaderCapabilities());

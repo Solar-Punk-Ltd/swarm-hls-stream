@@ -297,7 +297,7 @@ describe('managed run recovery', () => {
         markReportStarted();
         return reportResult;
       },
-    } as AdminApiClient;
+    } as unknown as AdminApiClient;
     const target = orchestrator(clock, () => WALL_START + clock.now(), store, admin);
     assert.equal(target.prepareManagedRun(CLAIM), true);
     assert.equal(provision(target, SOURCE_A), true);

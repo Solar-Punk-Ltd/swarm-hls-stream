@@ -142,7 +142,7 @@ describe('managed continuation polling', () => {
           throw new Error('injected lost preparation response');
         }
       },
-    } as AdminApiClient;
+    } as unknown as AdminApiClient;
     const target = makeTestOrchestrator({ adminApi, managedCheckpointStore: checkpoints });
 
     try {
@@ -186,7 +186,7 @@ describe('managed continuation polling', () => {
         _operationId: string,
         preparation: ManagedContinuationPreparation,
       ) => reported.push(preparation),
-    } as AdminApiClient;
+    } as unknown as AdminApiClient;
     const target = makeTestOrchestrator({ adminApi, managedCheckpointStore: checkpoints });
 
     try {
@@ -296,7 +296,7 @@ describe('managed continuation polling', () => {
         _operationId: string,
         preparation: ManagedContinuationPreparation,
       ) => void prepared.push(preparation),
-    } as AdminApiClient;
+    } as unknown as AdminApiClient;
     const target = makeTestOrchestrator({
       adminApi,
       managedSourceReconnectMs: 60_000,
@@ -352,7 +352,7 @@ describe('managed continuation polling', () => {
         _operationId: string,
         preparation: ManagedContinuationPreparation,
       ) => void prepared.push(preparation),
-    } as AdminApiClient;
+    } as unknown as AdminApiClient;
     const target = makeTestOrchestrator({
       adminApi,
       managedSourceReconnectMs: 60_000,
