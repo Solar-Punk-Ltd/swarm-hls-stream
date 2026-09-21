@@ -60,7 +60,7 @@ export function parseSwarmUri(url: string): { owner: string; topic: string } {
  * parsed fragment anyway, so omitting it is legal where guessing it would let hls.js discard a rung
  * that plays perfectly well.
  */
-export function buildMasterPlaylist(owner: string, renditions: Rendition[]): string {
+export function buildMasterPlaylist(owner: string, renditions: readonly Rendition[]): string {
   const lines = [HLS_M3U, `${HLS_VERSION}:3`, HLS_INDEPENDENT_SEGMENTS];
 
   for (const rendition of renditions) {
