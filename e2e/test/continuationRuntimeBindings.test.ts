@@ -110,6 +110,30 @@ class DockerObservations implements BoundedCommand {
 function guardedContainers(): ContainerFixture[] {
   return [
     {
+      id: 'manager-postgres-id',
+      name: 'manager-project-postgres-1',
+      project: 'manager-project',
+      service: 'postgres',
+      aliases: [],
+      ports: [{ port: 5432, protocol: 'tcp' }],
+    },
+    {
+      id: 'manager-api-id',
+      name: 'manager-project-api-1',
+      project: 'manager-project',
+      service: 'api',
+      aliases: ['manager-api'],
+      ports: [],
+    },
+    {
+      id: 'manager-web-id',
+      name: 'manager-project-web-1',
+      project: 'manager-project',
+      service: 'web',
+      aliases: [],
+      ports: [{ port: 80, protocol: 'tcp' }],
+    },
+    {
       id: 'admin-postgres-id',
       name: 'admin-project-postgres-1',
       project: 'admin-project',
@@ -174,7 +198,7 @@ describe('resolveFixtureRuntime', () => {
     const runtime = await resolveFixtureRuntime(command, {
       plan,
       topology,
-      projects: { admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+      projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
       fixtureNetworkId: NETWORK_ID,
       rawContainers: new Map([
         ['blockchain', { id: 'blockchain-id', name: `${FIXTURE_ID}-blockchain`, configuredImage: IMAGE_ID }],
@@ -199,6 +223,16 @@ describe('resolveFixtureRuntime', () => {
     assert.equal(runtime.readiness.containers.get('srs')?.id, 'srs-id');
     assert.equal(runtime.readiness.containers.get('uploader')?.id, 'uploader-id');
     assert.equal(runtime.readiness.containers.get('viewer')?.id, 'viewer-id');
+    assert.deepEqual(
+      [...runtime.measurements.containers.entries()].filter(([role]) => role.startsWith('manager-')),
+      [
+        ['manager-postgres', { id: 'manager-postgres-id', name: 'manager-project-postgres-1', configuredImage: 'fixture/postgres:candidate' }],
+        ['manager-api', { id: 'manager-api-id', name: 'manager-project-api-1', configuredImage: 'fixture/api:candidate' }],
+        ['manager-web', { id: 'manager-web-id', name: 'manager-project-web-1', configuredImage: 'fixture/web:candidate' }],
+      ],
+    );
+    assert.equal(runtime.measurements.containers.size, 17);
+    assert.equal(new Set([...runtime.measurements.containers.values()].map(({ id }) => id)).size, 17);
     assert.deepEqual(runtime.endpoints, {
       srs: { host: 'srs', rtmpPort: 10012, srtPort: 10011 },
       viewerMediaBaseUrl: 'http://client',
@@ -223,7 +257,7 @@ describe('resolveFixtureRuntime', () => {
       resolveFixtureRuntime(new DockerObservations(containers), {
         plan,
         topology,
-        projects: { admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+        projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
         fixtureNetworkId: NETWORK_ID,
         rawContainers: new Map(),
         guardSlots: new Map(),
@@ -242,12 +276,45 @@ describe('resolveFixtureRuntime', () => {
       resolveFixtureRuntime(command, {
         plan,
         topology,
-        projects: { admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+        projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
         fixtureNetworkId: NETWORK_ID,
         rawContainers: new Map(),
         guardSlots: new Map(),
       }),
       /exact fixture network/i,
+    );
+  });
+
+  it('refuses a missing or foreign manager runtime identity', async () => {
+    const plan = fixturePlan();
+    const topology = createContinuationTopology(plan, UPLOADER_ID);
+    const missing = guardedContainers().filter(({ service, project }) => !(project === 'manager-project' && service === 'api'));
+    await assert.rejects(
+      resolveFixtureRuntime(new DockerObservations(missing), {
+        plan,
+        topology,
+        projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+        fixtureNetworkId: NETWORK_ID,
+        rawContainers: new Map(),
+        guardSlots: new Map(),
+      }),
+      /manager-api guarded runtime did not resolve/i,
+    );
+
+    const wrong = guardedContainers();
+    const managerApi = wrong.find(({ service, project }) => project === 'manager-project' && service === 'api');
+    assert.ok(managerApi);
+    managerApi.project = 'foreign-manager-project';
+    await assert.rejects(
+      resolveFixtureRuntime(new DockerObservations(wrong), {
+        plan,
+        topology,
+        projects: { manager: 'manager-project', admin: 'admin-project', uploader: 'profile', viewer: 'viewer-project' },
+        fixtureNetworkId: NETWORK_ID,
+        rawContainers: new Map(),
+        guardSlots: new Map(),
+      }),
+      /manager-api guarded runtime did not resolve/i,
     );
   });
 });

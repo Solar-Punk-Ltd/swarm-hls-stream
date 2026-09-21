@@ -6,9 +6,11 @@ import { describe, it } from 'node:test';
 
 import type { BoundedCommand, CommandResult } from '../src/continuation/dockerCli.js';
 import { FixtureRefusal } from '../src/continuation/fixture.js';
-import { captureContinuationMeasurements } from '../src/continuation/measurements.js';
+import {
+  captureContinuationMeasurements,
+  type MeasurementContainerRole,
+} from '../src/continuation/measurements.js';
 import type { RuntimeContainerBinding } from '../src/continuation/readinessSource.js';
-import type { TopologyServiceRole } from '../src/continuation/topology.js';
 
 const FIXTURE_ID = 'srs-continuation-20260920-a1b2c3d4';
 
@@ -29,10 +31,18 @@ class RecordingCommand implements BoundedCommand {
       return { stdout: '{"status":"ok","complete":true}', stderr: '' };
     }
     if (args[0] === 'stats') {
-      return { stdout: '{"ID":"one","CPUPerc":"0.1%"}\n', stderr: '' };
+      return {
+        stdout: args.slice(args.indexOf('{"id":{{json .ID}}') + 1)
+          .map((id) => JSON.stringify({ id, cpu: '0.1%', memory: '1MiB / 1GiB', pids: '1', net: '0B / 0B', block: '0B / 0B' }))
+          .join('\n') + '\n',
+        stderr: '',
+      };
     }
     if (args[0] === 'inspect') {
-      return { stdout: '{"id":"one","nanoCpus":1000000000,"memory":1073741824,"pids":256}', stderr: '' };
+      return {
+        stdout: JSON.stringify({ id: args.at(-1), nanoCpus: 1_000_000_000, memory: 1_073_741_824, pids: 256 }),
+        stderr: '',
+      };
     }
     if (args[0] === 'ps') {
       return { stdout: '{"id":"foreign","name":"neighbor","image":"synthetic"}\n', stderr: '' };
@@ -50,8 +60,8 @@ class BoundedFailureCommand extends RecordingCommand {
   }
 }
 
-function containers(): ReadonlyMap<TopologyServiceRole, RuntimeContainerBinding> {
-  const roles: TopologyServiceRole[] = [
+function containers(): ReadonlyMap<MeasurementContainerRole, RuntimeContainerBinding> {
+  const roles: MeasurementContainerRole[] = [
     'blockchain',
     'bee-queen',
     'bee-worker-1',
@@ -66,6 +76,9 @@ function containers(): ReadonlyMap<TopologyServiceRole, RuntimeContainerBinding>
     'viewer',
     'browser',
     'media-sender',
+    'manager-postgres',
+    'manager-api',
+    'manager-web',
   ];
   return new Map(
     roles.map((role) => [
@@ -106,6 +119,9 @@ describe('continuation measurement snapshots', () => {
       'viewer',
       'browser',
       'media-sender',
+      'manager-postgres',
+      'manager-api',
+      'manager-web',
     ]);
     const metricUrls = command.calls
       .filter(({ args }) => args[0] === 'exec' && args.some((argument) => argument.startsWith('http://')))
@@ -124,7 +140,14 @@ describe('continuation measurement snapshots', () => {
         .every(({ args }) => args.at(-1) === String(256 * 1024)),
     );
     assert.equal(command.calls.filter(({ args }) => args[0] === 'stats').length, 1);
-    assert.equal(command.calls.filter(({ args }) => args[0] === 'inspect').length, 14);
+    assert.equal(command.calls.filter(({ args }) => args[0] === 'inspect').length, 17);
+    const statsCall = command.calls.find(({ args }) => args[0] === 'stats');
+    assert.ok(statsCall);
+    assert.ok(statsCall.args.includes('--no-trunc'));
+    const savedStats = String(saved.exactContainerStats).trim().split('\n').map((row) => JSON.parse(row) as { id: string });
+    assert.equal(savedStats.length, 17);
+    assert.equal(new Set(savedStats.map(({ id }) => id)).size, 17);
+    assert.deepEqual(new Set(savedStats.map(({ id }) => id)), new Set(containers().values().map(({ id }) => id)));
     assert.ok(command.calls.every(({ args }) => !args.includes('env')));
     assert.ok(command.calls.every(({ args }) => !args.includes('logs')));
   });
@@ -168,10 +191,10 @@ describe('continuation measurement snapshots', () => {
     assert.match(saved.serviceMetrics['bee-worker-1'] ?? '', /full service metrics/);
     assert.match(saved.serviceMetrics.uploader ?? '', /"complete":true/);
     assert.match(saved.exactContainerStats ?? '', /CPUPerc/);
-    assert.equal(Object.keys(saved.exactContainerLimits).length, 14);
+    assert.equal(Object.keys(saved.exactContainerLimits).length, 17);
     assert.match(saved.coTenancy ?? '', /neighbor/);
     assert.equal(command.calls.filter(({ args }) => args[0] === 'stats').length, 1);
-    assert.equal(command.calls.filter(({ args }) => args[0] === 'inspect').length, 14);
+    assert.equal(command.calls.filter(({ args }) => args[0] === 'inspect').length, 17);
     assert.equal(command.calls.filter(({ args }) => args[0] === 'ps').length, 1);
     const metricUrls = command.calls
       .filter(({ args }) => args[0] === 'exec' && args.some((argument) => argument.startsWith('http://')))
@@ -209,5 +232,45 @@ describe('continuation measurement snapshots', () => {
         diagnostic: 'bounded command timed out (stdout 17 bytes, stderr 23 bytes)',
       },
     ]);
+  });
+
+  it('records missing exact stats and mismatched limit identities as incomplete surfaces', async () => {
+    class IncompleteIdentityCommand extends RecordingCommand {
+      override async run(file: string, args: readonly string[]): Promise<CommandResult> {
+        const result = await super.run(file, args);
+        if (args[0] === 'stats') {
+          return { ...result, stdout: result.stdout.split('\n').slice(1).join('\n') };
+        }
+        if (args[0] === 'inspect' && args.at(-1) === 'manager-api-container-id') {
+          return { ...result, stdout: JSON.stringify({ id: 'foreign-manager-api', nanoCpus: 1, memory: 1, pids: 1 }) };
+        }
+        return result;
+      }
+    }
+    const outputRoot = mkdtempSync(join(tmpdir(), 'continuation-measurements-identities-'));
+
+    await assert.rejects(
+      captureContinuationMeasurements(new IncompleteIdentityCommand(), {
+        fixtureId: FIXTURE_ID,
+        outputRoot,
+        phase: 'before',
+        probeContainerId: 'admin-api-container-id',
+        containers: containers(),
+      }),
+      /snapshot is incomplete/i,
+    );
+
+    const saved = JSON.parse(readFileSync(join(outputRoot, 'measurements', 'before.json'), 'utf8')) as {
+      failures: Array<{ surface: string; diagnostic: string }>;
+      exactContainerStats: string | null;
+      exactContainerLimits: Record<string, string>;
+    };
+    assert.deepEqual(saved.failures, [
+      { surface: 'exactContainerStats', diagnostic: 'bounded command failed' },
+      { surface: 'exactContainerLimits.manager-api', diagnostic: 'bounded command failed' },
+    ]);
+    assert.equal(saved.exactContainerStats, null);
+    assert.equal('manager-api' in saved.exactContainerLimits, false);
+    assert.equal(Object.keys(saved.exactContainerLimits).length, 16);
   });
 });
