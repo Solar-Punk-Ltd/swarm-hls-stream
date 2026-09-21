@@ -497,6 +497,12 @@ services:
       # Empty on purpose: the entrypoint defaults it to the resolved SRS_RTMP_PORT, the RTMP listener
       # the transcode republish dials. Pinning a fixed port here would re-break the ladder under --portSlot.
       ABR_RTMP_PORT: ${ABR_RTMP_PORT:-}
+      # Read on both sides of the managed lifecycle: the uploader takes it as the version of the
+      # protocol it speaks, and this entrypoint takes it as whether the ingest source itself writes
+      # HLS. With a ladder configured and this unset, the ingest vhost keeps HLS off, so the
+      # provisional source never posts a segment, no progress callback arrives and rung binding is
+      # refused. It was on the uploader service alone, so every managed ABR deployment ran that way.
+      SRS_LIFECYCLE_VERSION: ${SRS_LIFECYCLE_VERSION:-}
 
   # --- OvenMediaEngine ---
 
