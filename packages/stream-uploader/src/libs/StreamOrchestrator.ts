@@ -335,6 +335,26 @@ export class StreamOrchestrator {
    * {@link HealthSignals.disconnectedStreams}.
    */
   private streamDisconnectedAt = new Map<string, number>();
+  /**
+   * Per stream, the monotonic instant until which the reaper holds off because the encoder has just
+   * come back and its first segment is still on its way.
+   *
+   * ⛔⛔ **Without it a resume that lands near the end of the window is reaped seconds later and the
+   * broadcaster becomes a zombie.** The reaper measures from the last media, so an `on_publish`
+   * accepted at 57 seconds into a 60 second window is followed three seconds later by a reap: the
+   * recording is sealed, `retireSession` frees the id, and the first returning segment — SRS needs a
+   * second or two to cut one — and every segment after it is refused as an unknown stream. SRS does
+   * not announce again for a publish session it already holds, so the encoder goes on sending into
+   * nothing until somebody restarts it by hand. On a ladder the slowest rung is the one this happens
+   * to, and it is then missing from the master for the rest of the broadcast.
+   *
+   * ⛔ **Bounded at one grace past the ORIGINAL deadline, which is what keeps it from being a way to
+   * hold a dead broadcast open.** See {@link resumeLiveSession}: however many times an encoder
+   * announces without delivering, the broadcast still ends at `streamIngestAt + orphanReapMs +
+   * RESUME_FIRST_SEGMENT_GRACE_MS`. Cleared by the first accepted segment, which is the event it is
+   * waiting for, and by the session retiring.
+   */
+  private resumeGraceUntil = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
   private stopOutcomes = new Map<string, RetainedStopOutcome>();
   /** Actual pending writes for topics shared across sessions, independently of bounded stop reports. */
@@ -590,6 +610,30 @@ export class StreamOrchestrator {
   }
 
   /**
+   * Give a returning encoder long enough to cut and deliver its first segment before the reaper may
+   * end the broadcast, and never longer than one grace past the deadline the broadcast already had.
+   *
+   * ⛔ **The cap is the whole safety of it.** `min(now + grace, lastMedia + window + grace)` means an
+   * announce arriving early in the window buys nothing at all, one arriving late moves the deadline
+   * by at most the grace, and a hundred of them move it by exactly the same amount as one. So the
+   * owner's case 5 — an encoder reconnecting over and over and never sending a frame — still ends,
+   * one grace later than it would have, rather than being held open for as long as it keeps trying.
+   *
+   * ⭐ **The grace is `segmentStallMs` because it is the same question.** That value answers "how
+   * long may something that is connected go without delivering a segment before we stop believing in
+   * it", which is exactly what is being asked of an encoder that has just announced. It is also
+   * comfortably past SRS's own twenty second first-packet timeout, so a publisher SRS still believes
+   * in is one this service still believes in. Sharing it means one number rather than two that drift.
+   */
+  private holdTheReaperForAFirstSegment(streamId: string): void {
+    const grace = this.config.segmentStallMs;
+    const now = this.clock.now();
+    const lastMedia = this.streamIngestAt.get(streamId);
+    const ceiling = lastMedia === undefined ? now + grace : lastMedia + this.config.orphanReapMs + grace;
+    this.resumeGraceUntil.set(streamId, Math.min(now + grace, ceiling));
+  }
+
+  /**
    * The encoder is back inside the window, so this broadcast carries on where it left off.
    *
    * ⛔ **Nothing is published and nothing is reported.** No closing playlist, no recording, no admin
@@ -610,7 +654,8 @@ export class StreamOrchestrator {
    * ⛔ **`streamIngestAt` and `streamActivityAt` are deliberately not touched.** Only media may move
    * them. An encoder that announces, sends nothing, drops and announces again would otherwise re-arm
    * the window on every attempt and hold a recording with no media in it open for ever, which is the
-   * owner's case 5.
+   * owner's case 5. What the returning encoder does get is a bounded grace for its first segment to
+   * arrive, which is {@link holdTheReaperForAFirstSegment}.
    *
    * Every other per-session latch `retireSession` clears — the fragment watch, the opening-video
    * gate, the unread-duration report, the loss timestamp — is deliberately KEPT. This is the same
@@ -621,6 +666,7 @@ export class StreamOrchestrator {
     this.restartSegmentAccounting(streamId);
     uploader.resumeAfterReconnect();
     this.streamDisconnectedAt.delete(streamId);
+    this.holdTheReaperForAFirstSegment(streamId);
     // The session that is speaking now is the one a later announce is judged against, which is the
     // same rule the replacement path applies. See `reasonToRefuseTakeover`.
     this.streamClaimants.set(streamId, claimant);
@@ -780,6 +826,8 @@ export class StreamOrchestrator {
     // longer a fact about anything. Left behind, the id would report a disconnect for the life of the
     // process and a successor on the same id would inherit it.
     this.streamDisconnectedAt.delete(streamId);
+    // Same reasoning: a grace is a promise made to one returning encoder, and this session is over.
+    this.resumeGraceUntil.delete(streamId);
     // Cleared with the session rather than kept for the id, so that a later broadcast on the same id
     // says it again. Whether an engine's segments are readable is a fact about the session producing
     // them, and the id can be handed to a different engine entirely.
@@ -1063,6 +1111,9 @@ export class StreamOrchestrator {
     // 11, mitigated at the layer that cannot be wrong about it. Naming the publish session on the
     // webhook is the proper answer and is a separate step.
     this.streamDisconnectedAt.delete(streamId);
+    // The segment a returning encoder was being held open for. From here the ordinary window applies,
+    // measured from this segment like any other. See `holdTheReaperForAFirstSegment`.
+    this.resumeGraceUntil.delete(streamId);
 
     const reading = measureSegmentDuration(data, duration);
     this.noteFragmentLength(streamId, reading);
@@ -1731,6 +1782,17 @@ export class StreamOrchestrator {
         // Fed since this was armed, so the window restarts from the last segment rather than from
         // now. Sleeping exactly the remainder is what keeps the check off the per-segment path.
         this.stallReapers.set(streamId, this.scheduleStallReap(streamId, this.config.orphanReapMs - idleMs));
+        return;
+      }
+
+      // The window is up but an encoder has announced itself since the last segment and its first one
+      // has not arrived yet. Ending the broadcast here leaves it connected and publishing into a
+      // stream id nothing holds any more, because it will not announce again. See
+      // {@link holdTheReaperForAFirstSegment} for why this cannot be used to hold a dead broadcast
+      // open: the grace is measured from the original deadline, not from the announce.
+      const graceUntil = this.resumeGraceUntil.get(streamId);
+      if (graceUntil !== undefined && this.clock.now() < graceUntil) {
+        this.stallReapers.set(streamId, this.scheduleStallReap(streamId, graceUntil - this.clock.now()));
         return;
       }
 

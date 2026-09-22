@@ -259,6 +259,10 @@ describe('a live stream whose engine dies without saying so (#86)', () => {
   /**
    * Case 5 in full. Connection attempts that never deliver a frame must not keep a dead recording
    * open, and an announce is not media.
+   *
+   * ⛔ Six announces move the deadline by exactly one grace, which is what one announce moves it by.
+   * The grace is measured from the broadcast's original deadline rather than from each announce, so
+   * churn cannot walk it forward. See `StreamOrchestrator.holdTheReaperForAFirstSegment`.
    */
   it('does not let reconnect churn that delivers nothing push the deadline back', async () => {
     const harness = makeHarness();
@@ -274,13 +278,81 @@ describe('a live stream whose engine dies without saying so (#86)', () => {
       orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
     }
 
-    await clock.advance(REAP_MS / 4 + 1);
+    // The window itself, to the millisecond before the grace that the last announce bought.
+    await clock.advance(REAP_MS / 4);
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
+    await clock.advance(STALL_MS + 1);
     await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
     assert.equal(
       orch.getActiveStreamCount(),
       0,
       'the churn bought another window every time, so a recording with no media in it is held for ever',
     );
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'and it ended once rather than once per announce',
+    );
+  });
+
+  /**
+   * ⛔⛔ **The zombie this grace exists for.** An `on_publish` accepted three seconds before the
+   * window is up is followed by a reap three seconds later, because the reaper measures from the last
+   * media and an announce is not media. The recording is sealed and `retireSession` frees the id
+   * while the encoder is connected and about to deliver — SRS needs a second or two to cut its first
+   * segment — so every segment it then sends is refused as an unknown stream, and it does not
+   * announce again for a publish session it already holds. The broadcaster is live to themselves and
+   * publishing into nothing until somebody restarts them by hand.
+   */
+  it('takes the first segment of an encoder that returned just before the window was up', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    orch.noteDisconnect(STREAM_ID);
+    await clock.advance(REAP_MS - 3_000);
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO), true, 'the encoder is back inside the window');
+
+    // The window is up here, and the first returning segment has not been cut yet.
+    await clock.advance(4_000);
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
+    assert.equal(orch.getActiveStreamCount(), 1, 'the session was reaped out from under a connected encoder');
+
+    await startAndFeed(harness, 1);
+    assert.equal(hasFinalized(published), false, 'and the broadcast carries on rather than ending');
+
+    // And from here it is an ordinary live stream again: the window runs from this segment.
+    await clock.advance(REAP_MS + 1);
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+  });
+
+  /**
+   * The bound on that grace, which is what keeps it from being a way to hold a dead broadcast open.
+   * An encoder that announces and then delivers nothing ends one grace after it announced, and the
+   * ceiling — one grace past the deadline the broadcast already had — is what the churn case above
+   * reaches. Either way the end comes, and it comes at a time this test can name.
+   */
+  it('ends a broadcast one grace after a return that delivers nothing', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    orch.noteDisconnect(STREAM_ID);
+    await clock.advance(REAP_MS - 3_000);
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+
+    // One millisecond short of one grace after that announce, which is inside the ceiling of the
+    // original deadline plus a grace and is therefore what decides here.
+    await clock.advance(STALL_MS - 1);
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
+
+    await clock.advance(2);
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(orch.getActiveStreamCount(), 0, 'an encoder that came back and sent nothing still ends');
   });
 
   /**
