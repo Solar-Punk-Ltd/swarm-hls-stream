@@ -218,17 +218,18 @@ const SUBJECT_SLOT = 'SUBJECTSLOT';
 const CAUSE_SLOT = 'CAUSESLOT';
 
 /**
- * ## The six lines below all mean one thing: this broadcast lost a segment or declared a break
+ * ## The seven lines below all mean one thing: this broadcast lost a segment or declared a break
  *
- * Six separate messages report it and the harness counts all six as one number, `discontinuitiesArmed`
- * in `e2e/src/harness/logwatch.ts`.
+ * Seven separate messages report it and the harness counts all seven as one number,
+ * `discontinuitiesArmed` in `e2e/src/harness/logwatch.ts`.
  *
- * ⚠️ **Only two of them are a break now.** Owner ruling of 2026-09-06: a lost segment leaves a hole
+ * ⚠️ **Only three of them are a break now.** Owner ruling of 2026-09-06: a lost segment leaves a hole
  * the playlist lists as `#EXT-X-GAP` entries, so the numbering behind it does not move, and it arms no
- * `#EXT-X-DISCONTINUITY`. What still does is the origin declaring one and the engine's own counter
- * restarting. The four loss lines keep the words "marking a discontinuity", which is no longer what
- * they do, because every reader of them matches on the wording and a stage that has not been
- * redeployed writes the old text. Read them as "a segment is gone".
+ * `#EXT-X-DISCONTINUITY`. What still does is the origin declaring one, the engine's own counter
+ * restarting, and an encoder returning inside the reconnect window. The four loss lines keep the
+ * words "marking a discontinuity", which is no longer what they do, because every reader of them
+ * matches on the wording and a stage that has not been redeployed writes the old text. Read them as
+ * "a segment is gone".
  *
  * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast produced
  * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
@@ -299,6 +300,33 @@ export function originDeclaredDiscontinuity(streamId: string): string {
 /** {@link originDeclaredDiscontinuity} as a matcher, the stream as capture group 1. */
 export function originDeclaredDiscontinuityPattern(flags = ''): RegExp {
   const escaped = originDeclaredDiscontinuity(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/**
+ * The encoder came back inside the window that holds a disconnected session open, so the same
+ * broadcast continues rather than a new one starting: same recording, same feed, one break at the
+ * seam and the dating re-anchored on the wall clock the encoder returned at.
+ *
+ * ⛔ **Its own wording rather than {@link originDeclaredDiscontinuity}'s, because the origin declared
+ * nothing.** SRS holds its HLS muxer alive for `hls_dispose x 1.1` after an unpublish, so an encoder
+ * returning inside the reconnect window is usually served by the SAME muxer and its `seq_no` carries
+ * straight on. Nothing about the numbering has restarted, so {@link datingReanchored} is not written
+ * either and the reset detection in `ManifestManager.placeInBroadcast` sees nothing to detect. This
+ * line is the only evidence in the log that the media either side of the seam is not continuous, and
+ * it is what makes the break countable: the segment carrying the marker IS uploaded, exactly as for
+ * an origin-declared break, so the segment run stays gapless and nothing else in a suite can see it.
+ */
+export function encoderReturned(streamId: string): string {
+  return (
+    `The encoder returned to stream ${streamId} inside the reconnect window, so the same session ` +
+    'continues, marking a discontinuity'
+  );
+}
+
+/** {@link encoderReturned} as a matcher, the stream as capture group 1. */
+export function encoderReturnedPattern(flags = ''): RegExp {
+  const escaped = encoderReturned(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
 }
 
