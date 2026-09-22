@@ -1,7 +1,6 @@
 import { Bee, BeeResponseError, PrivateKey, Topic } from '@ethersphere/bee-js';
 import {
   addingStreamToList,
-  encoderReturned,
   engineSkippedSegments,
   finalizeResumed,
   ladderFinalized,
@@ -482,10 +481,10 @@ export class StreamUploader {
         );
       }
       this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
-      // Restored beside the flag above because the two are one fact, and the window between arming
-      // them and the segment that consumes them is precisely a window in which nothing is arriving.
-      // Lost, the first segment after the encoder returned would publish at its own index with the
-      // dating the broadcast opened with, and the seam across the outage would go unsaid.
+      // Restored for a sharper version of the reason the flag above is: the window between arming it
+      // and the segment that consumes it is precisely one in which nothing is arriving. Lost, the
+      // first segment after the encoder returned would publish at its own index with the dating the
+      // broadcast opened with, and the seam across the outage would go unsaid.
       if (restoreState.resumingAfterReconnect) {
         this.manifestManager.resumeAfterReconnect();
       }
@@ -619,22 +618,29 @@ export class StreamUploader {
    * through `ManifestManager.resumeAfterReconnect`. Everything else about the session is untouched:
    * the recording, the feed topic, the SOC index, the admin report, the inherited prefix.
    *
-   * ⛔ **Both flags are armed and both are persisted**, because either one alone leaves a playlist
-   * that lies. Without the break a player is told a fifty second hole is a continuation, which is
-   * what it stalls on. Without the manifest's one shot a returning encoder whose index carried on —
-   * which is the usual case inside the window, since SRS's muxer outlives the publish session —
-   * would keep the old dating and, if its index had run ahead, emit gap entries for media nobody
-   * ever produced.
+   * ⛔ **One flag rather than two, and `pendingDiscontinuity` is deliberately NOT one of them.** The
+   * manifest's own one-shot declares the break where it places the seam, so arming the uploader's
+   * flag as well would only mean the same break twice over — and, for an encoder that reconnects and
+   * then delivers nothing, a break on a segment that has nothing in front of it to be separated from.
+   * The one-shot is persisted, so a crash between the return and its first segment still owes both.
    *
-   * ⛔ Queued rather than applied inline, for {@link queueDiscontinuity}'s own reason and one more:
-   * a segment already awaiting upload when the encoder returned belongs to the run BEFORE the gap,
-   * and arming inline would put the seam and the re-anchoring on that one instead of on the first
-   * segment of the run after it.
+   * ⛔ **Nothing countable is logged here.** The contract line belongs where the seam is actually
+   * placed, or an encoder that reconnects six times and delivers nothing puts six armings into a
+   * count that has to equal the breaks in the playlist. This line names the stream, which the one at
+   * the placement cannot, and an operator reads the two as a pair.
+   *
+   * ⛔ Queued rather than applied inline, for {@link queueAnnouncement}'s own reason and one more: a
+   * segment already awaiting upload when the encoder returned belongs to the run BEFORE the gap, and
+   * arming inline would put the seam and the re-anchoring on that one instead of on the first segment
+   * of the run after it.
    */
   public resumeAfterReconnect(): void {
-    this.queueDiscontinuity(() => {
+    this.queueAnnouncement(() => {
       this.manifestManager.resumeAfterReconnect();
-      this.logger.info(encoderReturned(this.streamId));
+      this.logger.info(
+        `[StreamUploader] The encoder feeding ${this.streamId} is back, so the next segment it delivers ` +
+          'opens a resumed run rather than continuing the one before the gap',
+      );
     });
   }
 

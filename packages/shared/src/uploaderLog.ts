@@ -304,30 +304,49 @@ export function originDeclaredDiscontinuityPattern(flags = ''): RegExp {
 }
 
 /**
- * The encoder came back inside the window that holds a disconnected session open, so the same
- * broadcast continues rather than a new one starting: same recording, same feed, one break at the
- * seam and the dating re-anchored on the wall clock the encoder returned at.
+ * The encoder came back inside the window that holds a disconnected session open, and the segment it
+ * delivered has just been placed: the same broadcast continues, with one break at the seam and the
+ * dating re-anchored on the wall clock it returned at.
  *
  * ⛔ **Its own wording rather than {@link originDeclaredDiscontinuity}'s, because the origin declared
- * nothing.** SRS holds its HLS muxer alive for `hls_dispose x 1.1` after an unpublish, so an encoder
- * returning inside the reconnect window is usually served by the SAME muxer and its `seq_no` carries
- * straight on. Nothing about the numbering has restarted, so {@link datingReanchored} is not written
- * either and the reset detection in `ManifestManager.placeInBroadcast` sees nothing to detect. This
- * line is the only evidence in the log that the media either side of the seam is not continuous, and
- * it is what makes the break countable: the segment carrying the marker IS uploaded, exactly as for
- * an origin-declared break, so the segment run stays gapless and nothing else in a suite can see it.
+ * nothing, and its own rather than {@link datingReanchored}'s, because nothing restarted.** SRS holds
+ * its HLS muxer alive for `hls_dispose x 1.1` after an unpublish, so an encoder returning inside the
+ * reconnect window is usually served by the SAME muxer and its `seq_no` carries straight on, leaving
+ * the reset detection in `ManifestManager.placeInBroadcast` nothing to find. This line is the only
+ * evidence in the log that the media either side of the seam is not continuous, and it is what makes
+ * the break countable: the segment carrying the marker IS uploaded, exactly as for an origin-declared
+ * break, so the segment run stays gapless and nothing else in a suite can see it.
+ *
+ * ⛔⛔ **Written where the seam is PLACED, never where it is armed**, so the count is one per break
+ * in the playlist. An encoder that reconnects six times and delivers nothing arms six times and
+ * places nothing, and writing this on the arming would put six armings into a count six suites
+ * assert is zero for a broadcast that produced no break at all.
+ *
+ * ⚠️ **It names no stream**, for the same reason {@link datingReanchored} names none: `ManifestManager`
+ * is not given one. The uploader writes its own plain line naming the stream where the return is
+ * armed, which is what an operator reads the two of them as a pair.
+ *
+ * @param sequence the playlist sequence the numbering and the dating both continue from
+ * @param wasAt the date that sequence would have carried had the encoder never left, as an ISO instant
+ * @param nowAt the date it carries instead, which is the wall clock the encoder came back at
  */
-export function encoderReturned(streamId: string): string {
+export function encoderReturned(sequence: number, wasAt: string, nowAt: string): string {
   return (
-    `The encoder returned to stream ${streamId} inside the reconnect window, so the same session ` +
-    'continues, marking a discontinuity'
+    `The encoder returned inside the reconnect window, so the playlist continues at sequence ` +
+    `${sequence} and the dating re-anchors from ${wasAt} to ${nowAt}, marking a discontinuity`
   );
 }
 
-/** {@link encoderReturned} as a matcher, the stream as capture group 1. */
+/**
+ * {@link encoderReturned} as a matcher, the sequence and the two instants as capture groups 1 to 3.
+ * Counted rather than captured, the same as its siblings.
+ */
 export function encoderReturnedPattern(flags = ''): RegExp {
-  const escaped = encoderReturned(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
-  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+  const escaped = encoderReturned(INDEX_SLOT, SUBJECT_SLOT, CAUSE_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped.replace(String(INDEX_SLOT), '(\\d+)').replace(SUBJECT_SLOT, '(\\S+)').replace(CAUSE_SLOT, '(\\S+)'),
+    flags,
+  );
 }
 
 /**

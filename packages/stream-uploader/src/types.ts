@@ -94,12 +94,14 @@ export interface StreamState {
    * run has not landed yet, so that segment still owes a break and a re-anchored dating. Absent
    * means no, which is every entry written before a disconnect held a session open.
    *
-   * ⛔ Persisted beside {@link StreamState.pendingDiscontinuity}, and for a sharper version of the
-   * same reason: the interval this covers is one in which the encoder has announced itself and sent
-   * nothing yet, which is the likeliest moment in a broadcast for a restart to land between the two.
-   * A recovered session that lost it publishes its first returning segment as a continuation of the
-   * media on the far side of the outage, dated where the broadcast would have been had nothing
-   * happened. See `ManifestManager.resumeAfterReconnect`.
+   * ⛔ Persisted for a sharper version of the reason {@link StreamState.pendingDiscontinuity} is: the
+   * interval this covers is one in which the encoder has announced itself and sent nothing yet, which
+   * is the likeliest moment in a broadcast for a restart to land. A recovered session that lost it
+   * publishes its first returning segment as a continuation of the media on the far side of the
+   * outage, dated where the broadcast would have been had nothing happened.
+   *
+   * ⛔ It is the ONLY thing a reconnect arms. `pendingDiscontinuity` is left alone, so a return that
+   * never delivers a segment arms no break at all. See `ManifestManager.resumeAfterReconnect`.
    */
   resumingAfterReconnect?: boolean;
   /**

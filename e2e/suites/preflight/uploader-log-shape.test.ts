@@ -179,7 +179,9 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
   ),
   deployedMessage(
     'the discontinuity an encoder returning inside the reconnect window arms',
-    (stream) => encoderReturned(stream),
+    // ⚠️ Every substituted value takes the placeholder, the sequence and the two instants included,
+    // for the reason the entry above gives: a real-looking value bakes itself into the fixed half.
+    (text, index) => encoderReturned(index, text, text),
     'the same seven assertions, for the path nothing else can see: an encoder that dropped and came ' +
       'back keeps its session, so the segment carrying the marker is uploaded like any other and the ' +
       'run either side of the join stays gapless. It is also the only line that says a broadcast ' +
