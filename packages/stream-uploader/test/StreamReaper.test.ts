@@ -329,10 +329,45 @@ describe('a live stream whose engine dies without saying so (#86)', () => {
   });
 
   /**
+   * ⛔⛔ **The ceiling itself, which every other case here leaves untested.** They all announce before
+   * the window is up, where `min(now + grace, lastMedia + window + grace)` is always the first term,
+   * so a build with no ceiling at all passes them. Here the announces walk PAST the deadline: at 57 s,
+   * again at 65 s and again at 80 s, each of which would buy another thirty seconds if the grace were
+   * measured from the announce. It is measured from the broadcast's own deadline instead, so all
+   * three land on the same instant and the broadcast ends at 90 s rather than at 110 s.
+   */
+  it('never lets repeated returns walk the deadline past one grace from the last media', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    orch.noteDisconnect(STREAM_ID);
+    for (const at of [REAP_MS - 3_000, REAP_MS + 5_000, REAP_MS + 20_000]) {
+      await clock.advance(at - clock.now());
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    }
+
+    // One millisecond short of the last media plus one window plus one grace.
+    await clock.advance(REAP_MS + STALL_MS - 1 - clock.now());
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
+
+    await clock.advance(2);
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'three returns that delivered nothing produced more than one recording',
+    );
+    assert.equal(orch.getActiveStreamCount(), 0, 'each return bought its own grace, so the deadline walked');
+  });
+
+  /**
    * The bound on that grace, which is what keeps it from being a way to hold a dead broadcast open.
    * An encoder that announces and then delivers nothing ends one grace after it announced, and the
-   * ceiling — one grace past the deadline the broadcast already had — is what the churn case above
-   * reaches. Either way the end comes, and it comes at a time this test can name.
+   * ceiling — one grace past the deadline the broadcast already had — is what the case above reaches.
+   * Either way the end comes, and it comes at a time this test can name.
    */
   it('ends a broadcast one grace after a return that delivers nothing', async () => {
     const harness = makeHarness();

@@ -605,6 +605,36 @@ describe('taking over a stream id with a proven publish key', () => {
    * so the squatter's session is finalized and the owner publishes into a recording of its own.
    * Resuming there would hand the owner a recording that opens with the squatter's media.
    */
+  it('says in the log that it evicted a publisher rather than that a stop was racing', async () => {
+    const lines: string[] = [];
+    const logger = Logger.getInstance();
+    const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+
+    try {
+      const harness = makeHarness();
+      const { orch } = harness;
+
+      assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), true);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      await publishOneSegment(harness, 0);
+
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true });
+
+      // ⛔ One line for two decisions read as the benign one. A stop that is still finalizing when the
+      // engine announces again is an ordinary race; a live broadcast finalized because somebody else
+      // was judged to own the id is not, and an operator looking at a recording that ended early has
+      // to be able to tell which happened, and to whom.
+      const said = lines.find((line) => line.includes(`took ${STREAM_ID} from`));
+      assert.ok(said, `no line said who took the id; the log was:\n${lines.join('\n')}`);
+      assert.ok(said.includes(BROADCASTER), 'the line does not name who took it');
+      assert.ok(said.includes(STRANGER), 'the line does not name who it was taken from');
+
+      await orch.cleanup();
+    } finally {
+      logger.configure(previous);
+    }
+  });
+
   it('evicts a squatter who claimed the id first and kept feeding it', async () => {
     const clock = new FakeClock();
     const harness = makeHarness(clock);
