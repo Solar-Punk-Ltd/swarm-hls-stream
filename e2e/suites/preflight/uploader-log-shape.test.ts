@@ -2,6 +2,7 @@ import {
   addingStreamToList,
   catalogStateLost,
   datingReanchored,
+  encoderReturned,
   engineSkippedSegments,
   finalizeResumed,
   ladderFinalized,
@@ -140,14 +141,23 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     'the same wait, for a rung whose drain lost the race to its own reconnect, which is the half of ' +
       'that scenario nothing else can observe',
   ),
-  // ⛔ The six below are one counter, `discontinuitiesArmed`, which counts the uploader announcing a
+  // ⛔ The seven below are one counter, `discontinuitiesArmed`, which counts the uploader announcing a
   // lost segment or a declared break. Six suites assert it is zero on a clean run, so a line nothing
   // matches does not fail them, it passes them for ever on a stage losing segments all night. A
-  // vacuous green is the worst thing this gate can be asked to prevent, which is why each of the six
-  // is listed rather than the family.
+  // vacuous green is the worst thing this gate can be asked to prevent, which is why each of the
+  // seven is listed rather than the family.
   //
-  // ⚠️ Only the third and the fifth are a break. Since the owner's ruling of 2026-09-06 the other
-  // four report a lost segment, whose hole the playlist says with `#EXT-X-GAP` entries instead.
+  // ⚠️ Only the third, the fifth and the seventh are a break. Since the owner's ruling of 2026-09-06
+  // the other four report a lost segment, whose hole the playlist says with `#EXT-X-GAP` entries
+  // instead.
+  //
+  // ⛔⛔ **The seventh refuses every live suite on this stage until the uploader is redeployed, and
+  // that is deliberate.** It landed in this checkout on 2026-09-22 with the reconnect window, and the
+  // deployed uploader ships a prebuilt `dist/`, so this gate refuses until `deploy/scripts/deploy.sh`
+  // has run against a head carrying it. Listing it only after the redeploy would be the wrong order,
+  // for the reason the batch-refusal entry below gives at length: a suite that cannot see a break
+  // reports a broadcast as clean when it survived an outage, and telling those two apart afterwards
+  // costs a sitting.
   deployedMessage(
     'a spent retry window, which loses the segment in flight',
     (stream, index) => segmentUploadFailed(stream, index),
@@ -166,6 +176,14 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     (stream) => originDeclaredDiscontinuity(stream),
     'the same seven assertions, for the one path that leaves the segment run gapless, so nothing else ' +
       'in the suite can see it at all',
+  ),
+  deployedMessage(
+    'the discontinuity an encoder returning inside the reconnect window arms',
+    (stream) => encoderReturned(stream),
+    'the same seven assertions, for the path nothing else can see: an encoder that dropped and came ' +
+      'back keeps its session, so the segment carrying the marker is uploaded like any other and the ' +
+      'run either side of the join stays gapless. It is also the only line that says a broadcast ' +
+      'survived an outage rather than being two broadcasts',
   ),
   deployedMessage(
     'losses the OME puller reported',

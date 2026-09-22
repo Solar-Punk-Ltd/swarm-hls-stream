@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import type { E2EConfig } from '../config.js';
 
 import type { PublisherRoute } from './publishers.js';
+import { DRAIN_TIMEOUT_MS, ORPHAN_REAP_MS } from './recording.js';
 import { sleep, waitFor } from './wait.js';
 
 const execFileAsync = promisify(execFile);
@@ -597,8 +598,24 @@ export function reportFailedRestore(
  * Block until the uploader reports no active streams. The scenarios share one live path on one
  * profile and must run serially (--test-concurrency=1); this guards each test's start against the
  * previous test's stream still draining, which would otherwise be rejected as "already active".
+ *
+ * ⛔⛔ **The default is a reap window plus a drain, and 90 s was that number before an encoder
+ * disconnect stopped ending a broadcast.** Since the reconnect window of 2026-09-22 a publisher
+ * stopping does not finalize anything: the session is held for {@link ORPHAN_REAP_MS} of no media so
+ * a returning encoder can rejoin it, and only then does the drain run. Every suite here ends with
+ * `publisher.stop()` in its `after` and the next one opens with this call, so a default shorter than
+ * that fails in a `before` hook and names the wrong suite — twenty-eight call sites of it, none of
+ * which passes a timeout of its own.
+ *
+ * A wait that is satisfied returns at the poll it is satisfied on, so the generous ceiling costs a
+ * passing run nothing. See `waitFor`'s own note, and `harness/recording.ts` for the same derivation
+ * written out at length.
  */
-export async function waitForIdle(host: Host, cfg: E2EConfig, timeoutMs: number = 90_000): Promise<void> {
+export async function waitForIdle(
+  host: Host,
+  cfg: E2EConfig,
+  timeoutMs: number = ORPHAN_REAP_MS + DRAIN_TIMEOUT_MS,
+): Promise<void> {
   await waitFor(async () => (await uploaderHealth(host, cfg)).activeStreams === 0, {
     timeoutMs,
     intervalMs: 2_000,
