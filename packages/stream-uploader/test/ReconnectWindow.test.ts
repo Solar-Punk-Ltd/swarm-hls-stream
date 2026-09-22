@@ -480,6 +480,52 @@ describe('an encoder that disconnects and comes back inside the window (cases 1 
   });
 
   /**
+   * ⛔⛔ **Every return is dated at the clock IT came back at, and the second and later ones are what
+   * this is for.** The re-anchoring used to recognise a restart by whether the line it minted still
+   * dated the resuming sequence as happening about now, which is true of a second outage on the same
+   * rung for as long as that outage is shorter than the two minute tolerance: nothing advanced while
+   * the encoder was away, so the line reaches the resuming sequence almost exactly where it was
+   * written down. Driven here: the first return was dated correctly, the second landed 48 seconds
+   * behind, the third 96 seconds behind, and only the fourth was right, because by then the
+   * accumulated lag had finally exceeded the tolerance. The log even said the dating moved from an
+   * instant to itself.
+   *
+   * Run with the muxer index carrying on, which is what SRS does inside the window and what leaves
+   * the counter-restart detection nothing to find, so the dating rests entirely on the reconnect
+   * having armed it.
+   */
+  it('dates each of four returns at its own wall clock, not at the first return’s', async () => {
+    const harness = reconnectHarness();
+    const cycles = 4;
+
+    harness.start();
+    await harness.segment('a0', 0);
+    await harness.published('a0');
+
+    const returnedAt: number[] = [];
+    for (let cycle = 0; cycle < cycles; cycle++) {
+      harness.orchestrator.noteDisconnect(STREAM_ID);
+      await harness.passTime(OUTAGE_MS);
+      returnedAt.push(TEST_ANCHOR.startedAtMs + (cycle + 1) * OUTAGE_MS);
+      harness.start();
+      await harness.segment(`b${cycle}`, cycle + 1);
+      await harness.published(`b${cycle}`);
+    }
+
+    const recordingWrite = await (async (): Promise<string> => {
+      await harness.orchestrator.stopStream(STREAM_ID);
+      await waitFor(() => recordings(harness.writes).length === 1, SETTLE_CEILING_MS);
+      return recordings(harness.writes)[0].playlist;
+    })();
+
+    assert.deepEqual(
+      returnedAt.map((_, cycle) => dateOfSegment(recordingWrite, `b${cycle}`)),
+      returnedAt.map((at) => new Date(at).toISOString()),
+      'a return carried an earlier return’s date, so its media is behind real time by the outages between them',
+    );
+  });
+
+  /**
    * Case 11. The two webhooks race and this service cannot order them, so an `on_unpublish` for a
    * publish session that has already been replaced lands after the reconnect. It must cost nothing:
    * it opens a window, and the next segment closes it.
@@ -718,6 +764,50 @@ describe('a whole ladder whose encoder disconnects together (case 8′s neighbou
     );
     assert.equal(recordings(harness.writes).length, 0, 'nothing was finalized');
     assert.equal(closingPlaylists(harness.writes).length, 0, 'and no rung ended its playlist');
+  });
+
+  /**
+   * ⛔⛔ **The rung this loses is the 1080p one, and losing it is permanent.** Rungs come back a few
+   * seconds apart, because SRS restarts four transcoders and the slowest to start is also the slowest
+   * to cut a segment. A rung whose announce lands near the end of the window and whose first segment
+   * lands just past it is reaped while its siblings resume: its recording is sealed, its id is freed,
+   * and every segment it then delivers is refused — so the master carries three rungs for the rest of
+   * the broadcast and a viewer on that quality is moved off it.
+   */
+  it('keeps a rung that comes back later than its siblings, and its first segment after that', async () => {
+    const harness = reconnectHarness({ ladder: true });
+    for (const streamId of rungIds) {
+      harness.start(streamId);
+      await harness.segment(`${streamId}-a0`, 0, streamId);
+    }
+
+    for (const streamId of rungIds) {
+      harness.orchestrator.noteDisconnect(streamId);
+    }
+
+    // SRS restarts four transcoders and they all re-publish with three seconds of the window left.
+    // What differs is when each one cuts its first segment: the fast three at once, the slowest five
+    // seconds later, which is past the window.
+    const fast = rungIds.slice(0, 3);
+    const slow = rungIds[rungIds.length - 1];
+    await harness.passTime(REAP_MS - 3_000);
+    for (const streamId of rungIds) {
+      harness.start(streamId);
+    }
+    for (const streamId of fast) {
+      await harness.segment(`${streamId}-b0`, 1, streamId);
+    }
+
+    await harness.passTime(5_000);
+    assert.equal(
+      harness.orchestrator.getActiveStreamCount(),
+      rungIds.length,
+      'the slow rung was reaped while its siblings resumed, so the master is short a quality for good',
+    );
+    await harness.segment(`${slow}-b0`, 1, slow);
+
+    assert.equal(recordings(harness.writes).length, 0, 'and nothing was finalized on any rung');
+    assert.equal(harness.orchestrator.getActiveStreamCount(), rungIds.length, 'all four are still live');
   });
 
   it('mints one dating line for the whole ladder when its rungs come back', async () => {

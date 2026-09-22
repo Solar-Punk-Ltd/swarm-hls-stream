@@ -210,13 +210,42 @@ interface ReanchorDecision {
  * sibling's point unchanged would leave its own first post-restart segment on the old line, with the
  * whole jump landing on the segment after it, where no discontinuity marks it.
  *
- * ⛔ **A restart is recognised by whether the line it minted still dates this rung's media as
- * happening now**, rather than by a clock reading or by how close the sequences are. That one test
- * covers both ways two restarts can be confused. A sibling crossing the same restart is asking about
- * a sequence within a fragment or two of the one the line was minted at, so the line dates it within
- * a fragment or two of now. A second restart is asking about a sequence the line reaches after an
- * outage in which no sequence advanced at all, so the line dates it that whole outage ago, however
- * few fragments of media separate the two restarts.
+ * ⛔⛔ **A restart is recognised by THE SEQUENCE ITS LINE WAS MINTED AT, and the clock is only a
+ * backstop.** A line minted for one restart is joined by a rung asking about exactly the sequence it
+ * was written down at, and by nothing else. That is what a sibling is: the rungs of one ladder are
+ * cut by one encoder on one keyframe grid, so they cross a restart holding the same media and resume
+ * at the same number by construction.
+ *
+ * ⛔ **The clock test alone was wrong, and it cost the second and every later reconnect of a
+ * broadcast its dating.** It asked whether the minted line still dates `resumeAt` within
+ * {@link SAME_RESTART_TOLERANCE_MS} of now, which is true of a second outage on the SAME rung for as
+ * long as that outage is shorter than the tolerance: nothing advanced while the encoder was away, so
+ * the line reaches the resuming sequence at almost exactly the instant it was minted. Measured
+ * through the orchestrator on four fifty second outages: the first return was dated correctly, the
+ * second landed 48 seconds behind, the third 96 seconds behind, and only the fourth was right,
+ * because by then the accumulated lag had finally exceeded the tolerance. A rung's second reconnect
+ * always resumes at a strictly higher sequence than its first, because a line is only ever minted
+ * where a segment is actually placed, so keying on the sequence separates them exactly.
+ *
+ * ⛔ **A rung may join from AT OR BELOW the sequence a line was minted at, never from above, and the
+ * direction is the whole discriminator.** A sibling that is behind its siblings is the routine case
+ * — the 1080p rung is the slowest to transcode and the slowest to upload, and a rung whose last
+ * pre-gap segment never landed resumes one lower than the rest — and it has always landed that many
+ * fragments earlier on the shared line. A later reconnect on the same rung can only ever ask about a
+ * HIGHER sequence than the line it already minted, because a line is minted where a segment is
+ * placed and the high-water mark never decreases. So "at or below joins, above mints" separates the
+ * two exactly, with no window to tune.
+ *
+ * ⚠️ **What it gives up, said out loud: a sibling that is AHEAD of the rung that minted first.** That
+ * ask is shaped exactly like a second reconnect and cannot be told from one, so it mints a line of
+ * its own at its own reading of the clock. Siblings cross a restart within seconds of each other, so
+ * the cost is those seconds of disagreement about one instant; the alternative is a whole outage of
+ * lag on every reconnect after the first, which is what the measurement above cost. It is also the
+ * less common ordering: the rung that is behind in numbering is behind because it is slower, and a
+ * slower rung is usually the last to come back rather than the first.
+ *
+ * The clock test is kept **as well**, so a line minted long ago cannot be joined by a sequence that
+ * happens to sit below it forever. It is a backstop rather than the rule.
  *
  * ⛔ **The broadcast's own start is never reused.** It is where the dating began rather than a
  * re-anchoring, so the first restart of a broadcast always re-anchors, which is the lag this whole
@@ -240,7 +269,7 @@ export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorReque
   const { resumeAt, nowMs, notBeforeMs } = request;
   const minted = (anchor.epochs ?? []).at(-1);
 
-  if (minted !== undefined) {
+  if (minted !== undefined && resumeAt <= minted.fromSequence) {
     const onTheSameLine = dateOnLine(minted, resumeAt, anchor.fragmentSeconds);
     if (Math.abs(onTheSameLine - nowMs) <= SAME_RESTART_TOLERANCE_MS) {
       return { epoch: { fromSequence: resumeAt, atMs: Math.max(onTheSameLine, notBeforeMs) }, joined: true };
