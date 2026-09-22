@@ -170,18 +170,17 @@ describe('taking over a stream id that is already being published', () => {
       true,
       'a stream nothing has fed for longer than the stall window is not held against a new publisher',
     );
-    // ⛔ **The cost of the escape hatch since the reconnect window, stated rather than discovered.**
-    // An allowed announce resumes the live session, so whoever the window lets in continues the
-    // incumbent's broadcast instead of starting their own over the top of it — which is right for the
-    // case the hatch exists for, a broadcaster whose address moved, and is the same act for anyone
-    // else the hatch admits. It is bounded by `orphanReapMs`: a session nothing feeds ends at it, and
-    // there is no live session left to join afterwards.
-    assert.equal(
+    // ⛔ **A stranger admitted by the window takes the ID, never the BROADCAST.** Two known and
+    // different addresses with neither having proved anything is the one shape that is provably not
+    // the incumbent coming back, so the incumbent's session is finalized and the newcomer publishes
+    // into a recording of its own. Joining instead would put one publisher's media inside another's
+    // recording, which is what the window is least entitled to do.
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.notEqual(
       await publishOneSegment(harness, 1),
       firstTopic,
-      'the newcomer was admitted and then given nothing to publish into',
+      'the newcomer carried on the incumbent’s broadcast rather than starting one of its own',
     );
-    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -583,12 +582,15 @@ describe('taking over a stream id with a proven publish key', () => {
       true,
       'a proven key outranks the address test and does not wait for the stall window',
     );
-    assert.equal(
+    // A key against an incumbent that proved nothing is proof they are different publishers, so the
+    // incumbent's broadcast is finalized rather than continued. The key holder taking over an
+    // incumbent that ALSO proved the key is the same publisher and resumes; that case is below.
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.notEqual(
       await publishOneSegment(harness, 1),
       firstTopic,
-      'the key holder was admitted and then given nothing to publish into',
+      'the key holder carried on an unproven incumbent’s broadcast rather than starting one of its own',
     );
-    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -598,21 +600,12 @@ describe('taking over a stream id with a proven publish key', () => {
    * which protects a squatter who claims an id and keeps feeding it just as firmly as it protects a
    * real broadcaster. `POST /stream/stop` was the only answer, and it needs an operator.
    *
-   * ⛔⛔ **The reconnect window narrowed what "evicts" means here, and this says so rather than
-   * hiding it.** An allowed announce against a live session that is not draining RESUMES that
-   * session, so the owner takes the id over the squatter's broadcast rather than over a fresh one:
-   * the squatter's media is in the recording the owner goes on to publish, and the owner's own media
-   * follows it after a seam. The admission rule is unchanged and is what this file is about — the
-   * squatter no longer holds the id against its owner — and the owner still gets their id back
-   * immediately rather than waiting out any window.
-   *
-   * **What an operator does about the squatter's media is `POST /stream/stop`**, which finalizes at
-   * once and frees the id, and then the owner's announce starts a session of its own. Narrowing this
-   * further inside `startStream` would mean deciding that a provably different claimant is never the
-   * encoder coming back, and a broadcaster whose address moved mid-outage is exactly that, so it is
-   * an owner's call rather than one to make here.
+   * ⛔ **The eviction is of the id AND of the broadcast, and the reconnect window does not soften
+   * it.** A key against an incumbent that proved nothing is proof the two are different publishers,
+   * so the squatter's session is finalized and the owner publishes into a recording of its own.
+   * Resuming there would hand the owner a recording that opens with the squatter's media.
    */
-  it('takes the id back from a squatter who claimed it first and kept feeding it', async () => {
+  it('evicts a squatter who claimed the id first and kept feeding it', async () => {
     const clock = new FakeClock();
     const harness = makeHarness(clock);
     const { orch } = harness;
@@ -622,11 +615,11 @@ describe('taking over a stream id with a proven publish key', () => {
     const squatterTopic = await publishOneSegment(harness, 0);
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
-    assert.equal(orch.getActiveStreamCount(), 1);
-    assert.equal(
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    assert.notEqual(
       await publishOneSegment(harness, 1),
       squatterTopic,
-      'the owner was admitted and then given nothing to publish into',
+      'the owner has to be publishing under a fresh session, not into the squatter uploader',
     );
 
     // And the squatter cannot walk back in, because the owner is the incumbent from here.
@@ -669,8 +662,15 @@ describe('taking over a stream id with a proven publish key', () => {
     await orch.cleanup();
   });
 
-  /** And the key holder is not locked out by the rule that protects them. */
-  it('lets the key holder back in against a proven incumbent', async () => {
+  /**
+   * And the key holder is not locked out by the rule that protects them.
+   *
+   * ⛔ This is also the shape every deployment that matters takes: in admin mode and under
+   * `PUBLISH_KEY_SECRET` every publish proves a key, so an encoder that stopped and came back is two
+   * proven claimants and RESUMES its own broadcast whatever its address did in between. The owner's
+   * cases 1 and 2 are exactly this row.
+   */
+  it('lets the key holder back in against a proven incumbent, resuming their broadcast', async () => {
     const harness = makeHarness();
     const { orch, published } = harness;
 

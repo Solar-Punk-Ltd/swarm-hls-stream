@@ -42,6 +42,7 @@ import { describe, it } from 'node:test';
 import { createSrsEngine } from '../src/engines/srs.js';
 import { SRS_WEBHOOK_TOKEN_PARAM } from '../src/engines/srs/webhookToken.js';
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
+import { Logger } from '../src/libs/Logger.js';
 import {
   ADMIN_STATE_LIVE,
   ADMIN_STATE_VOD,
@@ -68,6 +69,13 @@ const QUIET_WINDOW_MS = 60;
 
 /** What each test segment declares, so the arithmetic in an assertion is legible. */
 const SEGMENT_SECONDS = 2;
+
+/**
+ * The words every member of the armed-break family ends with, which is what `discontinuitiesArmed`
+ * counts. Matched on the phrase rather than on a composer, so a line that gained the words without
+ * being listed in the harness is caught here rather than passing.
+ */
+const ARMED_BREAK_PHRASE = 'marking a discontinuity';
 
 /** The gap a returning encoder is away for. Inside the window, and nothing about it is asserted. */
 const OUTAGE_MS = 50_000;
@@ -526,6 +534,56 @@ describe('an encoder that disconnects and comes back inside the window (cases 1 
   });
 
   /**
+   * ⛔⛔ **The count the e2e harness reads has to equal the breaks in the playlist, and churn is where
+   * the two come apart.** `discontinuitiesArmed` counts the contract lines, six suites assert it is
+   * zero on a clean broadcast and one asserts it is at least one when a fault cost something, so a
+   * line written where a break is ARMED rather than where it is PLACED puts an encoder that
+   * reconnected six times and delivered nothing six over. The line is written from the placement for
+   * that reason, and this is what says so.
+   */
+  it('says a break exactly as often as it puts one in the playlist', async () => {
+    const harness = reconnectHarness();
+    const lines: string[] = [];
+    const logger = Logger.getInstance();
+    const previous = logger.configure({
+      sink: (_level, line) => {
+        lines.push(line);
+      },
+    });
+
+    try {
+      harness.start();
+      await harness.segment('a0', 0);
+      await harness.published('a0');
+
+      // Six announces, none of them followed by a segment, then one that is.
+      for (let attempt = 0; attempt < 6; attempt++) {
+        harness.orchestrator.noteDisconnect(STREAM_ID);
+        await harness.passTime(1_000);
+        harness.start();
+      }
+      assert.equal(
+        lines.filter((line) => line.includes(ARMED_BREAK_PHRASE)).length,
+        0,
+        'six returns that delivered nothing announced breaks the playlist does not contain',
+      );
+
+      await harness.segment('b0', 1);
+      await harness.published('b0');
+      const playlist = writesNaming(harness.writes, 'b0').at(-1);
+      assert.ok(playlist);
+      assert.equal(seamCount(playlist.playlist), 1, 'the one segment that did arrive carries one break');
+      assert.equal(
+        lines.filter((line) => line.includes(ARMED_BREAK_PHRASE)).length,
+        1,
+        'and the log announced exactly that one, which is what the e2e counter has to equal',
+      );
+    } finally {
+      logger.configure(previous);
+    }
+  });
+
+  /**
    * Case 11. The two webhooks race and this service cannot order them, so an `on_unpublish` for a
    * publish session that has already been replaced lands after the reconnect. It must cost nothing:
    * it opens a window, and the next segment closes it.
@@ -611,7 +669,11 @@ describe('an encoder that disconnects and comes back inside the window (cases 1 
     const entry = harness.saved.at(-1);
     assert.ok(entry);
     assert.equal(entry.resumingAfterReconnect, true, 'the entry records that a returning segment is owed a seam');
-    assert.equal(entry.pendingDiscontinuity, true, 'and that the break has not been attached to anything yet');
+    assert.equal(
+      entry.pendingDiscontinuity,
+      false,
+      'and nothing else is armed: a return that delivers no segment must arm no break at all',
+    );
 
     // The crash. A second process recovers that entry and the encoder delivers into it.
     const rebuilt = await rebuildFrom(entry);
@@ -700,6 +762,56 @@ async function rebuildFrom(entry: StreamState): Promise<ReconnectHarness> {
     },
   };
 }
+
+describe('a session rebuilt after a crash, whose encoder then announces again', () => {
+  /**
+   * ⛔ **An announce against a recovered stream is a reconnect, so it owes a seam.** The recovery
+   * branch of `startStream` already resumed in place — it resets the accounting and cancels the
+   * finalize timer rather than replacing the session — but it inferred the break from the engine's
+   * counter, and where only the uploader was killed there is no counter restart to infer it from:
+   * SRS's own muxer outlives the process it was feeding, so the index carries straight on and the
+   * media across the gap is published as a continuation of itself.
+   */
+  it('marks the seam and re-anchors, even where the engine’s counter carried straight on', async () => {
+    const entry: StreamState = {
+      streamId: STREAM_ID,
+      streamRawTopic: DECLARATION.topic,
+      mediatype: MEDIA_TYPE_AUDIO,
+      socIndex: 1,
+      segments: [
+        { index: 40, duration: SEGMENT_SECONDS, ref: 'segment-a0', sequence: 0 },
+        { index: 41, duration: SEGMENT_SECONDS, ref: 'segment-a1', sequence: 1 },
+      ],
+      hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+      isFirstSegmentReady: true,
+      isFirstManifestReady: true,
+      liveManifestStale: false,
+      updatedAt: TEST_ANCHOR.startedAtMs,
+      anchor: TEST_ANCHOR,
+      adminStreamId: DECLARATION.id,
+    };
+
+    const rebuilt = await rebuildFrom(entry);
+    assert.equal(
+      rebuilt.orchestrator.startStream(STREAM_ID, MEDIA_TYPE_AUDIO, undefined, DECLARATION),
+      true,
+      'the encoder announcing again must be admitted against the session that was recovered',
+    );
+
+    // The index carries on from where the entry left off, which is what a surviving SRS muxer does.
+    await rebuilt.segment('b0', 42);
+    await rebuilt.published('b0');
+
+    const afterReturn = writesNaming(rebuilt.writes, 'b0').at(-1);
+    assert.ok(afterReturn, 'the returning segment must have been published');
+    assert.equal(seamCount(afterReturn.playlist), 1, 'the media across the crash is not a continuation');
+    assert.equal(
+      dateOfSegment(afterReturn.playlist, 'b0'),
+      new Date(TEST_ANCHOR.startedAtMs + OUTAGE_MS).toISOString(),
+      'and it is dated at the clock the encoder came back at rather than where the broadcast had got to',
+    );
+  });
+});
 
 describe('an operator stop is unchanged by the window', () => {
   it('finalizes at once, with no waiting for an encoder that has just been told to go', async () => {

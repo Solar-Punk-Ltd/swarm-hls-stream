@@ -456,6 +456,14 @@ export class StreamOrchestrator {
       // seeding nothing from an entry that holds nothing: there is no index to measure the new
       // counter against, so the first arrival must infer no gap at all.
       this.restartSegmentAccounting(streamId);
+      // ⛔ The seam and the re-anchored dating are owed here for the same reason they are owed on any
+      // other return, and are armed rather than inferred for the same reason too. An announce against
+      // a recovered stream means the encoder's publish session was replaced, so the media on either
+      // side of the gap is not continuous and its clock restarted while ours did not. The counter is
+      // no evidence: where only the uploader was killed, SRS's own muxer outlives it for
+      // `hls_dispose x 1.1` and the index carries straight on, leaving the restart detection in
+      // `ManifestManager.placeInBroadcast` nothing at all to find.
+      this.activeStreams.get(streamId)?.resumeAfterReconnect();
       // The recovery timer that was watching this stream has just been cancelled, so from here it is
       // an ordinary live stream and needs the ordinary watchdog. `handleSegment` arms it on the other
       // route out of recovery, which is the one both shipped engines take.
@@ -476,31 +484,26 @@ export class StreamOrchestrator {
         return false;
       }
 
-      // ⛔⛔ **A live session that is not draining is RESUMED, not replaced.** This is the encoder
-      // coming back: it stopped, or its network went, `on_unpublish` noted a disconnect and ended
-      // nothing, and here it is again inside the window. The broadcast it is rejoining is the one it
-      // left, so it keeps its recording, its feed position, its admin state and its place in the
-      // ladder, and the only things that change are the two that really did: a break on the next
-      // segment and a dating re-anchored at it. See {@link resumeLiveSession}.
-      //
-      // ⚠️ **Which announces reach here is unchanged, and that is the whole of the security story
-      // here.** `reasonToRefuseTakeover` above has already refused every announce it refused before,
-      // on exactly the same evidence. What has changed is what an ALLOWED one does, and for the two
-      // allowed announces that are not the incumbent coming back — a stranger admitted because the
-      // incumbent went quiet for the stall window, and a key holder evicting a squatter — that is a
-      // real change: they now continue the incumbent's broadcast instead of starting their own over
-      // the top of it. Both are bounded by the reap window, since a session nothing feeds ends at it.
-      if (!this.isDrainingId(streamId)) {
+      // ⛔⛔ **The same publisher coming back RESUMES the live session; anyone else REPLACES it.**
+      // This is the encoder returning: it stopped, or its network went, `on_unpublish` noted a
+      // disconnect and ended nothing, and here it is again inside the window. The broadcast it is
+      // rejoining is the one it left, so it keeps its recording, its feed position, its admin state
+      // and its place in the ladder, and the only things that change are the two that really did: a
+      // break on the next segment and a dating re-anchored at it. See {@link resumeLiveSession} and
+      // {@link isTheSamePublisher}.
+      if (!this.isDrainingId(streamId) && this.isTheSamePublisher(streamId, claimant)) {
         this.resumeLiveSession(streamId, stale, claimant);
         return true;
       }
 
+      // What reaches here is a genuinely new broadcast on this id, and there are two ways to be one.
       // The incumbent is draining, so its recording is already being committed and nothing may be
-      // added to it. What reaches here is the reconnect-during-drain race: an operator stop, an OME
-      // closing or a reap has begun finalizing this id, and the engine has announced again before it
-      // finished. The broadcast being rejoined is over, so this one is genuinely new — it is started
-      // rather than refused, so the broadcaster resumes instead of being rejected as "already
-      // active".
+      // added to it: an operator stop, an OME closing or a reap has begun finalizing this id and the
+      // engine has announced again before it finished. Or the announce is provably a different
+      // publisher from the incumbent, which `reasonToRefuseTakeover` has already decided may have the
+      // id — a key holder taking it back from a squatter, or a stranger admitted because the
+      // incumbent went quiet for the stall window. Either way the session it takes over from is
+      // finalized rather than joined, so nobody else's media ends up in its recording.
       //
       // The stale session leaves the live maps in this same synchronous turn, before anything can
       // deliver to it again. Finalizing it in the background and leaving it registered meanwhile
@@ -684,6 +687,45 @@ export class StreamOrchestrator {
       `[StreamOrchestrator] ${describeClaimant(claimant)} re-announced ${streamId} inside the reconnect ` +
         'window, so it resumed the same session: same recording, same feed, one break at the seam',
     );
+  }
+
+  /**
+   * Whether this announce is the publisher that is already on this id, coming back.
+   *
+   * ⛔ **Asked only of announces `reasonToRefuseTakeover` has already allowed**, so it never admits
+   * anybody: it decides whether an admitted announce joins the live broadcast or takes the id over a
+   * finalized one. Getting it wrong in the permissive direction puts one publisher's media in
+   * another's recording, which is why the test is "provably or plausibly the same" rather than "not
+   * provably different".
+   *
+   * Three ways to be the same publisher, and they are the three ways the evidence can point:
+   *
+   * - **Both proved the key.** The strongest, and the one every deployment that matters takes: in
+   *   admin mode and under `PUBLISH_KEY_SECRET` every publish proves a key, so an encoder that
+   *   stopped and came back always lands here whatever its address did. The owner's cases 1 and 2.
+   * - **The incumbent is unknown and the claimant proved the key.** No record means a session this
+   *   process restored after its own restart, which can never acquire a claimant. A key is the only
+   *   evidence available about such a session's owner, and it is evidence for rather than against.
+   * - **Neither proved anything and they are not provably different.** Either address is missing, or
+   *   the two are equal. This is the keyless deployment, where an address is all there is.
+   *
+   * What is left is a provably different publisher, and it takes the id rather than the broadcast:
+   * exactly one side proved the key against a known incumbent (a key holder evicting a squatter), or
+   * both are unauthenticated with two different addresses (a stranger admitted after the stall
+   * window). Both would otherwise have continued a broadcast that is not theirs, carrying whatever
+   * the incumbent had already published into their own recording.
+   */
+  private isTheSamePublisher(streamId: string, claimant: StreamClaimant): boolean {
+    const incumbent = this.streamClaimants.get(streamId);
+
+    if (incumbent === undefined) {
+      return claimant.isAuthenticated === true;
+    }
+    if (incumbent.isAuthenticated || claimant.isAuthenticated) {
+      return incumbent.isAuthenticated === true && claimant.isAuthenticated === true;
+    }
+
+    return incumbent.address === null || claimant.address === null || incumbent.address === claimant.address;
   }
 
   /**
