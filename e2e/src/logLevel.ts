@@ -117,17 +117,18 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'the retry counter the bee-outage scenarios report',
   },
   /*
-   * The four below are part of one counter, `discontinuitiesArmed` in `harness/logwatch.ts`, which
-   * counts the uploader announcing a lost segment or a declared break. Six suites assert it is zero
-   * and scenarios/bee-outage-long asserts it is at least one, so a level that drops any of them does
-   * not fail those six. It passes them, on a stage losing segments all night.
-   * `originDeclaredDiscontinuity` is the one of the four at `info` and so the first to go.
+   * The FIVE below are part of one counter, `discontinuitiesArmed` in `harness/logwatch.ts`, which
+   * counts the uploader announcing a lost segment or a declared break: `segmentUploadFailed`,
+   * `segmentsNeverArrived`, `originDeclaredDiscontinuity`, `encoderReturned` and
+   * `omeSegmentLossReported`. Six suites assert the counter is zero and scenarios/bee-outage-long
+   * asserts it is at least one, so a level that drops any of them does not fail those six. It passes
+   * them, on a stage losing segments all night. TWO of the five are at `info` and so are the first to
+   * go: `originDeclaredDiscontinuity` and `encoderReturned`.
    *
-   * ⚠️ The counter has THREE more members that this list does not carry, and each of them is at a
-   * level a threshold could drop: `encoderReturned` and `datingReanchored`, both `info` from
-   * `libs/ManifestManager.ts`, and `engineSkippedSegments`, `error` from `libs/StreamUploader.ts`.
-   * `encoderReturned` is listed on its own below, because a reconnect is now an ordinary event rather
-   * than a fault; the other two are covered by the deployed-shape preflight rather than here.
+   * ⚠️ The counter has two more members this list does not carry, both at a level a threshold could
+   * drop: `datingReanchored`, `info` from `libs/ManifestManager.ts`, and `engineSkippedSegments`,
+   * `error` from `libs/StreamUploader.ts`. Both are covered by the deployed-shape preflight rather
+   * than here.
    */
   {
     what: 'a spent upload retry window ("Failed to upload segment N for stream <stream>")',
