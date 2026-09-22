@@ -223,6 +223,67 @@ describe('a live stream whose engine dies without saying so (#86)', () => {
   });
 
   /**
+   * The disconnect arm of the same window, and the one the owner's cases 3 and 5 are about.
+   *
+   * ⛔ **A disconnect starts no window of its own.** The window is the reaper's and it runs from the
+   * last media, so a broadcast whose encoder leaves ends one window after its last segment rather
+   * than one window after the webhook. Case 5 is the reason: a broadcaster reconnecting every few
+   * seconds and never sending a frame would otherwise hold a recording with no media in it open for
+   * as long as it kept trying.
+   */
+  it('finalizes a disconnected broadcast at the window from its last media, not from the disconnect', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    // Half the window passes, and only then does the encoder's disconnect reach us.
+    await clock.advance(REAP_MS / 2);
+    orch.noteDisconnect(STREAM_ID);
+    assert.deepEqual(
+      orch.getHealthSignals().disconnectedStreams,
+      [STREAM_ID],
+      'the broadcast is held, and says so, rather than being finalized on the webhook',
+    );
+    assert.equal(hasFinalized(published), false, 'and nothing has been published on the strength of it');
+
+    // The remainder of the window, plus the millisecond that crosses it.
+    await clock.advance(REAP_MS / 2 + 1);
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+
+    assert.equal(orch.getActiveStreamCount(), 0, 'an encoder that never came back ends the broadcast');
+    assert.deepEqual(orch.getHealthSignals().disconnectedStreams, [], 'and nothing is left waiting for it');
+  });
+
+  /**
+   * Case 5 in full. Connection attempts that never deliver a frame must not keep a dead recording
+   * open, and an announce is not media.
+   */
+  it('does not let reconnect churn that delivers nothing push the deadline back', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    // Six connect-and-drop cycles across the window, none of them producing a segment.
+    for (let cycle = 0; cycle < 6; cycle++) {
+      orch.noteDisconnect(STREAM_ID);
+      await clock.advance(REAP_MS / 8);
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    }
+
+    await clock.advance(REAP_MS / 4 + 1);
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(
+      orch.getActiveStreamCount(),
+      0,
+      'the churn bought another window every time, so a recording with no media in it is held for ever',
+    );
+  });
+
+  /**
    * The one behaviour this fix takes away, stated here rather than left to be discovered.
    *
    * SEC-28 gave a proven publish key an unconditional hold on its stream id: an unproven announce was

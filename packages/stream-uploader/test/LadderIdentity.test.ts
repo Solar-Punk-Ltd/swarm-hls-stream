@@ -59,6 +59,18 @@ function groupOf(orch: StreamOrchestrator, base: string): string | undefined {
 }
 
 /**
+ * How many segments have actually reached Swarm, which is how a case waits for media to have been
+ * published rather than merely offered.
+ *
+ * The queue is asynchronous and a re-anchoring is minted where a segment is placed in the manifest,
+ * so a case that re-announced immediately after handing a segment over would sometimes read the
+ * epoch before the segment that mints it had landed.
+ */
+function published(orch: StreamOrchestrator): number {
+  return orch.getMetricsSnapshot().segmentsUploadedTotal;
+}
+
+/**
  * An orchestrator as `index.ts` builds one for an ABR deployment: a ladder, and a group store under
  * the state directory it shares with every other boot of the same deployment.
  */
@@ -171,16 +183,31 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
     orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
     orch.startStream(RUNG_360P, MEDIA_TYPE_VIDEO);
     await waitFor(() => ladderOf(orch, BASE) !== undefined, SETTLE_CEILING_MS);
+    // ⚠️ **Each rung has to publish something first, and that is a change of instrument rather than
+    // of subject.** A re-announce resumes the session it finds rather than replacing it, so the
+    // re-anchoring is minted where the numbering actually continues — on the first segment after the
+    // gap — instead of at the announce. A rung with nothing published has no sequence to resume at.
+    orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('720-before'));
+    orch.handleSegment(RUNG_360P, 0, 2, Buffer.from('360-before'));
+    await waitFor(() => published(orch) >= 2, SETTLE_CEILING_MS);
 
-    // The engine comes back and re-announces its rungs, seconds apart as a transcoder does.
+    // The engine comes back and re-announces its rungs, seconds apart as a transcoder does. Each
+    // rung's own segment is awaited before the clock moves on, because the re-anchoring is minted
+    // where that segment is placed: leaving them in flight lets both read one reading of the clock,
+    // which is the very disagreement this case exists to detect.
     nowMs = restartedAtMs;
     orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(RUNG_720P, 1, 2, Buffer.from('720-after'));
+    await waitFor(() => published(orch) >= 3, SETTLE_CEILING_MS);
+
     nowMs = restartedAtMs + 3_000;
     orch.startStream(RUNG_360P, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(RUNG_360P, 1, 2, Buffer.from('360-after'));
+    await waitFor(() => published(orch) >= 4, SETTLE_CEILING_MS);
 
     assert.deepEqual(
       ladderOf(orch, BASE)?.epochs,
-      [{ fromSequence: 0, atMs: restartedAtMs }],
+      [{ fromSequence: 1, atMs: restartedAtMs }],
       'the rungs re-anchored one ladder twice, so each of them dates the same media on its own clock',
     );
 
@@ -199,8 +226,14 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
     });
     before.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
     await waitFor(() => ladderOf(before, BASE) !== undefined, SETTLE_CEILING_MS);
+    // Published before the gap and again after it, for the reason the case above gives: the
+    // re-anchoring is minted on the segment that resumes the numbering, not on the announce.
+    before.handleSegment(RUNG_720P, 0, 2, Buffer.from('before'));
+    await waitFor(() => published(before) >= 1, SETTLE_CEILING_MS);
     nowMs = restartedAtMs;
     before.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    before.handleSegment(RUNG_720P, 1, 2, Buffer.from('after'));
+    await waitFor(() => (ladderOf(before, BASE)?.epochs?.length ?? 0) > 0, SETTLE_CEILING_MS);
     assert.ok(ladderOf(before, BASE)?.epochs?.length, 'the re-announce did not re-anchor, so nothing is being carried');
 
     const after = bootWithLadder(root);
@@ -208,7 +241,7 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
 
     assert.deepEqual(
       ladderOf(after, BASE)?.epochs,
-      [{ fromSequence: 0, atMs: restartedAtMs }],
+      [{ fromSequence: 1, atMs: restartedAtMs }],
       'the reboot came back on the dating the broadcast opened with, so it re-dated everything after the restart',
     );
 
@@ -586,7 +619,7 @@ describe('a ladder in admin mode', () => {
    * paid on purpose. Segments keep uploading throughout; only naming them in a playlist waits, and
    * the next segment re-attempts. The other way round corrupts the feed.
    */
-  it('holds a re-announced rung until its predecessor has drained, then continues above it', async () => {
+  it('holds a rung announced mid-drain until its predecessor has drained, then continues above it', async () => {
     const root = makeTempRoot();
     /** Every SOC write, in order, with what it carried, so a media playlist can be told from a master. */
     const writes: { index: number; payload: string }[] = [];
@@ -634,12 +667,19 @@ describe('a ladder in admin mode', () => {
       orch.handleSegment(RUNG_720P, 0, 2, Buffer.from('seg'));
       await waitFor(() => mediaPlaylists().length > 0, SETTLE_CEILING_MS);
 
-      // The transcoder restarts and re-announces the same rung, onto the same derived topic.
-      orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
-      orch.handleSegment(RUNG_720P, 1, 2, Buffer.from('seg'));
-
+      // ⚠️ **The stop is what makes two sessions, and it has to come first.** A bare re-announce of a
+      // live rung resumes the session it finds, which is the encoder-reconnect path and has no
+      // predecessor to wait for. Two sessions hold one derived topic only while a stop of that id is
+      // still finalizing, which is the window this gate exists for: the retired session's closing and
+      // VOD playlists are SOC writes onto the very feed the replacement is about to publish into.
+      const stopping = orch.stopStream(RUNG_720P);
       // The retired session gets as far as its recording and stops there, holding the drain open.
       await waitFor(() => vodIndex !== null, SETTLE_CEILING_MS);
+
+      // The transcoder comes back inside that drain and is registered as a replacement, onto the same
+      // derived topic.
+      orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO, undefined, ADMIN_SESSION);
+      orch.handleSegment(RUNG_720P, 1, 2, Buffer.from('seg'));
       const heldAt = mediaPlaylists().length;
       orch.handleSegment(RUNG_720P, 2, 2, Buffer.from('seg'));
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -653,6 +693,7 @@ describe('a ladder in admin mode', () => {
       // reads the head its predecessor left and writes above it rather than over it.
       releaseTheDrain();
       await waitFor(() => vodIndex !== null && writes.some((write) => write.index === vodIndex), SETTLE_CEILING_MS);
+      await stopping;
       orch.handleSegment(RUNG_720P, 3, 2, Buffer.from('seg'));
       await waitFor(() => mediaPlaylists().some((write) => write.index > vodIndex!), SETTLE_CEILING_MS);
     } finally {

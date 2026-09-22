@@ -115,8 +115,13 @@ describe('taking over a stream id that is already being published', () => {
   /**
    * CON-16's case, which this must not break. A media engine restarted without sending its unpublish
    * re-announces the same broadcaster, and rejecting that leaves them unable to resume at all.
+   *
+   * ⚠️ **What an allowed announce DOES changed on 2026-09-22 and is read here rather than assumed.**
+   * A live session that is not draining is resumed rather than replaced, so the broadcaster comes
+   * back onto the same feed and the same recording. Who may announce is unchanged and is the rest of
+   * this file; `ReconnectWindow.test.ts` holds what the resumed playlist looks like.
    */
-  it('lets the same address take the id back, and finalizes the session it replaces', async () => {
+  it('lets the same address take the id back, joining the session it left', async () => {
     const harness = makeHarness();
     const { orch, published } = harness;
 
@@ -130,13 +135,13 @@ describe('taking over a stream id that is already being published', () => {
       'a reconnecting broadcaster must still be accepted',
     );
 
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
-    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    assert.notEqual(
-      await publishOneSegment(harness, 0),
+    assert.equal(orch.getActiveStreamCount(), 1, 'one session holds the id, not a replacement beside it');
+    assert.equal(
+      await publishOneSegment(harness, 1),
       firstTopic,
-      'the re-announce must have started a fresh session rather than left the old one running',
+      'the broadcaster came back onto a feed of its own, which is a second recording of one broadcast',
     );
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -156,7 +161,7 @@ describe('taking over a stream id that is already being published', () => {
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    await publishOneSegment(harness, 0);
+    const firstTopic = await publishOneSegment(harness, 0);
 
     await clock.advance(STALL_MS + 1);
 
@@ -165,7 +170,18 @@ describe('taking over a stream id that is already being published', () => {
       true,
       'a stream nothing has fed for longer than the stall window is not held against a new publisher',
     );
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    // ⛔ **The cost of the escape hatch since the reconnect window, stated rather than discovered.**
+    // An allowed announce resumes the live session, so whoever the window lets in continues the
+    // incumbent's broadcast instead of starting their own over the top of it — which is right for the
+    // case the hatch exists for, a broadcaster whose address moved, and is the same act for anyone
+    // else the hatch admits. It is bounded by `orphanReapMs`: a session nothing feeds ends at it, and
+    // there is no live session left to join afterwards.
+    assert.equal(
+      await publishOneSegment(harness, 1),
+      firstTopic,
+      'the newcomer was admitted and then given nothing to publish into',
+    );
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -209,10 +225,11 @@ describe('taking over a stream id that is already being published', () => {
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    await publishOneSegment(harness, 0);
+    const firstTopic = await publishOneSegment(harness, 0);
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO), true, 'no evidence must not mean refused');
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(await publishOneSegment(harness, 1), firstTopic, 'and the announce joined the live session');
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -235,10 +252,11 @@ describe('taking over a stream id that is already being published', () => {
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    await publishOneSegment(harness, 0);
+    const firstTopic = await publishOneSegment(harness, 0);
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(await publishOneSegment(harness, 1), firstTopic, 'and the announce joined the live session');
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -249,10 +267,11 @@ describe('taking over a stream id that is already being published', () => {
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    await publishOneSegment(harness, 0);
+    const firstTopic = await publishOneSegment(harness, 0);
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: null }), true);
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(await publishOneSegment(harness, 1), firstTopic, 'and the announce joined the live session');
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -555,7 +574,7 @@ describe('taking over a stream id with a proven publish key', () => {
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    await publishOneSegment(harness, 0);
+    const firstTopic = await publishOneSegment(harness, 0);
 
     // No clock advance. The incumbent is being fed right now, which is what refuses every unproven
     // announce in the block above.
@@ -564,7 +583,12 @@ describe('taking over a stream id with a proven publish key', () => {
       true,
       'a proven key outranks the address test and does not wait for the stall window',
     );
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(
+      await publishOneSegment(harness, 1),
+      firstTopic,
+      'the key holder was admitted and then given nothing to publish into',
+    );
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });
@@ -573,8 +597,22 @@ describe('taking over a stream id with a proven publish key', () => {
    * SEC-26's other stated residual. Its guard is symmetric, so it protects whoever arrived first,
    * which protects a squatter who claims an id and keeps feeding it just as firmly as it protects a
    * real broadcaster. `POST /stream/stop` was the only answer, and it needs an operator.
+   *
+   * ⛔⛔ **The reconnect window narrowed what "evicts" means here, and this says so rather than
+   * hiding it.** An allowed announce against a live session that is not draining RESUMES that
+   * session, so the owner takes the id over the squatter's broadcast rather than over a fresh one:
+   * the squatter's media is in the recording the owner goes on to publish, and the owner's own media
+   * follows it after a seam. The admission rule is unchanged and is what this file is about — the
+   * squatter no longer holds the id against its owner — and the owner still gets their id back
+   * immediately rather than waiting out any window.
+   *
+   * **What an operator does about the squatter's media is `POST /stream/stop`**, which finalizes at
+   * once and frees the id, and then the owner's announce starts a session of its own. Narrowing this
+   * further inside `startStream` would mean deciding that a provably different claimant is never the
+   * encoder coming back, and a broadcaster whose address moved mid-outage is exactly that, so it is
+   * an owner's call rather than one to make here.
    */
-  it('evicts a squatter who claimed the id first and kept feeding it', async () => {
+  it('takes the id back from a squatter who claimed it first and kept feeding it', async () => {
     const clock = new FakeClock();
     const harness = makeHarness(clock);
     const { orch } = harness;
@@ -584,12 +622,18 @@ describe('taking over a stream id with a proven publish key', () => {
     const squatterTopic = await publishOneSegment(harness, 0);
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
-    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-
-    assert.notEqual(
-      await publishOneSegment(harness, 0),
+    assert.equal(orch.getActiveStreamCount(), 1);
+    assert.equal(
+      await publishOneSegment(harness, 1),
       squatterTopic,
-      'the owner has to be publishing under a fresh session, not into the squatter uploader',
+      'the owner was admitted and then given nothing to publish into',
+    );
+
+    // And the squatter cannot walk back in, because the owner is the incumbent from here.
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      false,
+      'the id is held by whoever proved the key, which is the whole of the eviction',
     );
 
     await orch.cleanup();
@@ -632,14 +676,15 @@ describe('taking over a stream id with a proven publish key', () => {
 
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    await publishOneSegment(harness, 0);
+    const firstTopic = await publishOneSegment(harness, 0);
 
     assert.equal(
       orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER, isAuthenticated: true }),
       true,
       'both hold the key for this stream, so they are the same publisher whatever their addresses say',
     );
-    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    assert.equal(await publishOneSegment(harness, 1), firstTopic, 'and the announce joined the live session');
+    await waitAndConfirmNothingHappened(() => !hasFinalized(published), NOTHING_HAPPENED_MS);
 
     await orch.cleanup();
   });

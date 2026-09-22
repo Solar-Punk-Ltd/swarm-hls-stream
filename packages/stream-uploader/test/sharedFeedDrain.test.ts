@@ -137,12 +137,34 @@ function writesNaming(writes: ManifestWrite[], segment: string): ManifestWrite[]
   return writes.filter((write) => write.playlist.includes(`segment-${segment}`));
 }
 
-async function beginBlockedVod(harness: ReturnType<typeof sharedFeedHarness>): Promise<void> {
+/**
+ * Get a predecessor as far as its recording write and leave it stuck there, with a successor
+ * registered under the same id and gated behind it.
+ *
+ * ⛔ **The stop is what makes two sessions, and it has to come first.** A bare re-announce of a live
+ * session resumes it, which is the encoder-reconnect path and has no predecessor to wait for: the
+ * gate this file is about exists only while a stop of that id is still finalizing, because that is
+ * the only window in which two sessions hold one topic and both want to write to it.
+ *
+ * ⛔ The stop is handed back **wrapped**, so a caller can settle it after releasing the write it is
+ * blocked on. Returning it bare does not work: `Promise<Promise<void>>` collapses, so `await` on this
+ * function would wait out the whole stop, and every case here would run against a predecessor that
+ * had already failed its own fifteen second publish deadline and released the gate on its way out.
+ */
+async function beginBlockedVod(harness: ReturnType<typeof sharedFeedHarness>): Promise<{ stopping: Promise<void> }> {
   harness.start();
   await harness.segment('a0', 0);
   await waitFor(() => writesNaming(harness.writes, 'a0').length === 1, SETTLE_CEILING_MS);
+  // ⛔ The successor is registered in the same turn the stop is, which is the interleaving the
+  // deployment produces: `stopStream` registers its drain before its first await, so the announce
+  // that follows it takes the replacement branch and is handed the predecessor's write completion.
+  // Waiting for the VOD write to begin first instead lets the predecessor's own 15 second publish
+  // deadline start running before the successor exists, and the gate it is supposed to be held by is
+  // then released by that failure rather than by anything the case is about.
+  const stopping = harness.orchestrator.stopStream(STREAM_ID);
   harness.start();
   await waitFor(harness.firstVodStarted, SETTLE_CEILING_MS);
+  return { stopping };
 }
 
 async function releaseVodAndPublishSuccessor(
@@ -179,10 +201,9 @@ async function releaseOutstandingVod(harness: ReturnType<typeof sharedFeedHarnes
 describe('shared manifest feeds wait for every outstanding predecessor write', () => {
   it('keeps a re-announced successor gated after the bounded predecessor stop times out', async () => {
     const harness = sharedFeedHarness();
+    const { stopping } = await beginBlockedVod(harness);
     try {
-      await beginBlockedVod(harness);
       await harness.segment('b0', 0);
-
       const readsBeforeDeadline = harness.feedHeadReads();
       await harness.clock.advance(DRAIN_TIMEOUT_MS + 1);
       await harness.segment('b1', 1);
@@ -195,6 +216,7 @@ describe('shared manifest feeds wait for every outstanding predecessor write', (
       await releaseVodAndPublishSuccessor(harness, 'b2', 2);
     } finally {
       await releaseOutstandingVod(harness);
+      await stopping;
     }
   });
 
@@ -260,12 +282,17 @@ describe('shared manifest feeds wait for every outstanding predecessor write', (
 
   it('inherits A through a failed B finalize when A, B and C share one topic', async () => {
     const harness = sharedFeedHarness();
+    const { stopping } = await beginBlockedVod(harness);
     try {
-      await beginBlockedVod(harness);
       await harness.segment('b0', 0);
 
+      // B's own stop. Its finalize cannot publish anything, because it is still gated behind the write
+      // A is blocking, so it fails — which is the whole point: C has to inherit A's pending write
+      // through a middle session that never completed one of its own.
+      const stoppingB = harness.orchestrator.stopStream(STREAM_ID);
       harness.start();
-      await waitFor(() => harness.orchestrator.getMetricsSnapshot().streamsFailedTotal === 1, SETTLE_CEILING_MS);
+      await stoppingB;
+      await waitFor(() => harness.orchestrator.getMetricsSnapshot().streamsFailedTotal >= 1, SETTLE_CEILING_MS);
 
       const readsBeforeC = harness.feedHeadReads();
       await harness.segment('c0', 0);
@@ -277,6 +304,7 @@ describe('shared manifest feeds wait for every outstanding predecessor write', (
       await releaseVodAndPublishSuccessor(harness, 'c1', 1);
     } finally {
       await releaseOutstandingVod(harness);
+      await stopping;
     }
   });
 });

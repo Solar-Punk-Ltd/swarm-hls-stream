@@ -206,6 +206,11 @@ export function makeFakeOrchestrator(overrides: Record<string, unknown> = {}): S
   return {
     startStream: () => true,
     stopStream: async () => {},
+    // ⛔ Here because leaving it out is the exact failure this stub's docblock describes, and it has
+    // now happened a sixth time: an SRS unpublish calls this, the cast hides the missing method from
+    // the compiler, the handler's own catch swallows the `TypeError`, and a test asserting that the
+    // webhook was acted on passes because nothing was acted on at all.
+    noteDisconnect: () => {},
     handleSegment: () => ({ accepted: true }),
     handleSegmentLoss: () => true,
     keepAlive: () => false,
@@ -233,6 +238,7 @@ function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignal
     msSinceStatePersistFailed: null,
     queueBacklogSeconds: 0,
     msSinceAuthRejection: null,
+    disconnectedStreams: [],
     hasIngestedMedia: false,
     segmentsSkipped: 0,
     openingSegmentsWithheld: 0,

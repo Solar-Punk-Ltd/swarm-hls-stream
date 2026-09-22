@@ -480,6 +480,8 @@ describe('the admin publish gate with the ABR ladder on', () => {
   interface LadderCalls {
     starts: Start[];
     stops: string[];
+    /** Every disconnect the engine reported, which is what an unpublish now does instead of stopping. */
+    disconnects: string[];
     /** How many refusals reached `/health` through `recordAuthRejection`. See OBS-15. */
     authRejections: number;
   }
@@ -497,7 +499,7 @@ describe('the admin publish gate with the ABR ladder on', () => {
     lookup: LookupAnswer,
     drive: (harness: { calls: LadderCalls; post: (body: SrsBody) => Promise<number> }) => Promise<void>,
   ): Promise<void> {
-    const calls: LadderCalls = { starts: [], stops: [], authRejections: 0 };
+    const calls: LadderCalls = { starts: [], stops: [], disconnects: [], authRejections: 0 };
     const orchestrator = makeFakeOrchestrator({
       startStream: (streamId: string, _mediatype: unknown, _claimant: unknown, admin?: AdminSession) => {
         calls.starts.push({ streamId, admin });
@@ -505,6 +507,9 @@ describe('the admin publish gate with the ABR ladder on', () => {
       },
       stopStream: async (streamId: string) => {
         calls.stops.push(streamId);
+      },
+      noteDisconnect: (streamId: string) => {
+        calls.disconnects.push(streamId);
       },
       recordAuthRejection: () => {
         calls.authRejections += 1;
@@ -629,13 +634,21 @@ describe('the admin publish gate with the ABR ladder on', () => {
     });
   });
 
-  it('still stops a rung on an unpublish from loopback', async () => {
+  /**
+   * ⚠️ **Reports a disconnect where it used to stop**, and the rung's broadcast ends at the reap
+   * window instead. SRS closes a publish within seconds of any interruption, so finalizing on this
+   * webhook sealed the recording one or two seconds into every outage a broadcaster was about to
+   * recover from. What is unchanged, and is what this file is about, is that the loopback origin is
+   * still the whole of the gate: the same webhook from anywhere else is acted on in neither way.
+   */
+  it('reports a disconnect for a rung on an unpublish from loopback, and stops nothing', async () => {
     await withSrsLadder(answersDraft(), async ({ calls, post }) => {
       await post(source({ param: `?key=${DECLARED_KEY}` }));
       await post(rung());
 
       assert.equal(await post(rung({ action: 'on_unpublish' })), 0);
-      assert.deepEqual(calls.stops, [RUNG_ID]);
+      assert.deepEqual(calls.disconnects, [RUNG_ID]);
+      assert.deepEqual(calls.stops, [], 'a rung is no longer finalized on its own webhook');
     });
   });
 

@@ -469,6 +469,56 @@ describe('a broadcast the stall reaper ended, and the one that follows it on the
   });
 
   /**
+   * The same handover on the arm production actually takes now: the encoder disconnected, its
+   * `on_unpublish` reported that and ended nothing, and nothing came back inside the window.
+   *
+   * ⛔ **A disconnect must reach the reaper's own path rather than a shorter one.** It ends nothing
+   * itself, so what finalizes the broadcast is the same timer that finalizes one whose engine died —
+   * and the glue on the far side of it has to be identical, since a viewer cannot tell the two
+   * apart. A build that finalized on the webhook would pass every other case in this file and fail
+   * here, because its recording would land a whole window earlier than the reap this waits for.
+   */
+  it('glues onto a recording the reaper published after the encoder disconnected', async () => {
+    const harness = glueHarness();
+
+    harness.start();
+    for (const [index, label] of A_SEGMENTS.entries()) {
+      await harness.segment(label, index);
+    }
+    await harness.published(A_SEGMENTS[A_SEGMENTS.length - 1]);
+
+    harness.orchestrator.noteDisconnect(SINGLE_STREAM_ID);
+    await waitAndConfirmNothingHappened(() => recordings(harness.writes).length === 0, QUIET_WINDOW_MS);
+
+    await harness.reap();
+    await waitFor(() => recordings(harness.writes).length === 1, SETTLE_CEILING_MS);
+    await waitFor(() => harness.orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+
+    // The encoder comes back, too late. That is a new broadcast, and it opens with the one before it.
+    harness.start();
+    for (const [index, label] of B_SEGMENTS.entries()) {
+      await harness.segment(label, index);
+    }
+    await harness.published(B_SEGMENTS[B_SEGMENTS.length - 1]);
+
+    const aRecording = recordings(harness.writes)[0];
+    const bFirstLive = writesNaming(harness.writes, B_SEGMENTS[0])[0];
+    assert.equal(
+      mediaSequenceOf(bFirstLive.playlist),
+      mediaSequenceOf(aRecording.playlist) + entryCount(aRecording.playlist),
+      'the returning broadcast numbered over the recording the reaper left',
+    );
+    assert.equal(seamCount(bFirstLive.playlist), 1, 'with the join declared once');
+
+    await harness.orchestrator.stopStream(harness.streamId);
+    await waitFor(() => recordings(harness.writes).length === 2, SETTLE_CEILING_MS);
+    assert.ok(
+      recordings(harness.writes)[1].playlist.includes(`${recordedMediaOf(aRecording.playlist)}${DISCONTINUITY_TAG}\n`),
+      'and the recording at the feed head carries both broadcasts, oldest first',
+    );
+  });
+
+  /**
    * ⛔ A rung′s topic is derived from its ladder group and its rung name rather than declared, so it
    * is stable across the two sessions for a different reason from the single declared stream above —
    * and the reaper releases the ladder on its way out, so the successor derives the topic again from
