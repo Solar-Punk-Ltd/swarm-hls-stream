@@ -221,10 +221,14 @@ So **the admin shows `live` for up to one window after the encoder leaves**, and
 its recording about a window later than it used to. That is the cost of the row above it, and it is
 the owner's decision of 2026-09-22.
 
-⛔ **A reconnect buys no extra time.** The window runs from the last segment rather than from the
-webhook, so an encoder that reconnects every few seconds and never sends a frame does not hold a
-recording with no media in it open: it ends at the same instant it would have ended had nothing
-reconnected at all. Only media moves that clock.
+⛔ **A reconnect buys the first segment time to arrive, and nothing more.** The window runs from the
+last segment rather than from the webhook, so an announce does not move the deadline. What it does
+buy is a grace of `SEGMENT_STALL_MS` for the segment it is about to deliver, capped at one grace past
+the deadline the broadcast already had — without it an announce accepted three seconds before the
+window was up was followed three seconds later by a reap, and the encoder went on publishing into an
+id nothing held any more, because it does not announce again for a publish session it already has. An
+encoder that reconnects every few seconds and never sends a frame therefore still ends, one grace
+later than it would have, rather than being held open for as long as it keeps trying.
 
 ⛔ **SRS's own publish timeout is deliberately not lengthened to match.** A clean stop sends an
 explicit goodbye, so no timeout applies to it at all, and a publish SRS still believes in refuses the
@@ -234,9 +238,26 @@ anything open here.
 ⚠️ **The seam is armed by the reconnect, not inferred from the numbering.** SRS keeps a source and
 its HLS muxer alive for `hls_dispose × 1.1` ≈ 132 s after an unpublish, so an encoder returning inside
 the window is usually served by the same muxer and its `seq_no` carries straight on — the
-counter-restart detection described above sees nothing to detect. The returning segment publishes one above
-everything already published whatever index it carries, which also means a reconnect never emits gap
-entries: nothing was lost, because nothing was being produced.
+counter-restart detection described above sees nothing to detect. The returning segment publishes one
+above everything already published whatever index it carries, which also means an **in-order** return
+emits no gap entries: nothing was lost, because nothing was being produced. In order is what both
+engines deliver — SRS posts each segment to the webhook as it closes it, and OME's puller walks a
+playlist front to back. A lower index of the resumed run arriving afterwards would take the ordinary
+counter-restart branch and declare a second break, re-anchor a second time and leave a gap entry
+between the two; that is pre-existing behaviour for any out-of-order arrival below a published
+sequence rather than something the reconnect path introduced, and nothing is engineered for it.
+
+**Which announces join a live broadcast, and which take the id over a finalized one.** An announce is
+first screened by the takeover rules below, which are unchanged; one that is allowed then joins the
+live session only when it is the publisher that left it. Both sides having proved the publish key is
+the strongest form of that and the one every real deployment takes, because in admin mode and under
+`PUBLISH_KEY_SECRET` every publish proves a key — so an encoder that stopped and came back resumes
+whatever its address did in between. An announce against an incumbent nobody can name resumes if it
+proved the key, and two announces that proved nothing resume unless their addresses are both known
+and different. What is left is a provably different publisher — a key holder taking the id from an
+incumbent that proved nothing, or a stranger admitted because the incumbent went quiet for the stall
+window — and that one finalizes the session it displaces and starts its own, so no publisher's
+recording ever opens with somebody else's media.
 
 The operator stop (`POST /stream/stop`), the recovery timeout and the reap expiry all finalize
 immediately and are unchanged, and so is OME's closing webhook. `/health` lists every id currently
@@ -332,13 +353,26 @@ minted epoch is never dated before the segment in front of it either, which matt
 nominal dating had run ahead of the wall clock: a stamp moving backwards is what hls.js reports as a
 parsing error rather than as a restart.
 
-**Every restart path re-anchors.** An encoder re-announcing a stream this service still holds resumes
-that session, so its epoch starts at the sequence the numbering continues from. Segments resuming
-inside one session after the engine's counter restarted do the same. The one path that still numbers
-from zero again is a session announced while a stop of that id is still finalizing, which is a
-genuinely new broadcast and takes its epoch at sequence 0
+**Every restart path re-anchors, and every reconnect does, not only the first of a broadcast.** An
+encoder re-announcing a stream this service still holds resumes that session, so its epoch starts at
+the sequence the numbering continues from; so does one re-announcing a session this service rebuilt
+after its own crash, and so do segments resuming inside one session after the engine's counter
+restarted. The one path that numbers from zero again is a session announced while a stop of that id is
+still finalizing, which is a genuinely new broadcast and takes its epoch at sequence 0
 (`StreamOrchestrator.reanchorReplacedBroadcast`). A single-rendition stream is a ladder of one and
 behaves identically.
+
+⛔ **A rung joins the line a sibling minted only from at or below the sequence that line was minted
+at.** The rungs of one ladder are cut on one keyframe grid and cross a restart holding the same media,
+and the one that is behind — the 1080p rung is the slowest to transcode and the slowest to upload — has
+always landed that many fragments earlier on the shared line. A rung's own later reconnect can only
+ask from above, because a line is minted where a segment is placed and the high-water mark never
+decreases, so the direction is what separates the two. Recognising a restart by the clock alone cost
+the second and every later reconnect of a broadcast its dating, because nothing advances while an
+encoder is away and the line therefore still dated the resuming sequence as happening about now.
+What the rule gives up is a sibling that is genuinely ahead of whichever rung minted first: it mints
+at its own reading of the clock, so it disagrees with its siblings by however far apart they crossed
+the restart, which is seconds against a whole outage.
 
 The epochs ride with the group in `state/ladder/groups.json` and with each rung's recovery entry, so
 a crash after a restart comes back on the re-anchored dating rather than re-dating everything after

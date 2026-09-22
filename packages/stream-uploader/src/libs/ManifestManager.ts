@@ -760,17 +760,18 @@ export class ManifestManager {
    * session's own first segment carries, which is only behind the window once that segment has slid
    * out of it. And any engine restart this session declared and has since slid past.
    *
-   * ⛔ Zero, and therefore no tag at all, for a session that opened on an empty feed. Such a session
-   * numbers its own breaks from its own first entry, which is what an absent tag already declares,
-   * and the playlists it publishes stay byte for byte the ones this project has always published.
-   * The tag exists here for the session that continues a feed, where the breaks a viewer cannot see
-   * any more are real and are the whole reason the count is not zero.
+   * ⛔ **Counted for every session, including one that opened on an empty feed.** It used to answer
+   * zero unconditionally there, on the reasoning that such a session numbers its breaks from its own
+   * first entry — which is true only until one of those breaks slides out of the window. A reconnect
+   * seam is an ordinary event now rather than an engine fault, so a first-session broadcast whose
+   * encoder dropped once and came back drops that seam out of its window within a minute and went on
+   * declaring zero. hls.js aligns discontinuity domains across levels from this tag when it switches
+   * rung, so a ladder under-declaring it puts the switch in the wrong domain.
+   *
+   * A broadcast that has had no break still publishes no tag at all, because the count is zero and
+   * {@link liveHeaderLines} omits it, so nothing about an unbroken playlist changes.
    */
   private discontinuitySequence(windowSegments: readonly SegmentEntry[]): number {
-    if (this.sequenceOffset === 0 && this.inherited === null) {
-      return 0;
-    }
-
     const first = windowSegments[0];
     if (first === undefined) {
       return this.inheritedDiscontinuities();
@@ -992,10 +993,12 @@ export class ManifestManager {
     // for the same reason the sequence is: the real value depends on where the window starts, which
     // is the answer this is computing. Over-reserving costs a handful of bytes; under-reserving
     // spends a budget that is one bee chunk.
+    // Every break this session could possibly declare as behind its window, which is what the header
+    // may have to carry. Unconditional since {@link discontinuitySequence} stopped answering zero for
+    // a session on an empty feed: reserving nothing there under-reserves the moment such a session's
+    // first reconnect seam slides out of the window, and the budget this feeds is one bee chunk.
     const mostBreaksBehind =
-      this.sequenceOffset === 0 && this.inherited === null
-        ? 0
-        : this.inheritedDiscontinuities() + 1 + this.segments.filter((seg) => seg.discontinuity === true).length;
+      this.inheritedDiscontinuities() + 1 + this.segments.filter((seg) => seg.discontinuity === true).length;
     const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestSequence, mostBreaksBehind));
 
     let spent = 0;

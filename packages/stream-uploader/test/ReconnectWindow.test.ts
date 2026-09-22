@@ -42,7 +42,6 @@ import { describe, it } from 'node:test';
 import { createSrsEngine } from '../src/engines/srs.js';
 import { SRS_WEBHOOK_TOKEN_PARAM } from '../src/engines/srs/webhookToken.js';
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
-import { Logger } from '../src/libs/Logger.js';
 import {
   ADMIN_STATE_LIVE,
   ADMIN_STATE_VOD,
@@ -50,6 +49,7 @@ import {
   AdminStateReport,
   STATE_REPORT_ACCEPTED,
 } from '../src/libs/AdminApiClient.js';
+import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { AdminSession, MEDIA_TYPE_AUDIO, StreamState } from '../src/types.js';
 

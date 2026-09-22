@@ -76,9 +76,16 @@ async function withCapturedLog(run: (lines: string[]) => Promise<void>): Promise
   }
 }
 
-/** The feed topic of the newest persisted state, which is what tells one session's writes from another's. */
-async function waitForTopic(saved: StreamState[]): Promise<string> {
-  await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+/**
+ * The feed topic of the newest persisted state, which is what tells one session's writes from another's.
+ *
+ * ⛔ Waits for a state written AFTER whatever the caller has already seen, rather than for any state
+ * at all. Sequenced on the count, because a comparison that reads the pre-existing entry answers about
+ * the session before the one it is asking about and passes whatever the code does. `after` is the
+ * length the caller last saw.
+ */
+async function waitForTopic(saved: StreamState[], after = 0): Promise<string> {
+  await waitFor(() => saved.length > after, SETTLE_CEILING_MS);
   return saved[saved.length - 1].streamRawTopic;
 }
 
@@ -583,15 +590,17 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     // Each session mints a feed topic of its own, so the topic is what tells a resumed session from
     // a replacement without reaching inside the orchestrator for the uploader.
     const firstTopic = await waitForTopic(saved);
+    const writesBeforeTheReturn = saved.length;
 
     // Previously this returned false → SRS rejected the broadcaster. It must still be accepted.
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 're-announce of an active stream must be accepted');
     assert.equal(orch.getActiveStreamCount(), 1, 'and one session holds the id, not a replacement beside it');
 
+    // Read off a state the RETURNING run wrote, not off the one already there: an equality against
+    // the pre-resume entry is satisfied whatever the announce did with the session.
     orch.handleSegment(id, 1, 2, Buffer.from('two'));
-    await waitFor(() => saved.length > 0 && saved[saved.length - 1].streamRawTopic !== undefined, SETTLE_CEILING_MS);
     assert.equal(
-      await waitForTopic(saved),
+      await waitForTopic(saved, writesBeforeTheReturn),
       firstTopic,
       'the broadcaster came back onto a different feed, which is a second recording of one broadcast',
     );

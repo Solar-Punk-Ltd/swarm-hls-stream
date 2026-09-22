@@ -292,6 +292,10 @@ describe('shared manifest feeds wait for every outstanding predecessor write', (
       const stoppingB = harness.orchestrator.stopStream(STREAM_ID);
       harness.start();
       await stoppingB;
+      // ⚠️ At least one rather than exactly one, because A's own stop is in flight throughout and its
+      // finalize fails too once the write it is blocked on gives up: which of the two lands first is
+      // wall-clock ordering rather than anything this case controls. What it needs is that B's did
+      // fail, so C inherits a pending write through a session that never completed one of its own.
       await waitFor(() => harness.orchestrator.getMetricsSnapshot().streamsFailedTotal >= 1, SETTLE_CEILING_MS);
 
       const readsBeforeC = harness.feedHeadReads();

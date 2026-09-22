@@ -1762,9 +1762,51 @@ describe('gluing the recording onto what was already on the feed', () => {
    * watching. hls.js 1.6.15 reads the tag into `level.startCC`.
    */
   describe('the discontinuity sequence on live playlists', () => {
-    it('declares nothing at all on a broadcast that opened on an empty feed', () => {
+    it('declares nothing at all on a broadcast that opened on an empty feed and never broke', () => {
       assert.ok(!withSegments(4, 2).buildLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG));
       assert.ok(!withSegments(4, 2).buildClosingLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG));
+    });
+
+    /**
+     * ⛔⛔ **A break of its own counts even on an empty feed, and this used to answer zero for ever.**
+     * The tag was skipped outright for a session with no offset and nothing inherited, on the
+     * reasoning that such a session numbers its breaks from its own first entry — true only until one
+     * of them slides out of the window. A reconnect seam is an ordinary event now rather than an
+     * engine fault, so a first-session broadcast whose encoder dropped once and came back loses that
+     * seam from its window within a minute and went on declaring nothing. hls.js reads this tag into
+     * `level.startCC` and aligns discontinuity domains across levels from it when it switches rung, so
+     * a ladder under-declaring it lands the switch in the wrong domain.
+     */
+    it('counts its own break once the window has slid past it, on an empty feed too', () => {
+      const manager = withSegments(2, 2);
+      // The encoder came back: this segment opens a resumed run and carries the seam.
+      manager.resumeAfterReconnect();
+      manager.buildLiveManifest();
+      manager.addSegment(2, 2, ref(2));
+
+      assert.ok(
+        !manager.buildLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG),
+        'the break is inside the window, so nothing is behind it yet and the tag stays absent',
+      );
+
+      // Enough segments that the byte budget slides the window past the seam.
+      for (let index = 3; index < 400; index++) {
+        manager.addSegment(index, 2, ref(index));
+      }
+
+      const live = manager.buildLiveManifest();
+      assert.ok(
+        live.includes(`${DISCONTINUITY_SEQUENCE_TAG}:1`),
+        `the seam left the window uncounted; header was ${live.split('\n').slice(0, 6).join(' / ')}`,
+      );
+      assert.ok(
+        manager.buildClosingLiveManifest().includes(`${DISCONTINUITY_SEQUENCE_TAG}:1`),
+        'and the playlist a viewer is handed when the broadcast ends says the same',
+      );
+      assert.ok(
+        !manager.buildVODManifest().includes(DISCONTINUITY_SEQUENCE_TAG),
+        'while the recording names the broadcast from its start, so nothing precedes it',
+      );
     });
 
     /** The seam is ON the first entry of this window, so nothing precedes it and the count is the prefix's. */
