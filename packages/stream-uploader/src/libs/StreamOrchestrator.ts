@@ -325,6 +325,16 @@ export class StreamOrchestrator {
   private streamIngestAt = new Map<string, number>();
   /** Per stream, the monotonic reading of the most recent segment the engine could not deliver. */
   private segmentLossAt = new Map<string, number>();
+  /**
+   * Per stream, the monotonic reading at which its encoder disconnected and did not come back.
+   *
+   * An entry means a live session whose publisher has gone but whose broadcast is deliberately still
+   * open: see {@link noteDisconnect}. It is cleared by the next accepted segment and by the session
+   * being retired, and it is read by nothing that decides anything — the window belongs to the stall
+   * reaper, which measures media rather than webhooks. What it is for is saying so out loud, through
+   * {@link HealthSignals.disconnectedStreams}.
+   */
+  private streamDisconnectedAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
   private stopOutcomes = new Map<string, RetainedStopOutcome>();
   /** Actual pending writes for topics shared across sessions, independently of bounded stop reports. */
@@ -425,8 +435,7 @@ export class StreamOrchestrator {
       // The accounting entry is deleted rather than reset, for the reason `recoverStream` gives for
       // seeding nothing from an entry that holds nothing: there is no index to measure the new
       // counter against, so the first arrival must infer no gap at all.
-      this.processedSegments.set(streamId, this.newDuplicateFilter());
-      this.lastAccountedIndex.delete(streamId);
+      this.restartSegmentAccounting(streamId);
       // The recovery timer that was watching this stream has just been cancelled, so from here it is
       // an ordinary live stream and needs the ordinary watchdog. `handleSegment` arms it on the other
       // route out of recovery, which is the one both shipped engines take.
@@ -447,9 +456,31 @@ export class StreamOrchestrator {
         return false;
       }
 
-      // The engine re-announced a stream we still track — it restarted without sending on_unpublish
-      // (e.g. the media engine was restarted). Finalize the stale session as a VOD, then start the
-      // new one, so the broadcaster resumes instead of being rejected as "already active".
+      // ⛔⛔ **A live session that is not draining is RESUMED, not replaced.** This is the encoder
+      // coming back: it stopped, or its network went, `on_unpublish` noted a disconnect and ended
+      // nothing, and here it is again inside the window. The broadcast it is rejoining is the one it
+      // left, so it keeps its recording, its feed position, its admin state and its place in the
+      // ladder, and the only things that change are the two that really did: a break on the next
+      // segment and a dating re-anchored at it. See {@link resumeLiveSession}.
+      //
+      // ⚠️ **Which announces reach here is unchanged, and that is the whole of the security story
+      // here.** `reasonToRefuseTakeover` above has already refused every announce it refused before,
+      // on exactly the same evidence. What has changed is what an ALLOWED one does, and for the two
+      // allowed announces that are not the incumbent coming back — a stranger admitted because the
+      // incumbent went quiet for the stall window, and a key holder evicting a squatter — that is a
+      // real change: they now continue the incumbent's broadcast instead of starting their own over
+      // the top of it. Both are bounded by the reap window, since a session nothing feeds ends at it.
+      if (!this.isDrainingId(streamId)) {
+        this.resumeLiveSession(streamId, stale, claimant);
+        return true;
+      }
+
+      // The incumbent is draining, so its recording is already being committed and nothing may be
+      // added to it. What reaches here is the reconnect-during-drain race: an operator stop, an OME
+      // closing or a reap has begun finalizing this id, and the engine has announced again before it
+      // finished. The broadcast being rejoined is over, so this one is genuinely new — it is started
+      // rather than refused, so the broadcaster resumes instead of being rejected as "already
+      // active".
       //
       // The stale session leaves the live maps in this same synchronous turn, before anything can
       // deliver to it again. Finalizing it in the background and leaving it registered meanwhile
@@ -485,6 +516,128 @@ export class StreamOrchestrator {
 
     this.spawnUploader(streamId, mediatype, claimant, admin);
     return true;
+  }
+
+  /**
+   * The engine's publisher has gone, and this ends nothing.
+   *
+   * ⛔⛔ **The whole point is what it does NOT do.** SRS ends a publish within seconds of any
+   * interruption — immediately on a clean stop, under five seconds on a torn-down socket, under
+   * fifteen on a frozen one — and answering that by finalizing put an `#EXT-X-ENDLIST` and a
+   * recording into the feed one or two seconds into an outage the broadcaster was about to recover
+   * from. Measured live on 2026-09-22 against SRS 6.0.184. So a disconnect is silence rather than an
+   * end: the live playlist at the head simply stops advancing, and what decides whether the broadcast
+   * is over is the stall reaper, which has always measured media rather than webhooks. An encoder
+   * back inside the window resumes the same session through {@link resumeLiveSession}; one that never
+   * comes back is finalized by {@link scheduleStallReap} exactly as an engine that died is.
+   *
+   * ⛔ **It does not move the reaper's clock either**, which is what keeps a broadcaster reconnecting
+   * every two seconds and never sending a frame from holding a dead recording open for ever: the
+   * window runs from the last segment, so reconnect churn buys nothing.
+   *
+   * A stream that is not live, or one already draining, is logged and ignored. That was the shape of
+   * the old stale-unpublish guard and it is now the answer for every state but the one above: a stop
+   * has either already run or is running, and the recording it produced is not this webhook's to
+   * reopen.
+   */
+  public noteDisconnect(streamId: string): void {
+    const uploader = this.activeStreams.get(streamId);
+    if (!uploader) {
+      this.logger.info(
+        `[StreamOrchestrator] Ignored a disconnect for ${streamId}: no session holds that id, so its ` +
+          'broadcast has already ended',
+      );
+      return;
+    }
+
+    if (this.isDraining(streamId, uploader)) {
+      this.logger.info(
+        `[StreamOrchestrator] Ignored a disconnect for ${streamId}: its session is already finalizing, ` +
+          'and a committed recording is not reopened',
+      );
+      return;
+    }
+
+    this.streamDisconnectedAt.set(streamId, this.clock.now());
+    this.ensureStallReaperArmed(streamId);
+    this.logger.info(
+      `[StreamOrchestrator] The encoder feeding ${streamId} disconnected. Holding the session open for ` +
+        `${this.config.orphanReapMs}ms from its last media: an encoder back inside that resumes this same ` +
+        'broadcast, and one that is not ends it as a recording',
+    );
+  }
+
+  /**
+   * Take a session's segment accounting back to where a session that had never received anything
+   * starts, because the engine feeding it has opened a new publish session.
+   *
+   * ⛔ **The duplicate filter is the load-bearing half.** A returning muxer may number from 0 again —
+   * SRS restarted, or a return after its source cleanup at `hls_dispose x 1.1` — and the filter still
+   * holds the low indexes this session took in its first minutes. Kept, every one of those opening
+   * segments comes back `{ accepted: true }` with nothing uploaded, the engine never retries because
+   * it was told the segment landed, and the resumed run's opening is simply gone. Accepted-as-
+   * duplicate is indistinguishable from accepted-and-published to everything upstream, which is why
+   * CON-16 went unseen.
+   *
+   * The accounting index is deleted rather than reset, which is hygiene rather than a fix:
+   * {@link accountForTakenSegment} already infers no loss from an index that goes backwards. Deleting
+   * it keeps this from being the one place a counter from a finished publish session is measured
+   * against a new one, which is OBS-19's reasoning one map along.
+   */
+  private restartSegmentAccounting(streamId: string): void {
+    this.processedSegments.set(streamId, this.newDuplicateFilter());
+    this.lastAccountedIndex.delete(streamId);
+  }
+
+  /**
+   * The encoder is back inside the window, so this broadcast carries on where it left off.
+   *
+   * ⛔ **Nothing is published and nothing is reported.** No closing playlist, no recording, no admin
+   * state report, and the recovery entry keeps describing this same session — it is only rewritten
+   * with the flags below, by the uploader, on its ordinary persist. A viewer following the feed head
+   * is handed the next update of the playlist they are already playing, with a media sequence that
+   * moved forward and a break at the seam, which is exactly what they were handed across an engine
+   * restart before this existed.
+   *
+   * ⛔ **Not {@link reanchorReplacedBroadcast}.** That re-anchors the broadcast's dating at sequence 0
+   * with no floor, which is right for a replacement numbering its playlist from zero again and wrong
+   * for a session whose numbering continues: it would date media a viewer is holding at the instant of
+   * the reconnect. The floor-protected re-anchoring the resuming session owes is minted at the
+   * sequence it actually resumes at, inside `ManifestManager`, through the same shared
+   * {@link BroadcastDating} the whole ladder reads — so four rungs coming back together mint one line
+   * between them rather than four.
+   *
+   * ⛔ **`streamIngestAt` and `streamActivityAt` are deliberately not touched.** Only media may move
+   * them. An encoder that announces, sends nothing, drops and announces again would otherwise re-arm
+   * the window on every attempt and hold a recording with no media in it open for ever, which is the
+   * owner's case 5.
+   *
+   * Every other per-session latch `retireSession` clears — the fragment watch, the opening-video
+   * gate, the unread-duration report, the loss timestamp — is deliberately KEPT. This is the same
+   * session: the media it measured is the media it is still publishing, and a player that fixed its
+   * codec set from this broadcast's first fragment has not revised it.
+   */
+  private resumeLiveSession(streamId: string, uploader: StreamUploader, claimant: StreamClaimant): void {
+    this.restartSegmentAccounting(streamId);
+    uploader.resumeAfterReconnect();
+    this.streamDisconnectedAt.delete(streamId);
+    // The session that is speaking now is the one a later announce is judged against, which is the
+    // same rule the replacement path applies. See `reasonToRefuseTakeover`.
+    this.streamClaimants.set(streamId, claimant);
+    // Unreachable today, because the recovery branch at the top of `startStream` returns before this
+    // one and a recovered stream is registered in both maps. Kept because the alternative is a
+    // broadcast held by two timers that both end in `stopStream`, and because `handleSegment` does
+    // exactly this on the other route out of recovery.
+    const recoveryTimer = this.recoveryTimers.get(streamId);
+    if (recoveryTimer) {
+      recoveryTimer.cancel();
+      this.recoveryTimers.delete(streamId);
+    }
+    this.ensureStallReaperArmed(streamId);
+    this.logger.info(
+      `[StreamOrchestrator] ${describeClaimant(claimant)} re-announced ${streamId} inside the reconnect ` +
+        'window, so it resumed the same session: same recording, same feed, one break at the seam',
+    );
   }
 
   /**
@@ -623,6 +776,10 @@ export class StreamOrchestrator {
     // the moment a broadcaster reconnected under the same id: `/health` then answered `degraded` with
     // `segment_loss` for a broadcast that had lost nothing.
     this.segmentLossAt.delete(streamId);
+    // The session this describes is over, so whether its encoder was connected at the end is no
+    // longer a fact about anything. Left behind, the id would report a disconnect for the life of the
+    // process and a successor on the same id would inherit it.
+    this.streamDisconnectedAt.delete(streamId);
     // Cleared with the session rather than kept for the id, so that a later broadcast on the same id
     // says it again. Whether an engine's segments are readable is a fact about the session producing
     // them, and the id can be handed to a different engine entirely.
@@ -899,6 +1056,13 @@ export class StreamOrchestrator {
     this.accountForTakenSegment(streamId, uploader, segmentIndex, processed);
     processed?.add(segmentIndex);
     this.streamActivityAt.set(streamId, this.clock.now());
+    // Media is the answer to a disconnect, whatever a webhook said and in whatever order it arrived.
+    // An `on_unpublish` for a publish session that has already been replaced lands after the
+    // reconnect — it is a race between two webhooks and this service cannot order them — and cleared
+    // here it costs nothing at all: it opened a window, and this segment closed it. The owner's case
+    // 11, mitigated at the layer that cannot be wrong about it. Naming the publish session on the
+    // webhook is the proper answer and is a separate step.
+    this.streamDisconnectedAt.delete(streamId);
 
     const reading = measureSegmentDuration(data, duration);
     this.noteFragmentLength(streamId, reading);
@@ -1445,6 +1609,11 @@ export class StreamOrchestrator {
         // media that was on the feed before it, and a recovered session cannot re-read it, because
         // by now the head is its own live playlist. See `ManifestManager.inherit`.
         inherited: state.inherited,
+        // Carried because the crash can land in the one interval where this is set: between an
+        // encoder announcing its return and the first segment of that return arriving, which is an
+        // interval in which nothing is being uploaded. Dropped, the returning media is published as
+        // a continuation of what came before the outage, with no break and the old dating.
+        resumingAfterReconnect: state.resumingAfterReconnect,
       },
       metrics: this.metrics,
       // From the entry rather than from a fresh lookup: nothing re-announces a recovered stream, so
@@ -1521,6 +1690,25 @@ export class StreamOrchestrator {
     this.stallReapers.set(streamId, this.scheduleStallReap(streamId, this.config.orphanReapMs));
   }
 
+  /**
+   * Make sure this stream has a watchdog, without giving it a fresh window.
+   *
+   * ⛔⛔ **The distinction from {@link armStallReaper} is a whole window of a dead broadcast.** That
+   * one cancels and sleeps `orphanReapMs` from now, so the earliest it can reap is a full window
+   * later however long the stream has already been silent. Calling it on an encoder's return would
+   * hand every reconnect a fresh sixty seconds, and an encoder that reconnects every few seconds and
+   * never sends a frame would hold a recording with no media in it open for as long as it kept
+   * trying — the owner's case 5. The already-armed timer needs no help: it re-derives the deadline
+   * from `streamIngestAt` when it wakes, so it either reaps or sleeps exactly the remainder.
+   *
+   * The arm is for the state that should not occur: a live session with no watchdog is #86 again.
+   */
+  private ensureStallReaperArmed(streamId: string): void {
+    if (!this.stallReapers.has(streamId)) {
+      this.armStallReaper(streamId);
+    }
+  }
+
   private scheduleStallReap(streamId: string, delayMs: number): Timer {
     return this.clock.setTimer(() => {
       this.stallReapers.delete(streamId);
@@ -1548,7 +1736,8 @@ export class StreamOrchestrator {
 
       this.logger.warn(
         `[StreamOrchestrator] No segments for ${streamId} in ${Math.round(idleMs)}ms and no stop was ever sent; ` +
-          'finalizing it as a VOD. Its engine most likely died without sending on_unpublish',
+          'finalizing it as a VOD. Either its encoder disconnected and did not return within the window, ' +
+          'or its engine died without sending on_unpublish',
       );
       this.metrics.recordStreamReaped();
       void this.stopStream(streamId).catch((error) =>
@@ -1816,6 +2005,24 @@ export class StreamOrchestrator {
   }
 
   /**
+   * Every live stream whose encoder has gone and has not come back, for {@link HealthSignals}.
+   *
+   * Read out of `activeStreams` rather than off the map alone, so an entry that somehow outlived its
+   * session cannot report a broadcast that has ended as merely disconnected. Draining streams are
+   * excluded for the reason {@link noteDisconnect} ignores one: a session being finalized is not one
+   * waiting for its encoder.
+   */
+  private getDisconnectedStreams(): string[] {
+    const disconnected: string[] = [];
+    for (const [streamId, uploader] of this.activeStreams) {
+      if (this.streamDisconnectedAt.has(streamId) && !this.isDraining(streamId, uploader)) {
+        disconnected.push(streamId);
+      }
+    }
+    return disconnected;
+  }
+
+  /**
    * A segment the OME handover floor discarded on purpose, counted once per playlist index by the
    * puller. Not routed through `handleSegmentLoss`: nothing was lost, and a stream that has already
    * left `activeStreams` still skipped what it skipped. See OBS-16.
@@ -1881,6 +2088,7 @@ export class StreamOrchestrator {
       msSinceStatePersistFailed: this.getMsSinceStatePersistFailed(),
       queueBacklogSeconds: this.getMetricsSnapshot().queueBacklogSeconds,
       msSinceAuthRejection: lastAuthRejectionAt === null ? null : Date.now() - lastAuthRejectionAt,
+      disconnectedStreams: this.getDisconnectedStreams(),
       hasIngestedMedia: counters.segmentsUploadedTotal > 0,
       segmentsSkipped: counters.segmentsSkippedTotal,
       openingSegmentsWithheld: counters.openingSegmentsWithheldTotal,

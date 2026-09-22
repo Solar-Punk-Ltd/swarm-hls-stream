@@ -25,6 +25,14 @@ import {
 } from './broadcastDating.js';
 import { Logger } from './Logger.js';
 
+/** The engine's own counter going back on itself, which {@link ManifestManager} detects for itself. */
+const COUNTER_RESTARTED = 'counter-restarted' as const;
+/** An encoder coming back inside the reconnect window, which only the orchestrator can know. */
+const ENCODER_RETURNED = 'encoder-returned' as const;
+
+/** Why a broadcast's numbering and dating moved forward without the media doing so. */
+type ReanchorCause = typeof COUNTER_RESTARTED | typeof ENCODER_RETURNED;
+
 /**
  * The most bytes a live manifest may occupy, which is one single-owner chunk.
  *
@@ -378,6 +386,24 @@ export class ManifestManager {
    */
   private inherited: InheritedTimeline | null = null;
 
+  /**
+   * Whether the next segment placed opens a run that resumed after the encoder went away and came
+   * back, so it publishes above everything already published and re-anchors the dating there.
+   *
+   * ⛔ **One-shot, and armed from outside rather than detected here, because there is nothing to
+   * detect.** SRS keeps a source and its HLS muxer alive for `hls_dispose x 1.1` after an unpublish,
+   * so an encoder returning inside the reconnect window is served by the same muxer and its index
+   * carries straight on: {@link placeInBroadcast}'s own restart test sees a number above the
+   * high-water mark and correctly concludes nothing restarted. The break is real all the same — the
+   * encoder's clock restarted and the media either side of the gap is not continuous — and the
+   * orchestrator is the only layer that knows it happened. See {@link resumeAfterReconnect}.
+   *
+   * It survives a crash through the recovery entry, beside `pendingDiscontinuity`, because the gap
+   * between arming it and the segment that consumes it is exactly a window in which nothing is
+   * arriving and a restart is most likely.
+   */
+  private resumingAfterReconnect = false;
+
   constructor(anchor: BroadcastAnchor, dating?: BroadcastDating) {
     this.anchor = anchor;
     this.dating = dating ?? soleRungDating(() => this.anchor);
@@ -440,6 +466,31 @@ export class ManifestManager {
   /** What a recovery entry has to carry for {@link inherit} to be re-applied after a crash. */
   public inheritedPrefix(): InheritedTimeline | null {
     return this.inherited;
+  }
+
+  /**
+   * The encoder that stopped feeding this session has come back, so the next segment opens a resumed
+   * run: it publishes one above everything already published whatever number its engine gives it,
+   * the numbering carries on from there, and the dating re-anchors at that sequence.
+   *
+   * ⛔ **Whatever the engine's counter did**, which is the whole reason this is told rather than
+   * inferred. See {@link resumingAfterReconnect}.
+   *
+   * ⛔ Publishing at the high-water mark plus one rather than at wherever the index lands is also
+   * what keeps a returning encoder from emitting gap entries across the reconnect: an index that
+   * jumped forward while nobody was listening would otherwise publish that far ahead, and every
+   * sequence in between would be listed as media a viewer cannot have. Nothing was lost — nothing
+   * was being produced — so there is nothing to say.
+   *
+   * Idempotent: a second call before any segment lands arms the same one shot.
+   */
+  public resumeAfterReconnect(): void {
+    this.resumingAfterReconnect = true;
+  }
+
+  /** Whether that one shot is still armed, for the recovery entry to carry across a crash. */
+  public isResumingAfterReconnect(): boolean {
+    return this.resumingAfterReconnect;
   }
 
   /** The number `sequence` is written into a playlist as. See {@link sequenceOffset}. */
@@ -527,6 +578,11 @@ export class ManifestManager {
    * hand a second segment the sequence the first one already has.
    */
   private placeInBroadcast(index: number): PlacedSegment {
+    if (this.resumingAfterReconnect) {
+      this.resumingAfterReconnect = false;
+      return this.placeResumed(index);
+    }
+
     const anchor = this.sequenceAnchor;
     if (anchor === null) {
       this.sequenceAnchor = { index, sequence: 0 };
@@ -558,7 +614,35 @@ export class ManifestManager {
         `sequence ${resumeAt} rather than moving it backwards`,
     );
     this.sequenceAnchor = { index, sequence: resumeAt };
-    this.reanchorDating(resumeAt);
+    this.reanchorDating(resumeAt, COUNTER_RESTARTED);
+    return { sequence: resumeAt, reanchored: true };
+  }
+
+  /**
+   * The first segment after the encoder came back, placed one above everything already published and
+   * dated at the clock it returned at. See {@link resumeAfterReconnect}.
+   *
+   * ⛔ The same forward move {@link placeInBroadcast} makes for a restarted counter, taken without
+   * asking whether the counter restarted. Inside the reconnect window it usually has not, because
+   * SRS's muxer outlives the publish session, so the arriving index carries straight on and the test
+   * above it would place the segment at its own candidate sequence with no break and no re-anchoring
+   * — a playlist telling a viewer that the media across a fifty second outage is continuous.
+   *
+   * A session that has placed nothing of its own yet is the one case that does not move: there is no
+   * numbering to carry forward, nothing has been dated, and this segment IS the session's first, so
+   * the ordinary opening placement is already the right answer. The seam still rides on it, because
+   * `StreamUploader` arms `pendingDiscontinuity` alongside this, and against an inherited playlist
+   * `isSeam` declares one there anyway.
+   */
+  private placeResumed(index: number): PlacedSegment {
+    if (this.sequenceAnchor === null) {
+      this.sequenceAnchor = { index, sequence: 0 };
+      return { sequence: 0, reanchored: false };
+    }
+
+    const resumeAt = this.highestSequence() + 1;
+    this.sequenceAnchor = { index, sequence: resumeAt };
+    this.reanchorDating(resumeAt, ENCODER_RETURNED);
     return { sequence: resumeAt, reanchored: true };
   }
 
@@ -573,8 +657,14 @@ export class ManifestManager {
    * run ahead of the wall clock, which is what a segment longer than `HLS_FRAGMENT` accumulates:
    * minting at the clock there would pull a stamp backwards, and hls.js reads that as a parsing
    * error rather than as a restart.
+   *
+   * @param cause what moved the numbering, which decides only which line is written. The two are
+   * different facts about the deployment and an operator reading one of them has different work to
+   * do, and only the counter restart is a member of the armed-break family the e2e harness counts:
+   * an encoder returning announces its own break once through {@link encoderReturned}, and writing
+   * a second family member here would count one seam twice.
    */
-  private reanchorDating(resumeAt: number): void {
+  private reanchorDating(resumeAt: number, cause: ReanchorCause): void {
     const newest = this.segments[this.segments.length - 1];
     const wouldHaveBeen = presentationMsOf(
       this.anchor,
@@ -583,11 +673,21 @@ export class ManifestManager {
     );
     const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen);
     this.anchor = withEpoch(this.anchor, epoch);
-    // Composed in the shared log contract rather than written out here, because the e2e harness
-    // counts this as one of the ways a discontinuity is armed and six suites assert that count is
-    // zero on a clean broadcast. A line reworded here and not read there passes them for ever.
+    const wasAt = new Date(wouldHaveBeen).toISOString();
+    const nowAt = new Date(epoch.atMs).toISOString();
+    if (cause === COUNTER_RESTARTED) {
+      // Composed in the shared log contract rather than written out here, because the e2e harness
+      // counts this as one of the ways a discontinuity is armed and six suites assert that count is
+      // zero on a clean broadcast. A line reworded here and not read there passes them for ever.
+      this.logger.info(datingReanchored(resumeAt, wasAt, nowAt));
+      return;
+    }
+    // Deliberately NOT a contract composer and deliberately not matching the one above. The break is
+    // already announced and counted where it was decided, one layer up, and a second countable line
+    // for the same seam would put every reconnect two over the number a clean run asserts is zero.
     this.logger.info(
-      datingReanchored(resumeAt, new Date(wouldHaveBeen).toISOString(), new Date(epoch.atMs).toISOString()),
+      `[ManifestManager] The returning encoder continues the playlist at sequence ${resumeAt}, and its ` +
+        `dating moves from ${wasAt} to ${nowAt}`,
     );
   }
 

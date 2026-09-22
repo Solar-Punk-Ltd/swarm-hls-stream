@@ -1,6 +1,7 @@
 import { Bee, BeeResponseError, PrivateKey, Topic } from '@ethersphere/bee-js';
 import {
   addingStreamToList,
+  encoderReturned,
   engineSkippedSegments,
   finalizeResumed,
   ladderFinalized,
@@ -245,6 +246,11 @@ interface RestoreState {
   sequenceOffset?: number;
   /** Absent on an entry written before recordings were glued, and on a session over an empty feed. */
   inherited?: InheritedTimeline;
+  /**
+   * Absent on an entry written before a disconnect held a session open, and on every session whose
+   * encoder was still feeding it. See {@link StreamUploader.resumeAfterReconnect}.
+   */
+  resumingAfterReconnect?: boolean;
 }
 
 export interface StreamUploaderOptions {
@@ -476,6 +482,13 @@ export class StreamUploader {
         );
       }
       this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
+      // Restored beside the flag above because the two are one fact, and the window between arming
+      // them and the segment that consumes them is precisely a window in which nothing is arriving.
+      // Lost, the first segment after the encoder returned would publish at its own index with the
+      // dating the broadcast opened with, and the seam across the outage would go unsaid.
+      if (restoreState.resumingAfterReconnect) {
+        this.manifestManager.resumeAfterReconnect();
+      }
       if (restoreState.bitrate) {
         this.bitrate = restoreState.bitrate;
       }
@@ -594,6 +607,35 @@ export class StreamUploader {
    */
   public markDiscontinuity(): void {
     this.queueDiscontinuity(() => this.logger.info(originDeclaredDiscontinuity(this.streamId)));
+  }
+
+  /**
+   * The encoder feeding this session went away and has come back inside the window that held the
+   * session open, so this broadcast carries on rather than a new one starting.
+   *
+   * What it changes is exactly the two things that are not true across a reconnect. The media either
+   * side of the gap is not continuous, so the next segment carries a break. And the encoder's clock
+   * restarted while ours did not, so the dating re-anchors at the sequence the numbering resumes at,
+   * through `ManifestManager.resumeAfterReconnect`. Everything else about the session is untouched:
+   * the recording, the feed topic, the SOC index, the admin report, the inherited prefix.
+   *
+   * ⛔ **Both flags are armed and both are persisted**, because either one alone leaves a playlist
+   * that lies. Without the break a player is told a fifty second hole is a continuation, which is
+   * what it stalls on. Without the manifest's one shot a returning encoder whose index carried on —
+   * which is the usual case inside the window, since SRS's muxer outlives the publish session —
+   * would keep the old dating and, if its index had run ahead, emit gap entries for media nobody
+   * ever produced.
+   *
+   * ⛔ Queued rather than applied inline, for {@link queueDiscontinuity}'s own reason and one more:
+   * a segment already awaiting upload when the encoder returned belongs to the run BEFORE the gap,
+   * and arming inline would put the seam and the re-anchoring on that one instead of on the first
+   * segment of the run after it.
+   */
+  public resumeAfterReconnect(): void {
+    this.queueDiscontinuity(() => {
+      this.manifestManager.resumeAfterReconnect();
+      this.logger.info(encoderReturned(this.streamId));
+    });
   }
 
   /**
@@ -1153,6 +1195,10 @@ export class StreamUploader {
       // own window in front of itself; one that simply lost this would finalize a recording naming
       // only what it had held since the crash, which is the whole defect the gluing exists to end.
       inherited: this.manifestManager.inheritedPrefix() ?? undefined,
+      // Read off the manifest manager rather than mirrored here, so there is one holder of the one
+      // shot and a crash between the encoder returning and its first segment landing comes back with
+      // the seam and the re-anchoring still owed. See {@link resumeAfterReconnect}.
+      resumingAfterReconnect: this.manifestManager.isResumingAfterReconnect(),
       // Absent outside admin mode, and absent on every entry written before admin mode existed. See
       // {@link StreamState.adminStreamId} for why a recovered session cannot resolve it again.
       adminStreamId: this.admin?.id,

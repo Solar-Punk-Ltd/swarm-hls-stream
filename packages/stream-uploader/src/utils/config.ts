@@ -250,8 +250,13 @@ export const config = {
     max: MAX_HLS_FRAGMENT_SECONDS,
   }),
   /**
-   * How long a live stream may receive nothing before it is finalized as a VOD, on the assumption
-   * that its engine died without sending `on_unpublish`. See #86.
+   * How long a live stream may receive nothing before it is finalized as a VOD. See #86.
+   *
+   * ⛔ **It is the reconnect window as well, and on the SRS path it is now the ONLY thing that ends a
+   * broadcast.** An `on_unpublish` reports a disconnect and finalizes nothing, so this governs both
+   * an engine that died without saying anything and an encoder that stopped, dropped or froze: an
+   * encoder back inside it resumes the same session, and one that is not gets its recording here.
+   * See `StreamOrchestrator.noteDisconnect`.
    *
    * **Deliberately its own value rather than either neighbour above, and lowering it is dangerous.**
    * `SEGMENT_STALL_MS` is a health *reporting* threshold at half this, and ending a broadcast on it

@@ -90,6 +90,19 @@ export interface StreamState {
    */
   inherited?: InheritedTimeline;
   /**
+   * Whether the encoder came back inside the reconnect window and the first segment of the resumed
+   * run has not landed yet, so that segment still owes a break and a re-anchored dating. Absent
+   * means no, which is every entry written before a disconnect held a session open.
+   *
+   * ⛔ Persisted beside {@link StreamState.pendingDiscontinuity}, and for a sharper version of the
+   * same reason: the interval this covers is one in which the encoder has announced itself and sent
+   * nothing yet, which is the likeliest moment in a broadcast for a restart to land between the two.
+   * A recovered session that lost it publishes its first returning segment as a continuation of the
+   * media on the far side of the outage, dated where the broadcast would have been had nothing
+   * happened. See `ManifestManager.resumeAfterReconnect`.
+   */
+  resumingAfterReconnect?: boolean;
+  /**
    * The admin's id for this broadcast, when the service is in admin mode. See {@link AdminSession}.
    *
    * ⛔ Persisted rather than resolved again after a crash, and it has to be. A recovered session is
@@ -476,6 +489,23 @@ export interface HealthSignals {
    * with no signal at all. See OBS-15 and SEC-28.
    */
   msSinceAuthRejection: number | null;
+  /**
+   * Every live stream whose encoder has disconnected and has not come back, in no particular order.
+   * Empty on a service whose broadcasters are all connected.
+   *
+   * ⛔ **A list rather than a count, because the answer an operator needs is WHICH.** On a four rung
+   * ladder a whole-encoder disconnect puts all four rungs here within a second of each other, and one
+   * rung here on its own is a transcoder that died while the broadcast carried on — which is a
+   * different fault with a different remedy, and a count cannot tell them apart.
+   *
+   * ⛔ **It raises no health reason, deliberately.** A disconnect is an ordinary event with a designed
+   * answer: the session is held for one reap window, and an encoder that comes back inside it resumes.
+   * Turning that into `degraded` would flag every ten second OBS restart, and a disconnect that does
+   * NOT come back already reaches `segment_stall` on the ordinary clock and then ends at the window.
+   * What this is for is the moment in between, which was invisible: a session held open with nothing
+   * feeding it looked, from every endpoint, exactly like one whose publisher was merely slow.
+   */
+  disconnectedStreams: string[];
   /**
    * Whether any segment has ever reached Swarm in this process's lifetime.
    *
