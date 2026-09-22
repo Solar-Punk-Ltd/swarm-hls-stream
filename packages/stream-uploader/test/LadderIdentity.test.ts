@@ -205,10 +205,13 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
     orch.handleSegment(RUNG_360P, 1, 2, Buffer.from('360-after'));
     await waitFor(() => published(orch) >= 4, SETTLE_CEILING_MS);
 
-    assert.deepEqual(
-      ladderOf(orch, BASE)?.epochs,
-      [{ fromSequence: 1, atMs: restartedAtMs }],
-      'the rungs re-anchored one ladder twice, so each of them dates the same media on its own clock',
+    const epochs = ladderOf(orch, BASE)?.epochs ?? [];
+    assert.equal(epochs.length, 1, 'the rungs re-anchored one ladder twice');
+    assert.equal(epochs[0].atMs, restartedAtMs, 'and the line they share is the clock the engine came back at');
+    assert.equal(epochs[0].fromSequence, 1, 'written down at the sequence the numbering resumed from');
+    assert.ok(
+      epochs[0].returnToken,
+      'a returning encoder’s line carries the return it belongs to, which is what makes it joinable',
     );
 
     await orch.cleanup();
@@ -239,11 +242,14 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
     const after = bootWithLadder(root);
     after.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
 
-    assert.deepEqual(
-      ladderOf(after, BASE)?.epochs,
-      [{ fromSequence: 1, atMs: restartedAtMs }],
+    const carried = ladderOf(after, BASE)?.epochs ?? [];
+    assert.equal(carried.length, 1, 'the reboot came back holding a different number of lines than it left');
+    assert.equal(
+      carried[0].atMs,
+      restartedAtMs,
       'the reboot came back on the dating the broadcast opened with, so it re-dated everything after the restart',
     );
+    assert.equal(carried[0].fromSequence, 1);
 
     await after.stopStream(RUNG_720P);
     await before.cleanup();

@@ -71,9 +71,14 @@ const QUIET_WINDOW_MS = 60;
 const SEGMENT_SECONDS = 2;
 
 /**
- * The words every member of the armed-break family ends with, which is what `discontinuitiesArmed`
- * counts. Matched on the phrase rather than on a composer, so a line that gained the words without
- * being listed in the harness is caught here rather than passing.
+ * The words six of the seven members of the armed-break family end with, and the ones `encoderReturned`
+ * ends with, which is all this case needs: it counts that line and nothing else.
+ *
+ * ⚠️ Not a claim about the whole family. `originDeclaredDiscontinuity` ends "marking the next segment"
+ * instead, so a check written on this phrase cannot stand in for the counter. What owns the counter is
+ * `packages/shared/test/uploaderLog.test.ts`, which asserts each of the seven messages matches exactly
+ * one of the seven patterns. Matched on the phrase rather than on the composer so that a SECOND line
+ * gaining these words — which is how a reconnect would start being counted twice — fails here.
  */
 const ARMED_BREAK_PHRASE = 'marking a discontinuity';
 
@@ -556,12 +561,19 @@ describe('an encoder that disconnects and comes back inside the window (cases 1 
       await harness.segment('a0', 0);
       await harness.published('a0');
 
-      // Six announces, none of them followed by a segment, then one that is.
+      // Six announces, none of them followed by a segment, then one that is. Each arming persists the
+      // state it armed, which is how the queue is waited on below.
+      const savedBeforeTheChurn = harness.saved.length;
       for (let attempt = 0; attempt < 6; attempt++) {
         harness.orchestrator.noteDisconnect(STREAM_ID);
         await harness.passTime(1_000);
         harness.start();
       }
+      // ⛔ Sequenced on the queue rather than read straight after the announces. Arming is a job on the
+      // uploader's own segment queue and `FakeClock.advance` only yields where a timer is due, so a
+      // read taken here without waiting can happen before any of the six jobs has run and pass
+      // whatever they would have logged.
+      await waitFor(() => harness.saved.length >= savedBeforeTheChurn + 6, SETTLE_CEILING_MS);
       assert.equal(
         lines.filter((line) => line.includes(ARMED_BREAK_PHRASE)).length,
         0,
@@ -664,11 +676,15 @@ describe('an encoder that disconnects and comes back inside the window (cases 1 
     harness.orchestrator.noteDisconnect(STREAM_ID);
     await harness.passTime(OUTAGE_MS);
     harness.start();
-    await waitFor(() => harness.saved.at(-1)?.resumingAfterReconnect === true, SETTLE_CEILING_MS);
+    await waitFor(() => harness.saved.at(-1)?.resumingAfterReconnect !== undefined, SETTLE_CEILING_MS);
 
     const entry = harness.saved.at(-1);
     assert.ok(entry);
-    assert.equal(entry.resumingAfterReconnect, true, 'the entry records that a returning segment is owed a seam');
+    assert.equal(
+      typeof entry.resumingAfterReconnect,
+      'string',
+      'the entry records which return the next segment is owed a seam for',
+    );
     assert.equal(
       entry.pendingDiscontinuity,
       false,
@@ -697,9 +713,9 @@ describe('an encoder that disconnects and comes back inside the window (cases 1 
  * one way — `listActive` and `load` answer with the entry — and threading that through every case
  * that does not recover would put a branch in the common path.
  */
-async function rebuildFrom(entry: StreamState): Promise<ReconnectHarness> {
+async function rebuildFrom(entry: StreamState, wallOffsetMs = OUTAGE_MS): Promise<ReconnectHarness> {
   const clock = new FakeClock();
-  let wallMs = TEST_ANCHOR.startedAtMs + OUTAGE_MS;
+  let wallMs = TEST_ANCHOR.startedAtMs + wallOffsetMs;
   const writes: ManifestWrite[] = [];
   const adminStates: string[] = [];
   const saved: StreamState[] = [];
@@ -809,6 +825,54 @@ describe('a session rebuilt after a crash, whose encoder then announces again', 
       dateOfSegment(afterReturn.playlist, 'b0'),
       new Date(TEST_ANCHOR.startedAtMs + OUTAGE_MS).toISOString(),
       'and it is dated at the clock the encoder came back at rather than where the broadcast had got to',
+    );
+  });
+
+  /**
+   * ⛔ **The return the entry names is what makes a recovered rung land on its siblings' line.** A
+   * rung that came back with the ladder and then died before its first segment is rebuilt from an
+   * entry whose anchor already carries that return's line, minted by whichever sibling got there
+   * first. It has to join that line rather than mint one at the instant the recovery happened to run,
+   * or the ladder dates one instant two ways — which is the whole reason the return is named rather
+   * than inferred from a sequence or a clock.
+   */
+  it('joins the line its siblings minted for the return its entry names', async () => {
+    const siblingsReturnedAt = TEST_ANCHOR.startedAtMs + OUTAGE_MS;
+    const theReturn = 'the-ladder-came-back';
+    const entry: StreamState = {
+      streamId: STREAM_ID,
+      streamRawTopic: DECLARATION.topic,
+      mediatype: MEDIA_TYPE_AUDIO,
+      socIndex: 1,
+      segments: [
+        { index: 40, duration: SEGMENT_SECONDS, ref: 'segment-a0', sequence: 0 },
+        { index: 41, duration: SEGMENT_SECONDS, ref: 'segment-a1', sequence: 1 },
+      ],
+      hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+      isFirstSegmentReady: true,
+      isFirstManifestReady: true,
+      liveManifestStale: false,
+      updatedAt: TEST_ANCHOR.startedAtMs,
+      // The line a sibling minted for this return, at the sequence that sibling resumed from.
+      anchor: {
+        ...TEST_ANCHOR,
+        epochs: [{ fromSequence: 2, atMs: siblingsReturnedAt, returnToken: theReturn }],
+      },
+      resumingAfterReconnect: theReturn,
+      adminStreamId: DECLARATION.id,
+    };
+
+    // Rebuilt well after the siblings came back, so a session minting at its own clock would be late.
+    const rebuilt = await rebuildFrom(entry, OUTAGE_MS + 30_000);
+    await rebuilt.segment('b0', 42);
+    await rebuilt.published('b0');
+
+    const afterCrash = writesNaming(rebuilt.writes, 'b0').at(-1);
+    assert.ok(afterCrash);
+    assert.equal(
+      dateOfSegment(afterCrash.playlist, 'b0'),
+      new Date(siblingsReturnedAt).toISOString(),
+      'the recovered rung minted a line of its own, so the ladder dates this return two ways',
     );
   });
 });
@@ -969,6 +1033,134 @@ describe('a whole ladder whose encoder disconnects together (case 8′s neighbou
       1,
       'the rungs of one ladder must break at one instant, or a level switch lands on the wrong side of it',
     );
+  });
+
+  /**
+   * ⛔⛔ **A ladder whose rungs are a segment apart, over two outages, which is what the sequence rule
+   * could not survive.** The epoch list belongs to the whole broadcast, so its newest line is often a
+   * SIBLING's: a rung a segment behind asked below that line, the clock test passed for the usual
+   * reason — nothing advances while an encoder is away — and it joined the PREVIOUS return's line,
+   * dating its media a whole outage ago. It reproduced about half the time, depending on which rung
+   * came back first, so both orders are driven here.
+   *
+   * The rungs are made unequal the way production makes them: one of them loses its last segment
+   * before the first outage, which the 480p rung did on the stage for real.
+   */
+  for (const [name, returningOrder] of [
+    ['the rung that is behind returns first', [1, 0]],
+    ['the rung that is ahead returns first', [0, 1]],
+  ] as const) {
+    it(`dates both rungs at their own return across two outages, when ${name}`, async () => {
+      const harness = reconnectHarness({ ladder: true });
+      const pair = [rungIds[0], rungIds[1]];
+
+      // One rung a segment ahead of the other before anything goes wrong.
+      for (const streamId of pair) {
+        harness.start(streamId);
+        await harness.segment(`${streamId}-a0`, 0, streamId);
+      }
+      await harness.segment(`${pair[0]}-a1`, 1, pair[0]);
+      await harness.published(`${pair[0]}-a1`);
+
+      const returnedAt: number[] = [];
+      for (const cycle of [0, 1]) {
+        for (const streamId of pair) {
+          harness.orchestrator.noteDisconnect(streamId);
+        }
+        await harness.passTime(OUTAGE_MS);
+        returnedAt.push(TEST_ANCHOR.startedAtMs + (cycle + 1) * OUTAGE_MS);
+
+        for (const rung of returningOrder) {
+          harness.start(pair[rung]);
+          await harness.segment(`${pair[rung]}-b${cycle}`, 2 + cycle, pair[rung]);
+          await harness.published(`${pair[rung]}-b${cycle}`);
+        }
+      }
+
+      for (const streamId of pair) {
+        await harness.orchestrator.stopStream(streamId);
+      }
+      await waitFor(() => recordings(harness.writes).length === pair.length, SETTLE_CEILING_MS);
+
+      const datedAt = pair.map((streamId, index) => {
+        const recording = recordings(harness.writes)[index].playlist;
+        return [0, 1].map((cycle) => Date.parse(dateOfSegment(recording, `${streamId}-b${cycle}`)));
+      });
+
+      // ⛔ **The defect, stated as the thing it broke.** Each return moved the dating on by the outage
+      // it followed. Joining the previous return's line instead moved it by one fragment, so a
+      // difference of anything but the outage is the media carrying an earlier return's date.
+      for (const [index, streamId] of pair.entries()) {
+        assert.equal(
+          datedAt[index][1] - datedAt[index][0],
+          returnedAt[1] - returnedAt[0],
+          `${streamId} dated its second return on the first return’s line, so it is behind by an outage`,
+        );
+      }
+
+      // ⭐ And the two rungs are on ONE line, materialised at each of their own sequences: the rung a
+      // segment ahead is exactly one fragment later, whichever of them came back first.
+      for (const cycle of [0, 1]) {
+        assert.equal(
+          datedAt[0][cycle] - datedAt[1][cycle],
+          SEGMENT_SECONDS * 1_000,
+          `the rungs disagree about return ${cycle} by something other than the segment between them`,
+        );
+      }
+    });
+  }
+
+  /**
+   * A rung that missed a return entirely — its transcoder was slower than the window, or it lost the
+   * webhook — and comes back with the next one. Its media belongs on the line of the return it is
+   * actually part of, which is not the newest line the broadcast holds.
+   */
+  it('puts a rung that missed a return onto the line of the one it came back in', async () => {
+    const harness = reconnectHarness({ ladder: true });
+    const pair = [rungIds[0], rungIds[1]];
+
+    for (const streamId of pair) {
+      harness.start(streamId);
+      await harness.segment(`${streamId}-a0`, 0, streamId);
+      await harness.published(`${streamId}-a0`);
+    }
+
+    // ⛔ Short enough that the rung which sits out the first return is still inside its own reap
+    // window when the second one comes: a rung that missed a whole minute is a reaped session rather
+    // than a late one, which is a different case and is `GlueAfterReap.test.ts`.
+    const SHORT_OUTAGE_MS = 20_000;
+
+    // Return one: only the first rung comes back.
+    for (const streamId of pair) {
+      harness.orchestrator.noteDisconnect(streamId);
+    }
+    await harness.passTime(SHORT_OUTAGE_MS);
+    harness.start(pair[0]);
+    await harness.segment(`${pair[0]}-b0`, 1, pair[0]);
+    await harness.published(`${pair[0]}-b0`);
+
+    // Return two: both of them.
+    harness.orchestrator.noteDisconnect(pair[0]);
+    await harness.passTime(SHORT_OUTAGE_MS);
+    const secondReturnAt = TEST_ANCHOR.startedAtMs + 2 * SHORT_OUTAGE_MS;
+    for (const streamId of pair) {
+      harness.start(streamId);
+      await harness.segment(`${streamId}-b1`, 2, streamId);
+      await harness.published(`${streamId}-b1`);
+    }
+
+    for (const streamId of pair) {
+      const write = writesNaming(harness.writes, `${streamId}-b1`).at(-1);
+      assert.ok(write);
+      // The rung that came back for both returns minted the line at its own sequence, and the one that
+      // missed the first return resumes a sequence lower, so it lands one fragment earlier on it.
+      const owed = streamId === pair[0] ? secondReturnAt : secondReturnAt - SEGMENT_SECONDS * 1_000;
+      assert.equal(
+        dateOfSegment(write.playlist, `${streamId}-b1`),
+        new Date(owed).toISOString(),
+        `${streamId} dated the second return on some other return’s line`,
+      );
+    }
   });
 });
 

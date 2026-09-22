@@ -402,7 +402,7 @@ export class ManifestManager {
    * between arming it and the segment that consumes it is exactly a window in which nothing is
    * arriving and a restart is most likely.
    */
-  private resumingAfterReconnect = false;
+  private resumingAfterReconnect: string | null = null;
 
   constructor(anchor: BroadcastAnchor, dating?: BroadcastDating) {
     this.anchor = anchor;
@@ -480,18 +480,25 @@ export class ManifestManager {
    * what keeps a returning encoder from emitting gap entries across the reconnect: an index that
    * jumped forward while nobody was listening would otherwise publish that far ahead, and every
    * sequence in between would be listed as media a viewer cannot have. Nothing was lost — nothing
-   * was being produced — so there is nothing to say. That holds for an **in-order** return, which is
-   * what SRS's per-segment webhook produces; see {@link placeResumed} for what a lower index arriving
-   * afterwards would do, which is pre-existing behaviour rather than a shape this path introduced.
+   * was being produced — so there is nothing to say. See {@link placeResumed} for what a lower index
+   * of the resumed run arriving afterwards would do, which is a second break rather than a gap, and
+   * is pre-existing behaviour rather than a shape this path introduced.
+   *
+   * @param returnToken which return this is, so the rungs of one ladder date it alike. See
+   * {@link BroadcastEpoch.returnToken}.
    *
    * Idempotent: a second call before any segment lands arms the same one shot.
    */
-  public resumeAfterReconnect(): void {
-    this.resumingAfterReconnect = true;
+  public resumeAfterReconnect(returnToken: string): void {
+    this.resumingAfterReconnect = returnToken;
   }
 
-  /** Whether that one shot is still armed, for the recovery entry to carry across a crash. */
-  public isResumingAfterReconnect(): boolean {
+  /**
+   * The return the next segment is owed a seam for, or null when none is armed. What the recovery
+   * entry carries across a crash, because a rung that came back and then died still has to date its
+   * first segment on the line its siblings took for that same return.
+   */
+  public armedReturn(): string | null {
     return this.resumingAfterReconnect;
   }
 
@@ -580,9 +587,10 @@ export class ManifestManager {
    * hand a second segment the sequence the first one already has.
    */
   private placeInBroadcast(index: number): PlacedSegment {
-    if (this.resumingAfterReconnect) {
-      this.resumingAfterReconnect = false;
-      return this.placeResumed(index);
+    const returning = this.resumingAfterReconnect;
+    if (returning !== null) {
+      this.resumingAfterReconnect = null;
+      return this.placeResumed(index, returning);
     }
 
     const anchor = this.sequenceAnchor;
@@ -638,12 +646,13 @@ export class ManifestManager {
    *
    * ⚠️ **For an in-order return, which is what SRS's per-segment webhook produces.** If a LOWER index
    * of the resumed run arrived after this one, it would fall through to the counter-restart branch
-   * above and declare a second break, re-anchor a second time and leave a gap entry between the two.
-   * That shape is not engineered for: SRS posts each segment as it closes it, in order, and OME's
-   * puller walks a playlist in order. It is pre-existing behaviour rather than something this path
-   * introduced — an out-of-order arrival below a published sequence has always taken that branch.
+   * above and declare a second break and a second re-anchoring. No gap: that branch places it at the
+   * high-water mark plus one as well, so the two are contiguous and {@link gapLines} emits nothing.
+   * The shape is not engineered for — SRS posts each segment as it closes it, in order, and OME's
+   * puller walks a playlist in order — and it is pre-existing behaviour rather than something this
+   * path introduced: an out-of-order arrival below a published sequence has always taken that branch.
    */
-  private placeResumed(index: number): PlacedSegment {
+  private placeResumed(index: number, returnToken: string): PlacedSegment {
     if (this.sequenceAnchor === null) {
       this.sequenceAnchor = { index, sequence: 0 };
       return { sequence: 0, reanchored: false };
@@ -651,7 +660,7 @@ export class ManifestManager {
 
     const resumeAt = this.highestSequence() + 1;
     this.sequenceAnchor = { index, sequence: resumeAt };
-    this.reanchorDating(resumeAt, ENCODER_RETURNED);
+    this.reanchorDating(resumeAt, ENCODER_RETURNED, returnToken);
     return { sequence: resumeAt, reanchored: true };
   }
 
@@ -673,14 +682,14 @@ export class ManifestManager {
    * both are members of the armed-break family the e2e harness counts, because both really are a
    * break and each is written exactly once per break.
    */
-  private reanchorDating(resumeAt: number, cause: ReanchorCause): void {
+  private reanchorDating(resumeAt: number, cause: ReanchorCause, returnToken?: string): void {
     const newest = this.segments[this.segments.length - 1];
     const wouldHaveBeen = presentationMsOf(
       this.anchor,
       resumeAt,
       newest === undefined ? null : this.placedMedia(newest),
     );
-    const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen);
+    const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen, returnToken);
     this.anchor = withEpoch(this.anchor, epoch);
     const wasAt = new Date(wouldHaveBeen).toISOString();
     const nowAt = new Date(epoch.atMs).toISOString();

@@ -1780,7 +1780,7 @@ describe('gluing the recording onto what was already on the feed', () => {
     it('counts its own break once the window has slid past it, on an empty feed too', () => {
       const manager = withSegments(2, 2);
       // The encoder came back: this segment opens a resumed run and carries the seam.
-      manager.resumeAfterReconnect();
+      manager.resumeAfterReconnect('a-return');
       manager.buildLiveManifest();
       manager.addSegment(2, 2, ref(2));
 

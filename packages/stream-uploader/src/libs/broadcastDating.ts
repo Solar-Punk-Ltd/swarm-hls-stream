@@ -149,14 +149,21 @@ export function presentationMsOf(anchor: BroadcastAnchor, sequence: number, prev
  * The dating with `epoch` in it, returned as a new anchor so a session still holding the old one
  * keeps the dates it published.
  *
- * Epochs it dates over are dropped rather than kept behind it. A replacement session numbers its
- * playlist from zero again, so its epoch starts at zero and supersedes every earlier one, which is
- * numbering nothing will publish again. What that leaves is a list in strict `fromSequence` order,
- * which is what makes {@link epochFor} unambiguous.
+ * ⛔ **An epoch at the same sequence is replaced; one at a different sequence is KEPT, whichever side
+ * of the new one it falls.** The list is the whole ladder's, so a rung joining from a sequence below
+ * its siblings' is writing down its own point on their line, not superseding it — and dropping
+ * everything above it left a third rung asking at the original sequence with nothing to join, so it
+ * minted a line of its own and the ladder dated one instant two ways. Sorted by `fromSequence` and
+ * complete, which is what makes {@link epochFor} unambiguous: it walks back to the newest epoch at or
+ * below the sequence it is dating, so nothing dated before the join can move.
+ *
+ * ⚠️ A replacement session's epoch at sequence 0 therefore no longer clears the list. It does not
+ * need to: that session renumbers from zero, so `epochFor` finds the sequence-0 epoch first for every
+ * sequence it will ever publish, and the epochs above it name numbering nothing will produce again.
  */
 export function withEpoch(anchor: BroadcastAnchor, epoch: BroadcastEpoch): BroadcastAnchor {
-  const kept = (anchor.epochs ?? []).filter((held) => held.fromSequence < epoch.fromSequence);
-  return { ...anchor, epochs: [...kept, epoch] };
+  const kept = (anchor.epochs ?? []).filter((held) => held.fromSequence !== epoch.fromSequence);
+  return { ...anchor, epochs: [...kept, epoch].sort((a, b) => a.fromSequence - b.fromSequence) };
 }
 
 interface ReanchorRequest {
@@ -169,6 +176,13 @@ interface ReanchorRequest {
    * have carried had nothing restarted.
    */
   notBeforeMs: number;
+  /**
+   * Which return of the broadcast is asking, for a rung whose encoder came back. Absent where the
+   * engine's own counter restarted, which nothing outside this rung witnesses.
+   *
+   * ⛔ This is the whole of how siblings are recognised. See {@link BroadcastEpoch.returnToken}.
+   */
+  returnToken?: string;
 }
 
 /**
@@ -181,8 +195,11 @@ export interface BroadcastDating {
   /**
    * The epoch a rung whose numbering resumes at `resumeAt` dates from, always starting at exactly
    * that sequence so nothing the rung has already published is re-dated.
+   *
+   * @param returnToken which return of the broadcast is asking, for a rung whose encoder came back.
+   * Omitted where the engine's own counter restarted. See {@link BroadcastEpoch.returnToken}.
    */
-  epochFrom(resumeAt: number, notBeforeMs: number): BroadcastEpoch;
+  epochFrom(resumeAt: number, notBeforeMs: number, returnToken?: string): BroadcastEpoch;
 }
 
 /** Which of the two ways a re-anchoring reached its epoch, alongside the epoch itself. */
@@ -210,42 +227,30 @@ interface ReanchorDecision {
  * sibling's point unchanged would leave its own first post-restart segment on the old line, with the
  * whole jump landing on the segment after it, where no discontinuity marks it.
  *
- * ⛔⛔ **A restart is recognised by THE SEQUENCE ITS LINE WAS MINTED AT, and the clock is only a
- * backstop.** A line minted for one restart is joined by a rung asking about exactly the sequence it
- * was written down at, and by nothing else. That is what a sibling is: the rungs of one ladder are
- * cut by one encoder on one keyframe grid, so they cross a restart holding the same media and resume
- * at the same number by construction.
+ * ⛔⛔ **A returning encoder's line is recognised by the RETURN it belongs to, and by nothing else.**
+ * The orchestrator sees a whole-encoder return once per rung and is the only layer that can tell four
+ * webhooks are one event, so it names the return and every rung of that return asks with the same
+ * name. Two sequence-shaped rules were tried here first and both were wrong, for reasons worth
+ * keeping:
  *
- * ⛔ **The clock test alone was wrong, and it cost the second and every later reconnect of a
- * broadcast its dating.** It asked whether the minted line still dates `resumeAt` within
- * {@link SAME_RESTART_TOLERANCE_MS} of now, which is true of a second outage on the SAME rung for as
- * long as that outage is shorter than the tolerance: nothing advanced while the encoder was away, so
- * the line reaches the resuming sequence at almost exactly the instant it was minted. Measured
- * through the orchestrator on four fifty second outages: the first return was dated correctly, the
- * second landed 48 seconds behind, the third 96 seconds behind, and only the fourth was right,
- * because by then the accumulated lag had finally exceeded the tolerance. A rung's second reconnect
- * always resumes at a strictly higher sequence than its first, because a line is only ever minted
- * where a segment is actually placed, so keying on the sequence separates them exactly.
+ * - **The clock alone** asked whether the minted line still dates `resumeAt` within
+ *   {@link SAME_RESTART_TOLERANCE_MS} of now, which is true of a second outage on the SAME rung for
+ *   as long as that outage is shorter than the tolerance: nothing advances while an encoder is away,
+ *   so the line reaches the resuming sequence almost exactly where it was written down. Measured on
+ *   four fifty second outages: the second return landed 48 seconds behind, the third 96.
+ * - **At-or-below the minted sequence** fixed that for a lone rung and failed on a ladder, because
+ *   the epoch list is the whole ladder's: the newest epoch is often a SIBLING's, so a rung a segment
+ *   behind asks at a sequence below its sibling's line and joins the PREVIOUS return's, again dating
+ *   its media a whole outage ago. Reproduced on two rungs one segment apart over two outages, about
+ *   half the time depending on which rung came back first.
  *
- * ⛔ **A rung may join from AT OR BELOW the sequence a line was minted at, never from above, and the
- * direction is the whole discriminator.** A sibling that is behind its siblings is the routine case
- * — the 1080p rung is the slowest to transcode and the slowest to upload, and a rung whose last
- * pre-gap segment never landed resumes one lower than the rest — and it has always landed that many
- * fragments earlier on the shared line. A later reconnect on the same rung can only ever ask about a
- * HIGHER sequence than the line it already minted, because a line is minted where a segment is
- * placed and the high-water mark never decreases. So "at or below joins, above mints" separates the
- * two exactly, with no window to tune.
+ * A name cannot be confused either way: it is minted per return by the layer that witnesses the
+ * return, and it is a uuid rather than a count, so it cannot collide with a line the anchor carried
+ * across a process restart.
  *
- * ⚠️ **What it gives up, said out loud: a sibling that is AHEAD of the rung that minted first.** That
- * ask is shaped exactly like a second reconnect and cannot be told from one, so it mints a line of
- * its own at its own reading of the clock. Siblings cross a restart within seconds of each other, so
- * the cost is those seconds of disagreement about one instant; the alternative is a whole outage of
- * lag on every reconnect after the first, which is what the measurement above cost. It is also the
- * less common ordering: the rung that is behind in numbering is behind because it is slower, and a
- * slower rung is usually the last to come back rather than the first.
- *
- * The clock test is kept **as well**, so a line minted long ago cannot be joined by a sequence that
- * happens to sit below it forever. It is a backstop rather than the rule.
+ * ⚠️ **The clock test still governs the other cause**, the engine's own counter restarting, which
+ * reaches here with no token because nothing outside the rung witnesses it. That is the shape it
+ * still covers and the only one.
  *
  * ⛔ **The broadcast's own start is never reused.** It is where the dating began rather than a
  * re-anchoring, so the first restart of a broadcast always re-anchors, which is the lag this whole
@@ -266,17 +271,35 @@ interface ReanchorDecision {
  * it as a parsing error rather than as a restart, and a recording is sealed with it for ever.
  */
 export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorRequest): ReanchorDecision {
-  const { resumeAt, nowMs, notBeforeMs } = request;
-  const minted = (anchor.epochs ?? []).at(-1);
+  const { resumeAt, nowMs, notBeforeMs, returnToken } = request;
+  const held = anchor.epochs ?? [];
+  const minted =
+    returnToken === undefined
+      ? // The engine's counter restarted, which only this rung witnessed. The newest line is the only
+        // candidate and the clock decides, exactly as it always has.
+        held.at(-1)
+      : held.find((epoch) => epoch.returnToken === returnToken);
 
-  if (minted !== undefined && resumeAt <= minted.fromSequence) {
+  if (minted !== undefined) {
     const onTheSameLine = dateOnLine(minted, resumeAt, anchor.fragmentSeconds);
-    if (Math.abs(onTheSameLine - nowMs) <= SAME_RESTART_TOLERANCE_MS) {
-      return { epoch: { fromSequence: resumeAt, atMs: Math.max(onTheSameLine, notBeforeMs) }, joined: true };
+    const sameRestart = returnToken !== undefined || Math.abs(onTheSameLine - nowMs) <= SAME_RESTART_TOLERANCE_MS;
+    if (sameRestart) {
+      return {
+        epoch: { fromSequence: resumeAt, atMs: Math.max(onTheSameLine, notBeforeMs), ...tokenOf(returnToken) },
+        joined: true,
+      };
     }
   }
 
-  return { epoch: { fromSequence: resumeAt, atMs: Math.max(nowMs, notBeforeMs) }, joined: false };
+  return {
+    epoch: { fromSequence: resumeAt, atMs: Math.max(nowMs, notBeforeMs), ...tokenOf(returnToken) },
+    joined: false,
+  };
+}
+
+/** Kept off the epoch entirely when there is none, so a counter restart's line is byte-identical to before. */
+function tokenOf(returnToken: string | undefined): { returnToken?: string } {
+  return returnToken === undefined ? {} : { returnToken };
 }
 
 /** {@link reanchorDecision} for a caller with no use for how the epoch was reached. */
@@ -293,6 +316,7 @@ export function reanchorEpoch(anchor: BroadcastAnchor, request: ReanchorRequest)
  */
 export function soleRungDating(anchorOf: () => BroadcastAnchor, wallClock: () => number = Date.now): BroadcastDating {
   return {
-    epochFrom: (resumeAt, notBeforeMs) => reanchorEpoch(anchorOf(), { resumeAt, nowMs: wallClock(), notBeforeMs }),
+    epochFrom: (resumeAt, notBeforeMs, returnToken) =>
+      reanchorEpoch(anchorOf(), { resumeAt, nowMs: wallClock(), notBeforeMs, returnToken }),
   };
 }

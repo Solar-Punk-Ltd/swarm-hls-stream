@@ -242,15 +242,42 @@ describe('adding an epoch to a broadcast’s dating', () => {
   });
 
   /**
-   * A re-announced session publishes a fresh playlist numbered from zero, so its epoch starts at
-   * zero and every earlier one is about numbering nothing will publish again.
+   * ⛔⛔ **An epoch above the new one is KEPT, and dropping it cost a ladder its agreement.** The list
+   * belongs to the whole broadcast, so a rung joining a line from a sequence below its siblings' is
+   * writing down its own point on their line rather than superseding it. Truncating above the join
+   * left a third rung asking at the original sequence with nothing to join, so it minted a line of
+   * its own and the ladder dated one instant two ways.
+   *
+   * Nothing dated before the join moves: {@link epochFor} walks back to the newest epoch at or below
+   * the sequence it is dating, so a sequence above the join still finds the epoch it always found.
    */
-  it('supersedes the epochs it dates over, so the list stays in sequence order', () => {
+  it('keeps an epoch above the new one, and stays in sequence order', () => {
     const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: 10_000 });
 
-    const renumbered = withEpoch(restarted, { fromSequence: 0, atMs: 90_000 });
+    const joinedFromBelow = withEpoch(restarted, { fromSequence: 8, atMs: 9_000 });
 
-    assert.deepEqual(renumbered.epochs, [{ fromSequence: 0, atMs: 90_000 }]);
+    assert.deepEqual(joinedFromBelow.epochs, [
+      { fromSequence: 8, atMs: 9_000 },
+      { fromSequence: 10, atMs: 10_000 },
+    ]);
+    assert.equal(
+      programDateTimeMsOf(joinedFromBelow, 12),
+      10_000 + 2 * STEP_MS,
+      'a sequence above the join must keep the line it already had',
+    );
+  });
+
+  /**
+   * A re-announced session publishes a fresh playlist numbered from zero, so its epoch starts at zero
+   * and dates every sequence it will ever publish. The epochs above it are about numbering nothing
+   * will produce again, and they are harmless where they are: `epochFor` never reaches them.
+   */
+  it('replaces an epoch at the same sequence rather than holding two', () => {
+    const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: 10_000 });
+
+    const renumbered = withEpoch(restarted, { fromSequence: 10, atMs: 90_000 });
+
+    assert.deepEqual(renumbered.epochs, [{ fromSequence: 10, atMs: 90_000 }]);
   });
 });
 
@@ -326,57 +353,14 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
       assert.deepEqual(epoch, { fromSequence: 39, atMs: RESTARTED_AT_MS - STEP_MS });
     });
 
-    /**
-     * ⛔⛔ **A rung asking about a sequence ABOVE the minted one mints a line of its own, and that is
-     * the whole of how a later reconnect is told from a sibling.** A rung's own second reconnect can
-     * only ask from above — a line is minted where a segment is placed, and the high-water mark never
-     * decreases — so refusing the direction separates the two with no window to tune. Joining from
-     * above instead cost the second and every later reconnect of a broadcast its dating: measured
-     * through the orchestrator on four fifty second outages, the second return landed 48 seconds
-     * behind and the third 96, because nothing advanced while the encoder was away and the line
-     * therefore still dated the resuming sequence as happening about now.
-     *
-     * ⚠️ **What it gives up is a sibling that really is ahead of whichever rung minted first.** It
-     * mints at its own reading of the clock, so it disagrees with its siblings by however far apart
-     * they crossed the restart, which is seconds. That is the cheaper of the two, and the ordering is
-     * the less common one: a rung behind in numbering is behind because it is slower, and a slower
-     * rung is usually the last to come back rather than the first.
-     */
-    it('mints its own line when it is one sequence ahead, because so is a later reconnect', () => {
-      const cameBackAt = RESTARTED_AT_MS + 1_200;
-      const { epoch, joined } = reanchorDecision(minted, {
+    it('lands on that line one fragment later when it is one sequence ahead', () => {
+      const epoch = reanchorEpoch(minted, {
         resumeAt: 41,
-        nowMs: cameBackAt,
+        nowMs: RESTARTED_AT_MS + 1_200,
         notBeforeMs: nominalDateOf(41),
       });
 
-      assert.equal(joined, false, 'an ask from above the minted sequence is indistinguishable from a second outage');
-      assert.deepEqual(epoch, { fromSequence: 41, atMs: cameBackAt });
-    });
-
-    /**
-     * The defect the rule above exists for, at this layer. A rung that crossed one outage, published
-     * a segment and then crossed a second one asks about the sequence right above the line it minted
-     * itself, and the line still dates that sequence as happening about now — because nothing
-     * advanced while the encoder was away. Under the old clock-only test it joined, and its media
-     * carried the first outage's date for as long as the accumulated lag stayed under two minutes.
-     */
-    it('mints again for the same rung’s second outage rather than reusing its own line', () => {
-      const secondReturnAt = RESTARTED_AT_MS + 50_000;
-
-      const { epoch, joined } = reanchorDecision(minted, {
-        resumeAt: 41,
-        nowMs: secondReturnAt,
-        notBeforeMs: nominalDateOf(41),
-      });
-
-      assert.equal(joined, false, 'the second outage was read as a sibling crossing the first one');
-      assert.equal(
-        epoch.atMs,
-        secondReturnAt,
-        'the media after the second outage carried the first outage’s date, so it is behind real time ' +
-          'by the length of that outage',
-      );
+      assert.deepEqual(epoch, { fromSequence: 41, atMs: RESTARTED_AT_MS + STEP_MS });
     });
 
     /**
@@ -522,6 +506,119 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
  * carried, so a caller comparing the date before against the date after sees no change and has no
  * way to tell a join from a restart that moved nothing.
  */
+/**
+ * The other cause, and the one no clock and no sequence can judge: an encoder that went away and came
+ * back.
+ *
+ * ⛔⛔ **Two sequence-shaped rules were tried here first and both were wrong.** The clock alone read a
+ * second outage on the same rung as a sibling crossing the first one, because nothing advances while
+ * an encoder is away, so the line still dates the resuming sequence as happening about now — four
+ * fifty second outages measured through the orchestrator dated the second return 48 seconds behind
+ * and the third 96. Keying on "at or below the minted sequence" fixed that for a lone rung and failed
+ * on a ladder, because the epoch list is the whole ladder's: a rung a segment behind its siblings
+ * asks below THEIR line and joins the previous return's, about half the time depending on which rung
+ * came back first.
+ *
+ * The orchestrator witnesses a return once per rung and names it. That name is the whole test here.
+ */
+describe('the epoch a rung takes when its encoder came back', () => {
+  const RETURNED_AT_MS = STARTED_AT_MS + 600_000;
+  const THIS_RETURN = 'return-1';
+  const minted = withEpoch(BROADCAST, { fromSequence: 40, atMs: RETURNED_AT_MS, returnToken: THIS_RETURN });
+
+  it('mints a line for the first rung of a return, and names it', () => {
+    const { epoch, joined } = reanchorDecision(BROADCAST, {
+      resumeAt: 40,
+      nowMs: RETURNED_AT_MS,
+      notBeforeMs: nominalDateOf(40),
+      returnToken: THIS_RETURN,
+    });
+
+    assert.equal(joined, false);
+    assert.deepEqual(epoch, { fromSequence: 40, atMs: RETURNED_AT_MS, returnToken: THIS_RETURN });
+  });
+
+  /** The rung that is behind, which is the routine one: the 1080p rung is the slowest of the four. */
+  it('joins the line its siblings minted from a lower sequence', () => {
+    const { epoch, joined } = reanchorDecision(minted, {
+      resumeAt: 39,
+      nowMs: RETURNED_AT_MS + 3_000,
+      notBeforeMs: nominalDateOf(39),
+      returnToken: THIS_RETURN,
+    });
+
+    assert.equal(joined, true);
+    assert.deepEqual(epoch, { fromSequence: 39, atMs: RETURNED_AT_MS - STEP_MS, returnToken: THIS_RETURN });
+  });
+
+  /** And the rung that is ahead, which no sequence rule could tell from a second outage. */
+  it('joins that same line from a higher sequence', () => {
+    const { epoch, joined } = reanchorDecision(minted, {
+      resumeAt: 41,
+      nowMs: RETURNED_AT_MS + 3_000,
+      notBeforeMs: nominalDateOf(41),
+      returnToken: THIS_RETURN,
+    });
+
+    assert.equal(joined, true);
+    assert.deepEqual(epoch, { fromSequence: 41, atMs: RETURNED_AT_MS + STEP_MS, returnToken: THIS_RETURN });
+  });
+
+  /**
+   * The defect the name exists for. A rung that crossed one outage, published a segment and then
+   * crossed another asks about a sequence its own line still dates as happening about now, so every
+   * clock-shaped test read it as a sibling and its media carried the first outage's date.
+   */
+  it('mints again for a later return, however close its sequence and its clock are', () => {
+    const secondReturnAt = RETURNED_AT_MS + 50_000;
+
+    const { epoch, joined } = reanchorDecision(minted, {
+      resumeAt: 41,
+      nowMs: secondReturnAt,
+      notBeforeMs: nominalDateOf(41),
+      returnToken: 'return-2',
+    });
+
+    assert.equal(joined, false, 'the second return was read as a sibling crossing the first one');
+    assert.deepEqual(epoch, { fromSequence: 41, atMs: secondReturnAt, returnToken: 'return-2' });
+  });
+
+  /**
+   * A rung that missed a return entirely and comes back in the next one. The line it must land on is
+   * the one ITS return minted rather than the newest in the list, which is what a rule reading only
+   * `epochs.at(-1)` could not express.
+   */
+  it('joins the return it is part of rather than the newest line in the list', () => {
+    const laterReturnAt = RETURNED_AT_MS + 50_000;
+    const twoReturns = withEpoch(minted, { fromSequence: 45, atMs: laterReturnAt, returnToken: 'return-2' });
+
+    const { epoch, joined } = reanchorDecision(twoReturns, {
+      resumeAt: 44,
+      nowMs: laterReturnAt + 4_000,
+      notBeforeMs: nominalDateOf(44),
+      returnToken: 'return-2',
+    });
+
+    assert.equal(joined, true);
+    assert.equal(epoch.atMs, laterReturnAt - STEP_MS, 'it landed on the wrong return’s line');
+  });
+
+  /** The floor applies to a joined line here exactly as it does for a counter restart. */
+  it('never lands below the date this rung’s own media had already reached', () => {
+    const ranLong = RETURNED_AT_MS + 4_000;
+
+    const { epoch, joined } = reanchorDecision(minted, {
+      resumeAt: 39,
+      nowMs: RETURNED_AT_MS + 3_000,
+      notBeforeMs: ranLong,
+      returnToken: THIS_RETURN,
+    });
+
+    assert.equal(joined, true);
+    assert.equal(epoch.atMs, ranLong);
+  });
+});
+
 describe('what a re-anchoring reports about how it reached its epoch', () => {
   const RESTARTED_AT_MS = STARTED_AT_MS + 600_000;
   const MINTED = withEpoch(BROADCAST, { fromSequence: 40, atMs: RESTARTED_AT_MS });

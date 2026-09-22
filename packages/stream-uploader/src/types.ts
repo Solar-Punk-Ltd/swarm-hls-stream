@@ -90,9 +90,13 @@ export interface StreamState {
    */
   inherited?: InheritedTimeline;
   /**
-   * Whether the encoder came back inside the reconnect window and the first segment of the resumed
-   * run has not landed yet, so that segment still owes a break and a re-anchored dating. Absent
-   * means no, which is every entry written before a disconnect held a session open.
+   * The return the next segment is owed a seam for, when the encoder came back inside the reconnect
+   * window and the first segment of the resumed run has not landed yet. Absent means none is owed,
+   * which is every entry written before a disconnect held a session open.
+   *
+   * ⛔ The return's own name rather than a flag, because a rung that came back and then died still
+   * has to date its first segment on the line its siblings took for that SAME return. See
+   * {@link BroadcastEpoch.returnToken}.
    *
    * ⛔ Persisted for a sharper version of the reason {@link StreamState.pendingDiscontinuity} is: the
    * interval this covers is one in which the encoder has announced itself and sent nothing yet, which
@@ -103,7 +107,7 @@ export interface StreamState {
    * ⛔ It is the ONLY thing a reconnect arms. `pendingDiscontinuity` is left alone, so a return that
    * never delivers a segment arms no break at all. See `ManifestManager.resumeAfterReconnect`.
    */
-  resumingAfterReconnect?: boolean;
+  resumingAfterReconnect?: string;
   /**
    * The admin's id for this broadcast, when the service is in admin mode. See {@link AdminSession}.
    *
@@ -180,6 +184,22 @@ export interface BroadcastEpoch {
   fromSequence: number;
   /** Epoch milliseconds that sequence's first frame is presented at. */
   atMs: number;
+  /**
+   * Which return of the broadcast minted this line, for an epoch a returning encoder minted. Absent
+   * on one minted by the engine's counter restarting, and on every epoch written before returns were
+   * named.
+   *
+   * ⛔ **The rungs of one ladder share a line because they share this, not because their numbers look
+   * alike.** A whole-encoder return reaches the orchestrator once per rung and it is the orchestrator
+   * that can see they are one event; the sequences the rungs resume at cannot say so, because a rung
+   * that is a segment behind its siblings resumes a sequence lower and a rung's own next return
+   * resumes a sequence higher, and those two overlap. See `StreamOrchestrator.tokenForThisReturn`.
+   *
+   * Unique per return rather than counted, because the epoch list survives a process restart inside
+   * the recovery entry and the ladder group store: a number restarting from zero would let a return
+   * after a reboot join a line minted before it.
+   */
+  returnToken?: string;
 }
 
 /** One rung of the encoder's ABR ladder, as configured via ABR_LADDER. */

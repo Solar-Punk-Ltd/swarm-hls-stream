@@ -355,6 +355,20 @@ export class StreamOrchestrator {
    * waiting for, and by the session retiring.
    */
   private resumeGraceUntil = new Map<string, number>();
+  /**
+   * Per broadcast, the return its rungs are currently coming back from, and which of them have said
+   * so. Keyed by {@link datingKeyOf}, so a lone rendition is a ladder of one.
+   *
+   * ⛔⛔ **This is how four webhooks are known to be one event, and nothing about the numbering can
+   * say it.** A whole-encoder outage stops SRS's transcoders, so each rung announces its return
+   * separately, seconds apart, and the rungs of one ladder have to date the media they come back with
+   * identically or a level switch lands somewhere else. Two sequence-shaped rules were tried and both
+   * failed: a rung a segment behind its siblings resumes a LOWER sequence and a rung's own next
+   * return resumes a HIGHER one, and those overlap, so no arithmetic separates a sibling from a later
+   * return. The orchestrator is the only layer that sees the returns as they arrive, so it is the one
+   * that can name them. See {@link tokenForThisReturn} and {@link BroadcastEpoch.returnToken}.
+   */
+  private returnsInProgress = new Map<string, { token: string; resumedRungs: Set<string> }>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
   private stopOutcomes = new Map<string, RetainedStopOutcome>();
   /** Actual pending writes for topics shared across sessions, independently of bounded stop reports. */
@@ -463,7 +477,7 @@ export class StreamOrchestrator {
       // no evidence: where only the uploader was killed, SRS's own muxer outlives it for
       // `hls_dispose x 1.1` and the index carries straight on, leaving the restart detection in
       // `ManifestManager.placeInBroadcast` nothing at all to find.
-      this.activeStreams.get(streamId)?.resumeAfterReconnect();
+      this.activeStreams.get(streamId)?.resumeAfterReconnect(this.tokenForThisReturn(streamId));
       // The recovery timer that was watching this stream has just been cancelled, so from here it is
       // an ordinary live stream and needs the ordinary watchdog. `handleSegment` arms it on the other
       // route out of recovery, which is the one both shipped engines take.
@@ -512,7 +526,14 @@ export class StreamOrchestrator {
       // above its high-water were published into the outgoing session's manifest. Neither reached
       // `handleSegmentLoss`, and a draining stream is excluded from the stall signal, so the whole
       // window was silent. See CON-16.
-      this.logger.info(`[StreamOrchestrator] Stream ${streamId} re-announced; finalizing stale session and restarting`);
+      this.logger.info(
+        this.isDrainingId(streamId)
+          ? `[StreamOrchestrator] Stream ${streamId} re-announced while its stop was still finalizing; ` +
+              'that recording is committed, so this announce starts a broadcast of its own'
+          : `[StreamOrchestrator] ${describeClaimant(claimant)} took ${streamId} from ` +
+              `${describeIncumbent(this.streamClaimants.get(streamId))}, which is a different publisher rather ` +
+              'than that one returning, so its live broadcast is being finalized rather than joined',
+      );
       stale.retire();
       this.retireSession(streamId);
       this.reanchorReplacedBroadcast(streamId);
@@ -613,6 +634,34 @@ export class StreamOrchestrator {
   }
 
   /**
+   * Which return of this broadcast the rung announcing now belongs to, minting a name for a new one.
+   *
+   * ⛔ **A rung that has already said it is back starts the NEXT return.** That is the whole rule, and
+   * it holds whatever order the rungs come back in and whichever of them missed a return entirely: a
+   * rung joins the return in progress until it has joined it, and the moment it announces again the
+   * ladder is plainly coming back from something else. A rung that missed the previous return and
+   * arrives during this one simply joins this one, which is where its media belongs.
+   *
+   * ⛔ **A uuid rather than a counter.** The epochs this names ride in the recovery entry and in the
+   * ladder group store, so they outlive the process: a count restarting at zero after a reboot would
+   * let a return join a line minted before it, which is the defect this exists to end wearing a
+   * different hat.
+   */
+  private tokenForThisReturn(streamId: string): string {
+    const key = this.datingKeyOf(streamId, this.streamBases.get(streamId) ?? null);
+    const inProgress = this.returnsInProgress.get(key);
+
+    if (inProgress !== undefined && !inProgress.resumedRungs.has(streamId)) {
+      inProgress.resumedRungs.add(streamId);
+      return inProgress.token;
+    }
+
+    const started = { token: crypto.randomUUID(), resumedRungs: new Set([streamId]) };
+    this.returnsInProgress.set(key, started);
+    return started.token;
+  }
+
+  /**
    * Give a returning encoder long enough to cut and deliver its first segment before the reaper may
    * end the broadcast, and never longer than one grace past the deadline the broadcast already had.
    *
@@ -629,11 +678,19 @@ export class StreamOrchestrator {
    * in is one this service still believes in. Sharing it means one number rather than two that drift.
    */
   private holdTheReaperForAFirstSegment(streamId: string): void {
-    const grace = this.config.segmentStallMs;
-    const now = this.clock.now();
     const lastMedia = this.streamIngestAt.get(streamId);
-    const ceiling = lastMedia === undefined ? now + grace : lastMedia + this.config.orphanReapMs + grace;
-    this.resumeGraceUntil.set(streamId, Math.min(now + grace, ceiling));
+    if (lastMedia === undefined) {
+      // ⛔ No grace at all rather than an uncapped one. Unreachable today — an id enters
+      // `activeStreams` and this map together and leaves them together — and the point of refusing it
+      // here is that a future path which broke that pairing would otherwise get a grace with no
+      // ceiling, which is reconnect churn holding a dead broadcast open for as long as it keeps
+      // trying. Without a reading of the last media there is no deadline to measure a ceiling from.
+      return;
+    }
+
+    const grace = this.config.segmentStallMs;
+    const ceiling = lastMedia + this.config.orphanReapMs + grace;
+    this.resumeGraceUntil.set(streamId, Math.min(this.clock.now() + grace, ceiling));
   }
 
   /**
@@ -667,7 +724,7 @@ export class StreamOrchestrator {
    */
   private resumeLiveSession(streamId: string, uploader: StreamUploader, claimant: StreamClaimant): void {
     this.restartSegmentAccounting(streamId);
-    uploader.resumeAfterReconnect();
+    uploader.resumeAfterReconnect(this.tokenForThisReturn(streamId));
     this.streamDisconnectedAt.delete(streamId);
     this.holdTheReaperForAFirstSegment(streamId);
     // The session that is speaking now is the one a later announce is judged against, which is the
@@ -741,6 +798,14 @@ export class StreamOrchestrator {
    * The stall window is the escape hatch, and it is what keeps a refusal from being permanent. A
    * broadcaster whose address changed between sessions is a stranger by the test above, and without
    * this they could never retake their own id.
+   *
+   * ⚠️ **It gives them the ID back, not the BROADCAST.** Once admitted they are judged again by
+   * {@link isTheSamePublisher}, which reads two known and different addresses with neither having
+   * proved a key as a different publisher and starts a session of its own. That is deliberate: in a
+   * keyless deployment an address is the only evidence there is, so a returning broadcaster and a
+   * stranger are the same announce, and a stranger joining a live recording is the worse of the two
+   * mistakes. A deployment that wants a broadcaster to RESUME across an address change configures
+   * `PUBLISH_KEY_SECRET` or runs in admin mode, where every publish proves a key.
    *
    * **No record at all is not the same as a record naming nobody**, and reading them alike left the
    * guard off for the whole life of every recovered stream. A stream this process restored after its
@@ -2342,7 +2407,8 @@ export class StreamOrchestrator {
   /** The dating handed to one session, bound to its broadcast rather than to the session. */
   private datingFor(datingKey: string, base: string | null): BroadcastDating {
     return {
-      epochFrom: (resumeAt, notBeforeMs) => this.reanchorBroadcast(datingKey, base, resumeAt, notBeforeMs),
+      epochFrom: (resumeAt, notBeforeMs, returnToken) =>
+        this.reanchorBroadcast(datingKey, base, resumeAt, notBeforeMs, returnToken),
     };
   }
 
@@ -2366,11 +2432,17 @@ export class StreamOrchestrator {
     base: string | null,
     resumeAt: number,
     notBeforeMs: number,
+    returnToken?: string,
   ): BroadcastEpoch {
     const anchor =
       this.broadcastAnchors.get(datingKey) ??
       ({ startedAtMs: this.wallClock(), fragmentSeconds: this.config.fragmentSeconds } as BroadcastAnchor);
-    const { epoch, joined } = reanchorDecision(anchor, { resumeAt, nowMs: this.wallClock(), notBeforeMs });
+    const { epoch, joined } = reanchorDecision(anchor, {
+      resumeAt,
+      nowMs: this.wallClock(),
+      notBeforeMs,
+      returnToken,
+    });
     const reanchored = withEpoch(anchor, epoch);
     this.broadcastAnchors.set(datingKey, reanchored);
 
@@ -2428,6 +2500,9 @@ export class StreamOrchestrator {
 
     if (!base) {
       this.broadcastAnchors.delete(streamId);
+      // Retired with the dating it names, and for the same reason: a return belongs to a broadcast,
+      // and this one is over. Kept, the map would grow for the life of the process.
+      this.returnsInProgress.delete(streamId);
       return;
     }
 
@@ -2437,6 +2512,7 @@ export class StreamOrchestrator {
     if (!stillRunning) {
       this.ladderGroups.delete(base);
       this.broadcastAnchors.delete(base);
+      this.returnsInProgress.delete(base);
       this.config.ladderGroupStore?.forget(base);
     }
   }

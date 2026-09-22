@@ -249,7 +249,7 @@ interface RestoreState {
    * Absent on an entry written before a disconnect held a session open, and on every session whose
    * encoder was still feeding it. See {@link StreamUploader.resumeAfterReconnect}.
    */
-  resumingAfterReconnect?: boolean;
+  resumingAfterReconnect?: string;
 }
 
 export interface StreamUploaderOptions {
@@ -486,7 +486,7 @@ export class StreamUploader {
       // first segment after the encoder returned would publish at its own index with the dating the
       // broadcast opened with, and the seam across the outage would go unsaid.
       if (restoreState.resumingAfterReconnect) {
-        this.manifestManager.resumeAfterReconnect();
+        this.manifestManager.resumeAfterReconnect(restoreState.resumingAfterReconnect);
       }
       if (restoreState.bitrate) {
         this.bitrate = restoreState.bitrate;
@@ -629,14 +629,17 @@ export class StreamUploader {
    * count that has to equal the breaks in the playlist. This line names the stream, which the one at
    * the placement cannot, and an operator reads the two as a pair.
    *
+   * @param returnToken which return of the broadcast this is, so the rungs of one ladder date it
+   * alike however far apart their numbering is. See {@link BroadcastEpoch.returnToken}.
+   *
    * ⛔ Queued rather than applied inline, for {@link queueAnnouncement}'s own reason and one more: a
    * segment already awaiting upload when the encoder returned belongs to the run BEFORE the gap, and
    * arming inline would put the seam and the re-anchoring on that one instead of on the first segment
    * of the run after it.
    */
-  public resumeAfterReconnect(): void {
+  public resumeAfterReconnect(returnToken: string): void {
     this.queueAnnouncement(() => {
-      this.manifestManager.resumeAfterReconnect();
+      this.manifestManager.resumeAfterReconnect(returnToken);
       this.logger.info(
         `[StreamUploader] The encoder feeding ${this.streamId} is back, so the next segment it delivers ` +
           'opens a resumed run rather than continuing the one before the gap',
@@ -1204,7 +1207,7 @@ export class StreamUploader {
       // Read off the manifest manager rather than mirrored here, so there is one holder of the one
       // shot and a crash between the encoder returning and its first segment landing comes back with
       // the seam and the re-anchoring still owed. See {@link resumeAfterReconnect}.
-      resumingAfterReconnect: this.manifestManager.isResumingAfterReconnect(),
+      resumingAfterReconnect: this.manifestManager.armedReturn() ?? undefined,
       // Absent outside admin mode, and absent on every entry written before admin mode existed. See
       // {@link StreamState.adminStreamId} for why a recovered session cannot resolve it again.
       adminStreamId: this.admin?.id,
