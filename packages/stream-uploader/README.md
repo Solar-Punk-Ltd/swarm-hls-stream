@@ -243,9 +243,10 @@ above everything already published whatever index it carries, which also means a
 emits no gap entries: nothing was lost, because nothing was being produced. In order is what both
 engines deliver — SRS posts each segment to the webhook as it closes it, and OME's puller walks a
 playlist front to back. A lower index of the resumed run arriving afterwards would take the ordinary
-counter-restart branch and declare a second break, re-anchor a second time and leave a gap entry
-between the two; that is pre-existing behaviour for any out-of-order arrival below a published
-sequence rather than something the reconnect path introduced, and nothing is engineered for it.
+counter-restart branch and declare a second break and a second re-anchoring — not a gap, because that
+branch also places it at the high-water mark plus one, so the two are contiguous. It is pre-existing
+behaviour for any out-of-order arrival below a published sequence rather than something the reconnect
+path introduced, and nothing is engineered for it.
 
 **Which announces join a live broadcast, and which take the id over a finalized one.** An announce is
 first screened by the takeover rules below, which are unchanged; one that is allowed then joins the
@@ -258,6 +259,13 @@ and different. What is left is a provably different publisher — a key holder t
 incumbent that proved nothing, or a stranger admitted because the incumbent went quiet for the stall
 window — and that one finalizes the session it displaces and starts its own, so no publisher's
 recording ever opens with somebody else's media.
+
+⚠️ **Without a publish key, a broadcaster returning from a CHANGED address starts a new session.** The
+two are indistinguishable there — an address is all the evidence a keyless deployment has — and a
+stranger must never join a live recording, so the stall window lets the owner retake the ID rather
+than rejoin the broadcast. Configure `PUBLISH_KEY_SECRET`, or run in admin mode, and every publish
+proves a key: the same broadcaster then resumes across an address change, which is what cases 1 and 2
+ask for and what the owner's deployments do.
 
 The operator stop (`POST /stream/stop`), the recovery timeout and the reap expiry all finalize
 immediately and are unchanged, and so is OME's closing webhook. `/health` lists every id currently
@@ -362,17 +370,23 @@ still finalizing, which is a genuinely new broadcast and takes its epoch at sequ
 (`StreamOrchestrator.reanchorReplacedBroadcast`). A single-rendition stream is a ladder of one and
 behaves identically.
 
-⛔ **A rung joins the line a sibling minted only from at or below the sequence that line was minted
-at.** The rungs of one ladder are cut on one keyframe grid and cross a restart holding the same media,
-and the one that is behind — the 1080p rung is the slowest to transcode and the slowest to upload — has
-always landed that many fragments earlier on the shared line. A rung's own later reconnect can only
-ask from above, because a line is minted where a segment is placed and the high-water mark never
-decreases, so the direction is what separates the two. Recognising a restart by the clock alone cost
-the second and every later reconnect of a broadcast its dating, because nothing advances while an
-encoder is away and the line therefore still dated the resuming sequence as happening about now.
-What the rule gives up is a sibling that is genuinely ahead of whichever rung minted first: it mints
-at its own reading of the clock, so it disagrees with its siblings by however far apart they crossed
-the restart, which is seconds against a whole outage.
+⛔ **The rungs of one ladder share a line because they share a RETURN, not because their numbers look
+alike.** A whole-encoder outage stops all four transcoders, so each rung announces its return
+separately, seconds apart; the orchestrator is the only layer that sees those four webhooks as one
+event, so it names the return and every rung of it asks the dating with that name. A rung joins a line
+when the line carries its own return's name, and mints one otherwise, whatever sequence either of them
+is at. The name is a uuid rather than a count, because the epochs it labels ride in the recovery entry
+and the ladder group store and so outlive the process.
+
+Two sequence-shaped rules were tried before this one and both were wrong, which is worth knowing
+before anyone simplifies it. Recognising a return by the clock alone read a second outage on the same
+rung as a sibling crossing the first, because nothing advances while an encoder is away: four fifty
+second outages dated the second return 48 seconds behind and the third 96. Keying on "at or below the
+sequence the line was minted at" fixed that for a lone rendition and failed on a ladder, because the
+epoch list belongs to the whole broadcast and its newest line is usually a sibling's — a rung one
+segment behind then joined the previous return's line about half the time. The engine's own counter
+restarting is a different cause with no witness outside the rung, and it is still judged by the
+clock.
 
 The epochs ride with the group in `state/ladder/groups.json` and with each rung's recovery entry, so
 a crash after a restart comes back on the re-anchored dating rather than re-dating everything after
