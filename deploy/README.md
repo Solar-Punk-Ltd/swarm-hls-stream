@@ -164,12 +164,15 @@ the ladder on our transcoders decode it, conceal the hole as best they can and e
 cleanly into every rung and into the recording. From then on nothing downstream can tell it apart
 from real picture, and it stays in the recording.
 
-**The default is 2000ms since 2026-09-23.** It was 200ms, and on 2026-09-22 an outside broadcaster
-over an ordinary internet uplink lost 5 to 8.5% of packets for five hours. SRT resent nearly all of
-them and SRS dropped nearly every resend as too late, so the whole recording has broken blocks of
-picture while the broadcaster's OBS preview looked perfect. OBS shows the picture before it is
-encoded and sent, so it can never show this. Every packet waits the full window, so the cost is
-1.8s more delay at ingest.
+**The default is 2000ms since 2026-09-23, and it fills both `latency` and `recvlatency`.** Before
+that the config said 200ms and SRS actually waited 120ms: SRS 6 sets `recvlatency` after `latency`
+and defaults it to 120, so a `latency` alone never reaches ingest (measured with libsrt 1.5.4 on
+2026-09-23: `latency 2000` alone negotiated 120, with `recvlatency 2000` beside it 2000). On
+2026-09-22 an outside broadcaster over an ordinary internet uplink lost 5 to 8.5% of packets for
+five hours. SRT resent nearly all of them and SRS dropped nearly every resend as too late, so the
+whole recording has broken blocks of picture while the broadcaster's OBS preview looked perfect.
+OBS shows the picture before it is encoded and sent, so it can never show this. Every packet waits
+the full window, so the cost is about 1.9s more delay at ingest.
 
 The broadcaster can raise it from their side without any change here, because SRT uses the larger
 of the two ends' values. OBS takes the value in **microseconds** at the end of the SRT address:
