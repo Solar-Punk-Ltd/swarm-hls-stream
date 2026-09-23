@@ -19,6 +19,7 @@ import {
   buildExtinf,
   buildProgramDateTime,
   HLS_DISCONTINUITY,
+  HLS_DISCONTINUITY_SEQUENCE,
   HLS_ENDLIST,
   HLS_GAP,
   HLS_M3U,
@@ -97,3 +98,68 @@ export function rungPlaylist(sequences: readonly number[], options: PlaylistOpti
  * that fed it straight to the contract would report a broadcast that published an empty timeline.
  */
 export const GATEWAY_ERROR_ENVELOPE = '{"message":"Not Found","code":404}';
+
+/**
+ * How long the broadcaster was away between two sessions of one broadcast, in the fixtures below.
+ *
+ * Any forward step is legal across an `#EXT-X-DISCONTINUITY`, so the value is arbitrary. What it must
+ * not be is a whole number of fragments, or a seam would pass the contract's step rule for the wrong
+ * reason and the fixture would stop proving the break is what excuses it.
+ */
+const FIXTURE_RESTART_GAP_MS = 41_500;
+
+/**
+ * The recording at the head of a rung feed a broadcaster stopped and restarted on.
+ *
+ * ⛔ One playlist naming every session, in order, each behind an `#EXT-X-DISCONTINUITY`, numbered
+ * from `#EXT-X-MEDIA-SEQUENCE:0` and ended with `#EXT-X-ENDLIST`. Its media sequence is therefore
+ * BELOW the one the last session's live playlists carried, which is correct and is the case these
+ * fixtures exist to hold the contract to: the client latches a rung finalized at the closing live
+ * playlist's ENDLIST and never walks on to this, so no viewer is handed a number that moved
+ * backwards.
+ *
+ * ⛔ The wall clock jumps at each seam by the time the broadcaster was away, not by a fragment, which
+ * is what a real restart does and what the break is there to excuse.
+ *
+ * ⛔ `inherited` is the other shape this produces: a recording glued onto the live WINDOW a session
+ * that was killed left behind. Only that window survived on the feed, so the recording starts at its
+ * numbers rather than at the broadcast's, and it declares its `#EXT-X-DISCONTINUITY-SEQUENCE` because
+ * the breaks earlier in that broadcast really did run in front of it. Its first entry is an inherited
+ * one and carries no seam, which is what makes the header the only thing that can say so.
+ *
+ * @param sessions how many media entries each session of the broadcast contributed, oldest first
+ * @param inherited what a killed predecessor's window declared, where the recording is glued onto one
+ */
+export function gluedRecording(
+  sessions: readonly number[],
+  inherited: { mediaSequence?: number; discontinuitySequence?: number } = {},
+): string {
+  const mediaSequence = inherited.mediaSequence ?? 0;
+  const discontinuitySequence = inherited.discontinuitySequence ?? 0;
+  const lines: string[] = [
+    HLS_M3U,
+    `${HLS_VERSION}:3`,
+    `${HLS_TARGET_DURATION}:${FIXTURE_FRAGMENT_SECONDS}`,
+    HLS_PLAYLIST_TYPE_VOD,
+    `${HLS_MEDIA_SEQUENCE}:${mediaSequence}`,
+    ...(discontinuitySequence > 0 ? [`${HLS_DISCONTINUITY_SEQUENCE}:${discontinuitySequence}`] : []),
+    '',
+  ];
+
+  let sequence = mediaSequence;
+  let atMs = FIXTURE_ANCHOR_MS;
+  sessions.forEach((entries, session) => {
+    if (session > 0) {
+      lines.push(HLS_DISCONTINUITY);
+      atMs += FIXTURE_RESTART_GAP_MS;
+    }
+    for (let i = 0; i < entries; i++) {
+      lines.push(buildProgramDateTime(atMs), buildExtinf(FIXTURE_FRAGMENT_SECONDS), reference(sequence));
+      atMs += FIXTURE_FRAGMENT_SECONDS * MS_PER_SECOND;
+      sequence++;
+    }
+  });
+
+  lines.push(HLS_ENDLIST);
+  return lines.join('\n') + '\n';
+}

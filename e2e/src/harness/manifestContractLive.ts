@@ -50,6 +50,7 @@ import { SEGMENT_ANY, type SegmentExpectation } from '../segmentLength.js';
 import type { Host } from './host.js';
 import { announcedLiveTopics, announcedRungs, segmentIndicesByStream } from './logwatch.js';
 import {
+  discontinuitySequenceOf,
   type ManifestContract,
   manifestContractFailures,
   mediaSequenceOf,
@@ -125,6 +126,17 @@ interface RungPlaylistParse {
   gaps: number;
   /** Whether the first media entry declares the seam of a session continuing an older feed head. */
   firstSegmentDiscontinuity: boolean;
+  /**
+   * The `#EXT-X-DISCONTINUITY-SEQUENCE` this playlist declares, which is 0 where it declares none.
+   *
+   * ⛔ On a RECORDING this is the one thing that says the recording does not begin at the broadcast's
+   * beginning, and nothing else can say it. A recording glued onto the live window a killed session
+   * left behind starts at that window's own numbers, and its first entry is one of the inherited ones
+   * and carries no seam — the seam is further down, where this session's media begins. Without this
+   * header such a recording reads exactly like one that should have started at 0. See
+   * {@link judgeRungPlaylists}.
+   */
+  discontinuitySequence: number;
   /** The first and last `#EXT-X-PROGRAM-DATE-TIME`, as ISO text, or null where a segment carried none. */
   firstDate: string | null;
   lastDate: string | null;
@@ -283,6 +295,7 @@ export function rungPlaylistParse(feed: RungFeed, body: string): RungPlaylistPar
     discontinuities: tagCountOf(text, HLS_DISCONTINUITY),
     gaps: tagCountOf(text, HLS_GAP),
     firstSegmentDiscontinuity: parsed.segments[0]?.discontinuity === true,
+    discontinuitySequence: discontinuitySequenceOf(text),
     firstDate: isoOf(dates[0]),
     lastDate: isoOf(dates[dates.length - 1]),
     recording: parsed.headers.includes(HLS_PLAYLIST_TYPE_VOD),
@@ -307,6 +320,7 @@ const NOTHING_READ = {
   discontinuities: 0,
   gaps: 0,
   firstSegmentDiscontinuity: false,
+  discontinuitySequence: 0,
   firstDate: null,
   lastDate: null,
   recording: false,
@@ -392,9 +406,30 @@ export function publishedFor(parse: RungPlaylistParse, byStream: ReadonlyMap<str
  * Apply the contract to every parse.
  *
  * A recording on a fresh feed is held to sequence 0 whatever the caller promised, because it names
- * every segment from the start. A session continuing an older feed head deliberately starts above
- * zero and declares that seam with a discontinuity on its first media entry. The marker is a
- * declaration rather than provenance for the prior head, which this helper does not read.
+ * every segment from the start — and since recordings are glued, "the start" is the start of the
+ * whole broadcast however many times the broadcaster restarted, so the rule got stronger rather than
+ * weaker.
+ *
+ * ⛔ **Two different things declare a continuation, because a live playlist and a recording say it
+ * in different places.** A LIVE playlist of a session continuing an older head starts above zero and
+ * carries the seam on its own first media entry. A RECORDING carries the seam in the middle, where
+ * this session's media begins, and its first entry is an inherited one with no break on it — so the
+ * only thing that can say the recording does not begin at the broadcast's beginning is
+ * `#EXT-X-DISCONTINUITY-SEQUENCE`, which is above zero exactly when breaks ran in front of its first
+ * entry. That is the case of a recording glued onto the live window a killed session left behind:
+ * only that window survived on the feed, so the recording legitimately starts at its numbers. Both
+ * numbers propagate through every later glue on that feed, so reading only the first-entry seam made
+ * the false positive permanent for the rung rather than one-off.
+ *
+ * ⛔ That second rule is **not** applied here. It lives in `mediaSequenceFailures`, because a playlist
+ * declaring breaks in front of its own first entry contradicts being the broadcast's first playlist
+ * whoever asks, and a direct caller of the contract must get the same answer as this one. So this
+ * helper may still pass `firstOfBroadcast: true` for such a recording and the rulebook will exempt
+ * it. A recording declaring a media sequence above zero and NO `#EXT-X-DISCONTINUITY-SEQUENCE` is
+ * still refused, which is the numbering defect this check exists for.
+ *
+ * A marker is a declaration rather than provenance for the prior head, which this helper does not
+ * read.
  *
  * @param knownFirst per rung, whether the suite can show this playlist still starts at the
  *   broadcast's first segment. Defaults to the contract's own flag for every rung. See
@@ -564,9 +599,14 @@ function lineFor(parse: RungPlaylistParse): string {
     parse.mediaSequence === null ? 'no #EXT-X-MEDIA-SEQUENCE' : `#EXT-X-MEDIA-SEQUENCE:${parse.mediaSequence}`;
   const span = parse.firstDate === null ? 'no dates' : `${parse.firstDate} to ${parse.lastDate}`;
 
+  // The declared count is printed beside the tags actually in the window, because the two answer
+  // different questions — how many breaks ran before this playlist, and how many are in it — and a
+  // reader looking at a glued recording needs both to see where in the broadcast it starts.
+  const behind = parse.discontinuitySequence > 0 ? `, ${parse.discontinuitySequence} behind it` : '';
+
   return (
     `  ${name}: ${kind}, ${parse.segments} segments, ${parse.gaps} gaps, ` +
-    `${parse.discontinuities} discontinuities, ${sequence}, ${span}`
+    `${parse.discontinuities} discontinuities${behind}, ${sequence}, ${span}`
   );
 }
 

@@ -29,6 +29,7 @@ import {
   FIXTURE_FRAGMENT_SECONDS,
   fixtureDateOf,
   GATEWAY_ERROR_ENVELOPE,
+  gluedRecording,
   rungPlaylist,
 } from './helpers/rungPlaylistFixtures.js';
 
@@ -653,5 +654,112 @@ describe('the one call a live suite makes', () => {
     });
 
     assert.match(verdict.refusal ?? '', /no rung feed/);
+  });
+});
+
+/**
+ * ## The head recording carries every session the feed has held
+ *
+ * A broadcaster who stops and starts again writes several recordings onto one rung feed, and since
+ * 2026-09-21 the head one opens with all of them: every earlier session verbatim, one
+ * `#EXT-X-DISCONTINUITY` at each seam, this session's media last, numbered from where the broadcast
+ * started.
+ *
+ * ⛔ Its `#EXT-X-MEDIA-SEQUENCE` is therefore BELOW the one the last session's live playlists
+ * carried, and that is correct rather than the numbering defect this contract refuses. The rule the
+ * contract holds is about one playlist's own timeline, and a viewer is never handed this in place of
+ * a live playlist: the client latches a rung finalized at the closing live playlist's `#EXT-X-ENDLIST`
+ * and stops walking the feed there, so nothing downstream ever sees the number move. Verified
+ * 2026-09-21 against `LadderFeedPoller.ingest` and `ManifestStateManager.updateManifest`.
+ */
+describe('a recording glued across several sessions of one broadcast', () => {
+  const FEED = feedOf('360p', TOPIC_360);
+
+  it('is accepted whole, with a seam per join', () => {
+    const reading = readingOf(FEED, gluedRecording([14, 16, 22]), SLID_WINDOW);
+
+    assert.deepEqual(reading.failures, []);
+    assert.equal(reading.recording, true);
+    assert.equal(reading.mediaSequence, 0, 'the recording starts where the broadcast started');
+    assert.equal(reading.segments, 52);
+    assert.equal(reading.discontinuities, 2, 'one per restart and no more');
+  });
+
+  /**
+   * ⛔ A recording names every segment from the start, so it is held to sequence 0 whatever the suite
+   * around it could show about a live window. A glued recording is still that recording — the gluing
+   * is what makes the number 0 true across the restarts rather than only within the last session.
+   */
+  it('is still held to a media sequence of 0 even where the caller declared a slid window', () => {
+    const wrong = gluedRecording([4, 4]).replace('#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-MEDIA-SEQUENCE:8');
+
+    assert.match(readingOf(FEED, wrong, SLID_WINDOW).failures[0], /rather than 0/);
+  });
+
+  /** One session on a feed that had never been written is the same playlist with no seam in it. */
+  it('is the ordinary recording when the broadcaster never restarted', () => {
+    const reading = readingOf(FEED, gluedRecording([14]), FIRST_PLAYLIST);
+
+    assert.deepEqual(reading.failures, []);
+    assert.equal(reading.discontinuities, 0);
+  });
+
+  /**
+   * ⛔⛔ The false positive a re-review found on 2026-09-21. A session whose predecessor was killed
+   * inherits only the live WINDOW that predecessor left at the head, so its recording starts at that
+   * window's numbers rather than at the broadcast's, and its first entry is an inherited one with no
+   * seam on it — the seam is further down. Held to sequence 0 as an ordinary recording, such a
+   * playlist is refused for being exactly what it should be, and because both numbers propagate
+   * through every later glue the refusal would be permanent for that rung's feed rather than one-off.
+   */
+  it('is accepted when it was glued onto the window a killed session left, which starts above zero', () => {
+    const recording = gluedRecording([1, 12], { mediaSequence: 40, discontinuitySequence: 3 });
+    const reading = readingOf(FEED, recording, FIRST_PLAYLIST);
+
+    assert.deepEqual(reading.failures, []);
+    assert.equal(reading.mediaSequence, 40, 'the window it inherited is where this recording starts');
+    assert.equal(reading.discontinuitySequence, 3, 'and its header is what says that is not the broadcast′s start');
+  });
+
+  /**
+   * ⛔ The rule is not loosened for an ordinary recording. A recording of a broadcast that began on
+   * this feed starts at 0 however many times the broadcaster restarted, because the gluing is what
+   * makes that true, and one declaring otherwise with nothing in front of it is the numbering defect
+   * this contract exists to catch.
+   */
+  it('is refused at the same media sequence when it declares no discontinuity sequence', () => {
+    const recording = gluedRecording([1, 12], { mediaSequence: 40 });
+
+    assert.match(readingOf(FEED, recording, FIRST_PLAYLIST).failures[0], /rather than 0/);
+  });
+
+  /**
+   * Both numbers propagate: the third session inherits the second's glued recording, keeping its
+   * media sequence and its declared count, and is accepted for the same reason the second was.
+   */
+  it('is still accepted at the third generation of glue onto that same window', () => {
+    const third = gluedRecording([1, 12, 9], { mediaSequence: 40, discontinuitySequence: 3 });
+    const reading = readingOf(FEED, third, FIRST_PLAYLIST);
+
+    assert.deepEqual(reading.failures, []);
+    assert.equal(reading.discontinuities, 2, 'two joins inside it, on top of the three behind it');
+    assert.equal(reading.discontinuitySequence, 3);
+  });
+
+  /** A recording of a broadcast that began on this feed declares no such header, and starts at 0. */
+  it('declares no discontinuity sequence when the broadcast began on this feed', () => {
+    assert.equal(readingOf(FEED, gluedRecording([14, 16]), FIRST_PLAYLIST).discontinuitySequence, 0);
+  });
+
+  /**
+   * The live playlists are unchanged by the gluing: a window over the last session's own segments,
+   * numbered on from the head it opened over, with the seam on its own first entry. That is the
+   * continuation the judge already allows above zero, and the recording above is what a viewer plays
+   * afterwards.
+   */
+  it('sits behind live playlists that still continue the feed rather than restarting it', () => {
+    const continuing = rungPlaylist([0, 1, 2], { mediaSequence: 30, breaks: [0] });
+
+    assert.deepEqual(readingOf(FEED, continuing, FIRST_PLAYLIST).failures, []);
   });
 });

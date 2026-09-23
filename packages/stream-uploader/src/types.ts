@@ -13,6 +13,40 @@ export {
 
 import type { MediaType } from '@swarm-hls-stream/shared';
 
+/**
+ * A previous session's recording, carried verbatim so this session's own recording opens with the
+ * whole broadcast rather than with this session alone.
+ *
+ * ⛔ **`lines` is the previous playlist's own text and nothing here re-derives any of it.** Not the
+ * dates, not the numbering, not the references. A rung's feed outlives its sessions, so the head this
+ * was read off is a playlist somebody may already be playing, and a prefix that re-dated or
+ * renumbered it would be this session inventing a history for media it never saw. The uploader's own
+ * anchor and sequence apply to the segments this session placed, and stop at the seam.
+ *
+ * @see ManifestManager.inherit
+ */
+export interface InheritedTimeline {
+  /** The `#EXT-X-MEDIA-SEQUENCE` the prefix's first entry is numbered from, which the glued recording declares. */
+  mediaSequence: number;
+  /** The `#EXT-X-TARGETDURATION` the prefix was published with, which the glued recording takes the max of. */
+  targetDuration: number;
+  /**
+   * The `#EXT-X-DISCONTINUITY-SEQUENCE` the prefix declared, which is the breaks that had already
+   * slid out of ITS window. Zero for a recording, which names the broadcast from its start.
+   *
+   * ⛔ Carried, because a session that dropped it published a discontinuity sequence LOWER than the
+   * head a viewer had just been handed. See `ManifestManager.inheritedDiscontinuities`.
+   */
+  discontinuitySequence: number;
+  /**
+   * The seconds of media the prefix holds, for the reported duration: its `#EXTINF` values, less those
+   * of `#EXT-X-GAP` entries, which name a lost segment and hold no media. See `mediaSecondsOf`.
+   */
+  durationSeconds: number;
+  /** Every timeline line of the prefix, in order, from its first timeline tag to before its `#EXT-X-ENDLIST`. */
+  lines: string[];
+}
+
 export interface StreamState {
   streamId: string;
   streamRawTopic: string;
@@ -40,6 +74,43 @@ export interface StreamState {
    * `ManifestManager.continueFrom`.
    */
   sequenceOffset?: number;
+  /**
+   * The previous session's recording, which this session's own recording opens with. Absent means
+   * the feed was empty, which is every entry written before recordings were glued.
+   *
+   * ⛔ Persisted for the same reason {@link StreamState.sequenceOffset} is, and it is the same head
+   * that both were read off. By the time a recovered session runs, the feed head is this session's
+   * own live playlist, so re-reading it would glue this session's own window in front of itself.
+   * See `ManifestManager.inherit`.
+   *
+   * ⚠️ **What it costs, measured rather than estimated.** `RecoveryStore` writes this whole entry
+   * synchronously once per segment, and the prefix grows by a session every time the broadcaster
+   * restarts. Over four sessions of 30 minutes at 2s segments the entry measured 150 KB, 269 KB,
+   * 388 KB and 507 KB, the prefix being 357 KB of the last. The entry was already six figures at the
+   * first session, because `segments` holds every segment the broadcast ever published, so this
+   * roughly triples a write that was never small. Accepted at this size; a deployment seeing entries
+   * approach a megabyte should make the write incremental rather than trim what it records.
+   */
+  inherited?: InheritedTimeline;
+  /**
+   * The return the next segment is owed a seam for, when the encoder came back inside the reconnect
+   * window and the first segment of the resumed run has not landed yet. Absent means none is owed,
+   * which is every entry written before a disconnect held a session open.
+   *
+   * ⛔ The return's own name rather than a flag, because a rung that came back and then died still
+   * has to date its first segment on the line its siblings took for that SAME return. See
+   * {@link BroadcastEpoch.returnToken}.
+   *
+   * ⛔ Persisted for a sharper version of the reason {@link StreamState.pendingDiscontinuity} is: the
+   * interval this covers is one in which the encoder has announced itself and sent nothing yet, which
+   * is the likeliest moment in a broadcast for a restart to land. A recovered session that lost it
+   * publishes its first returning segment as a continuation of the media on the far side of the
+   * outage, dated where the broadcast would have been had nothing happened.
+   *
+   * ⛔ It is the ONLY thing a reconnect arms. `pendingDiscontinuity` is left alone, so a return that
+   * never delivers a segment arms no break at all. See `ManifestManager.resumeAfterReconnect`.
+   */
+  resumingAfterReconnect?: string;
   /**
    * The admin's id for this broadcast, when the service is in admin mode. See {@link AdminSession}.
    *
@@ -116,6 +187,22 @@ export interface BroadcastEpoch {
   fromSequence: number;
   /** Epoch milliseconds that sequence's first frame is presented at. */
   atMs: number;
+  /**
+   * Which return of the broadcast minted this line, for an epoch a returning encoder minted. Absent
+   * on one minted by the engine's counter restarting, and on every epoch written before returns were
+   * named.
+   *
+   * ⛔ **The rungs of one ladder share a line because they share this, not because their numbers look
+   * alike.** A whole-encoder return reaches the orchestrator once per rung and it is the orchestrator
+   * that can see they are one event; the sequences the rungs resume at cannot say so, because a rung
+   * that is a segment behind its siblings resumes a sequence lower and a rung's own next return
+   * resumes a sequence higher, and those two overlap. See `StreamOrchestrator.tokenForThisReturn`.
+   *
+   * Unique per return rather than counted, because the epoch list survives a process restart inside
+   * the recovery entry and the ladder group store: a number restarting from zero would let a return
+   * after a reboot join a line minted before it.
+   */
+  returnToken?: string;
 }
 
 /** One rung of the encoder's ABR ladder, as configured via ABR_LADDER. */
@@ -427,6 +514,23 @@ export interface HealthSignals {
    * with no signal at all. See OBS-15 and SEC-28.
    */
   msSinceAuthRejection: number | null;
+  /**
+   * Every live stream whose encoder has disconnected and has not come back, in no particular order.
+   * Empty on a service whose broadcasters are all connected.
+   *
+   * ⛔ **A list rather than a count, because the answer an operator needs is WHICH.** On a four rung
+   * ladder a whole-encoder disconnect puts all four rungs here within a second of each other, and one
+   * rung here on its own is a transcoder that died while the broadcast carried on — which is a
+   * different fault with a different remedy, and a count cannot tell them apart.
+   *
+   * ⛔ **It raises no health reason, deliberately.** A disconnect is an ordinary event with a designed
+   * answer: the session is held for one reap window, and an encoder that comes back inside it resumes.
+   * Turning that into `degraded` would flag every ten second OBS restart, and a disconnect that does
+   * NOT come back already reaches `segment_stall` on the ordinary clock and then ends at the window.
+   * What this is for is the moment in between, which was invisible: a session held open with nothing
+   * feeding it looked, from every endpoint, exactly like one whose publisher was merely slow.
+   */
+  disconnectedStreams: string[];
   /**
    * Whether any segment has ever reached Swarm in this process's lifetime.
    *

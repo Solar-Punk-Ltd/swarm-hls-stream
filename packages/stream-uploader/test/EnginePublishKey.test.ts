@@ -466,8 +466,13 @@ describe('the publish key SRS reads out of an on_publish', () => {
   });
 
   /**
-   * A broadcaster who simply disconnects still gets their stream finalized once the close path is
-   * screened, driven through a real orchestrator all the way to the stream leaving the active set.
+   * A broadcaster who simply disconnects reaches the orchestrator once the close path is screened,
+   * driven through a real orchestrator all the way to the state the disconnect leaves behind.
+   *
+   * ⚠️ **It reports the disconnect where it used to finalize**, so what this reads is the session
+   * being held and said to be waiting rather than the id going free. The credential rule is what the
+   * test is about and it is unchanged: a screened-clean unpublish is acted on, and the SEC-29 block
+   * below holds every refusal. What a held session then does is `ReconnectWindow.test.ts`.
    *
    * **This test used to assert the opposite and its reasoning was wrong.** It was written for SEC-28
    * as "does not require a key on an unpublish", arguing that screening the close path would strand
@@ -481,7 +486,7 @@ describe('the publish key SRS reads out of an on_publish', () => {
    * The SEC-29 block below covers the refusals with a recording orchestrator, which answers whether
    * `stopStream` was called and not whether a stream actually finalizes. This one keeps that half.
    */
-  it('finalizes the stream on an unpublish carrying the key its publish carried', async () => {
+  it('acts on an unpublish carrying the key its publish carried', async () => {
     const orchestrator = makeTestOrchestrator();
     const app = express();
     const engine = createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN, publishKeySecret: PUBLISH_SECRET });
@@ -506,7 +511,13 @@ describe('the publish key SRS reads out of an on_publish', () => {
       });
 
       assert.equal(await response.json(), 0, 'an unpublish is acknowledged whatever it carried');
-      await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+      await waitFor(() => orchestrator.getHealthSignals().disconnectedStreams.length === 1, SETTLE_CEILING_MS);
+      assert.deepEqual(
+        orchestrator.getHealthSignals().disconnectedStreams,
+        [STREAM_ID],
+        'the unpublish was screened clean, so the session is held open and says it is waiting',
+      );
+      assert.equal(orchestrator.getActiveStreamCount(), 1, 'and it is still live, ready for the encoder to return');
     } finally {
       server.close();
       await orchestrator.cleanup();
@@ -721,6 +732,15 @@ describe('the publish key on the path that stops a stream (SEC-29)', () => {
 
   interface SrsStopHarness {
     stops: string[];
+    /**
+     * Stream ids the engine reported a disconnect for, in order.
+     *
+     * ⛔ **This is what an SRS unpublish now asks for, and it is what every assertion below reads.**
+     * The credential rule SEC-29 states is unchanged — a forged or keyless unpublish must not reach
+     * the orchestrator at all — and only the call it makes when it does has moved. `stops` is kept
+     * beside it so a build that went back to finalizing on this webhook fails rather than passes.
+     */
+    disconnects: string[];
     announce: (param: string | null) => Promise<number>;
     unpublish: (param: string | null) => Promise<number>;
   }
@@ -730,9 +750,13 @@ describe('the publish key on the path that stops a stream (SEC-29)', () => {
     drive: (harness: SrsStopHarness) => Promise<void>,
   ): Promise<void> {
     const stops: string[] = [];
+    const disconnects: string[] = [];
     const orchestrator = makeFakeOrchestrator({
       stopStream: async (streamId: string) => {
         stops.push(streamId);
+      },
+      noteDisconnect: (streamId: string) => {
+        disconnects.push(streamId);
       },
     });
     const app = express();
@@ -743,6 +767,7 @@ describe('the publish key on the path that stops a stream (SEC-29)', () => {
     try {
       await drive({
         stops,
+        disconnects,
         announce: (param) => announceToSrs(baseUrl, engine.prefix, BROADCASTER, param),
         unpublish: (param) => unpublishFromSrs(baseUrl, engine.prefix, BROADCASTER, param),
       });
@@ -809,29 +834,32 @@ describe('the publish key on the path that stops a stream (SEC-29)', () => {
   });
 
   describe('SRS', () => {
-    it('stops the stream for an unpublish that carries the key', async () => {
-      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops }) => {
+    it('acts on an unpublish that carries the key, by reporting the disconnect', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops, disconnects }) => {
         assert.equal(await announce(`?key=${KEY}`), 0);
 
         assert.equal(await unpublish(`?key=${KEY}`), 0);
-        assert.deepEqual(stops, [STREAM_ID]);
+        assert.deepEqual(disconnects, [STREAM_ID]);
+        assert.deepEqual(stops, [], 'and it finalizes nothing, which is what holds the reconnect window open');
       });
     });
 
-    it('does not stop the stream for an unpublish that carries no key', async () => {
-      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops }) => {
+    it('acts on no unpublish that carries no key', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops, disconnects }) => {
         assert.equal(await announce(`?key=${KEY}`), 0);
 
         await unpublish(null);
-        assert.deepEqual(stops, [], 'a keyless unpublish must not end a proven broadcast');
+        assert.deepEqual(disconnects, [], 'a keyless unpublish must not touch a proven broadcast');
+        assert.deepEqual(stops, []);
       });
     });
 
-    it('does not stop the stream for an unpublish carrying a key issued for another stream', async () => {
-      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops }) => {
+    it('acts on no unpublish carrying a key issued for another stream', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops, disconnects }) => {
         assert.equal(await announce(`?key=${KEY}`), 0);
 
         await unpublish(`?key=${KEY_FOR_ANOTHER_STREAM}`);
+        assert.deepEqual(disconnects, []);
         assert.deepEqual(stops, []);
       });
     });
@@ -849,12 +877,13 @@ describe('the publish key on the path that stops a stream (SEC-29)', () => {
       });
     });
 
-    it('stops the stream for a keyless unpublish when no secret is configured', async () => {
-      await withSrsStops(undefined, async ({ announce, unpublish, stops }) => {
+    it('acts on a keyless unpublish when no secret is configured', async () => {
+      await withSrsStops(undefined, async ({ announce, unpublish, stops, disconnects }) => {
         assert.equal(await announce(null), 0);
 
         await unpublish(null);
-        assert.deepEqual(stops, [STREAM_ID], 'SEC-29 must not change a deployment that never opted in');
+        assert.deepEqual(disconnects, [STREAM_ID], 'SEC-29 must not change a deployment that never opted in');
+        assert.deepEqual(stops, []);
       });
     });
   });
@@ -964,6 +993,8 @@ describe('the SRS publisher auth with the ladder on (SEC-28)', () => {
     starts: string[];
     /** Stream ids the engine asked the orchestrator to stop, in order. */
     stops: string[];
+    /** Stream ids the engine reported a disconnect for, which is what an unpublish now asks for. */
+    disconnects: string[];
     /** How many refusals reached `/health` through `recordAuthRejection`. See OBS-15. */
     authRejections: number;
   }
@@ -981,7 +1012,7 @@ describe('the SRS publisher auth with the ladder on (SEC-28)', () => {
     publishKeySecret: string | undefined,
     drive: (harness: { calls: LadderCalls; post: (body: SrsBody) => Promise<number> }) => Promise<void>,
   ): Promise<void> {
-    const calls: LadderCalls = { starts: [], stops: [], authRejections: 0 };
+    const calls: LadderCalls = { starts: [], stops: [], disconnects: [], authRejections: 0 };
     const orchestrator = makeFakeOrchestrator({
       startStream: (streamId: string) => {
         calls.starts.push(streamId);
@@ -989,6 +1020,9 @@ describe('the SRS publisher auth with the ladder on (SEC-28)', () => {
       },
       stopStream: async (streamId: string) => {
         calls.stops.push(streamId);
+      },
+      noteDisconnect: (streamId: string) => {
+        calls.disconnects.push(streamId);
       },
       recordAuthRejection: () => {
         calls.authRejections += 1;
@@ -1097,13 +1131,19 @@ describe('the SRS publisher auth with the ladder on (SEC-28)', () => {
     });
   });
 
-  it('stops a rung on an unpublish from loopback', async () => {
+  /**
+   * ⚠️ Reports a disconnect where it used to stop. The gate is what this file is about and it has not
+   * moved: the loopback origin is still the whole of what admits a rung's unpublish, and a rung's
+   * broadcast now ends at the reap window rather than on this webhook.
+   */
+  it('reports a disconnect for a rung on an unpublish from loopback, and stops nothing', async () => {
     await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
       await post(source({ param: `?key=${KEY}` }));
       await post(rung());
 
       assert.equal(await post(rung({ action: 'on_unpublish' })), 0);
-      assert.deepEqual(calls.stops, [RUNG_ID]);
+      assert.deepEqual(calls.disconnects, [RUNG_ID]);
+      assert.deepEqual(calls.stops, []);
     });
   });
 

@@ -44,6 +44,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     msSinceStatePersistFailed: null,
     queueBacklogSeconds: 0,
     msSinceAuthRejection: null,
+    disconnectedStreams: [],
     // A service that has ingested media, so an unrelated case cannot pick up `ingest_refused` by
     // default. The OBS-15 cases below set both fields explicitly.
     hasIngestedMedia: true,

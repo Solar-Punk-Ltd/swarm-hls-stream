@@ -117,11 +117,18 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'the retry counter the bee-outage scenarios report',
   },
   /*
-   * The four below are one counter, `discontinuitiesArmed` in `harness/logwatch.ts`, which counts the
-   * uploader announcing a lost segment or a declared break. Six suites assert it is zero and
-   * scenarios/bee-outage-long asserts it is at least one, so a level that drops any of the four does
-   * not fail those six. It passes them, on a stage losing segments all night.
-   * `originDeclaredDiscontinuity` is the one at `info` and so the first to go.
+   * The FIVE below are part of one counter, `discontinuitiesArmed` in `harness/logwatch.ts`, which
+   * counts the uploader announcing a lost segment or a declared break: `segmentUploadFailed`,
+   * `segmentsNeverArrived`, `originDeclaredDiscontinuity`, `encoderReturned` and
+   * `omeSegmentLossReported`. Six suites assert the counter is zero and scenarios/bee-outage-long
+   * asserts it is at least one, so a level that drops any of them does not fail those six. It passes
+   * them, on a stage losing segments all night. TWO of the five are at `info` and so are the first to
+   * go: `originDeclaredDiscontinuity` and `encoderReturned`.
+   *
+   * ⚠️ The counter has two more members this list does not carry, both at a level a threshold could
+   * drop: `datingReanchored`, `info` from `libs/ManifestManager.ts`, and `engineSkippedSegments`,
+   * `error` from `libs/StreamUploader.ts`. Both are covered by the deployed-shape preflight rather
+   * than here.
    */
   {
     what: 'a spent upload retry window ("Failed to upload segment N for stream <stream>")',
@@ -146,6 +153,16 @@ export const PARSED_LINES: readonly ParsedLine[] = [
       'discontinuitiesArmed, and the dangerous one to lose: the segment carrying the marker IS ' +
       'uploaded, so nothing is missing and the gapless check is no backstop either. Since 2026-09-06 ' +
       'it is also one of only two lines in the family that really do mean a break',
+  },
+  {
+    what: 'an encoder returning inside the reconnect window ("The encoder returned inside the …")',
+    level: 'info',
+    emittedBy: { file: 'libs/ManifestManager.ts', fragment: 'encoderReturned(resumeAt, wasAt, nowAt)' },
+    neededBy:
+      'discontinuitiesArmed, for the break a reconnect really is. It is the SECOND dangerous one to ' +
+      'lose, for the same reason as the line above it: the segment carrying the marker IS uploaded, ' +
+      'so the run stays gapless and nothing else in the suite can see the join at all. It is also the ' +
+      'only evidence in the log that a broadcast survived an outage rather than being two broadcasts',
   },
   {
     what: 'the OME puller reporting a loss ("[OME] … lost for <stream> after …")',
