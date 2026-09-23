@@ -373,7 +373,7 @@ describe('every path that loses a segment or declares a break is counted', () =>
    * each closed segment once and never retries, so a segment it closed while the uploader was dead
    * is reported by nothing at all: the orchestrator infers the gap from the arriving index being
    * more than one above the last it accounted for. Scenario F reads this family on its own, because
-   * a wait on the whole armed count would be satisfied by any of the other five.
+   * a wait on the whole armed count would be satisfied by any of the other six.
    */
   const SKIPPED = (from: number, to: number, count: number) => engineSkippedSegments(from, to, 'stream-7', count);
 
