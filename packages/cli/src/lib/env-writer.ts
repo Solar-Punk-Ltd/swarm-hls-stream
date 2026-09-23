@@ -77,6 +77,13 @@ function writeFileAtomically(targetPath: string, content: string): void {
  * terminal scrollback and nowhere else. See OPS-1.
  */
 export function writeEnvKey(envPath: string, key: string, value: string): void {
+  // A .env entry is one line, so a newline in the key or value would write a second entry. The batch
+  // id this ever carries is 64 hex characters, but the one-key-per-line shape is enforced rather than
+  // trusted.
+  if (/[\r\n]/.test(key) || /[\r\n]/.test(value)) {
+    throw new Error('A .env key or value cannot contain a newline');
+  }
+
   const content = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : '';
   const lines = content === '' ? [] : content.split('\n');
   const pattern = new RegExp(`^${key}=`);
