@@ -20,6 +20,8 @@ srt_server {
     enabled         on;
     listen          SRT_PORT_PLACEHOLDER;
     latency         SRT_LATENCY_PLACEHOLDER;
+    # SRS sets this after `latency` and defaults it to 120, which overwrites the wait on ingest.
+    recvlatency     SRT_LATENCY_PLACEHOLDER;
     passphrase      PASSPHRASE_PLACEHOLDER;
     pbkeylen        16;
     tlpktdrop       on;

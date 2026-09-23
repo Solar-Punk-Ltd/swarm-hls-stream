@@ -98,7 +98,9 @@ Going from 2.0s to 0.5s costs **19% more BZZ**, because the extra bytes are keyf
 
 ⛔⛔⛔ **This whole table is for a SINGLE-RENDITION stage. With the ABR ladder on, none of it decides
 the segment length and 0.5s is unreachable.** The transcoders re-GOP every rung from `HLS_FRAGMENT`
-(`ABR_GOP = ABR_FPS x HLS_FRAGMENT`), so the broadcaster's own keyframe interval stops mattering, and
+(`ABR_GOP = ABR_FPS x HLS_FRAGMENT`), so the broadcaster's own keyframe interval stops mattering to
+the segment length (it still decides how long a lost packet damages the picture, see the SRT section
+below), and
 a second limit appears that a single rendition never meets: SRS announces each closed segment over
 `on_hls` once per rung, so the ladder asks for `rungs / HLS_FRAGMENT` announcements a second.
 Measured on the deployment host 2026-08-31, SRS sustains about **6.7 a second** while its own
@@ -152,6 +154,51 @@ length and the stamps step by it exactly. On a single-rendition stream the publi
 decides the segment, and a segment past that 1% moves the next stamp by what it really held rather
 than by the declared length. See
 [the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-continuous-published-numbering).
+
+### SRT: the latency window, and what a lossy uplink does to the picture
+
+SRT resends a lost packet, but it only waits `SRT_LATENCY` milliseconds for the resend. With
+`tlpktdrop` on, which live streaming needs, a packet still missing when its time comes is dropped
+for good, and a dropped packet is a hole in a video frame. SRS hands the broken frame on, and with
+the ladder on our transcoders decode it, conceal the hole as best they can and encode the result
+cleanly into every rung and into the recording. From then on nothing downstream can tell it apart
+from real picture, and it stays in the recording.
+
+**The default is 2000ms since 2026-09-23, and it fills both `latency` and `recvlatency`.** Before
+that the config said 200ms and SRS actually waited 120ms: SRS 6 sets `recvlatency` after `latency`
+and defaults it to 120, so a `latency` alone never reaches ingest (measured with libsrt 1.5.4 on
+2026-09-23: `latency 2000` alone negotiated 120, with `recvlatency 2000` beside it 2000). On
+2026-09-22 an outside broadcaster over an ordinary internet uplink lost 5 to 8.5% of packets for
+five hours. SRT resent nearly all of them and SRS dropped nearly every resend as too late, so the
+whole recording has broken blocks of picture while the broadcaster's OBS preview looked perfect.
+OBS shows the picture before it is encoded and sent, so it can never show this. Every packet waits
+the full window, so the cost is about 1.9s more delay at ingest.
+
+The broadcaster can raise it from their side without any change here, because SRT uses the larger
+of the two ends' values. OBS takes the value in **microseconds** at the end of the SRT address:
+
+```
+srt://<host>:<port>?streamid=<id>&latency=3000000
+```
+
+That asks for 3 seconds. What else helps, in order: a wired connection instead of WiFi, a lower
+bitrate (720p30 needs no more than 3500 to 4000k), and a keyframe interval of 2 seconds or less.
+⚠️ That last one matters even with the ladder on, where it no longer sets the segment length: a
+lost packet damages the picture until the broadcaster's **next keyframe**, because our transcoder
+cannot rebuild a picture the source never sent whole. The rung's own keyframes do not repair it.
+
+**Reading the loss.** SRS prints one line per SRT publisher about every ten seconds with the counts
+for that interval, and it is the only place they exist, because SRS's HTTP API does not carry them:
+
+```bash
+docker logs <deployment>-srs-1 2>&1 | grep 'Transport Stats' | tail -6
+```
+
+`pktRcvLoss` is what went missing, `pktRcvRetrans` is how many resends arrived, and **`pktRcvDrop` is
+what was given up on**. A non-zero `pktRcvDrop` is damage in the picture. Lost roughly equal to
+resent roughly equal to dropped means the resends are arriving but after the window, so raise the
+window. ⛔ Grep for that line rather than reading the log whole: SRS writes its webhook URL,
+secret token included, into every hook line.
 
 ## Scripts
 
