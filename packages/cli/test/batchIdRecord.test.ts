@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -58,6 +58,21 @@ describe('a malformed batch id cannot escape the recovery directory', () => {
   it('never throws, whatever the id looks like', () => {
     assert.doesNotThrow(() => recordAgainstUnwritableEnv('../../../../etc/passwd'));
     assert.doesNotThrow(() => recordAgainstUnwritableEnv(''));
+  });
+
+  // The recovery write truncates, so two ids that shared one name would lose the first paid-for id.
+  it('gives two malformed ids two recovery files', () => {
+    const envDir = join(workspace(), 'env');
+    mkdirSync(envDir);
+    const envPath = join(envDir, '.env');
+    mkdirSync(envPath);
+
+    const first = recordBatchId(envPath, 'not-a-batch-id-1');
+    const second = recordBatchId(envPath, 'not-a-batch-id-2');
+
+    assert.notEqual(first.writtenTo[0], second.writtenTo[0]);
+    assert.equal(readFileSync(first.writtenTo[0], 'utf8'), 'STAMP=not-a-batch-id-1\n');
+    assert.equal(readFileSync(second.writtenTo[0], 'utf8'), 'STAMP=not-a-batch-id-2\n');
   });
 
   // A well-formed id keeps its informative recovery name, so the guard does not flatten the good path.
