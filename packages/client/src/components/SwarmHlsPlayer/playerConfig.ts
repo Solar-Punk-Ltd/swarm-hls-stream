@@ -74,7 +74,8 @@ const MB = 1024 * 1024;
  * A paragraph here used to say that a player on this deployment rebuffers every 63 seconds whatever
  * this number is. That was LAT-10 and it is **retracted**: the freeze was bee's sequential feed head
  * lookup, which the bench polled every cycle and a player calls only on mount. See
- * `docs/reviews/freeze-elimination-plan.md`.
+ * `docs/bench/feed-reader-ab.md` for the reader comparison that showed it, and
+ * `docs/reviews/upstream-bee-feed-lookup.md` for what the lookup costs.
  */
 export const LIVE_SYNC_DURATION_S = 6;
 
