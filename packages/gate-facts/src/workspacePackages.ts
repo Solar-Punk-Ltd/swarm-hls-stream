@@ -22,9 +22,10 @@ function hasTestScript(packageJsonPath: string): boolean {
  *
  * This exists to answer "which package did not report", which is a question the test output alone
  * cannot answer. A parser that only reads what was printed cannot distinguish a package that ran
- * clean from one whose totals never arrived, and this repository has the second case: the uploader
- * runs with `--test-force-exit`, which calls `process.exit()` and truncates pending stdout writes to
- * a pipe, so its summary is lost whenever pnpm pipes it. The largest suite in the workspace was
+ * clean from one whose totals never arrived, and this repository has the second case: the uploader's
+ * test script sends node's TAP reporter, which carries the totals, to `.test-summary.tap` and only
+ * the dot reporter to stdout, so pnpm's output never holds them, and the `assert-test-floor` line it
+ * prints instead is not one the parser reads. The largest suite in the workspace at the time was
  * silently absent from the artifact until this cross-check named it.
  */
 export function packagesWithTests(repoRoot: string): string[] {
