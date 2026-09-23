@@ -80,8 +80,10 @@ pnpm stamp:buy --rung 1080p 6000000000 23
 ```
 
 The rung is a flag, not a leading positional: a positional whose meaning changed with `BEE_PUBLISHERS`
-would hand a single-node operator's amount to the rung lookup. The rung is required and validated
-against `BEE_PUBLISHERS`. An unknown rung, a missing rung, or an unsplit config all fail before any network call, listing the rungs that _are_ configured:
+would hand a single-node operator's amount to the rung lookup. The rung is required once `BEE_PUBLISHERS`
+is set, and validated against it. A rung passed on an unsplit config fails before any network call, saying
+`BEE_PUBLISHERS` is not set, since there are no rungs to list. On a split config an unknown or missing rung
+fails just as early, listing the rungs that _are_ configured:
 
 ```
 ✗ No node configured for rung "1080p". Configured rungs: 360p, 720p
