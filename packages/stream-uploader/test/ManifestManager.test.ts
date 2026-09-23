@@ -1554,7 +1554,7 @@ describe('gluing the recording onto what was already on the feed', () => {
 
       assert.equal(parsed.mediaSequence, 14);
       assert.equal(parsed.targetDuration, 3);
-      assert.equal(parsed.durationSeconds, 7);
+      assert.equal(parsed.durationSeconds, 5, 'the gap entry’s 2s is a lost segment, not media');
       assert.equal(parsed.lines[0], DISCONTINUITY_TAG, 'the break opens the timeline and is not a header');
       assert.ok(parsed.lines.includes(GAP_TAG));
       assert.ok(parsed.lines.includes('gap-15'), 'the hole keeps the name the previous session gave it');
@@ -1714,6 +1714,29 @@ describe('gluing the recording onto what was already on the feed', () => {
       feed(manager, 0, 3, 2);
 
       assert.equal(manager.getTotalDuration(), SESSION_ONE_SECONDS + 6);
+    });
+
+    /**
+     * ⛔⛔ Gluing a recording must not change how long it is reported to be. A session's own total
+     * never counted a lost segment, since it is never held, but the prefix summed every `#EXTINF`,
+     * gap entries included. So a broadcast that lost two segments reported 12s before its restart and
+     * 16s after the next session glued it, to the catalog and to the admin alike.
+     */
+    it('reports a recording with a lost segment at the length it reported before it was glued', () => {
+      const one = withHole(3, 2, 3);
+      one.buildLiveManifest();
+      const recording = one.buildVODManifest();
+      assert.equal(countOccurrences(recording, GAP_TAG), 2, 'the fixture must carry its holes as gap entries');
+
+      const two = glued(recording);
+
+      assert.equal(
+        two.getTotalDuration(),
+        one.getTotalDuration(),
+        'the glued recording counted the gap entries it inherited as media',
+      );
+      feed(two, 0, 2, 2);
+      assert.equal(two.getTotalDuration(), one.getTotalDuration() + 4, 'and grows by exactly its own media');
     });
 
     it('names nothing at all before its own first segment lands', () => {
@@ -1973,6 +1996,23 @@ describe('gluing the recording onto what was already on the feed', () => {
 
       assert.deepEqual(manager.inheritedPrefix(), parsed);
       assert.equal(new ManifestManager(TEST_ANCHOR).inheritedPrefix(), null);
+    });
+
+    /**
+     * An entry written before gap entries stopped counting as media carries a duration that includes
+     * them. The lines it carries are verbatim, so the media they hold is recovered from them rather
+     * than the stale number trusted.
+     */
+    it('re-derives the inherited duration off the lines, not the number an older entry carries', () => {
+      const one = withHole(3, 2, 3);
+      one.buildLiveManifest();
+      const parsed = inheritedTimeline(one.buildVODManifest())!;
+      const written = { ...parsed, durationSeconds: parsed.durationSeconds + 4 };
+
+      const recovered = new ManifestManager(TEST_ANCHOR);
+      recovered.restoreState([], [], written);
+
+      assert.equal(recovered.getTotalDuration(), one.getTotalDuration());
     });
   });
 

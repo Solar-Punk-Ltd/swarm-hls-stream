@@ -194,10 +194,10 @@ export function inheritedTimeline(manifest: string): InheritedTimeline | null {
   const endsAt = lines.indexOf(HLS_ENDLIST, opensAt);
   const timeline = lines.slice(opensAt, endsAt === -1 ? undefined : endsAt).filter((line) => line !== '');
 
-  const durations = timeline
-    .filter((line) => line.startsWith(`${HLS_EXTINF}:`))
-    .map((line) => Number.parseFloat(line.slice(HLS_EXTINF.length + 1)));
-  if (durations.length === 0) {
+  // Every entry, gap entries included, because a prefix whose only entries are holes still carries
+  // numbering the glued recording has to continue from. What it counts as media is a different
+  // question, which `mediaSecondsOf` answers.
+  if (!timeline.some((line) => line.startsWith(`${HLS_EXTINF}:`))) {
     return null;
   }
 
@@ -208,11 +208,46 @@ export function inheritedTimeline(manifest: string): InheritedTimeline | null {
     // Absent on a recording, which names its timeline from the start, and on every playlist written
     // before this project declared it. Zero is what an absent tag already means.
     discontinuitySequence: headerNumber(headers, HLS_DISCONTINUITY_SEQUENCE, 0),
-    // A duration that will not parse contributes nothing rather than poisoning the whole sum with a
-    // NaN, which would reach the admin as the broadcast's reported length.
-    durationSeconds: durations.reduce((total, seconds) => total + (Number.isFinite(seconds) ? seconds : 0), 0),
+    durationSeconds: mediaSecondsOf(timeline),
     lines: timeline,
   };
+}
+
+/**
+ * The seconds of media a prefix's timeline holds: every `#EXTINF` except those of gap entries.
+ *
+ * ⛔⛔ **A gap entry is not media, and counting it made a recording longer the moment it was glued.**
+ * `gapLines` writes a lost segment as `#EXT-X-GAP`, its date, then an `#EXTINF` of the configured
+ * length and a name, so the hole occupies its place in the numbering. RFC 8216bis says a gap entry
+ * holds no media, and {@link ManifestManager.getTotalDuration} has never counted one for a session's
+ * own segments, since a lost segment is never held. Summing every `#EXTINF` here reported a
+ * broadcast with one loss as 2 s longer after its next session glued it than before: the catalog's
+ * `duration` and the admin's `vod` report both moved for media nobody uploaded.
+ *
+ * The `#EXT-X-GAP` tag precedes the `#EXTINF` it marks, with the date between them, so the flag is
+ * raised on the tag and consumed by the next `#EXTINF`, the same way `parseManifest` reads one.
+ *
+ * A duration that will not parse contributes nothing rather than poisoning the whole sum with a NaN,
+ * which would reach the admin as the broadcast's reported length.
+ */
+function mediaSecondsOf(timeline: readonly string[]): number {
+  let total = 0;
+  let marksAGap = false;
+  for (const line of timeline) {
+    if (line === HLS_GAP) {
+      marksAGap = true;
+      continue;
+    }
+    if (!line.startsWith(`${HLS_EXTINF}:`)) {
+      continue;
+    }
+    const seconds = Number.parseFloat(line.slice(HLS_EXTINF.length + 1));
+    if (!marksAGap && Number.isFinite(seconds)) {
+      total += seconds;
+    }
+    marksAGap = false;
+  }
+  return total;
 }
 
 /**
@@ -912,6 +947,11 @@ export class ManifestManager {
    * announce and the admin's `vod` report all describe the recording a viewer is about to be handed,
    * and a length that stopped at the last restart would tell them a four-session broadcast is as long
    * as its last session.
+   *
+   * ⛔ Gap entries count on neither side, so gluing a recording never changes its length. A lost
+   * segment is never held, so this session's own sum skips it by construction, and the prefix skips
+   * the gap entries a previous session wrote for its own. The report for the glued recording is the
+   * earlier report plus this session's media, exactly.
    */
   public getTotalDuration(): number {
     const own = this.segments.reduce((sum, seg) => sum + seg.duration, 0);
@@ -942,7 +982,10 @@ export class ManifestManager {
    */
   public restoreState(segments: SegmentEntry[], hlsHeaders: string[], inherited?: InheritedTimeline): void {
     if (inherited !== undefined) {
-      this.inherited = inherited;
+      // ⛔ Re-derived off the lines rather than trusted. An entry written before gap entries stopped
+      // counting as media carries a duration that includes them, and the lines are verbatim, so the
+      // media they hold is exactly recoverable. See `mediaSecondsOf`.
+      this.inherited = { ...inherited, durationSeconds: mediaSecondsOf(inherited.lines) };
     }
     const firstIndex = segments[0]?.index ?? 0;
     const renumbered = segments.map((seg) => ({ ...seg, sequence: seg.sequence ?? seg.index - firstIndex }));

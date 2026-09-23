@@ -38,7 +38,10 @@ export interface InheritedTimeline {
    * head a viewer had just been handed. See `ManifestManager.inheritedDiscontinuities`.
    */
   discontinuitySequence: number;
-  /** The seconds of media the prefix holds, summed off its `#EXTINF` values, for the reported duration. */
+  /**
+   * The seconds of media the prefix holds, for the reported duration: its `#EXTINF` values, less those
+   * of `#EXT-X-GAP` entries, which name a lost segment and hold no media. See `mediaSecondsOf`.
+   */
   durationSeconds: number;
   /** Every timeline line of the prefix, in order, from its first timeline tag to before its `#EXT-X-ENDLIST`. */
   lines: string[];
