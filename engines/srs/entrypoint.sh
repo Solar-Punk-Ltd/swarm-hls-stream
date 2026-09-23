@@ -192,14 +192,18 @@ aof_ratio_for() {
 HLS_AOF_RATIO="$(aof_ratio_for "$HLS_FRAGMENT" "$HLS_SEGMENT_MAX" "${HLS_AOF_RATIO:-}")"
 # --- end hls tuning ---
 
-# How long SRT holds a packet waiting for a retransmission before delivering without it.
+# How long SRT holds a packet waiting for a retransmission before delivering without it, in ms.
 #
-# Never configurable, on this branch or on `main`. It is a latency floor on the ingest hop and it
-# trades against loss: too low and `tlpktdrop` discards retransmissions that would have arrived,
-# too high and every packet waits for a window it does not need. 200ms suits a lossy path, and a
-# publisher on the same host as the engine is not on one.
-require_number SRT_LATENCY "${SRT_LATENCY:-200}"
-sed -i "s/SRT_LATENCY_PLACEHOLDER/${SRT_LATENCY:-200}/" "$CONF"
+# Every packet waits this long, so it is also a delay floor on the ingest hop. Too low and
+# `tlpktdrop` throws away resends that were on their way, and each thrown-away packet is a hole in a
+# frame that the ladder then re-encodes into every rung and the recording. On 2026-09-22 an
+# ordinary uplink losing 5 to 8.5% had nearly every loss resent and nearly every resend dropped as
+# too late, for five hours. The template fills both `latency` and `recvlatency`, because SRS sets
+# the second after the first and defaults it to 120, so until 2026-09-23 the configured 200 never
+# reached ingest and SRS waited 120. SRT uses the larger of the two ends' values, so a publisher
+# can still ask for more.
+require_number SRT_LATENCY "${SRT_LATENCY:-2000}"
+sed -i "s/SRT_LATENCY_PLACEHOLDER/${SRT_LATENCY:-2000}/" "$CONF"
 
 # The uploader rejects every webhook without this, so an empty value is a misconfiguration worth
 # failing on here rather than at the first publish. SRS cannot sign its callbacks or send a header,

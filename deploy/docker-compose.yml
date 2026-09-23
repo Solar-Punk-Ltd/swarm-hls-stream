@@ -479,7 +479,7 @@ services:
       HLS_SEGMENT_MAX: ${HLS_SEGMENT_MAX:-2.5}
       HLS_AOF_RATIO: ${HLS_AOF_RATIO:-}
       HLS_WINDOW: ${HLS_WINDOW:-15}
-      SRT_LATENCY: ${SRT_LATENCY:-200}
+      SRT_LATENCY: ${SRT_LATENCY:-2000}
       # The ABR ladder, read by the SRS entrypoint. Off by default.
       ABR_ENABLED: ${ABR_ENABLED:-false}
       ABR_LADDER: ${ABR_LADDER:-}
