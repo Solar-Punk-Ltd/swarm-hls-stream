@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { countAdvisoryFindings } from '../src/collectChecks.js';
+import { countAdvisoryFindings, missingTotalsVerdict } from '../src/collectChecks.js';
 import { totalLines } from '../src/collectDiff.js';
 import { distArgs, summarise, type VersionProvenance } from '../src/collectProvenance.js';
 import { formatFacts, hasFailure } from '../src/formatFacts.js';
@@ -9,7 +12,45 @@ import { introducedVersions, lockfileVersions, splitVersion } from '../src/lockf
 import { formatSuiteCounts, parseSuiteCounts } from '../src/parseSuiteCounts.js';
 import { mutationApplicability, surfacesTouched } from '../src/surfaces.js';
 import type { GateFacts } from '../src/types.js';
-import { packagesMissingTotals } from '../src/workspacePackages.js';
+import { packagesMissingTotals, packagesWithTests } from '../src/workspacePackages.js';
+
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+
+/** The directories under `parent`, read from disk so a package added later is checked too. */
+function directoriesUnder(parent: string): string[] {
+  return readdirSync(join(REPO_ROOT, parent), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `${parent}/${entry.name}`);
+}
+
+/** Read here rather than through the package, so the tests do not grade the package with its own answer. */
+function manifestHasTestScript(dir: string): boolean {
+  const path = join(REPO_ROOT, dir, 'package.json');
+  if (!existsSync(path)) {
+    return false;
+  }
+  const manifest = JSON.parse(readFileSync(path, 'utf8')) as { scripts?: Record<string, string> };
+  return typeof manifest.scripts?.test === 'string';
+}
+
+/**
+ * The `packages` list of `pnpm-workspace.yaml`, read line by line because the package has no YAML
+ * dependency. It stops at the first line that is not a list item, which is where the list ends.
+ */
+function workspaceEntries(): string[] {
+  const lines = readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8').split('\n');
+  const start = lines.indexOf('packages:');
+  assert.notEqual(start, -1, 'pnpm-workspace.yaml has no packages list');
+  const entries: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    const item = /^\s+-\s+['"]?([^'"]+?)['"]?\s*$/.exec(line);
+    if (!item) {
+      break;
+    }
+    entries.push(item[1]);
+  }
+  return entries;
+}
 
 describe('parseSuiteCounts', () => {
   it('reads the TAP totals every node:test package prints', () => {
@@ -126,9 +167,10 @@ describe('lockfileVersions', () => {
 
 describe('packagesMissingTotals', () => {
   it('names a package that ran and reported nothing', () => {
-    // The uploader runs with --test-force-exit, which calls process.exit() and truncates pending
-    // stdout writes to a pipe, so its summary never survives pnpm's aggregation. Without this the
-    // artifact listed five packages where the workspace has six and nothing said which was gone.
+    // The uploader's test script sends node's TAP reporter, which carries the totals, to
+    // `.test-summary.tap` and only the dot reporter to stdout, so its TAP totals never reach pnpm's
+    // output. Without this the artifact listed five packages where the workspace had six and nothing
+    // said which was gone.
     const expected = ['deploy', 'packages/cli', 'packages/stream-uploader'];
     const reported = ['deploy', 'packages/cli'];
 
@@ -137,6 +179,77 @@ describe('packagesMissingTotals', () => {
 
   it('is empty when every package reported', () => {
     assert.deepEqual(packagesMissingTotals(['a', 'b'], ['b', 'a']), []);
+  });
+});
+
+describe('packagesWithTests', () => {
+  it('expects a total from e2e and deploy as well as from every package under packages/', () => {
+    const expected = packagesWithTests(REPO_ROOT);
+    const wanted = ['deploy', 'e2e', ...directoriesUnder('packages').filter(manifestHasTestScript)];
+
+    const notExpected = wanted.filter((dir) => !expected.includes(dir));
+    assert.deepEqual(notExpected, []);
+  });
+
+  it('expects exactly the members pnpm-workspace.yaml lists that have a test script', () => {
+    // The standalone list is a literal, and it already went stale once: e2e joined the workspace the
+    // day after the list was written, and its total was never expected. This reads the file pnpm reads.
+    const members = workspaceEntries().flatMap((entry) => {
+      if (entry.endsWith('/*')) {
+        return directoriesUnder(entry.slice(0, -2));
+      }
+      assert.doesNotMatch(entry, /[*?{[!]/, `a workspace entry this check cannot read: ${entry}`);
+      return [entry];
+    });
+    assert.notEqual(members.length, 0);
+
+    assert.deepEqual(packagesWithTests(REPO_ROOT), members.filter(manifestHasTestScript).sort());
+  });
+
+  it('expects e2e under the name pnpm -r test prefixes its lines with', () => {
+    // pnpm -r printed e2e's lines as `e2e <script>: ...` on 2026-09-24. An expected name that differed
+    // from that prefix would put e2e in the missing row on every run, however cleanly it reported.
+    const [e2e] = parseSuiteCounts('e2e test: # tests 12').map((count) => count.packageName);
+
+    assert.ok(packagesWithTests(REPO_ROOT).includes(e2e), `no expected package is named ${e2e}`);
+  });
+});
+
+describe('missingTotalsVerdict', () => {
+  const withRowFor = (missing: string[]): GateFacts => ({
+    base: 'main',
+    head: 'abc1234',
+    headSupplied: false,
+    groups: [
+      {
+        title: 'Checks',
+        facts: [
+          {
+            key: 'packages that reported no total',
+            value: missing.join(', '),
+            command: 'pnpm verify',
+            ...missingTotalsVerdict(missing),
+          },
+        ],
+      },
+    ],
+    authorMeasured: [],
+  });
+
+  it('keeps the exit code out of it when exactly the uploader is missing, the failure TEST-27 accepts', () => {
+    assert.deepEqual(missingTotalsVerdict(['packages/stream-uploader']), { failed: true, known: true });
+    assert.equal(hasFailure(withRowFor(['packages/stream-uploader'])), false);
+  });
+
+  it('fails the run when e2e alone is missing, which nothing has accepted', () => {
+    // Every missing set used to be known, so a package newly losing its total never moved the exit code.
+    assert.deepEqual(missingTotalsVerdict(['e2e']), { failed: true, known: false });
+    assert.equal(hasFailure(withRowFor(['e2e'])), true);
+  });
+
+  it('fails the run when e2e is missing beside the uploader', () => {
+    assert.deepEqual(missingTotalsVerdict(['e2e', 'packages/stream-uploader']), { failed: true, known: false });
+    assert.equal(hasFailure(withRowFor(['e2e', 'packages/stream-uploader'])), true);
   });
 });
 
@@ -244,6 +357,44 @@ describe('mutationApplicability', () => {
 
   it('does not treat a sibling package as the covered one on a bare prefix match', () => {
     assert.equal(mutationApplicability(['packages/stream-uploader-legacy/src/x.ts']).state, 'unavailable');
+  });
+
+  it('applies when only packages/shared changes, because pnpm mutate reaches it too', () => {
+    // stryker.config.json has mutated packages/shared since 2026-08-11, and a shared-only change still
+    // read as unavailable, which told a reviewer there was no harness when there was one.
+    assert.deepEqual(mutationApplicability(['packages/shared/src/publishKey.ts']), { state: 'applies', uncovered: [] });
+  });
+
+  it('names only the client path when a change spans the uploader, shared and the client', () => {
+    // The client has a harness of its own, pnpm mutate:client, which this fact has never counted.
+    const result = mutationApplicability([
+      'packages/stream-uploader/src/engines/ome.ts',
+      'packages/shared/src/publishKey.ts',
+      'packages/client/src/App.tsx',
+    ]);
+
+    assert.equal(result.state, 'applies');
+    assert.deepEqual(result.uncovered, ['packages/client/src/App.tsx']);
+  });
+
+  it('counts as covered exactly the packages the mutate globs of stryker.config.json name', () => {
+    // The covered list is a literal, and it already went stale once: shared joined the config ten days
+    // after the list was written and nothing noticed. This reads the config pnpm mutate runs.
+    const config = JSON.parse(readFileSync(join(REPO_ROOT, 'stryker.config.json'), 'utf8')) as { mutate: string[] };
+    const packageOf = (glob: string): string => {
+      const segments = glob.split('/');
+      const packageEnd = segments.findIndex((s) => s === 'src' || /[*?{[]/.test(s));
+      return segments.slice(0, packageEnd).join('/');
+    };
+    const named = new Set(config.mutate.filter((glob) => !glob.startsWith('!')).map(packageOf));
+    assert.notEqual(named.size, 0);
+
+    for (const dir of named) {
+      assert.deepEqual(mutationApplicability([`${dir}/src/sample.ts`]), { state: 'applies', uncovered: [] }, dir);
+    }
+    for (const dir of directoriesUnder('packages').filter((d) => !named.has(d))) {
+      assert.equal(mutationApplicability([`${dir}/src/sample.ts`]).state, 'unavailable', dir);
+    }
   });
 
   it('agrees with surfacesTouched that deploy tests are the deploy surface, not source', () => {

@@ -1,4 +1,4 @@
-/** What one package's test run reported, or null where the runner printed no recognisable total. */
+/** What one package's test run reported. A package that printed no recognisable total has no entry at all. */
 interface SuiteCount {
   packageName: string;
   tests: number;

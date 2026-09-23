@@ -56,14 +56,19 @@ interface MutationApplicability {
   /**
    * Changed source the harness does not reach, even when `state` is `applies`.
    *
-   * A diff touching both the covered package and another one used to report a bare `applies`, so a
+   * A diff touching both a covered package and another one used to report a bare `applies`, so a
    * reviewer ran the check, got a real score, and read it as covering the whole change.
    */
   uncovered: string[];
 }
 
-/** The one package the Stryker harness covers. Anything else with a `src/` is uncovered. */
-const MUTATION_COVERED_PACKAGE = 'packages/stream-uploader/';
+/**
+ * The packages `pnpm mutate` reaches, which are the ones the `mutate` globs of `stryker.config.json`
+ * name. Anything else with a `src/` is uncovered. `pnpm mutate:client` runs a separate config over
+ * `packages/client` that this fact has never counted, so a client change reads as uncovered here.
+ * A test holds this list to the config.
+ */
+const MUTATION_COVERED_PACKAGES = ['packages/stream-uploader/', 'packages/shared/'] as const;
 
 /** Source and tests, by location, matching how the surface matchers classify the same paths. */
 function isMutatableSource(path: string): boolean {
@@ -75,7 +80,7 @@ export function mutationApplicability(paths: readonly string[]): MutationApplica
   if (mutatable.length === 0) {
     return { state: 'not-applicable', uncovered: [] };
   }
-  const uncovered = mutatable.filter((p) => !p.startsWith(MUTATION_COVERED_PACKAGE));
+  const uncovered = mutatable.filter((p) => !MUTATION_COVERED_PACKAGES.some((pkg) => p.startsWith(pkg)));
   const covered = mutatable.length - uncovered.length;
   return { state: covered > 0 ? 'applies' : 'unavailable', uncovered };
 }
