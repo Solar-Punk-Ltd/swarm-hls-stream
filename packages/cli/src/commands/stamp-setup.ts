@@ -201,7 +201,7 @@ export async function stampSetup(args: StampCommandArgs = {}, seams: StampSetupS
     return exit(1);
   }
 
-  // Step 6: Record it immediately. Nothing that can throw may come between the spend and this,
+  // Step 7: Record it immediately. Nothing that can throw may come between the spend and this,
   // including waiting for the batch to become usable, which routinely times out.
   const record = recordBatchId(envPath, batchIdHex);
   if (!reachedEnvFile(envPath, record)) {
@@ -215,7 +215,7 @@ export async function stampSetup(args: StampCommandArgs = {}, seams: StampSetupS
   }
   ok(`Written ${STAMP_ENV_KEY}=${batchIdHex} to .env`);
 
-  // Step 7: Wait for the stamp to become usable
+  // Step 8: Wait for the stamp to become usable
   try {
     await awaitStamp(bee, batchIdHex);
   } catch (err) {

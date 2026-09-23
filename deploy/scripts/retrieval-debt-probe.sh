@@ -55,7 +55,7 @@ SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
 
 # The arms of one round, as
-# `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs[:spread[:jitterMs[:refsPattern]]]]]]`,
+# `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs[:spread[:jitterMs[:refsPattern[:budgetMs]]]]]]]`,
 # in order.
 #
 # ⭐ The cache field exists because every arm this project has ever run set `--cache-capacity=0`, so
@@ -178,11 +178,13 @@ SPREAD="${SPREAD:-1}"
 
 # A fresh uniform random offset in front of EVERY fetch, in milliseconds, re-drawn each time.
 #
-# ⭐ This is what the client actually ships, and `spread` is not. `spread` gives each viewer one fixed
-# offset held for the whole session, which models an audience that joined at different moments. This
-# models `RequestJitter`: a bounded random delay drawn again for each request. The shipped bound is
-# **60ms**, against the 4.3 seconds of spread the cohort finding was measured at, so the two are 70x
-# apart and the shipped default has never been tested against a herd.
+# ⭐ This models the client's `RequestJitter`, and `spread` does not. `spread` gives each viewer one
+# fixed offset held for the whole session, which models an audience that joined at different moments.
+# This models a bounded random delay drawn again for each request. The client shipped that bound at
+# **60ms** in #108 and has shipped **0** since #109 (2026-08-08), because 60ms measured against a herd
+# did nothing. See `docs/bench/jitter-is-not-what-breaks-a-herd-2026-08-08.md` and
+# `GATEWAY_REQUEST_JITTER_MS` in `packages/client/src/utils/requestJitter.ts`. The default below is
+# 0, which is also what the client ships.
 #
 # Added to the deadline rather than to the schedule, so it perturbs each request without the schedule
 # drifting, and lag is measured against the jittered deadline because the offset is deliberate.

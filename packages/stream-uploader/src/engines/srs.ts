@@ -662,11 +662,13 @@ async function handleStreams(
  * Absolute path of the segment SRS reported, or `undefined` when the reported path resolves outside
  * the media root.
  *
- * `file` arrives on an unauthenticated webhook and the caller both reads and deletes whatever it
- * names, so this is a containment boundary rather than a formatting step. Stripping the prefix is
- * not itself a defence: `path.resolve` drops the root entirely for an absolute input and walks out
- * of it for `../`, so the result is compared against the root instead of the input being screened
- * for suspicious-looking segments.
+ * `file` arrives in a webhook body and the caller both reads and deletes whatever it names, so this
+ * is a containment boundary rather than a formatting step. Every SRS webhook has had to carry
+ * `SRS_WEBHOOK_TOKEN` since 2026-07-31, and that proves who sent the call, not that the path inside
+ * it is sane, so the containment stays as defence in depth. Stripping the prefix is not itself a
+ * defence: `path.resolve` drops the root entirely for an absolute input and walks out of it for
+ * `../`, so the result is compared against the root instead of the input being screened for
+ * suspicious-looking segments.
  */
 export function resolveSegmentPath(mediaRootPath: string, file: string): string | undefined {
   const mediaRoot = path.resolve(mediaRootPath);

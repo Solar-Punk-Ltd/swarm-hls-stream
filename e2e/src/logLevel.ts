@@ -152,7 +152,7 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy:
       'discontinuitiesArmed, and the dangerous one to lose: the segment carrying the marker IS ' +
       'uploaded, so nothing is missing and the gapless check is no backstop either. Since 2026-09-06 ' +
-      'it is also one of only two lines in the family that really do mean a break',
+      'it is also one of only three lines in the family that really do mean a break',
   },
   {
     what: 'an encoder returning inside the reconnect window ("The encoder returned inside the …")',

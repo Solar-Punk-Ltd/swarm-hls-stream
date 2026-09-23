@@ -351,7 +351,7 @@ export class StreamOrchestrator {
    * ⛔ **Bounded at one grace past the ORIGINAL deadline, which is what keeps it from being a way to
    * hold a dead broadcast open.** See {@link resumeLiveSession}: however many times an encoder
    * announces without delivering, the broadcast still ends at `streamIngestAt + orphanReapMs +
-   * RESUME_FIRST_SEGMENT_GRACE_MS`. Cleared by the first accepted segment, which is the event it is
+   * segmentStallMs`. Cleared by the first accepted segment, which is the event it is
    * waiting for, and by the session retiring.
    */
   private resumeGraceUntil = new Map<string, number>();
@@ -1733,10 +1733,12 @@ export class StreamOrchestrator {
 
   /** Rebuild one stream from its persisted state, register it as live, and return its id. */
   private recoverStream(state: StreamState): string {
-    // RecoveryStore names files by a slash-sanitized id (live/stream → live_stream); the real
-    // streamId lives inside the state. Key the live maps by the real id so incoming segments
-    // (handleSegment looks up the real id) actually match this recovered stream — otherwise the
-    // recovery timer can never be cancelled and the stream is always VOD-ed at the timeout.
+    // RecoveryStore files an entry under its escaped id (live/stream → live%2Fstream) and lists it
+    // back decoded, but an entry saved before ids were escaped is still filed under the old flattened
+    // name (live_stream) and lists back as that. The real streamId lives inside the state. Key the
+    // live maps by the real id so incoming segments (handleSegment looks up the real id) actually
+    // match this recovered stream — otherwise the recovery timer can never be cancelled and the
+    // stream is always VOD-ed at the timeout.
     const streamId = state.streamId;
 
     // Reinstate the ladder from what was persisted, not from the current ABR_LADDER: a rung that was

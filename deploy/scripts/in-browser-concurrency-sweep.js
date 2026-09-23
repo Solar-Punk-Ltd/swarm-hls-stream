@@ -32,9 +32,16 @@
  * out. Two arms sharing a reference would let the second read the first's cached bytes, and the warm
  * control shows what that is worth: single-digit ms against a cold ~800ms.
  *
- * ⛔ ONE TAB. Every weeb-3 tab runs its own libp2p node dialing 160 bootnodes, and concurrent tabs
- * starve each other: measured on 2026-08-11, a second tab halved the newer node's peers and a third
- * left it at zero connected with no error shown. Check the peer count before believing any arm.
+ * ⛔ REFUTED 2026-08-15: there is no one-node-per-machine limit. Six, then twelve, separate browser
+ * processes each reached 200 peers on one host. See `cdp.mjs` for what almost certainly produced the
+ * original numbers, a first node that can sit at 0 peers for over 120 seconds while every later one
+ * attaches within 30, and for the harness rule that survives it: record time-to-attach as a curve,
+ * and never gate an arm on a peer floor with a short timeout. What this file said until then is kept,
+ * as `cdp.mjs` keeps its own:
+ *
+ *   > ⛔ ONE TAB. Every weeb-3 tab runs its own libp2p node dialing 160 bootnodes, and concurrent tabs
+ *   > starve each other: measured on 2026-08-11, a second tab halved the newer node's peers and a third
+ *   > left it at zero connected with no error shown. Check the peer count before believing any arm.
  *
  * HOW TO RUN
  *   1. Open https://lat-murmeldjur.github.io/weeb-3/ in Chrome, ALONE, and wait for the peer count to
