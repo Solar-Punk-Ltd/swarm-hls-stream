@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { countAdvisoryFindings } from '../src/collectChecks.js';
 import { totalLines } from '../src/collectDiff.js';
@@ -10,6 +13,15 @@ import { formatSuiteCounts, parseSuiteCounts } from '../src/parseSuiteCounts.js'
 import { mutationApplicability, surfacesTouched } from '../src/surfaces.js';
 import type { GateFacts } from '../src/types.js';
 import { packagesMissingTotals } from '../src/workspacePackages.js';
+
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+
+/** The directories under `packages/`, read from disk so a package added later is checked too. */
+function packageDirectories(): string[] {
+  return readdirSync(join(REPO_ROOT, 'packages'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `packages/${entry.name}`);
+}
 
 describe('parseSuiteCounts', () => {
   it('reads the TAP totals every node:test package prints', () => {
@@ -244,6 +256,44 @@ describe('mutationApplicability', () => {
 
   it('does not treat a sibling package as the covered one on a bare prefix match', () => {
     assert.equal(mutationApplicability(['packages/stream-uploader-legacy/src/x.ts']).state, 'unavailable');
+  });
+
+  it('applies when only packages/shared changes, because pnpm mutate reaches it too', () => {
+    // stryker.config.json has mutated packages/shared since 2026-08-11, and a shared-only change still
+    // read as unavailable, which told a reviewer there was no harness when there was one.
+    assert.deepEqual(mutationApplicability(['packages/shared/src/publishKey.ts']), { state: 'applies', uncovered: [] });
+  });
+
+  it('names only the client path when a change spans the uploader, shared and the client', () => {
+    // The client has a harness of its own, pnpm mutate:client, which this fact has never counted.
+    const result = mutationApplicability([
+      'packages/stream-uploader/src/engines/ome.ts',
+      'packages/shared/src/publishKey.ts',
+      'packages/client/src/App.tsx',
+    ]);
+
+    assert.equal(result.state, 'applies');
+    assert.deepEqual(result.uncovered, ['packages/client/src/App.tsx']);
+  });
+
+  it('counts as covered exactly the packages the mutate globs of stryker.config.json name', () => {
+    // The covered list is a literal, and it already went stale once: shared joined the config ten days
+    // after the list was written and nothing noticed. This reads the config pnpm mutate runs.
+    const config = JSON.parse(readFileSync(join(REPO_ROOT, 'stryker.config.json'), 'utf8')) as { mutate: string[] };
+    const packageOf = (glob: string): string => {
+      const segments = glob.split('/');
+      const packageEnd = segments.findIndex((s) => s === 'src' || /[*?{[]/.test(s));
+      return segments.slice(0, packageEnd).join('/');
+    };
+    const named = new Set(config.mutate.filter((glob) => !glob.startsWith('!')).map(packageOf));
+    assert.notEqual(named.size, 0);
+
+    for (const dir of named) {
+      assert.deepEqual(mutationApplicability([`${dir}/src/sample.ts`]), { state: 'applies', uncovered: [] }, dir);
+    }
+    for (const dir of packageDirectories().filter((d) => !named.has(d))) {
+      assert.equal(mutationApplicability([`${dir}/src/sample.ts`]).state, 'unavailable', dir);
+    }
   });
 
   it('agrees with surfacesTouched that deploy tests are the deploy surface, not source', () => {
