@@ -238,20 +238,20 @@ A profile is a deployment instance: same topology (from `config.json`), separate
 
 99 is the ceiling because the slot arithmetic owns a second block: the per-rung bee nodes take 11001 to 11006 at slot 0, shifted the same way, and slot 100 would put `API_PORT` at 11000 and the rest of the first block straight on top of them. Anything above 99 is refused with that named as the reason.
 
-| Var                   |  Base | `--portSlot=1` | `--portSlot=2` | `--portSlot=99` |
-| --------------------- | ----: | -------------: | -------------: | --------------: |
-| API_PORT              | 10000 |          10010 |          10020 |           10990 |
-| SRS_SRT_PORT          | 10001 |          10011 |          10021 |           10991 |
-| SRS_RTMP_PORT         | 10002 |          10012 |          10022 |           10992 |
-| SRS_HTTP_PORT         | 10003 |          10013 |          10023 |           10993 |
-| CLIENT_PORT           | 10004 |          10014 |          10024 |           10994 |
-| BEE_UPLOADER_API_PORT | 10005 |          10015 |          10025 |           10995 |
-| BEE_UPLOADER_P2P_PORT | 10006 |          10016 |          10026 |           10996 |
-| BEE_GATEWAY_API_PORT  | 10007 |          10017 |          10027 |           10997 |
-| BEE_GATEWAY_P2P_PORT  | 10008 |          10018 |          10028 |           10998 |
-| SRS_HTTP_API_PORT     | 10009 |          10019 |          10029 |           10999 |
+| Var                   | No flag (stock) |  Base | `--portSlot=1` | `--portSlot=2` | `--portSlot=99` |
+| --------------------- | --------------: | ----: | -------------: | -------------: | --------------: |
+| API_PORT              |            3000 | 10000 |          10010 |          10020 |           10990 |
+| SRS_SRT_PORT          |           10080 | 10001 |          10011 |          10021 |           10991 |
+| SRS_RTMP_PORT         |            1935 | 10002 |          10012 |          10022 |           10992 |
+| SRS_HTTP_PORT         |            8080 | 10003 |          10013 |          10023 |           10993 |
+| CLIENT_PORT           |            5173 | 10004 |          10014 |          10024 |           10994 |
+| BEE_UPLOADER_API_PORT |            1633 | 10005 |          10015 |          10025 |           10995 |
+| BEE_UPLOADER_P2P_PORT |            1634 | 10006 |          10016 |          10026 |           10996 |
+| BEE_GATEWAY_API_PORT  |            1733 | 10007 |          10017 |          10027 |           10997 |
+| BEE_GATEWAY_P2P_PORT  |            1734 | 10008 |          10018 |          10028 |           10998 |
+| SRS_HTTP_API_PORT     |            1985 | 10009 |          10019 |          10029 |           10999 |
 
-The **Base** column is the slot arithmetic's starting point, not what you get with no flag. Without `--portSlot`, values already set in the env files win and only the unset ones fall back to this column, so the SRS ports in a stock local setup are `SRS_SRT_PORT=10080` from `engines/srs/.env.sample` and `SRS_RTMP_PORT=1935` / `SRS_HTTP_PORT=8080` from the compose file's own defaults, not 10001 through 10003.
+The **Base** column is the slot arithmetic's starting point, not what you get with no flag. Without `--portSlot`, values already set in the env files win and only the unset ones fall back to the **No flag (stock)** column, the same default the compose file falls back to. So the SRS ports in a stock local setup are `SRS_SRT_PORT=10080` from `engines/srs/.env.sample` and `SRS_RTMP_PORT=1935` / `SRS_HTTP_PORT=8080` from that column, not 10001 through 10003.
 
 `SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
 
