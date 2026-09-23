@@ -908,18 +908,16 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   // from the active map the stall signal has nothing left to report it through.
   it('keeps the reconnected session when a stop that began before it finishes after it', async () => {
     const id = 'live/stream';
-    const published: unknown[] = [];
     const finalizeStarted: string[] = [];
     const orch = makeTestOrchestrator(
       { recoveryTimeout: RECOVERY_TIMEOUT_MS },
       {},
       makeFakeRecoveryStore(),
       makeFakeCatalog({
-        addStream: async (entry: unknown) => {
+        addStream: async () => {
           finalizeStarted.push('vod');
           // Long enough that the reconnect below lands inside this drain rather than after it.
           await sleep(60);
-          published.push(entry);
         },
       }),
     );
