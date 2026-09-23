@@ -1,6 +1,7 @@
 import { config as loadDotenv } from 'dotenv';
+import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, describe, it } from 'node:test';
@@ -140,5 +141,47 @@ describe('BEE_PUBLISHERS set but unreadable (finding 22)', () => {
       resolvePublisherTargets().map((node) => node.rung),
       ['360p', '720p'],
     );
+  });
+});
+
+describe('an ssh-alias target cannot run a command', () => {
+  // The target is passed to `ssh -G` to resolve an alias, and it reaches ssh only when it is not an
+  // IP or FQDN, so both the marker and the ssh config live under a dot-free directory: a dot would
+  // make IP_OR_FQDN treat the value as a hostname and skip ssh entirely, proving nothing. /tmp is
+  // dot-free on macOS and on the Linux container the box runs, and the random suffix is hex.
+  function dotFreeDir(): string {
+    const dir = join('/tmp', `ssh-alias-${randomBytes(8).toString('hex')}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    return dir;
+  }
+
+  function uploaderConfig(target: string): string {
+    return configFile(JSON.stringify({ services: { 'bee-uploader': target } }));
+  }
+
+  // Resolving the alias through a shell let a `;` chain a second command. Running ssh without a shell
+  // hands the whole value to ssh as one argument, so the marker is never touched.
+  it('does not run a shell command chained onto the alias', () => {
+    const dir = dotFreeDir();
+    const marker = join(dir, 'marker');
+
+    resolveBeeUploaderTarget(uploaderConfig(`x;touch ${marker}`));
+
+    assert.equal(existsSync(marker), false, 'a chained shell command must not run');
+  });
+
+  // Even without a shell, ssh reads a value beginning with `-` as an option. `-F<file>` loads a
+  // config whose `Match exec` runs during `-G` evaluation, so a target starting with `-` is refused
+  // rather than handed to ssh. The destination token is what makes `Match exec` fire at all.
+  it('does not let a -F option load a config whose Match exec runs', () => {
+    const dir = dotFreeDir();
+    const marker = join(dir, 'marker');
+    const sshConfig = join(dir, 'sshconfig');
+    writeFileSync(sshConfig, `Match exec "touch ${marker}"\n`);
+
+    resolveBeeUploaderTarget(uploaderConfig(`-F${sshConfig} streamhost`));
+
+    assert.equal(existsSync(marker), false, 'a -F Match exec must not run');
   });
 });
