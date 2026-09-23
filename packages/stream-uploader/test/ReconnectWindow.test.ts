@@ -37,6 +37,9 @@
 
 import express from 'express';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createSrsEngine } from '../src/engines/srs.js';
@@ -49,6 +52,7 @@ import {
   AdminStateReport,
   STATE_REPORT_ACCEPTED,
 } from '../src/libs/AdminApiClient.js';
+import { LadderGroupStore } from '../src/libs/LadderGroupStore.js';
 import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { AdminSession, MEDIA_TYPE_AUDIO, StreamState } from '../src/types.js';
@@ -1161,6 +1165,242 @@ describe('a whole ladder whose encoder disconnects together (case 8′s neighbou
         `${streamId} dated the second return on some other return’s line`,
       );
     }
+  });
+});
+
+/** What two uploader processes share across a restart: what is on disk, and what is on the feeds. */
+interface RestartDisk {
+  /** The recovery entries, keyed by the file id `RecoveryStore` names them by. */
+  entries: Map<string, StreamState>;
+  /** A real group store over a temp file, because what it drops and keeps is part of the case. */
+  groupsFile: string;
+  feeds: Map<string, FakeFeedHead>;
+}
+
+/** One uploader process over a {@link RestartDisk}. */
+interface LadderProcess {
+  orchestrator: StreamOrchestrator;
+  writes: ManifestWrite[];
+  start: (streamId: string) => void;
+  segment: (label: string, index: number, streamId: string) => Promise<void>;
+  published: (label: string) => Promise<void>;
+  passTime: (ms: number) => Promise<void>;
+  wallNow: () => number;
+}
+
+/** A publish that proved the declaration's key, which is every publish admin mode accepts. */
+const PROVEN_PUBLISHER = { address: null, isAuthenticated: true };
+
+function fileIdOf(streamId: string): string {
+  return streamId.replace(/[/\\]/g, '_');
+}
+
+function restartDisk(): RestartDisk {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reconnect-restart-'));
+  return { entries: new Map(), groupsFile: path.join(root, 'ladder-groups.json'), feeds: new Map() };
+}
+
+/**
+ * A ladder uploader over `disk`, recovering whatever is on it first when `recoverOrder` is given.
+ *
+ * ⛔ The order is the case's, not the store's. A rebuilt ladder used to take the dating of whichever
+ * rung was recovered LAST, so both orders have to be driven for a pass to mean anything.
+ */
+async function ladderProcess(
+  disk: RestartDisk,
+  options: { wallStartMs: number; recoverOrder?: readonly string[] },
+): Promise<LadderProcess> {
+  const clock = new FakeClock();
+  let wallMs = options.wallStartMs;
+  const writes: ManifestWrite[] = [];
+  const uploadedSegments: string[] = [];
+
+  const adminApi = {
+    describe: () => 'http://admin.test',
+    reportState: async () => STATE_REPORT_ACCEPTED,
+  } as unknown as AdminApiClient;
+
+  const orchestrator = makeTestOrchestrator(
+    {
+      adminApi,
+      clock,
+      wallClock: () => wallMs,
+      orphanReapMs: REAP_MS,
+      ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
+      ladderGroupStore: new LadderGroupStore(disk.groupsFile),
+    },
+    {
+      uploadData: async (_stamp, data) => {
+        const label = Buffer.from(data).toString('utf8');
+        uploadedSegments.push(label);
+        return { reference: { toHex: () => `segment-${label}` } };
+      },
+      feedHead: (topic) => disk.feeds.get(topic) ?? null,
+      uploadPayload: async (index, payload, topic) => {
+        const playlist = String(payload);
+        writes.push({ index, playlist, topic });
+        disk.feeds.set(topic, { index, manifest: playlist });
+        return { reference: { toHex: () => `soc-${index}` } };
+      },
+    },
+    makeFakeRecoveryStore({
+      save: (streamId: string, state: StreamState) => disk.entries.set(fileIdOf(streamId), structuredClone(state)),
+      remove: (streamId: string) => disk.entries.delete(fileIdOf(streamId)),
+      listActive: () => (options.recoverOrder ?? []).map(fileIdOf),
+      load: (fileId: string) => disk.entries.get(fileIdOf(fileId)) ?? null,
+    }),
+  );
+
+  if (options.recoverOrder !== undefined) {
+    assert.deepEqual(
+      await orchestrator.recoverStreams(),
+      [...options.recoverOrder],
+      'every rung on disk must rebuild into a session',
+    );
+  }
+
+  return {
+    orchestrator,
+    writes,
+    // ⛔ Authenticated, because that is what admin mode's every publish is, and because a process
+    // that recovered a session has no claimant on record for it: an unauthenticated return to a
+    // recovered session that media had already resumed is REPLACED, by design, which is
+    // `StreamTakeover.test.ts`'s subject and not this one. See `isTheSamePublisher`.
+    start: (streamId) => {
+      assert.equal(
+        orchestrator.startStream(streamId, MEDIA_TYPE_AUDIO, PROVEN_PUBLISHER, DECLARATION),
+        true,
+        `${streamId} must be admitted`,
+      );
+    },
+    segment: async (label, index, streamId) => {
+      assert.deepEqual(
+        orchestrator.handleSegment(streamId, index, SEGMENT_SECONDS, Buffer.from(label)),
+        { accepted: true },
+        `segment ${label} must be taken`,
+      );
+      await waitFor(() => uploadedSegments.includes(label), SETTLE_CEILING_MS);
+    },
+    published: async (label) => {
+      await waitFor(() => writesNaming(writes, label).length > 0, SETTLE_CEILING_MS);
+    },
+    passTime: async (ms) => {
+      wallMs += ms;
+      await clock.advance(ms);
+    },
+    wallNow: () => wallMs,
+  };
+}
+
+/**
+ * ⛔⛔ **The rungs of one return announce seconds apart, so an uploader restart can land between them.**
+ * Which return a rung belongs to was held in memory alone. The rung announcing after the restart was
+ * handed a new name, found no line under it and minted its own, so the ladder dated one instant two
+ * ways for the rest of the broadcast — and at the next outage the rung that had come back first was
+ * not in the new name's set, so it joined THAT line and dated its media a whole outage behind.
+ */
+describe('a ladder whose uploader restarts in the middle of its encoder coming back', () => {
+  const [ahead, behind] = RUNG_NAMES.slice(0, 2).map((rung) => `${LADDER_BASE}_${rung}`);
+  const pair = [ahead, behind];
+  /** The wall clock the second process starts at, past the return, so a rung minting its own line is late. */
+  const RESTART_TAKES_MS = 5_000;
+
+  /**
+   * Both rungs publish, the encoder goes away, and only `ahead` comes back and places its first
+   * segment before the process dies. Hands over the disk and the instant `ahead` returned at.
+   */
+  async function crashedBetweenTheRungsOfOneReturn(): Promise<{ disk: RestartDisk; returnedAt: number }> {
+    const disk = restartDisk();
+    const one = await ladderProcess(disk, { wallStartMs: TEST_ANCHOR.startedAtMs });
+    for (const streamId of pair) {
+      one.start(streamId);
+      await one.segment(`${streamId}-a0`, 0, streamId);
+      await one.segment(`${streamId}-a1`, 1, streamId);
+      await one.published(`${streamId}-a1`);
+    }
+
+    for (const streamId of pair) {
+      one.orchestrator.noteDisconnect(streamId);
+    }
+    await one.passTime(OUTAGE_MS);
+    const returnedAt = one.wallNow();
+
+    one.start(ahead);
+    await one.segment(`${ahead}-b0`, 2, ahead);
+    await one.published(`${ahead}-b0`);
+    // The crash lands once both entries say what they published, which is what the next boot reads.
+    await waitFor(
+      () =>
+        disk.entries.get(fileIdOf(ahead))?.segments.length === 3 &&
+        disk.entries.get(fileIdOf(behind))?.segments.length === 2,
+      SETTLE_CEILING_MS,
+    );
+    return { disk, returnedAt };
+  }
+
+  for (const [name, recoverOrder] of [
+    ['the rung that came back is recovered first', [ahead, behind]],
+    ['the rung that came back is recovered last', [behind, ahead]],
+  ] as const) {
+    it(`puts the rung that returns after the restart on its sibling’s line, when ${name}`, async () => {
+      const { disk, returnedAt } = await crashedBetweenTheRungsOfOneReturn();
+      const two = await ladderProcess(disk, { wallStartMs: returnedAt + RESTART_TAKES_MS, recoverOrder });
+
+      two.start(behind);
+      await two.segment(`${behind}-b0`, 2, behind);
+      await two.published(`${behind}-b0`);
+
+      const write = writesNaming(two.writes, `${behind}-b0`).at(-1);
+      assert.ok(write);
+      // Both rungs resume at sequence 2, so one line dates them identically.
+      assert.equal(
+        dateOfSegment(write.playlist, `${behind}-b0`),
+        new Date(returnedAt).toISOString(),
+        'the rung that came back after the restart minted a line of its own, so the ladder dates this ' +
+          'return two ways',
+      );
+    });
+  }
+
+  it('starts a new line at the next outage rather than joining the one the restart interrupted', async () => {
+    const { disk, returnedAt } = await crashedBetweenTheRungsOfOneReturn();
+    const two = await ladderProcess(disk, {
+      wallStartMs: returnedAt + RESTART_TAKES_MS,
+      recoverOrder: [ahead, behind],
+    });
+
+    two.start(behind);
+    await two.segment(`${behind}-b0`, 2, behind);
+    await two.published(`${behind}-b0`);
+    // `ahead`'s encoder was already back, so its media simply carries on into the new process.
+    await two.segment(`${ahead}-b1`, 3, ahead);
+    await two.published(`${ahead}-b1`);
+
+    for (const streamId of pair) {
+      two.orchestrator.noteDisconnect(streamId);
+    }
+    await two.passTime(OUTAGE_MS);
+    const secondReturnAt = two.wallNow();
+    two.start(ahead);
+    await two.segment(`${ahead}-c0`, 4, ahead);
+    await two.published(`${ahead}-c0`);
+    two.start(behind);
+    await two.segment(`${behind}-c0`, 3, behind);
+    await two.published(`${behind}-c0`);
+
+    const dateOf = (streamId: string): string => {
+      const write = writesNaming(two.writes, `${streamId}-c0`).at(-1);
+      assert.ok(write);
+      return dateOfSegment(write.playlist, `${streamId}-c0`);
+    };
+    assert.equal(
+      dateOf(ahead),
+      new Date(secondReturnAt).toISOString(),
+      'the rung that had come back before the restart joined the line minted after it, so it dates this ' +
+        'return an outage behind',
+    );
+    // One line, materialised a sequence lower for the rung that is a segment behind.
+    assert.equal(dateOf(behind), new Date(secondReturnAt - SEGMENT_SECONDS * 1_000).toISOString());
   });
 });
 

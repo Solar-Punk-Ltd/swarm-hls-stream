@@ -646,19 +646,58 @@ export class StreamOrchestrator {
    * ladder group store, so they outlive the process: a count restarting at zero after a reboot would
    * let a return join a line minted before it, which is the defect this exists to end wearing a
    * different hat.
+   *
+   * ⛔⛔ **A ladder's return in progress is kept in its group record, and read back from it after a
+   * restart.** The rungs of one return announce seconds apart, so an uploader restarted between them
+   * is an ordinary crash rather than a contrived one. Held in memory alone, the map came back empty
+   * and the next rung minted a second name: it and every rung after it dated the rest of the
+   * broadcast on a line of their own, and at the next outage the rung that had already come back was
+   * not in the new name's set, so it joined that line a whole outage behind. What is read back is the
+   * rule itself, the token AND the rungs that joined it, never "the newest token": a finished return
+   * and one a sibling has yet to join carry the same kind of token, and only the set tells them apart.
+   * A lone rendition needs none of it, since its only rung is always in the set.
    */
   private tokenForThisReturn(streamId: string): string {
-    const key = this.datingKeyOf(streamId, this.streamBases.get(streamId) ?? null);
-    const inProgress = this.returnsInProgress.get(key);
+    const base = this.streamBases.get(streamId) ?? null;
+    const key = this.datingKeyOf(streamId, base);
+    const inProgress = this.returnsInProgress.get(key) ?? this.persistedReturnOf(base);
 
     if (inProgress !== undefined && !inProgress.resumedRungs.has(streamId)) {
       inProgress.resumedRungs.add(streamId);
+      this.rememberReturn(key, base, inProgress);
       return inProgress.token;
     }
 
     const started = { token: crypto.randomUUID(), resumedRungs: new Set([streamId]) };
-    this.returnsInProgress.set(key, started);
+    this.rememberReturn(key, base, started);
     return started.token;
+  }
+
+  /** The return a ladder's group record says its rungs are coming back from, after a restart of this process. */
+  private persistedReturnOf(base: string | null): { token: string; resumedRungs: Set<string> } | undefined {
+    const persisted = base === null ? undefined : this.ladderGroups.get(base)?.returnInProgress;
+    return persisted === undefined
+      ? undefined
+      : { token: persisted.token, resumedRungs: new Set(persisted.resumedRungs) };
+  }
+
+  /**
+   * Hold the return in progress, and write it into the ladder's group record so a restart of this
+   * process finds it. A lone rendition has no record and keeps it in memory only.
+   */
+  private rememberReturn(
+    key: string,
+    base: string | null,
+    inProgress: { token: string; resumedRungs: Set<string> },
+  ): void {
+    this.returnsInProgress.set(key, inProgress);
+    const ladder = base === null ? undefined : this.ladderGroups.get(base);
+    if (base !== null && ladder !== undefined) {
+      this.rememberLadder(base, {
+        ...ladder,
+        returnInProgress: { token: inProgress.token, resumedRungs: [...inProgress.resumedRungs] },
+      });
+    }
   }
 
   /**
@@ -1711,22 +1750,34 @@ export class StreamOrchestrator {
       fragmentSeconds: this.config.fragmentSeconds,
     };
     const base = state.ladder ? baseStreamId(streamId, state.ladder.rung.name) : null;
+    // What the broadcast's rungs decide their dating against, which for a ladder is the ladder's own
+    // record rather than this rung's copy. This rung's uploader still dates from its own `anchor`.
+    let sharedAnchor = anchor;
 
     if (state.ladder && base !== null) {
+      // ⛔⛔ **The ladder's record, when there is one for this group, and never the last rung
+      // recovered.** A rung's own anchor holds only the epochs it placed itself on top of what it had
+      // when its session started, so a ladder rebuilt rung by rung from their own copies took the
+      // dating of whichever rung happened to be recovered last. A line a sibling minted for a return
+      // still in progress vanished with it, and the rung that then came back had nothing to join. The
+      // record is the one every rung's re-anchoring was written to, so it holds all of them.
+      //
       // Written back to disk rather than only read into memory. The recovery entry and the group
       // store are two records of one fact and either can be the survivor: a rung that finalized
       // cleared its entry and left the group behind, and an entry an operator restores by hand
-      // arrives with no group on disk at all.
-      this.rememberLadder(base, {
-        group: state.ladder.group,
-        startedAtMs: anchor.startedAtMs,
-        epochs: anchor.epochs,
-      });
+      // arrives with no group on disk at all, which is the case this rung's own anchor is kept for.
+      const remembered = this.ladderGroups.get(base) ?? this.config.ladderGroupStore?.load(base) ?? null;
+      const ladder: RememberedLadder =
+        remembered !== null && remembered.group === state.ladder.group
+          ? { ...remembered, startedAtMs: remembered.startedAtMs ?? anchor.startedAtMs }
+          : { group: state.ladder.group, startedAtMs: anchor.startedAtMs, epochs: anchor.epochs };
+      this.rememberLadder(base, ladder);
       this.streamBases.set(streamId, base);
+      sharedAnchor = this.anchorOf(ladder);
     }
 
     const datingKey = this.datingKeyOf(streamId, base);
-    this.broadcastAnchors.set(datingKey, anchor);
+    this.broadcastAnchors.set(datingKey, sharedAnchor);
 
     // Routed from the persisted rung name rather than from a fresh ladder match, so a recovered rung
     // resumes on the node that has been paying for it. If the ladder was reconfigured while this
@@ -2374,6 +2425,7 @@ export class StreamOrchestrator {
       group: persisted.group,
       startedAtMs: persisted.startedAtMs ?? this.wallClock(),
       ...(persisted.epochs === undefined ? {} : { epochs: persisted.epochs }),
+      ...(persisted.returnInProgress === undefined ? {} : { returnInProgress: persisted.returnInProgress }),
     };
   }
 
@@ -2446,9 +2498,10 @@ export class StreamOrchestrator {
     const reanchored = withEpoch(anchor, epoch);
     this.broadcastAnchors.set(datingKey, reanchored);
 
-    const group = base === null ? undefined : this.ladderGroups.get(base)?.group;
-    if (base !== null && group !== undefined) {
-      this.rememberLadder(base, { group, startedAtMs: reanchored.startedAtMs, epochs: reanchored.epochs });
+    // Spread rather than rebuilt, so the return in progress the record also carries survives the write.
+    const ladder = base === null ? undefined : this.ladderGroups.get(base);
+    if (base !== null && ladder !== undefined) {
+      this.rememberLadder(base, { ...ladder, startedAtMs: reanchored.startedAtMs, epochs: reanchored.epochs });
     }
 
     this.logger.info(

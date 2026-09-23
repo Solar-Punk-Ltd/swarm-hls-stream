@@ -25,6 +25,28 @@ export interface RememberedLadder {
    * them. See `BroadcastEpoch`.
    */
   epochs?: BroadcastEpoch[];
+  /**
+   * The return this ladder's rungs are coming back from, and which of them have said so. Absent until
+   * the encoder first comes back.
+   *
+   * ⛔⛔ **Persisted because the rungs of one return can straddle a restart of this process.** Each rung
+   * announces its return separately, seconds apart, and the name of the return is the only thing that
+   * lets them join one dating line. Held in memory alone, an uploader restarted between two rungs'
+   * webhooks minted a second name for the rungs still to come: they dated the rest of the broadcast
+   * on a line of their own, and at the next outage the rung that had already come back joined THAT
+   * line, a whole outage behind. See `StreamOrchestrator.tokenForThisReturn`.
+   *
+   * The rungs are kept with the token rather than the token alone, because they are what says the
+   * return is still in progress: the newest name on its own cannot tell a finished return from one a
+   * sibling has yet to join.
+   */
+  returnInProgress?: ReturnInProgress;
+}
+
+/** A return of a ladder's encoder, named, with the rungs that have announced they are back from it. */
+export interface ReturnInProgress {
+  token: string;
+  resumedRungs: string[];
 }
 
 /**
@@ -56,6 +78,27 @@ function readEpochs(epochs: unknown): BroadcastEpoch[] {
       typeof (epoch as BroadcastEpoch).fromSequence === 'number' &&
       typeof (epoch as BroadcastEpoch).atMs === 'number',
   );
+}
+
+/**
+ * The return a persisted record names, or undefined for one that names none or names it damaged.
+ *
+ * Dropped rather than repaired, for `readEpochs`'s reason: a rung that cannot find the return costs
+ * the ladder one dating line, which is exactly what a restart cost it before this was kept.
+ */
+function readReturnInProgress(value: unknown): ReturnInProgress | undefined {
+  if (value === null || typeof value !== 'object') {
+    return undefined;
+  }
+  const { token, resumedRungs } = value as Partial<ReturnInProgress>;
+  if (
+    typeof token !== 'string' ||
+    !Array.isArray(resumedRungs) ||
+    !resumedRungs.every((rung) => typeof rung === 'string')
+  ) {
+    return undefined;
+  }
+  return { token, resumedRungs };
 }
 
 /**
@@ -107,7 +150,12 @@ export class LadderGroupStore {
    * instant there rather than being handed a fabricated one, because a wrong wall clock on a
    * recording is worse than a late one on a broadcast that was already in progress.
    */
-  public load(base: string): { group: string; startedAtMs: number | null; epochs?: BroadcastEpoch[] } | null {
+  public load(base: string): {
+    group: string;
+    startedAtMs: number | null;
+    epochs?: BroadcastEpoch[];
+    returnInProgress?: ReturnInProgress;
+  } | null {
     const identity = this.read()[base];
     if (typeof identity === 'string') {
       return { group: identity, startedAtMs: null };
@@ -116,12 +164,14 @@ export class LadderGroupStore {
       return null;
     }
     const epochs = readEpochs(identity.epochs);
+    const returnInProgress = readReturnInProgress(identity.returnInProgress);
     return {
       group: identity.group,
       startedAtMs: typeof identity.startedAtMs === 'number' ? identity.startedAtMs : null,
       // Absent rather than empty for a broadcast nothing has restarted, so a record that predates
       // the epochs reads back the way it was written.
       ...(epochs.length === 0 ? {} : { epochs }),
+      ...(returnInProgress === undefined ? {} : { returnInProgress }),
     };
   }
 
