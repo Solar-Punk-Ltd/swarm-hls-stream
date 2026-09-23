@@ -117,14 +117,15 @@ pnpm stamp:setup
 ```
 
 1. Polls the bee node until it's healthy
-2. Checks wallet balance. If the node has no BZZ or xDAI, prints the node's ethereum address and stops so you can fund it
-3. Checks for existing usable stamps, and uses one if found
-4. Checks the root `.env` can be written, and **refuses to buy anything if it cannot**. A batch id that cannot be recorded is worth nothing, and this is the last moment refusing is free
-5. Buys a new stamp via `createPostageBatch` (default: amount `10000000000`, depth `20`)
-6. Writes `STAMP=<batchId>` to the root `.env` **immediately**, before anything else that can fail
-7. Waits for the stamp to become usable (~5 minutes)
+2. Checks for existing usable stamps. If one is found it is written to the root `.env` and the run ends there, without the wallet ever being checked. Listing needs no chain while the balance needs a working Gnosis RPC, so a failing RPC cannot block the path that spends nothing
+3. Checks the wallet balance against the batch's cost. If the BZZ does not cover the batch, or there is no xDAI for gas, prints the node's ethereum address and stops so you can fund it
+4. Checks the root `.env` can be written, and **refuses to buy anything if it cannot**. A batch id that cannot be recorded is worth nothing, so this is checked while refusing is still free
+5. Asks to confirm the purchase, unless `--yes` is given
+6. Buys a new stamp via `createPostageBatch` (default: amount `10000000000`, depth `20`)
+7. Writes `STAMP=<batchId>` to the root `.env` **immediately**, before anything else that can fail
+8. Waits for the stamp to become usable (~5 minutes)
 
-Steps 6 and 7 are in that order deliberately. The wait routinely times out on a slow chain, and it
+Steps 7 and 8 are in that order deliberately. The wait routinely times out on a slow chain, and it
 used to sit between the purchase and the only write, so a timeout meant a batch you had paid for
 whose id existed only in terminal scrollback.
 
