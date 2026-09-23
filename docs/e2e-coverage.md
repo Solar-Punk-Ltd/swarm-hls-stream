@@ -109,8 +109,8 @@ publishes and an idle stage would look identical to a stale one. One `docker exe
 refusal names redeploying as the fix and rewording the patterns as the wrong one, because the wrong
 one is tempting and buys a green run against code nobody is shipping.
 
-Since 2026-09-01 it lists every family the harness parses, nineteen at this writing and the gate prints its own count rather than trusting this sentence: the four originals, the
-finalize flips and session ends seven scenarios wait on, the six lines that say the uploader lost a
+Since 2026-09-01 it lists every family the harness parses, twenty at this writing and the gate prints its own count rather than trusting this sentence: the four originals, the
+finalize flips and session ends seven scenarios wait on, the seven lines that say the uploader lost a
 segment or declared a break
 (six suites assert that count is zero, and a line nothing matches passes them vacuously green), the
 catalog-lost discriminator, the catalog announce, and the finalize that resumes rather than
@@ -118,15 +118,16 @@ republishes after a crash. The finalize one reports whether scenario H's kill la
 it aims at, and a deployment that cannot write it still passes the scenario, and passes it without
 anyone being able to say the window was ever exercised.
 
-The newest, added 2026-09-04, is the line naming a postage batch bee refused, and it is the third entry that refuses a deployment built before it, so the next sitting after this checkout lands asks for one uploader redeploy. Before it came the sixth arming line, added on 2026-09-03: a gap the uploader was never told about
+The newest, added with the reconnect window of 2026-09-22, is the seventh arming line, written when an encoder that came back inside that window has its first segment placed, carrying the break at the seam. That segment is uploaded like any other and the run either side of the join stays gapless, so nothing else in the suite can see it. It refuses any uploader built before it, so a stage deployed before the reconnect window asks for one redeploy. Before it, added 2026-09-04, came the line naming a postage batch bee refused, and it is the third entry that refuses a deployment built before it, so the next sitting after this checkout lands asks for one uploader redeploy. Before that came the sixth arming line, added on 2026-09-03: a gap the uploader was never told about
 and worked out from the engine's own numbering. It is the only kind of loss the shipped SRS path
 produces, because SRS posts each closed segment to the webhook once and never retries, so everything
 it closed while the uploader was dead is simply absent. Scenario F waits on that family by itself,
 which is why `logwatch` counts it separately as well as inside the total. The fifth was added
 the same day with the re-anchored dating: the segment where the engine's own counter restarted now
 carries a break, and that path goes nowhere near `pendingDiscontinuity`. Both leave the uploaded
-segment run gapless, so nothing else in the suite can see either of them. ⚠️ Since 2026-09-06 only two
-of the six really are a break, the origin declaring one and the counter restarting. The other four
+segment run gapless, so nothing else in the suite can see either of them. ⚠️ Only three of the seven
+really are a break, the origin declaring one, the counter restarting and, since 2026-09-22, the encoder
+returning inside the reconnect window. Since 2026-09-06 the other four
 report a lost segment, whose hole the playlist says with gap entries, and they stay in the family
 because every suite reading the count is asking whether the broadcast lost or broke anything. Three entries now refuse
 any uploader built
