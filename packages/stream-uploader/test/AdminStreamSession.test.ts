@@ -60,6 +60,20 @@ const SETTLE_CEILING_MS = 4_000;
 /** A playlist the head read can hand back. Its content decides nothing on the resume path. */
 const SOME_PLAYLIST = '#EXTM3U\n#EXT-X-VERSION:3\n';
 
+/** A head naming one segment, so a case can read both facts a session takes off it. */
+const PREVIOUS_ON_THIS_FEED = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-TARGETDURATION:2',
+  '#EXT-X-MEDIA-SEQUENCE:6',
+  '',
+  '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:21.849Z',
+  '#EXTINF:2,',
+  'd'.repeat(64),
+  '#EXT-X-ENDLIST',
+  '',
+].join('\n');
+
 /**
  * A read failure that is not a 404 and not worth retrying, so the head read fails on its first
  * attempt instead of spending its fifteen second window proving it.
@@ -181,6 +195,160 @@ describe('the feed index a declared topic resumes from', () => {
     await feedOneSegment(session.uploader, 0);
 
     assert.equal(session.published[0]?.index, 8, 'the first write of this session must sit above the feed head');
+  });
+
+  /**
+   * ⛔ The prefix is persisted rather than re-derived, for the same reason the sequence offset is: by
+   * the time a recovered session runs, the feed head is its own live playlist, so re-reading it would
+   * glue this session's own window in front of itself. `FinalizeResume.test.ts` drives what the
+   * recovered session then builds; this pins that the entry actually carries it.
+   */
+  it('writes what it inherited into its recovery entry', async () => {
+    const head = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-MEDIA-SEQUENCE:6',
+      '',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:21.849Z',
+      '#EXTINF:2,',
+      'c'.repeat(64),
+      '#EXT-X-ENDLIST',
+      '',
+    ].join('\n');
+    const session = newSession({ feedHead: () => ({ index: 7, manifest: head }) });
+
+    await feedOneSegment(session.uploader, 0);
+
+    const entry = session.saved.at(-1);
+    assert.equal(entry?.sequenceOffset, 7, 'six entries behind it plus the one it names');
+    assert.equal(entry?.inherited?.mediaSequence, 6);
+    assert.equal(entry?.inherited?.durationSeconds, 2);
+    assert.deepEqual(entry?.inherited?.lines.at(-1), 'c'.repeat(64));
+  });
+
+  /**
+   * ⛔⛔ The window a review found on 2026-09-21. The head read runs behind the first segment's
+   * upload and the segment path does not await the manifest publish, so a recovery entry could be
+   * written while the feed position was still unsettled. Such an entry says `sequenceOffset: 0` and
+   * no inherited recording, which is not "unknown yet" but a positive claim that this session opened
+   * on an empty feed — and a recovered session never re-reads its head, so it republished the
+   * numbering from a number viewers had already been handed and finalized a recording that dropped
+   * every earlier session.
+   *
+   * Driven here through the other thing that holds the same state open, an earlier session still
+   * finalizing onto the topic they share, because it can be held deterministically where the race
+   * itself cannot. It is the same guard and the same refusal. Nothing is lost by writing no entry,
+   * because no playlist may be published before the same facts are settled, so a session that has
+   * not settled them has told no viewer anything.
+   */
+  it('writes no recovery entry while its feed position is unsettled', async () => {
+    let release: (() => void) | null = null;
+    const session = newSession({
+      feedHead: () => ({ index: 7, manifest: PREVIOUS_ON_THIS_FEED }),
+      // An earlier session still finalizing onto the topic they share, which is the other thing that
+      // holds the feed position open. The head is not read at all until it drains.
+      predecessorDrained: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(
+      session.saved.length,
+      0,
+      'an entry here would claim this session opened on an empty feed, which a recovery believes',
+    );
+
+    release!();
+    await feedOneSegment(session.uploader, 1);
+
+    const entry = session.saved.at(-1);
+    assert.ok(entry, 'and the entry is written as soon as the read answers');
+    assert.equal(entry?.sequenceOffset, 7, 'carrying the numbering the head really left');
+    assert.equal(entry?.inherited?.durationSeconds, 2, 'and the recording it really has to open with');
+    assert.equal(entry?.segments.length, 2, 'naming the segment it held while the read was outstanding as well');
+  });
+
+  /**
+   * ⛔ And the entry lands on the settling itself rather than waiting for a segment to follow it.
+   * Otherwise a broadcast whose first segment settled the position and whose second never came would
+   * hold an uploaded, unnamed segment with nothing on disk recording it.
+   */
+  it('writes the entry as soon as the head read settles, with no further segment needed', async () => {
+    let release: (() => void) | null = null;
+    const session = newSession({
+      feedHead: () => ({ index: 7, manifest: PREVIOUS_ON_THIS_FEED }),
+      predecessorDrained: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+    assert.equal(session.saved.length, 0);
+
+    release!();
+    // The publish the held segment already queued, re-attempted now the position can settle.
+    session.uploader.handleSegment(1, 2, Buffer.from('seg1'));
+    await drain(session.uploader);
+
+    const entry = session.saved.at(-1);
+    assert.equal(entry?.sequenceOffset, 7);
+    assert.equal(entry?.inherited?.mediaSequence, 6);
+  });
+
+  /**
+   * ⛔⛔ The half of the persist gate that could have cost something. A `live` the admin was told
+   * while no recovery entry existed would strand that row: nothing on the uploader side would survive
+   * a crash to flip it, because the entry the next boot recovers from was never written. It cannot
+   * happen, because the report is `notifyStart`'s, which is reached only through `announceToCatalog`,
+   * which `commitManifest` calls BELOW its `feedPositionSettled` refusal. Pinned here so moving the
+   * announce in front of that gate fails rather than strands a row.
+   */
+  it('never reports live to the admin before a recovery entry exists', async () => {
+    let release: (() => void) | null = null;
+    const session = newSession({
+      feedHead: () => ({ index: 7, manifest: PREVIOUS_ON_THIS_FEED }),
+      predecessorDrained: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(session.saved.length, 0, 'the entry is deliberately withheld while the position is unsettled');
+    assert.equal(session.reports.length, 0, 'so nothing may have told the admin the stream is live either');
+
+    release!();
+    await feedOneSegment(session.uploader, 1);
+
+    assert.ok(session.saved.length > 0);
+    assert.ok(
+      session.reports.some((report) => report.state === ADMIN_STATE_LIVE),
+      'and both happen once it settles, in that order',
+    );
+  });
+
+  /**
+   * ⛔ The standalone deployment is untouched by that. Its topic is a fresh uuid per session, so its
+   * feed position is settled by construction and it persists from its first segment exactly as it
+   * always did.
+   */
+  it('persists from the first segment on a stream that reads no head at all', async () => {
+    const session = newSession({ standalone: true });
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.ok(session.saved.length > 0, 'a session with nothing to settle has nothing to wait for');
+  });
+
+  it('carries no inherited recording when the topic has never been written', async () => {
+    const session = newSession();
+
+    await feedOneSegment(session.uploader, 0);
+
+    assert.equal(session.saved.at(-1)?.inherited, undefined);
   });
 
   it('starts at zero when nothing has ever been written on the topic', async () => {
@@ -841,5 +1009,144 @@ describe('a rung of a declared ladder', () => {
     await feedOneSegment(session.uploader, 1);
 
     assert.deepEqual(session.delivered, ['720p', '720p']);
+  });
+
+  /**
+   * ## The head recording carries every session this rung's feed has held
+   *
+   * A rung's topic is derived, so it outlives its sessions and a broadcaster who stops and starts
+   * again writes several recordings onto one feed. The catalogue points at the head, so the head
+   * recording opens with what was already there: the previous playlist verbatim, one
+   * `#EXT-X-DISCONTINUITY`, then this session's own media.
+   *
+   * ⛔ `ManifestManager.test.ts` owns the shape of the glued playlist. These cases own the wiring: that
+   * the SAME head read that moves the numbering is also what the recording inherits, that the duration
+   * the admin is told is the whole broadcast, and that a session over an empty feed publishes exactly
+   * what it always did.
+   */
+  describe('a rung whose feed already holds a recording', () => {
+    const PREVIOUS_REF = 'a'.repeat(64);
+    const PREVIOUS_RECORDING = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:21.849Z',
+      '#EXTINF:2,',
+      PREVIOUS_REF,
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:23.849Z',
+      '#EXTINF:2,',
+      'b'.repeat(64),
+      '#EXT-X-ENDLIST',
+      '',
+    ].join('\n');
+
+    /** The recording, which finalize publishes last, out of everything this session wrote. */
+    function recordingOf(published: readonly { playlist: string }[]): string {
+      const vod = published.filter((write) => write.playlist.includes('#EXT-X-PLAYLIST-TYPE:VOD'));
+      assert.equal(vod.length, 1, 'a finalize publishes exactly one recording');
+      return vod[0].playlist;
+    }
+
+    function urisOf(playlist: string): string[] {
+      return playlist
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '' && !line.startsWith('#'));
+    }
+
+    it('finalizes a recording that opens with the previous one and seams it once', async () => {
+      const session = newLadderSession({ feedHead: () => ({ index: 4, manifest: PREVIOUS_RECORDING }) });
+
+      await feedOneSegment(session.uploader, 0);
+      await feedOneSegment(session.uploader, 1);
+      await session.uploader.notifyStop();
+
+      const recording = recordingOf(session.published);
+      const uris = urisOf(recording);
+
+      assert.equal(uris[0], PREVIOUS_REF, 'the recording must start where the broadcast started');
+      assert.equal(uris.length, 4, 'two inherited entries and this session′s two');
+      assert.equal(recording.split('#EXT-X-DISCONTINUITY\n').length - 1, 1, 'one seam, never two');
+      assert.match(recording, /#EXT-X-MEDIA-SEQUENCE:0/, 'the whole broadcast starts at the prefix′s number');
+    });
+
+    /**
+     * ⛔ Every number reported about the recording describes the recording. The admin's `vod` report is
+     * what an audience is shown as the length of what they are about to play, and stopping it at the
+     * last restart would call a four-session broadcast as long as its last session.
+     */
+    it('reports the whole broadcast′s duration, not this session′s share', async () => {
+      const session = newLadderSession({
+        feedHead: () => ({ index: 4, manifest: PREVIOUS_RECORDING }),
+        // The rung whose report finished the ladder, which is the one that tells the admin how long
+        // the recording plays.
+        announce: (_upsert, attempt) => ({
+          masterIndex: 0,
+          flippedToFinished: attempt > 1,
+          duration: null,
+        }),
+      });
+
+      await feedOneSegment(session.uploader, 0);
+      await feedOneSegment(session.uploader, 1);
+      await session.uploader.notifyStop();
+
+      assert.equal(
+        session.upserts.at(-1)?.rendition.duration,
+        8,
+        'the rendition record: four seconds inherited plus this session′s four',
+      );
+      const vod = session.reports.find((report) => report.state === ADMIN_STATE_VOD);
+      assert.equal(vod?.state === ADMIN_STATE_VOD ? vod.duration : null, 8, 'and the admin′s vod report with it');
+    });
+
+    /**
+     * ⚠️ A predecessor that was killed never published a recording, so its head is a live window and
+     * only that window is inherited. Not worked around here: that session's own recovery entry is what
+     * recovers the rest of its recording.
+     */
+    it('inherits only the window a session that never finalized left behind', async () => {
+      const liveWindow = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:2',
+        '#EXT-X-MEDIA-SEQUENCE:8',
+        '',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:21.849Z',
+        '#EXTINF:2,',
+        PREVIOUS_REF,
+        '',
+      ].join('\n');
+      const session = newLadderSession({ feedHead: () => ({ index: 4, manifest: liveWindow }) });
+
+      await feedOneSegment(session.uploader, 0);
+      await session.uploader.notifyStop();
+
+      const uris = urisOf(recordingOf(session.published));
+      assert.equal(uris[0], PREVIOUS_REF, 'the window that was on the head is inherited');
+      assert.equal(uris.length, 2, 'and nothing that had already slid out of it');
+    });
+
+    /**
+     * ⛔⛔ A standalone single-rendition stream mints a fresh topic per broadcast, so its head is empty
+     * by construction and nothing is inherited. That deployment must publish exactly what it published
+     * before any of this existed.
+     */
+    it('publishes an unglued recording when its feed has never been written', async () => {
+      const session = newLadderSession();
+
+      await feedOneSegment(session.uploader, 0);
+      await feedOneSegment(session.uploader, 1);
+      await session.uploader.notifyStop();
+
+      const recording = recordingOf(session.published);
+      assert.equal(urisOf(recording).length, 2, 'only this session′s own segments');
+      assert.match(recording, /#EXT-X-MEDIA-SEQUENCE:0/);
+      assert.ok(!recording.includes('#EXT-X-DISCONTINUITY'), 'there is no seam to declare');
+      assert.ok(!recording.includes('#EXT-X-DISCONTINUITY-SEQUENCE'));
+    });
   });
 });

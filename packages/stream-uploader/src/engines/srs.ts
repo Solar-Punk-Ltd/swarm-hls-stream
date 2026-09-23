@@ -386,13 +386,6 @@ function reasonToRefuseRung(
   return null;
 }
 
-function stopStreamQuietly(streamOrchestrator: StreamOrchestrator, streamId: string): void {
-  streamOrchestrator.stopStream(streamId).catch((error) => {
-    const msg = getErrorMessage(error);
-    logger.error(`[SRS] Error during stream stop ${streamId}: ${msg}`);
-  });
-}
-
 /**
  * What a publish has to prove, in whichever of the two mutually exclusive ways this deployment uses.
  *
@@ -444,6 +437,18 @@ async function handleStreams(
     // broadcaster on the ingest vhost was admitted with no key whenever the ladder was on. See SEC-28.
     const role = classifyLadderStream(payload, streamId, abr);
 
+    // ⛔⛔ **An unpublish reports a disconnect and ends nothing.** SRS closes a publish within seconds
+    // of any interruption — immediately on a clean stop, under five seconds on a torn-down socket,
+    // under fifteen on a frozen one, measured live against 6.0.184 on 2026-09-22 — so answering it
+    // with `stopStream` sealed the recording one or two seconds into every outage a broadcaster was
+    // about to recover from. `noteDisconnect` holds the session instead, and what ends the broadcast
+    // is the uploader's own reap window with no media in it. An encoder back inside that window
+    // arrives here as an ordinary `on_publish` and resumes the session it left.
+    //
+    // ⛔ SRS's own timeout is deliberately NOT lengthened to match. A clean stop sends an explicit
+    // goodbye, so no timeout applies to it at all, and a publish SRS still believes in refuses the
+    // encoder's own reconnect as a stream already busy. The uploader is the only side that can hold
+    // anything open here.
     if (payload.action === SRS_ACTION_UNPUBLISH) {
       if (role.kind === 'stray') {
         srsResponse(res, SRS_ACCEPT);
@@ -453,12 +458,12 @@ async function handleStreams(
       if (role.kind === 'rung') {
         // No key to parse, so the acknowledgement is safe to send first. The base-authenticated
         // requirement is dropped on the stop side on purpose: a source that has already unpublished
-        // has cleared its base, and a rung has to be able to stop cleanly rather than linger until the
-        // orphan reaper takes it. The loopback origin is the gate.
+        // has cleared its base, and a rung has to be able to say it went quiet rather than say
+        // nothing at all. The loopback origin is the gate.
         srsResponse(res, SRS_ACCEPT);
         if (isLoopbackPublisher(payload)) {
           logger.info(`[SRS] Rung unpublished: ${streamId}`);
-          stopStreamQuietly(streamOrchestrator, streamId);
+          streamOrchestrator.noteDisconnect(streamId);
         }
         return;
       }
@@ -497,7 +502,7 @@ async function handleStreams(
       }
 
       logger.info(`[SRS] Stream unpublished: ${streamId}`);
-      stopStreamQuietly(streamOrchestrator, streamId);
+      streamOrchestrator.noteDisconnect(streamId);
       return;
     }
 

@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 
 import { BeePublisherPool, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
 import { Logger } from '../src/libs/Logger.js';
-import { ManifestManager } from '../src/libs/ManifestManager.js';
+import { inheritedTimeline, ManifestManager } from '../src/libs/ManifestManager.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import {
@@ -88,6 +88,8 @@ interface RecoveredOptions {
   socIndex?: number | null;
   /** Built without `restoreState`, which is an ordinary session rather than a recovered one. */
   fresh?: boolean;
+  /** The recording this session had inherited before it died, as its recovery entry carried it. */
+  inherited?: ReturnType<ManifestManager['inheritedPrefix']>;
 }
 
 const STREAM_ID = 'live/stream_1080p';
@@ -121,6 +123,7 @@ function makeRecovered(options: RecoveredOptions = {}): RecoveredUploader {
     hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
     isFirstSegmentReady: true,
     isFirstManifestReady: true,
+    inherited: options.inherited ?? undefined,
   };
 
   const uploader = new StreamUploader({
@@ -722,5 +725,80 @@ describe('a recovered single-rendition stream whose entry outlived the recording
     assert.notEqual(wroteAt, -1, 'the finalize never wrote the catalog at all');
     assert.notEqual(announcedAt, -1, 'the finalize never announced the flip at all');
     assert.ok(wroteAt < announcedAt, `the flip was announced before the write landed: ${sequence.join(' | ')}`);
+  });
+});
+
+/**
+ * ## A crash must not un-glue the recording
+ *
+ * The playlist a session inherits is read off the feed head once, before anything is published. By
+ * the time a recovered session runs, that head is its own last live playlist, so the prefix cannot be
+ * read again — which is the same reason `sequenceOffset` is persisted. It travels in the recovery
+ * entry, and a finalize that came back after a crash writes the same recording the session would
+ * have written had it lived.
+ */
+describe('a glued recording surviving a crash', () => {
+  const PREVIOUS_REF = 'a'.repeat(64);
+  const PREVIOUS_RECORDING = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:2',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '',
+    '#EXT-X-PROGRAM-DATE-TIME:2026-09-21T10:05:21.849Z',
+    '#EXTINF:2,',
+    PREVIOUS_REF,
+    '#EXT-X-ENDLIST',
+    '',
+  ].join('\n');
+
+  /** What `resumeFeedIndex` put on the manager, as the recovery entry would have carried it. */
+  function prefixOf(): NonNullable<ReturnType<ManifestManager['inheritedPrefix']>> {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    const parsed = inheritedTimeline(PREVIOUS_RECORDING);
+    assert.ok(parsed, 'the fixture head must be readable');
+    manager.inherit(parsed!);
+    return manager.inheritedPrefix()!;
+  }
+
+  function recordingAfter(inherited?: ReturnType<ManifestManager['inheritedPrefix']>): string {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    manager.restoreState(SEGMENTS, ['#EXTM3U', '#EXT-X-VERSION:3'], inherited ?? undefined);
+    manager.continueFrom(1);
+    return manager.buildVODManifest();
+  }
+
+  it('rebuilds the same glued recording from the entry the crash left behind', () => {
+    const recording = recordingAfter(prefixOf());
+
+    assert.match(recording, /#EXT-X-MEDIA-SEQUENCE:0/, 'the whole broadcast′s numbering, not this session′s');
+    assert.ok(recording.includes(PREVIOUS_REF), 'the session before the crash is still at the front');
+    assert.ok(recording.includes('ref40') && recording.includes('ref41'));
+    assert.equal(recording.split('#EXT-X-DISCONTINUITY\n').length - 1, 1, 'one seam');
+  });
+
+  /**
+   * ⛔ What losing the prefix would cost, spelled out as the difference rather than assumed: a
+   * recording naming only what this session held, which is the defect the gluing exists to end.
+   */
+  it('would have recorded this session alone had the entry not carried it', () => {
+    const recording = recordingAfter(undefined);
+
+    assert.ok(!recording.includes(PREVIOUS_REF));
+    assert.match(recording, /#EXT-X-MEDIA-SEQUENCE:1/);
+  });
+
+  it('publishes the glued recording once, when the crash landed before it went out', async () => {
+    const { uploader, published } = makeRecovered({
+      feedHead: () => ({ index: 9, manifest: PLAYLISTS.closingLive }),
+      inherited: prefixOf(),
+    });
+
+    await uploader.notifyStop();
+
+    assert.equal(published.length, 2, 'the closing playlist and the recording');
+    assert.ok(published[1].playlist.includes('#EXT-X-PLAYLIST-TYPE:VOD'));
+    assert.ok(published[1].playlist.includes(PREVIOUS_REF), 'the recovered recording is still glued');
   });
 });
