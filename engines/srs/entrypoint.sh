@@ -196,10 +196,12 @@ HLS_AOF_RATIO="$(aof_ratio_for "$HLS_FRAGMENT" "$HLS_SEGMENT_MAX" "${HLS_AOF_RAT
 #
 # Every packet waits this long, so it is also a delay floor on the ingest hop. Too low and
 # `tlpktdrop` throws away resends that were on their way, and each thrown-away packet is a hole in a
-# frame that the ladder then re-encodes into every rung and the recording. 200 was the default
-# until 2026-09-23 and it was too low for an ordinary broadcaster: on 2026-09-22 an uplink losing
-# 5 to 8.5% had nearly every loss resent and nearly every resend dropped as too late, for five
-# hours. SRT uses the larger of the two ends' values, so a publisher can still ask for more.
+# frame that the ladder then re-encodes into every rung and the recording. On 2026-09-22 an
+# ordinary uplink losing 5 to 8.5% had nearly every loss resent and nearly every resend dropped as
+# too late, for five hours. The template fills both `latency` and `recvlatency`, because SRS sets
+# the second after the first and defaults it to 120, so until 2026-09-23 the configured 200 never
+# reached ingest and SRS waited 120. SRT uses the larger of the two ends' values, so a publisher
+# can still ask for more.
 require_number SRT_LATENCY "${SRT_LATENCY:-2000}"
 sed -i "s/SRT_LATENCY_PLACEHOLDER/${SRT_LATENCY:-2000}/" "$CONF"
 
