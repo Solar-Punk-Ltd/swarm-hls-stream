@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { config as loadDotenv } from 'dotenv';
 import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
@@ -83,9 +83,17 @@ function hostFromTarget(target: string): string {
     return host;
   }
 
-  // SSH alias — resolve via `ssh -G`
+  // A value beginning with `-` is an ssh option, not a host. `ssh -G` reads `-F<file>` as a config
+  // to load even without a shell, and that config's `Match exec` runs during `-G` evaluation, so a
+  // hostile target could still run a command. Refuse it and keep the raw value.
+  if (host.startsWith('-')) {
+    return host;
+  }
+
+  // SSH alias — resolve via `ssh -G`, without a shell so a target that is not a hostname cannot
+  // chain a second command.
   try {
-    const output = execSync(`ssh -G ${host}`, { encoding: 'utf-8', timeout: 3000 });
+    const output = execFileSync('ssh', ['-G', host], { encoding: 'utf-8', timeout: 3000 });
     const match = output.match(/^hostname\s+(.+)$/m);
     if (match) {
       return match[1];

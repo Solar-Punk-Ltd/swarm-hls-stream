@@ -683,7 +683,6 @@ describe('StreamCatalog unreadable-head hardening', () => {
   });
 
   it('closes the window as soon as the state reads, so a later failure is fatal', async () => {
-    const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
     const reads = { fails: false };
     const bee = {
@@ -700,10 +699,7 @@ describe('StreamCatalog unreadable-head hardening', () => {
       }),
       isConnected: async () => true,
       makeFeedWriter: () => ({
-        uploadPayload: async (_stamp: string, data: unknown, writeOpts: CapturedWrite) => {
-          writes.push({ ...writeOpts, payload: String(data) });
-          return { reference: { toHex: () => 'ref' } };
-        },
+        uploadPayload: async () => ({ reference: { toHex: () => 'ref' } }),
       }),
     } as unknown as Bee;
     const catalog = new StreamCatalog(makePublishers(bee), TEST_STREAM_KEY, TEST_TOPIC, store);

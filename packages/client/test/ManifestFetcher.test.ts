@@ -1198,8 +1198,6 @@ describe('a refused slot that later slots are already behind (#71)', () => {
   let publishedThrough: bigint;
   /** Slots the gateway refuses although the publisher wrote them, which is what the probe is for. */
   let unretrievable: Set<bigint>;
-  /** Slots holding the finished recording, which names every segment and renumbers from zero. */
-  let recordingAt: Set<bigint>;
   /** Advanced by `poll`, so a run of unserved slots ages the way it would in a browser. */
   let probeClockMs = 0;
 
@@ -1215,7 +1213,6 @@ describe('a refused slot that later slots are already behind (#71)', () => {
     requested = [];
     publishedThrough = START_INDEX;
     unretrievable = new Set();
-    recordingAt = new Set();
 
     globalThis.fetch = async (input: RequestInfo | URL) => {
       const index = requestedIndex(String(input));
@@ -1225,12 +1222,9 @@ describe('a refused slot that later slots are already behind (#71)', () => {
         return new Response('not found', { status: 404 });
       }
       const lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2'];
-      const from = recordingAt.has(index!) ? 0n : index! > WINDOW ? index! - WINDOW : 0n;
+      const from = index! > WINDOW ? index! - WINDOW : 0n;
       for (let seg = from; seg <= index!; seg++) {
         lines.push('#EXTINF:2,', `seg-${seg}.ts`);
-      }
-      if (recordingAt.has(index!)) {
-        lines.push('#EXT-X-ENDLIST');
       }
       return new Response(lines.join('\n'));
     };
