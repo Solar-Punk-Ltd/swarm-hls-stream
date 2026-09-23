@@ -2730,6 +2730,74 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
   });
 
   /**
+   * ⛔⛔ The same replacement, after the session it replaces had re-anchored at a sequence the
+   * replacement then numbers past. The shared record kept that epoch next to the replacement's own
+   * at 0, and the dating takes the highest epoch at or below a sequence rather than the newest added,
+   * so the replacement's sequence 3 was dated from the predecessor's line: a restart ten minutes
+   * earlier, and a date that went backwards in the middle of a live playlist.
+   */
+  it('keeps a replacement session’s dates moving forwards past an epoch its predecessor minted', async () => {
+    const published: string[] = [];
+    const finalizeStarted: string[] = [];
+    let nowMs = STARTED_AT_MS;
+    const orch = makeTestOrchestrator(
+      { wallClock: () => nowMs },
+      capturingPlaylists(published),
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: { state?: StreamStatus }) => {
+          if (entry.state === STREAM_STATUS_VOD) {
+            finalizeStarted.push('vod');
+            // Long enough that the re-announce below lands inside this drain rather than after it.
+            await sleep(60);
+          }
+          return true;
+        },
+      }),
+    );
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(STREAM_ID, 100, 2, Buffer.from('one'));
+    orch.handleSegment(STREAM_ID, 101, 2, Buffer.from('two'));
+    orch.handleSegment(STREAM_ID, 102, 2, Buffer.from('three'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 3, SETTLE_CEILING_MS);
+
+    // The engine's counter restarting inside the first session, which re-anchors it at sequence 3.
+    const predecessorReanchoredAtMs = STARTED_AT_MS + 60_000;
+    nowMs = predecessorReanchoredAtMs;
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after the counter restart'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 4, SETTLE_CEILING_MS);
+    assert.equal(
+      stampsOf(newestLivePlaylist(published))[3],
+      predecessorReanchoredAtMs,
+      'the first session did not re-anchor at sequence 3, so this case has no stale epoch to number past',
+    );
+
+    const stopping = orch.stopStream(STREAM_ID);
+    await waitFor(() => finalizeStarted.length > 0, SETTLE_CEILING_MS);
+
+    nowMs = RESTARTED_AT_MS;
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    for (let index = 0; index < 5; index++) {
+      orch.handleSegment(STREAM_ID, index, 2, Buffer.from(`replacement ${index}`));
+    }
+    const replacementLive = (): number[] => {
+      const stamps = stampsOf(newestLivePlaylist(published));
+      return stamps[0] === RESTARTED_AT_MS ? stamps : [];
+    };
+    await waitFor(() => replacementLive().length === 5, SETTLE_CEILING_MS);
+
+    assert.deepEqual(
+      replacementLive(),
+      [0, 1, 2, 3, 4].map((sequence) => RESTARTED_AT_MS + sequence * STEP_MS),
+      'the replacement dated a sequence from the epoch the session it replaced minted, so its playlist ' +
+        'went back to that restart in the middle of the window',
+    );
+    await stopping;
+    await orch.cleanup();
+  });
+
+  /**
    * The other path: the engine's session never closed, so its counter simply restarts and segments
    * resume inside the session already running. The numbering re-anchors forwards there, and the
    * dating goes with it.

@@ -267,17 +267,82 @@ describe('adding an epoch to a broadcast’s dating', () => {
     );
   });
 
-  /**
-   * A re-announced session publishes a fresh playlist numbered from zero, so its epoch starts at zero
-   * and dates every sequence it will ever publish. The epochs above it are about numbering nothing
-   * will produce again, and they are harmless where they are: `epochFor` never reaches them.
-   */
   it('replaces an epoch at the same sequence rather than holding two', () => {
     const restarted = withEpoch(BROADCAST, { fromSequence: 10, atMs: 10_000 });
 
     const renumbered = withEpoch(restarted, { fromSequence: 10, atMs: 90_000 });
 
     assert.deepEqual(renumbered.epochs, [{ fromSequence: 10, atMs: 90_000 }]);
+  });
+
+  /**
+   * ⛔⛔ **A replacement session's epoch at sequence 0 supersedes every epoch its predecessor
+   * minted.** It publishes a fresh playlist numbered from zero again, so it will number straight
+   * through the sequences those epochs name. Kept, they are reached: `epochFor` returns the highest
+   * epoch at or below the sequence, so the replacement's sequence 10 dated from the predecessor's
+   * line, which is behind its own, and its playlist's dates went backwards mid-window.
+   */
+  describe('from a replacement session renumbering from zero', () => {
+    const PREDECESSOR_REANCHORED_AT_MS = STARTED_AT_MS + 60_000;
+    const REPLACED_AT_MS = STARTED_AT_MS + 600_000;
+    const predecessor = withEpoch(withEpoch(BROADCAST, { fromSequence: 4, atMs: STARTED_AT_MS + 30_000 }), {
+      fromSequence: 10,
+      atMs: PREDECESSOR_REANCHORED_AT_MS,
+    });
+    const replaced = withEpoch(predecessor, { fromSequence: 0, atMs: REPLACED_AT_MS });
+
+    it('drops the epochs the predecessor minted, above it as well as below', () => {
+      assert.deepEqual(replaced.epochs, [{ fromSequence: 0, atMs: REPLACED_AT_MS }]);
+    });
+
+    it('dates every sequence the replacement publishes on its own line, through the old epochs', () => {
+      for (const sequence of [0, 4, 9, 10, 12]) {
+        assert.equal(
+          programDateTimeMsOf(replaced, sequence),
+          REPLACED_AT_MS + sequence * STEP_MS,
+          `sequence ${sequence} dated from an epoch the predecessor minted rather than from the replacement's`,
+        );
+      }
+    });
+
+    it('never moves a following segment backwards when it numbers past the predecessor’s epoch', () => {
+      let previous: { sequence: number; presentedAtMs: number; durationSeconds: number } | null = null;
+      const dates: number[] = [];
+      for (let sequence = 0; sequence <= 12; sequence++) {
+        const presentedAtMs = presentationMsOf(replaced, sequence, previous);
+        dates.push(presentedAtMs);
+        previous = { sequence, presentedAtMs, durationSeconds: FRAGMENT_SECONDS };
+      }
+
+      const backwards = dates.findIndex((date, i) => i > 0 && date < dates[i - 1]);
+      assert.equal(backwards, -1, `the date went backwards at sequence ${backwards}: ${dates.join(', ')}`);
+      assert.equal(dates[10], REPLACED_AT_MS + 10 * STEP_MS, 'sequence 10 re-anchored on the predecessor’s line');
+    });
+
+    it('leaves the predecessor’s own anchor as it was, so the dates it published stay put', () => {
+      assert.deepEqual(predecessor.epochs, [
+        { fromSequence: 4, atMs: STARTED_AT_MS + 30_000 },
+        { fromSequence: 10, atMs: PREDECESSOR_REANCHORED_AT_MS },
+      ]);
+    });
+
+    /**
+     * The counter restart's candidate line is the newest epoch in the list. Kept, that was the
+     * predecessor's epoch at 10 rather than the replacement's own at 0, so the clock test ran against
+     * a line from another session.
+     */
+    it('leaves the replacement’s own line as the one a later counter restart is measured against', () => {
+      const resumeAt = 20;
+      const lineDates = REPLACED_AT_MS + resumeAt * STEP_MS;
+
+      const decision = reanchorDecision(replaced, {
+        resumeAt,
+        nowMs: lineDates + 1_000,
+        notBeforeMs: lineDates,
+      });
+
+      assert.deepEqual(decision, { epoch: { fromSequence: resumeAt, atMs: lineDates }, joined: true });
+    });
   });
 });
 

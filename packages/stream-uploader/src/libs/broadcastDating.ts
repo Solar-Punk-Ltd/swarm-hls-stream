@@ -50,6 +50,9 @@ export const DATING_SNAP_TOLERANCE = 0.01;
  */
 export const SAME_RESTART_TOLERANCE_MS = 120_000;
 
+/** The sequence a playlist starts its numbering at, which an epoch only names when a new session renumbers. */
+const RENUMBERED_FROM = 0;
+
 /** Where a broadcast's dating starts, which is the epoch every sequence below the first restart takes. */
 function openingEpoch(anchor: BroadcastAnchor): BroadcastEpoch {
   return { fromSequence: 0, atMs: anchor.startedAtMs };
@@ -157,11 +160,23 @@ export function presentationMsOf(anchor: BroadcastAnchor, sequence: number, prev
  * complete, which is what makes {@link epochFor} unambiguous: it walks back to the newest epoch at or
  * below the sequence it is dating, so nothing dated before the join can move.
  *
- * ⚠️ A replacement session's epoch at sequence 0 therefore no longer clears the list. It does not
- * need to: that session renumbers from zero, so `epochFor` finds the sequence-0 epoch first for every
- * sequence it will ever publish, and the epochs above it name numbering nothing will produce again.
+ * ⛔⛔ **Except an epoch at sequence 0, which starts a new numbering and supersedes the whole list.**
+ * Only a replacement session writes one (`reanchorReplacedBroadcast`): it publishes a fresh playlist
+ * numbered from zero again, and every other re-anchoring resumes at the sequence after one already
+ * placed, so it is never 0. Kept, the old session's epochs are NOT out of reach: {@link epochFor}
+ * returns the highest epoch at or below the sequence rather than the newest added, so once the
+ * replacement numbers up to an epoch its predecessor minted at 10, sequence 10 dates from that
+ * line, which is behind the replacement's own, and `#EXT-X-PROGRAM-DATE-TIME` goes backwards
+ * mid-playlist. hls.js reads that as a parsing error and a recording is sealed with it. A counter
+ * restart inside the replacement would also take the stale epoch as its newest line.
+ *
+ * ⭐ Clearing the shared record re-dates nothing already published. Each session dates from its own
+ * copy of the anchor, so a ladder rung still finishing its old session keeps the epochs it held.
  */
 export function withEpoch(anchor: BroadcastAnchor, epoch: BroadcastEpoch): BroadcastAnchor {
+  if (epoch.fromSequence === RENUMBERED_FROM) {
+    return { ...anchor, epochs: [epoch] };
+  }
   const kept = (anchor.epochs ?? []).filter((held) => held.fromSequence !== epoch.fromSequence);
   return { ...anchor, epochs: [...kept, epoch].sort((a, b) => a.fromSequence - b.fromSequence) };
 }
