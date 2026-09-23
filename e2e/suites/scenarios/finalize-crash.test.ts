@@ -13,6 +13,7 @@ import {
 } from '../../src/harness/logwatch.js';
 import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { vodFinalizeWaitMs } from '../../src/harness/recording.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
@@ -82,7 +83,13 @@ const WARMUP_WAIT_MS = 120_000;
  * buffered segment does to this count, and why that outcome is legal rather than a missed run.
  */
 const FINALIZE_MANIFEST_PUBLISHES = 2;
-const FINALIZE_WAIT_MS = 90_000;
+/**
+ * ⛔ The whole finalize bound, although the two publishes it waits for are finalize's first writes.
+ * Since the reconnect window a clean stop starts no drain: the reaper does, a reap window after the
+ * last segment, and the drain that follows is bounded only by its own timeout. Sized from
+ * `harness/recording.ts` rather than from the 90_000 that was here when the unpublish started it.
+ */
+const FINALIZE_WAIT_MS = vodFinalizeWaitMs({ segmentSeconds: null, pollMs: 250 });
 const REBOOT_WAIT_MS = 60_000;
 /** Past the 60s recovery timer, so a re-finalize triggered by recovery has run before anything is read. */
 const SETTLE_PAST_RECOVERY_MS = 90_000;
@@ -145,8 +152,8 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     await publisher.stop();
 
     // Read straight after the stop returns, so what the wait below counts is what finalize adds
-    // rather than the whole broadcast's publishing. The engine has not fired its unpublish webhook
-    // yet at this point, so nothing of the drain is in this baseline.
+    // rather than the whole broadcast's publishing. The drain starts only when the reaper fires, a
+    // reap window after the last segment, so nothing of it is in this baseline.
     const manifestsAtStop = manifestCounts(await log());
 
     // The kill is armed on finalize's own feed writes rather than on a delay or on the flip line:
