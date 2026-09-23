@@ -14,6 +14,18 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
 /**
  * Scenario — the engine restarts mid-broadcast while transcoding a ladder.
  *
+ * ⛔⛔ **NOT RE-RUN LIVE SINCE THE RECONNECT WINDOW OF 2026-09-22, and it may now be asserting the
+ * wrong one of two answers.** A disconnected session is held open for `ORPHAN_REAP_MS` (60 s) and the
+ * reconnect grace here is ten seconds on SRS, so if the engine's shutdown fires its rungs'
+ * `on_unpublish` webhooks the uploader ends nothing and each rung RESUMES: same derived topic, same
+ * recording, one `#EXT-X-DISCONTINUITY` at the seam, no VOD during the gap, and — the sharp one — a
+ * resumed rung does NOT restart its `#EXT-X-MEDIA-SEQUENCE` at 0, because it is the same playlist
+ * carrying on. Every wait below is keyed on rungs re-announcing after the restart instant, which a
+ * resumed session does do, so the shape may hold; the media-sequence expectation is the one that
+ * cannot. See `engine-restart.test.ts` for the same note and for why the assertions are left alone
+ * rather than guessed at: only a live run against the redeployed stack can say which path SRS's
+ * shutdown takes.
+ *
  * The ABR counterpart to `engine-restart.test.ts`, and it asks one question that scenario cannot:
  * **do the rungs come back as the same ladder?** A ladder's group is derived when the uploader first
  * sees a rung, so a re-announce that grouped them differently would leave a viewer with two ladders

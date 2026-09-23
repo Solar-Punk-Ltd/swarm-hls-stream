@@ -9,6 +9,8 @@ import {
   catalogStateLostPattern,
   datingReanchored,
   datingReanchoredPattern,
+  encoderReturned,
+  encoderReturnedPattern,
   engineSkippedSegments,
   engineSkippedSegmentsPattern,
   finalizeResumed,
@@ -285,12 +287,17 @@ describe('the catalog announce message', () => {
 
 /**
  * ⛔ The property every zero-arm assertion in the e2e suite rests on. `parseUploaderLog` sums matches
- * across these six patterns, and that sum is the number of discontinuities armed only while each
+ * across these seven patterns, and that sum is the number of discontinuities armed only while each
  * message matches exactly one of them. Asserted message by message rather than left to the reader: a
  * pattern that grew into a sibling's line would double a count six suites assert is zero, and a
  * count that is never zero fails nothing, it just stops meaning anything.
+ *
+ * ⛔⛔ **`encoderReturned` and `datingReanchored` are the pair to watch.** They were written to the
+ * same shape on purpose — a sequence and two instants, ending in the same clause — because they say
+ * the same thing about the playlist for two different causes. Two messages that alike are exactly how
+ * a pattern grows into its sibling's line, and this is the only place that would catch it.
  */
-describe('the six messages that mean a discontinuity was armed', () => {
+describe('the seven messages that mean a discontinuity was armed', () => {
   const STREAM = 'live/stream_720p';
   const ARMING: readonly (readonly [string, string])[] = [
     ['a spent retry window', segmentUploadFailed(STREAM, 41)],
@@ -302,6 +309,10 @@ describe('the six messages that mean a discontinuity was armed', () => {
       "the engine's own counter restarting",
       datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
     ],
+    [
+      'an encoder coming back inside the reconnect window',
+      encoderReturned(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
+    ],
     ['an index skip the uploader inferred a loss from', engineSkippedSegments(4, 9, STREAM, 4)],
   ];
 
@@ -311,14 +322,15 @@ describe('the six messages that mean a discontinuity was armed', () => {
     originDeclaredDiscontinuityPattern('g'),
     omeSegmentLossReportedPattern('g'),
     datingReanchoredPattern('g'),
+    encoderReturnedPattern('g'),
     engineSkippedSegmentsPattern('g'),
   ];
 
   for (const [name, message] of ARMING) {
-    it(`counts ${name} exactly once across the six patterns`, () => {
+    it(`counts ${name} exactly once across the seven patterns`, () => {
       const hits = armingPatterns().reduce((total, re) => total + [...message.matchAll(re)].length, 0);
 
-      assert.equal(hits, 1, `"${message}" matched ${hits} of the six patterns, so the armed count is not a count`);
+      assert.equal(hits, 1, `"${message}" matched ${hits} of the seven patterns, so the armed count is not a count`);
     });
   }
 
@@ -338,7 +350,7 @@ describe('the six messages that mean a discontinuity was armed', () => {
     assert.equal(found[2], STREAM);
   });
 
-  it('reads no failed-upload index off the five other messages, so a caller cannot invent one', () => {
+  it('reads no failed-upload index off the other messages, so a caller cannot invent one', () => {
     for (const message of [
       segmentsNeverArrived('Segment 42', STREAM),
       originDeclaredDiscontinuity(STREAM),
@@ -347,6 +359,7 @@ describe('the six messages that mean a discontinuity was armed', () => {
       // purpose. A caller reading this as an index would name the engine's counter, which is what
       // the sequence exists to replace.
       datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
+      encoderReturned(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
       // Two indexes and a count, none of them a segment whose upload was attempted. A reader taking
       // one of these for the failed-upload index would name a segment that reached Swarm.
       engineSkippedSegments(4, 9, STREAM, 4),

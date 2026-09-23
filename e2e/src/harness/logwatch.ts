@@ -24,6 +24,7 @@ import {
   addingStreamToListPattern,
   catalogStateLostPattern,
   datingReanchoredPattern,
+  encoderReturnedPattern,
   engineSkippedSegmentsPattern,
   finalizeResumedPattern,
   ladderFinalizedPattern,
@@ -45,21 +46,22 @@ import {
 export interface UploaderEvents {
   uploadedSegments: number[];
   /**
-   * How many times the uploader announced that something happened to the timeline, by any of the six
-   * lines that say so.
+   * How many times the uploader announced that something happened to the timeline, by any of the
+   * seven lines that say so.
    *
    * ⚠️ **Since the owner's ruling of 2026-09-06 the name is wider than the truth, and the name is
-   * kept on purpose.** Three of the six report a LOST SEGMENT, which no longer arms an
+   * kept on purpose.** Three of the seven report a LOST SEGMENT, which no longer arms an
    * `#EXT-X-DISCONTINUITY`: the hole is said with `#EXT-X-GAP` entries instead, so the media behind it
-   * keeps the numbers it was published with. Two of the remaining three really are a break, the origin
-   * declaring one and the engine's counter restarting, and the sixth is the OME puller's own report of
+   * keeps the numbers it was published with. Three of the remaining four really are a break, the origin
+   * declaring one, the engine's counter restarting and an encoder returning inside the reconnect
+   * window, and the last is the OME puller's own report of
    * a loss the uploader is about to record. So this counts "the uploader announced a loss or a break",
    * and every suite that reads it means exactly that: zero on a clean broadcast, above zero when a
    * fault cost something. Renaming it would have to move six log lines, six suites, the log-level gate
    * and the deployed-log-shape preflight in one step, and a count changed in the same step as a
    * message leaves neither provable.
    *
-   * A count rather than a list of indices, because only one of the six reports a segment whose
+   * A count rather than a list of indices, because only one of the seven reports a segment whose
    * upload was attempted. The scenarios that care read this number, and the one that wants an index
    * reads `discontinuitySegments`.
    */
@@ -68,7 +70,7 @@ export interface UploaderEvents {
   discontinuitySegments: number[];
   /**
    * How many gaps the uploader inferred from the engine's own numbering rather than being told
-   * about, out of the sixth arming line alone.
+   * about, out of `engineSkippedSegments` alone.
    *
    * ⛔ Counted on its own because scenario F needs exactly this family and no other. SRS posts each
    * closed segment once and never retries, so the segments it closed while the uploader was dead are
@@ -172,6 +174,12 @@ const discontinuityPatterns = (): RegExp[] => [
   omeSegmentLossReportedPattern('g'),
   datingReanchoredPattern('g'),
   engineSkippedSegmentsPattern('g'),
+  // ⛔ The seventh, and it is armed by an ordinary event rather than by a fault: an encoder that
+  // dropped and came back inside the reconnect window. The segment carrying its marker IS uploaded,
+  // so the run stays gapless and nothing else in the suite can see it — the same blind spot the
+  // origin-declared line is listed for. A clean broadcast still produces none of these, because a
+  // clean broadcast never loses its encoder.
+  encoderReturnedPattern('g'),
 ];
 
 /**

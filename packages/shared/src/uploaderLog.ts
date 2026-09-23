@@ -218,17 +218,18 @@ const SUBJECT_SLOT = 'SUBJECTSLOT';
 const CAUSE_SLOT = 'CAUSESLOT';
 
 /**
- * ## The six lines below all mean one thing: this broadcast lost a segment or declared a break
+ * ## The seven lines below all mean one thing: this broadcast lost a segment or declared a break
  *
- * Six separate messages report it and the harness counts all six as one number, `discontinuitiesArmed`
- * in `e2e/src/harness/logwatch.ts`.
+ * Seven separate messages report it and the harness counts all seven as one number,
+ * `discontinuitiesArmed` in `e2e/src/harness/logwatch.ts`.
  *
- * ⚠️ **Only two of them are a break now.** Owner ruling of 2026-09-06: a lost segment leaves a hole
+ * ⚠️ **Only three of them are a break now.** Owner ruling of 2026-09-06: a lost segment leaves a hole
  * the playlist lists as `#EXT-X-GAP` entries, so the numbering behind it does not move, and it arms no
- * `#EXT-X-DISCONTINUITY`. What still does is the origin declaring one and the engine's own counter
- * restarting. The four loss lines keep the words "marking a discontinuity", which is no longer what
- * they do, because every reader of them matches on the wording and a stage that has not been
- * redeployed writes the old text. Read them as "a segment is gone".
+ * `#EXT-X-DISCONTINUITY`. What still does is the origin declaring one, the engine's own counter
+ * restarting, and an encoder returning inside the reconnect window. The four loss lines keep the
+ * words "marking a discontinuity", which is no longer what they do, because every reader of them
+ * matches on the wording and a stage that has not been redeployed writes the old text. Read them as
+ * "a segment is gone".
  *
  * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast produced
  * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
@@ -300,6 +301,52 @@ export function originDeclaredDiscontinuity(streamId: string): string {
 export function originDeclaredDiscontinuityPattern(flags = ''): RegExp {
   const escaped = originDeclaredDiscontinuity(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/**
+ * The encoder came back inside the window that holds a disconnected session open, and the segment it
+ * delivered has just been placed: the same broadcast continues, with one break at the seam and the
+ * dating re-anchored on the wall clock it returned at.
+ *
+ * ⛔ **Its own wording rather than {@link originDeclaredDiscontinuity}'s, because the origin declared
+ * nothing, and its own rather than {@link datingReanchored}'s, because nothing restarted.** SRS holds
+ * its HLS muxer alive for `hls_dispose x 1.1` after an unpublish, so an encoder returning inside the
+ * reconnect window is usually served by the SAME muxer and its `seq_no` carries straight on, leaving
+ * the reset detection in `ManifestManager.placeInBroadcast` nothing to find. This line is the only
+ * evidence in the log that the media either side of the seam is not continuous, and it is what makes
+ * the break countable: the segment carrying the marker IS uploaded, exactly as for an origin-declared
+ * break, so the segment run stays gapless and nothing else in a suite can see it.
+ *
+ * ⛔⛔ **Written where the seam is PLACED, never where it is armed**, so the count is one per break
+ * in the playlist. An encoder that reconnects six times and delivers nothing arms six times and
+ * places nothing, and writing this on the arming would put six armings into a count six suites
+ * assert is zero for a broadcast that produced no break at all.
+ *
+ * ⚠️ **It names no stream**, for the same reason {@link datingReanchored} names none: `ManifestManager`
+ * is not given one. The uploader writes its own plain line naming the stream where the return is
+ * armed, which is what an operator reads the two of them as a pair.
+ *
+ * @param sequence the playlist sequence the numbering and the dating both continue from
+ * @param wasAt the date that sequence would have carried had the encoder never left, as an ISO instant
+ * @param nowAt the date it carries instead, which is the wall clock the encoder came back at
+ */
+export function encoderReturned(sequence: number, wasAt: string, nowAt: string): string {
+  return (
+    `The encoder returned inside the reconnect window, so the playlist continues at sequence ` +
+    `${sequence} and the dating re-anchors from ${wasAt} to ${nowAt}, marking a discontinuity`
+  );
+}
+
+/**
+ * {@link encoderReturned} as a matcher, the sequence and the two instants as capture groups 1 to 3.
+ * Counted rather than captured, the same as its siblings.
+ */
+export function encoderReturnedPattern(flags = ''): RegExp {
+  const escaped = encoderReturned(INDEX_SLOT, SUBJECT_SLOT, CAUSE_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped.replace(String(INDEX_SLOT), '(\\d+)').replace(SUBJECT_SLOT, '(\\S+)').replace(CAUSE_SLOT, '(\\S+)'),
+    flags,
+  );
 }
 
 /**

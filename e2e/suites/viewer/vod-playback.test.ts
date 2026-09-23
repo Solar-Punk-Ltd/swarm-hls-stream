@@ -12,6 +12,7 @@ import {
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { vodFinalizeWaitMs } from '../../src/harness/recording.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import {
   type CatalogEntry,
@@ -151,7 +152,12 @@ const RECORD_MEDIA_SECONDS = 120;
  */
 const RECORD_SEGMENTS_WHEN_UNPINNED = 120;
 const SEGMENT_WAIT_MS = 300_000;
-const VOD_WAIT_MS = 120_000;
+/**
+ * ⛔ A reap window and a drain, plus room for the last segment, because a clean stop now ends at the
+ * reaper rather than at SRS's unpublish. Sized from `harness/recording.ts`, the same bound scenario D
+ * and `make:recording` wait on, rather than from the 120_000 that was here when the stop finalized.
+ */
+const VOD_WAIT_MS = vodFinalizeWaitMs({ segmentSeconds: null, pollMs: 2_000 });
 /**
  * How long the finished entry may take to reach the catalog through the gateway.
  *
