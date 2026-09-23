@@ -5,7 +5,7 @@
 # ⛔⛔⛔ `docker compose up -d` returns as soon as a container has been created and started, and a
 # container whose process throws on its first line has been started. With `restart: unless-stopped`
 # docker then loops it, and the deploy that asked for it has already printed its success line. Every
-# startup refusal this repository has on purpose lands in that gap: the five `required()` reads in
+# startup refusal this repository has on purpose lands in that gap: the `required()` reads in
 # `utils/config.ts`, the chequebook floor on a deployment that sets UPLOADER_START_GATES=refuse, and
 # `PostageGate` under every mode but warn when the node answers that the batch is absent, unusable,
 # expired or full, which is decision 7 b of 2026-09-17.
