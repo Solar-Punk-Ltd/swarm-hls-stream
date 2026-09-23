@@ -13,9 +13,12 @@
 #
 # A clock in the frame closes that. Screenshot the player, read the time in the picture, subtract it
 # from the time on the wall, and the difference is the whole path with the player's own behaviour
-# inside it. It needs no instrumentation in the client and no cooperation from the manifest, which
-# matters because SRS publishes no `EXT-X-PROGRAM-DATE-TIME` and `hls.playingDate` is therefore
-# unavailable on this engine.
+# inside it. It needs no instrumentation in the client and no cooperation from the manifest. Since
+# 2026-09-03 the uploader writes an `EXT-X-PROGRAM-DATE-TIME` on every segment, so `hls.playingDate`
+# is available, but that date is the uploader's own wall clock, read when it admitted the broadcast
+# and again at each re-anchoring, plus the media in front of the segment. It is never the moment a
+# frame was captured, so it cannot measure the path from the camera, and the clock in the picture is
+# still the instrument.
 #
 # ## Why it publishes from the deployment host
 #

@@ -6,8 +6,13 @@
  *  - the container fronting ingest (restarted mid-stream by the engine-restart scenario),
  *  - the lifecycle log markers the uploader emits (published/unpublished vs opening/closing).
  *
- * Everything downstream of the uploader — catalog, VOD finalize, /health shape — is engine-agnostic,
- * so it stays in the shared scenarios untouched.
+ * Everything downstream of the uploader (the catalog, the VOD finalize, the /health shape) is
+ * engine-agnostic, so it stays in the shared scenarios untouched, with one exception since #245: what
+ * an encoder dropping does to the broadcast. On SRS the unpublish ends nothing: `noteDisconnect` in
+ * `packages/stream-uploader/src/engines/srs.ts` holds the session, the orphan reaper finalizes it
+ * once no media has arrived for `ORPHAN_REAP_MS`, and an encoder back inside that window resumes the
+ * same recording. On OME the closing webhook still calls `stopStream` in
+ * `packages/stream-uploader/src/engines/ome.ts`, so the broadcast finalizes at once.
  */
 
 import { derivePublishKey, PUBLISH_KEY_PARAM } from '@swarm-hls-stream/shared/publishKey';
@@ -39,7 +44,11 @@ interface EngineProfile {
   srtIngestUrl(cfg: E2EConfig, streamPath: string): string;
   /** Uploader log line emitted when a broadcaster session begins. */
   publishedMarker: RegExp;
-  /** Uploader log line emitted when a broadcaster session ends (clean stop or drop). */
+  /**
+   * Uploader log line emitted when the broadcaster's publish ends, on a clean stop or a drop. On OME
+   * the uploader's session ends with it. On SRS it does not: the session is held for the reconnect
+   * window, so this marks the disconnect rather than the end of the broadcast.
+   */
   unpublishedMarker: RegExp;
   /** How long to let the engine accept SRT again after a restart before the broadcaster reconnects. */
   reconnectGraceMs: number;

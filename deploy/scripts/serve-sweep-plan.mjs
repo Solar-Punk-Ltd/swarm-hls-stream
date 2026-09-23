@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 export const PLAN_ROUTE = '/plan.json';
 export const SWEEP_ROUTE = '/sweep.js';
-/** Any other harness in this directory, by file name. See {@link harnessPath}. */
+/** Any other harness in this directory, by file name. See {@link asHarnessRoute}. */
 export const SCRIPT_ROUTE_PREFIX = '/script/';
 
 const DEFAULT_PORT = 8899;

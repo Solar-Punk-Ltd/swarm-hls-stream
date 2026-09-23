@@ -619,7 +619,7 @@ export const DEFAULT_IDLE_WAIT_MS = vodFinalizeWaitMs({ segmentSeconds: null, po
  *
  * Every suite here ends with `publisher.stop()` in its `after` and the next one opens with this call,
  * so a default shorter than {@link DEFAULT_IDLE_WAIT_MS} fails in a `before` hook and names the wrong
- * suite — twenty-eight call sites of it, none of which passes a timeout of its own.
+ * suite. Every suite that publishes calls this, and none of them passes a timeout of its own.
  *
  * A wait that is satisfied returns at the poll it is satisfied on, so the generous ceiling costs a
  * passing run nothing. See `waitFor`'s own note.

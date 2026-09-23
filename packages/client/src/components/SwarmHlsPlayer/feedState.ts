@@ -655,10 +655,12 @@ export class FeedHealthTracker {
    * Watch for a rung that has stopped being produced while the rest of its ladder carries on.
    *
    * ⛔ Announced from here rather than read off {@link subscribe}, because the four states are
-   * published once per change and this judgement is not a function of one rung alone. The margin in
-   * {@link RUNG_ALIVE_WITHIN_MS} can fail on the poll where the rung first reads stalled and hold on
-   * the next, and a listener watching for a `stalled` edge would have heard its one notification and
-   * missed the answer. This is re-judged on every poll the dead rung records, and announced once.
+   * published once per change and this judgement is not a function of one rung alone. The lag it
+   * compares with {@link RUNG_DEATH_LAG_SEGMENTS} is how far the ladder has moved on since this rung
+   * was last served, so it can be short of the threshold on the poll where the rung first reads
+   * stalled and reach it on a later one, and a listener watching for a `stalled` edge would have
+   * heard its one notification and missed the answer. This is re-judged for every rung of the ladder
+   * whenever anything is recorded against any of them, and announced once.
    */
   onRungStopped(listener: (rungTopicId: string) => void): () => void {
     this.rungStoppedListeners.add(listener);

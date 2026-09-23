@@ -57,7 +57,7 @@ export interface UploaderEvents {
    * window, and the last is the OME puller's own report of
    * a loss the uploader is about to record. So this counts "the uploader announced a loss or a break",
    * and every suite that reads it means exactly that: zero on a clean broadcast, above zero when a
-   * fault cost something. Renaming it would have to move six log lines, six suites, the log-level gate
+   * fault cost something. Renaming it would have to move seven log lines, six suites, the log-level gate
    * and the deployed-log-shape preflight in one step, and a count changed in the same step as a
    * message leaves neither provable.
    *
@@ -153,16 +153,20 @@ interface BatchRefusal {
  * path produces, since SRS posts each closed segment once and never retries, and it is counted
  * separately as well as here. See {@link UploaderEvents.inferredSegmentGaps}.
  *
- * ⚠️ **Only two of the six are a break now.** Since the owner's ruling of 2026-09-06 the three loss
- * lines report a hole the playlist says with `#EXT-X-GAP` entries, and `markDiscontinuity` and the
- * re-anchoring are what still arm an `#EXT-X-DISCONTINUITY`. Every line is kept in the family because
- * every suite reading this count is asking whether the broadcast lost or broke anything, which all six
- * still answer.
+ * The seventh is `ManifestManager` again, on the segment where an encoder that dropped came back
+ * inside the reconnect window. It is written where that seam is placed, so once per break, and an
+ * ordinary reconnect rather than a fault is what produces it. See the note on it in the list below.
+ *
+ * ⚠️ **Only three of the seven are a break now.** Since the owner's ruling of 2026-09-06 the three
+ * loss lines report a hole the playlist says with `#EXT-X-GAP` entries, and `markDiscontinuity`, the
+ * re-anchoring and the encoder's return are what still arm an `#EXT-X-DISCONTINUITY`. Every line is
+ * kept in the family because every suite reading this count is asking whether the broadcast lost or
+ * broke anything, which all seven still answer.
  *
  * ⛔ Not written out here. Each pattern is derived from the composer the producer logs with, so a
  * reworded message cannot leave this matching nothing. Six suites assert this count is zero on a
  * clean run and a blind reader passes every one of them, for ever, on a stage losing segments all
- * night. Anchoring on the upload failure alone once matched one of the six for exactly that reason,
+ * night. Anchoring on the upload failure alone once matched one of the seven for exactly that reason,
  * and the `markDiscontinuity` miss is the dangerous shape: the segment carrying an origin-declared
  * marker IS accepted and uploaded, so it leaves no hole and `isContiguous` is no backstop either. The
  * re-anchoring and the inferred hole both have that same shape.

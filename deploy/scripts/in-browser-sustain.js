@@ -13,10 +13,17 @@
  * sittings lost time to that before the cause was named, so the visibility assertion below is the
  * null control for this instrument and must not be removed to "make it work".
  *
- * ⛔ ONE TAB, and no other weeb-3 tab anywhere. Every tab runs its own libp2p node dialing 160
- * bootnodes and they starve each other: measured 2026-08-11, a second tab halved the newer node's
- * peers and a third left it at zero connected with no error shown. This probe reports `peersAtStart`
- * for exactly that reason. Read it before reading the ratio.
+ * ⛔ REFUTED 2026-08-15: there is no one-node-per-machine limit. Six, then twelve, separate browser
+ * processes each reached 200 peers on one host. See `cdp.mjs` for what almost certainly produced the
+ * original numbers, a first node that can sit at 0 peers for over 120 seconds while every later one
+ * attaches within 30, and for the harness rule that survives it: record time-to-attach as a curve,
+ * and never gate an arm on a peer floor with a short timeout. What this file said until then is kept,
+ * as `cdp.mjs` keeps its own:
+ *
+ *   > ⛔ ONE TAB, and no other weeb-3 tab anywhere. Every tab runs its own libp2p node dialing 160
+ *   > bootnodes and they starve each other: measured 2026-08-11, a second tab halved the newer node's
+ *   > peers and a third left it at zero connected with no error shown. This probe reports
+ *   > `peersAtStart` for exactly that reason. Read it before reading the ratio.
  *
  * HOW TO RUN
  *   1. On the machine, from the repo: `node deploy/scripts/serve-sweep-plan.mjs <any-plan.json>`
@@ -35,10 +42,10 @@
  *
  * Every in-browser sitting before 2026-08-11 ran against the owner and topic that used to be
  * hardcoded here. That is a recording of `HLS_FRAGMENT=0.25`, which is the latency bench profile and
- * **not what we ship**: both compose files default to 1.0. Nobody chose that, it was simply what the
- * constant said, and a whole series of results was reported as being about "our stream". So the
- * choice is now compulsory and unset throws, because the failure being guarded against is not a wrong
- * answer, it is a right answer to a question nobody realised was being asked.
+ * **not what shipped**: on 2026-08-11 both compose files defaulted to 1.0. Nobody chose that, it was
+ * simply what the constant said, and a whole series of results was reported as being about "our
+ * stream". So the choice is now compulsory and unset throws, because the failure being guarded
+ * against is not a wrong answer, it is a right answer to a question nobody realised was being asked.
  *
  * ⚠️ `peers: plateaued at ~140` is the ordinary message, not a fault. `PEER_TARGET` of 190 was set
  * when one load reached 200; the loads measured on 2026-08-11 settled at 134 and 147, so the plateau
@@ -98,7 +105,7 @@
       // known: the same pairing at 0.5 delivers 0.502s, so the obvious near-miss explanation is wrong.
       segmentSeconds: 1.917,
       segmentKB: 787,
-      what: '⭐ THE PROFILE WE SHIP, 1080p at HLS_FRAGMENT=1.0. Delivered 1.917s segments, 3.37 Mbps.',
+      what: '⭐ THE PROFILE WE SHIPPED ON 2026-08-11, 1080p at HLS_FRAGMENT=1.0. Delivered 1.917s segments, 3.37 Mbps.',
     },
   };
 

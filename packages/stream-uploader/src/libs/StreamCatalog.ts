@@ -134,7 +134,8 @@ export class StreamCatalog implements LadderRegistry {
    *
    * Fire and forget, deliberately: the caller is the segment path and a master write is a feed write
    * behind a queue. A burst of deliveries across one transition still queues a single rewrite,
-   * because the shape being written is held in {@link rewritingShape} until that write settles.
+   * because {@link MasterRewriteSchedule.beginRewrite} marks the shape being written as in flight
+   * until that write settles.
    *
    * ⛔ **A rewrite that did not reach the feed is not a shape anyone is being offered, and this used
    * to record it as one.** `advertised` was stamped before the write ran, so a master the writer
@@ -142,8 +143,9 @@ export class StreamCatalog implements LadderRegistry {
    * exhausts its own retry window, the catch only logged, and nothing ever tried again. The reasoning
    * written here leaned on the next transition or the next announce to put it right, and a steady
    * broadcast produces neither, so one failed write left a viewer joining that broadcast offered a
-   * dead rung for the rest of it. Now `advertised` records only what the feed took, and a failure
-   * holds the group off for {@link MASTER_REWRITE_RETRY_MS} rather than for good.
+   * dead rung for the rest of it. Now `advertised`, kept in {@link MasterRewriteSchedule} since #235,
+   * records only what the feed took, and a failure holds the group off for
+   * {@link MASTER_REWRITE_RETRY_MS} rather than for good.
    */
   private republishIfLadderShapeChanged(group: string, liveRungs: readonly string[]): void {
     if (this.masterWriter === undefined) {

@@ -85,7 +85,7 @@ const AFTER_SEGMENTS = 45;
 /**
  * How long the writer's node stays down.
  *
- * Longer than `MANIFEST_UPLOAD_RETRY_WINDOW_MS` (15s), which is what makes the uploader give up on the
+ * Longer than `SEGMENT_UPLOAD_RETRY_WINDOW_MS` (15s), which is what makes the uploader give up on the
  * segment in flight and leave a hole its playlist lists as gap entries. Shorter and the segments merely
  * buffer and flush, which is scenario A and leaves nothing to seek across.
  */
