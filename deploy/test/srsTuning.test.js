@@ -161,6 +161,10 @@ describe('the SRS latency knobs', () => {
     assert.match(conf, /hls_aof_ratio\s+3\.3;/, 'the aof ratio has to reach srs.conf');
     assert.match(conf, /hls_window\s+7\.5;/, 'the window has to reach srs.conf');
     assert.match(conf, /latency\s+120;/, 'the SRT latency has to reach srs.conf');
+    // SRS 6 sets SRTO_LATENCY, then SRTO_RCVLATENCY from `recvlatency`, whose own default of 120
+    // overwrites the receive side. Measured with libsrt 1.5.4 on 2026-09-23: `latency 2000` alone
+    // negotiated a 120ms wait, and only `recvlatency 2000` beside it gave 2000.
+    assert.match(conf, /recvlatency\s+120;/, 'the wait SRS applies on ingest has to be the configured one');
   });
 
   /**
@@ -189,6 +193,7 @@ describe('the SRS latency knobs', () => {
     // on 2026-09-22, SRT resent nearly all of them, and SRS dropped the resends as too late, so every
     // one became a hole in the picture that the ladder then re-encoded into every rung.
     assert.match(conf, /latency\s+2000;/);
+    assert.match(conf, /recvlatency\s+2000;/);
   });
 
   /**
