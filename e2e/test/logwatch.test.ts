@@ -1,4 +1,5 @@
 import {
+  encoderReturned,
   engineSkippedSegments,
   finalizeResumed,
   ladderFinalized,
@@ -326,6 +327,43 @@ describe('every path that loses a segment or declares a break is counted', () =>
 
   it('reads no segment index off the re-anchoring, whose number is a playlist sequence', () => {
     assert.deepEqual(parseUploaderLog(textLine('info', REANCHORED(42))).discontinuitySegments, []);
+  });
+
+  /**
+   * ⛔ The seventh line, and the one that is an ordinary event rather than a fault: an encoder that
+   * dropped and came back inside the reconnect window keeps its session, so the segment carrying its
+   * marker is uploaded like any other and the run either side of the join stays gapless. Nothing else
+   * in the suite can see that join.
+   *
+   * ⛔⛔ **Constructed through the composer, and side by side with the counter-restart line on
+   * purpose.** The two were written to the same shape — a sequence and two instants, ending in the
+   * same clause — because they say the same thing about the playlist for two different causes, and
+   * two messages that alike are exactly how one pattern grows into the other's line. One line must
+   * count one, and both together must count two.
+   */
+  const ENCODER_BACK = (sequence: number) =>
+    encoderReturned(sequence, '2026-09-22T12:00:00.000Z', '2026-09-22T12:00:50.000Z');
+
+  it('counts an encoder coming back inside the reconnect window', () => {
+    assert.equal(parseUploaderLog(textLine('info', ENCODER_BACK(42))).discontinuitiesArmed, 1);
+  });
+
+  it('counts the returning encoder and the counter restart as two, never as one or four', () => {
+    const log = [textLine('info', ENCODER_BACK(42)), textLine('info', REANCHORED(42))].join('\n');
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.discontinuitiesArmed, 2, 'the two lines match each other’s patterns as well as their own');
+    assert.deepEqual(events.discontinuitySegments, [], 'and neither number is a segment index');
+  });
+
+  it('sees a return that leaves the segment run gapless', () => {
+    const log = [textLine('log', UPLOADED(0)), textLine('info', ENCODER_BACK(1)), textLine('log', UPLOADED(1))].join(
+      '\n',
+    );
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.discontinuitiesArmed, 1, 'a returning encoder’s break must be counted');
+    assert.equal(isContiguous(events.uploadedSegments), true, 'and it leaves no gap, which is why the count is needed');
   });
 
   /**

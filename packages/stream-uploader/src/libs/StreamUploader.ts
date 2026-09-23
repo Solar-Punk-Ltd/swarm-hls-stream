@@ -18,6 +18,7 @@ import PQueue from 'p-queue';
 import {
   BitrateSample,
   BroadcastAnchor,
+  InheritedTimeline,
   LadderMembership,
   MediaType,
   Rendition,
@@ -52,7 +53,7 @@ import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
-import { continuesFrom, ManifestManager } from './ManifestManager.js';
+import { continuesFrom, inheritedTimeline, ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
@@ -242,6 +243,13 @@ interface RestoreState {
   anchor?: BroadcastAnchor;
   /** Absent on an entry written before a rung's feed outlived its session. See {@link StreamState}. */
   sequenceOffset?: number;
+  /** Absent on an entry written before recordings were glued, and on a session over an empty feed. */
+  inherited?: InheritedTimeline;
+  /**
+   * Absent on an entry written before a disconnect held a session open, and on every session whose
+   * encoder was still feeding it. See {@link StreamUploader.resumeAfterReconnect}.
+   */
+  resumingAfterReconnect?: string;
 }
 
 export interface StreamUploaderOptions {
@@ -473,10 +481,19 @@ export class StreamUploader {
         );
       }
       this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
+      // Restored for a sharper version of the reason the flag above is: the window between arming it
+      // and the segment that consumes it is precisely one in which nothing is arriving. Lost, the
+      // first segment after the encoder returned would publish at its own index with the dating the
+      // broadcast opened with, and the seam across the outage would go unsaid.
+      if (restoreState.resumingAfterReconnect) {
+        this.manifestManager.resumeAfterReconnect(restoreState.resumingAfterReconnect);
+      }
       if (restoreState.bitrate) {
         this.bitrate = restoreState.bitrate;
       }
-      this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
+      // The inherited prefix goes in with the segments rather than after them, because it is part of
+      // what this session's recording is and `restoreState` is where that is settled.
+      this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders, restoreState.inherited);
       // After the segments, because it is about how they are published rather than about what they
       // are: `restoreState` replays a numbering that is already in a feed, and this is the offset
       // that numbering was published under.
@@ -589,6 +606,45 @@ export class StreamUploader {
    */
   public markDiscontinuity(): void {
     this.queueDiscontinuity(() => this.logger.info(originDeclaredDiscontinuity(this.streamId)));
+  }
+
+  /**
+   * The encoder feeding this session went away and has come back inside the window that held the
+   * session open, so this broadcast carries on rather than a new one starting.
+   *
+   * What it changes is exactly the two things that are not true across a reconnect. The media either
+   * side of the gap is not continuous, so the next segment carries a break. And the encoder's clock
+   * restarted while ours did not, so the dating re-anchors at the sequence the numbering resumes at,
+   * through `ManifestManager.resumeAfterReconnect`. Everything else about the session is untouched:
+   * the recording, the feed topic, the SOC index, the admin report, the inherited prefix.
+   *
+   * ⛔ **One flag rather than two, and `pendingDiscontinuity` is deliberately NOT one of them.** The
+   * manifest's own one-shot declares the break where it places the seam, so arming the uploader's
+   * flag as well would only mean the same break twice over — and, for an encoder that reconnects and
+   * then delivers nothing, a break on a segment that has nothing in front of it to be separated from.
+   * The one-shot is persisted, so a crash between the return and its first segment still owes both.
+   *
+   * ⛔ **Nothing countable is logged here.** The contract line belongs where the seam is actually
+   * placed, or an encoder that reconnects six times and delivers nothing puts six armings into a
+   * count that has to equal the breaks in the playlist. This line names the stream, which the one at
+   * the placement cannot, and an operator reads the two as a pair.
+   *
+   * @param returnToken which return of the broadcast this is, so the rungs of one ladder date it
+   * alike however far apart their numbering is. See {@link BroadcastEpoch.returnToken}.
+   *
+   * ⛔ Queued rather than applied inline, for {@link queueAnnouncement}'s own reason and one more: a
+   * segment already awaiting upload when the encoder returned belongs to the run BEFORE the gap, and
+   * arming inline would put the seam and the re-anchoring on that one instead of on the first segment
+   * of the run after it.
+   */
+  public resumeAfterReconnect(returnToken: string): void {
+    this.queueAnnouncement(() => {
+      this.manifestManager.resumeAfterReconnect(returnToken);
+      this.logger.info(
+        `[StreamUploader] The encoder feeding ${this.streamId} is back, so the next segment it delivers ` +
+          'opens a resumed run rather than continuing the one before the gap',
+      );
+    });
   }
 
   /**
@@ -929,6 +985,11 @@ export class StreamUploader {
    * sequence that moved backwards as a parsing error rather than as a new broadcast. See
    * {@link continuesFrom} and `ManifestManager.continueFrom`.
    *
+   * ⛔ **A third thing comes off it: the media that head holds.** The recording this session
+   * finalizes opens with it, so the catalogue's head recording plays every session this feed has
+   * carried rather than the last one alone. See {@link inheritedTimeline} and
+   * `ManifestManager.inherit`.
+   *
    * @returns whether the index is settled and a manifest may be committed.
    */
   private async resumeFeedIndex(): Promise<boolean> {
@@ -953,12 +1014,33 @@ export class StreamUploader {
       if (continueAt !== null) {
         this.manifestManager.continueFrom(continueAt);
       }
+      // Read off the same head, and only the head. What it holds is the recording this session's own
+      // recording opens with, so the catalogue's head entry plays the broadcast from its first
+      // session rather than from the last restart. A head that was left by a session which never
+      // finalized is a live window, and only that window is here to inherit — that session's own
+      // recovery entry is the path that recovers the rest of it. See `ManifestManager.inherit`.
+      const prefix = inheritedTimeline(head.manifest);
+      if (prefix !== null) {
+        this.manifestManager.inherit(prefix);
+      }
       this.logger.info(
         `[StreamUploader] Stream ${this.streamId} resumes its topic at SOC index ${head.index}, numbering ` +
           `its playlist from media sequence ${continueAt ?? 0}, so this session continues the feed rather ` +
           'than writing over the last one',
       );
+      if (prefix !== null) {
+        this.logger.info(
+          `[StreamUploader] Stream ${this.streamId} opens its recording with the ${prefix.lines.length} ` +
+            `timeline lines and ${prefix.durationSeconds.toFixed(3)}s of media already on this feed, so the ` +
+            'recording it finalizes carries every session rather than this one alone',
+        );
+      }
     }
+    // ⛔ Written here rather than left to the next segment, because this is the moment the entry
+    // becomes writable at all: everything before this point was refused by {@link persistState} for
+    // having nothing true to say about where this session stands in its feed. A crash between the
+    // segments already held and the next one would otherwise leave no entry naming them.
+    this.persistState();
     return true;
   }
 
@@ -1117,6 +1199,15 @@ export class StreamUploader {
       // feed, and a recovered session that lost it would publish this broadcast's history again from
       // a number a viewer has already been handed.
       sequenceOffset: this.manifestManager.publishedSequenceOffset(),
+      // Persisted beside the offset because the two were read off one head, and after a crash that
+      // head is this session's own live playlist. A recovered session that re-read it would glue its
+      // own window in front of itself; one that simply lost this would finalize a recording naming
+      // only what it had held since the crash, which is the whole defect the gluing exists to end.
+      inherited: this.manifestManager.inheritedPrefix() ?? undefined,
+      // Read off the manifest manager rather than mirrored here, so there is one holder of the one
+      // shot and a crash between the encoder returning and its first segment landing comes back with
+      // the seam and the re-anchoring still owed. See {@link resumeAfterReconnect}.
+      resumingAfterReconnect: this.manifestManager.armedReturn() ?? undefined,
       // Absent outside admin mode, and absent on every entry written before admin mode existed. See
       // {@link StreamState.adminStreamId} for why a recovered session cannot resolve it again.
       adminStreamId: this.admin?.id,
@@ -1390,6 +1481,9 @@ export class StreamUploader {
     this.socIndex = nextIndex;
 
     if (needsCatalogAnnounce(this.readiness)) {
+      // ⛔ Both of these are below the `feedPositionSettled` refusal above, and that ordering is what
+      // stops the admin being told a stream is `live` while no recovery entry exists to flip it back.
+      // See {@link persistState}.
       this.persistState();
       await this.announceToCatalog();
     }
@@ -1447,8 +1541,45 @@ export class StreamUploader {
     return this.statePersistFailedAt === null ? null : Date.now() - this.statePersistFailedAt;
   }
 
+  /**
+   * Write the recovery entry, once there is anything true to write in it.
+   *
+   * ⛔⛔ **A session whose feed position is not settled persists nothing at all, and that is the
+   * safe half of the trade.** Where the head stands decides two facts this entry is the only surviving
+   * record of: the media sequence this session numbers from, and the recording it opens with. Both
+   * come off one head read, which runs behind the first segment's upload and is NOT awaited by the
+   * segment path — `uploadLiveManifest` is fired and `persistState` follows it immediately. So an
+   * entry written in between says `sequenceOffset: 0` and no inherited recording, which are not
+   * "unknown yet" but a positive claim that this session opened on an empty feed. A crash there used
+   * to resurrect the session on that claim: a recovered session never reads its head
+   * ({@link topicOutlivesThisSession} is false for one), so it republished the broadcast's numbering
+   * from a number viewers had already been handed and finalized a recording that silently dropped
+   * every earlier session.
+   *
+   * Nothing is lost by waiting, and the ordering is what makes that true rather than luck.
+   * {@link commitManifest} refuses every publish until the same two facts are settled, so a session
+   * that has not settled them has told no viewer anything and there is no published history for a
+   * recovery to keep faith with. The segments it uploaded are in Swarm and unnamed, which is exactly
+   * what they would be had the process died one moment earlier.
+   *
+   * ⛔⛔ **That includes the admin, and it is load bearing rather than incidental.** The `live` report
+   * is `notifyStart`'s, `notifyStart` has exactly one caller in `announceToCatalog`, and
+   * `announceToCatalog` has exactly one caller in {@link commitManifest} — BELOW its
+   * `feedPositionSettled` refusal, and one line below a `persistState` of its own. So the admin
+   * cannot be told a stream is `live` while no recovery entry exists: by the time anything reports it,
+   * the position is settled and the entry is written. Were the announce ever moved in front of that
+   * gate, this refusal would strand an admin row at `live` with nothing left on the uploader side to
+   * flip it, because the entry the next boot would have recovered from was never written. Keep the
+   * announce behind the gate.
+   *
+   * A standalone single-rendition stream settles trivially — its topic is fresh per session — so it
+   * persists from its first segment exactly as it always did.
+   */
   private persistState(): void {
     if (!this.ownsRecoveryEntry) {
+      return;
+    }
+    if (!this.feedPositionSettled()) {
       return;
     }
     try {
