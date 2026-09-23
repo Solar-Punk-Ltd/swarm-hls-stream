@@ -26,7 +26,11 @@ after(() => {
  * permission bits, which root ignores on the verification box. The fallback then builds a file name
  * from the batch id, which is the path this fix is about.
  */
-function recordAgainstUnwritableEnv(id: string): { work: string; envDir: string; record: ReturnType<typeof recordBatchId> } {
+function recordAgainstUnwritableEnv(id: string): {
+  work: string;
+  envDir: string;
+  record: ReturnType<typeof recordBatchId>;
+} {
   const work = workspace();
   const envDir = join(work, 'env');
   mkdirSync(envDir);
