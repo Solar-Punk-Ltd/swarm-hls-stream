@@ -167,9 +167,10 @@ describe('lockfileVersions', () => {
 
 describe('packagesMissingTotals', () => {
   it('names a package that ran and reported nothing', () => {
-    // The uploader runs with --test-force-exit, which calls process.exit() and truncates pending
-    // stdout writes to a pipe, so its summary never survives pnpm's aggregation. Without this the
-    // artifact listed five packages where the workspace has six and nothing said which was gone.
+    // The uploader's test script sends node's TAP reporter, which carries the totals, to
+    // `.test-summary.tap` and only the dot reporter to stdout, so its TAP totals never reach pnpm's
+    // output. Without this the artifact listed five packages where the workspace had six and nothing
+    // said which was gone.
     const expected = ['deploy', 'packages/cli', 'packages/stream-uploader'];
     const reported = ['deploy', 'packages/cli'];
 
