@@ -116,10 +116,11 @@ describe('taking over a stream id that is already being published', () => {
    * CON-16's case, which this must not break. A media engine restarted without sending its unpublish
    * re-announces the same broadcaster, and rejecting that leaves them unable to resume at all.
    *
-   * ⚠️ **What an allowed announce DOES changed on 2026-09-22 and is read here rather than assumed.**
-   * A live session that is not draining is resumed rather than replaced, so the broadcaster comes
-   * back onto the same feed and the same recording. Who may announce is unchanged and is the rest of
-   * this file; `ReconnectWindow.test.ts` holds what the resumed playlist looks like.
+   * ⚠️ **Since 2026-09-22 an allowed announce resumes the live session rather than replacing it,
+   * and this reads that rather than assuming it.** A live session that is not draining is resumed,
+   * so the broadcaster comes back onto the same feed and the same recording. Who may announce is
+   * unchanged and is the rest of this file; `ReconnectWindow.test.ts` holds what the resumed
+   * playlist looks like.
    */
   it('lets the same address take the id back, joining the session it left', async () => {
     const harness = makeHarness();
