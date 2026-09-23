@@ -53,11 +53,12 @@ Falls back to the previous behaviour: the bee-uploader URL, auto-detected from
 1. `deploy/config.json` — deployment target for `bee-uploader`
 2. `.env` — `BEE_UPLOADER_API_PORT` (default: 1633)
 
-| Config target    | Resolved URL                      |
-| ---------------- | --------------------------------- |
-| `"localhost"`    | `http://localhost:1633`           |
-| `"root@1.2.3.4"` | `http://1.2.3.4:1633`             |
-| `false`          | Falls back to `BEE_URL` from .env |
+| Config target             | Resolved URL                                                                |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `"localhost"`             | `http://localhost:1633`                                                     |
+| `"root@1.2.3.4"`          | `http://1.2.3.4:1633`                                                       |
+| no entry, or `"disabled"` | `BEE_URL` from .env, else `http://localhost:1633`                           |
+| `false`                   | `http://localhost:1633`, whatever `BEE_URL` and `BEE_UPLOADER_API_PORT` say |
 
 ### `--url`
 
