@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, join } from 'path';
@@ -21,12 +22,13 @@ const WELL_FORMED_BATCH_ID = /^[0-9a-fA-F]{64}$/;
  *
  * The first 16 characters go into the name and the name is `path.join`ed onto a directory, so an id
  * carrying `..` or a slash could steer that join outside it. A malformed id therefore contributes
- * nothing to the path and gets a fixed name instead: never throwing and never losing the id matters
- * more than an informative name in a case the caller's boundary already prevents.
+ * only a digest of itself, which no id can steer and which differs between ids. A shared fixed name
+ * would not do, because the write truncates and one id's recovery would overwrite another's.
  */
 function recoveryFileName(batchIdHex: string): string {
   if (!WELL_FORMED_BATCH_ID.test(batchIdHex)) {
-    return 'stamp-batch-recovery.txt';
+    const digest = createHash('sha256').update(batchIdHex).digest('hex').slice(0, 16);
+    return `stamp-batch-unrecognised-${digest}.txt`;
   }
   return `stamp-batch-${batchIdHex.slice(0, 16)}.txt`;
 }
