@@ -5,7 +5,10 @@ import { CollectionError, type FactGroup } from './types.js';
 /** Registry lookups are independent, and doing 200 of them one at a time is the slow way. */
 const REGISTRY_CONCURRENCY = 12;
 
-/** Under this, the owner's dependency rule treats a version as a flag rather than a routine bump. */
+/**
+ * Wider than the owner's dependency rule, which flags a version published less than about two weeks
+ * ago, so the fresh row lists every version that rule would flag and some it would not.
+ */
 const FRESH_DAYS = 30;
 
 const REGISTRY_TIMEOUT_MS = 60 * 1000;
