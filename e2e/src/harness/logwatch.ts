@@ -57,7 +57,7 @@ export interface UploaderEvents {
    * window, and the last is the OME puller's own report of
    * a loss the uploader is about to record. So this counts "the uploader announced a loss or a break",
    * and every suite that reads it means exactly that: zero on a clean broadcast, above zero when a
-   * fault cost something. Renaming it would have to move six log lines, six suites, the log-level gate
+   * fault cost something. Renaming it would have to move seven log lines, six suites, the log-level gate
    * and the deployed-log-shape preflight in one step, and a count changed in the same step as a
    * message leaves neither provable.
    *
