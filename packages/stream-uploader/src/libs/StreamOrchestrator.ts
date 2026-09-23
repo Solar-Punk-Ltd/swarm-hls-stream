@@ -351,7 +351,7 @@ export class StreamOrchestrator {
    * ⛔ **Bounded at one grace past the ORIGINAL deadline, which is what keeps it from being a way to
    * hold a dead broadcast open.** See {@link resumeLiveSession}: however many times an encoder
    * announces without delivering, the broadcast still ends at `streamIngestAt + orphanReapMs +
-   * RESUME_FIRST_SEGMENT_GRACE_MS`. Cleared by the first accepted segment, which is the event it is
+   * segmentStallMs`. Cleared by the first accepted segment, which is the event it is
    * waiting for, and by the session retiring.
    */
   private resumeGraceUntil = new Map<string, number>();
