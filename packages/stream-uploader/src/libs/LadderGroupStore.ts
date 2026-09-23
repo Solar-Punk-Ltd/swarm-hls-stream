@@ -44,7 +44,7 @@ export interface RememberedLadder {
 }
 
 /** A return of a ladder's encoder, named, with the rungs that have announced they are back from it. */
-export interface ReturnInProgress {
+interface ReturnInProgress {
   token: string;
   resumedRungs: string[];
 }
