@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { countAdvisoryFindings } from '../src/collectChecks.js';
+import { countAdvisoryFindings, missingTotalsVerdict } from '../src/collectChecks.js';
 import { totalLines } from '../src/collectDiff.js';
 import { distArgs, summarise, type VersionProvenance } from '../src/collectProvenance.js';
 import { formatFacts, hasFailure } from '../src/formatFacts.js';
@@ -211,6 +211,44 @@ describe('packagesWithTests', () => {
     const [e2e] = parseSuiteCounts('e2e test: # tests 12').map((count) => count.packageName);
 
     assert.ok(packagesWithTests(REPO_ROOT).includes(e2e), `no expected package is named ${e2e}`);
+  });
+});
+
+describe('missingTotalsVerdict', () => {
+  const withRowFor = (missing: string[]): GateFacts => ({
+    base: 'main',
+    head: 'abc1234',
+    headSupplied: false,
+    groups: [
+      {
+        title: 'Checks',
+        facts: [
+          {
+            key: 'packages that reported no total',
+            value: missing.join(', '),
+            command: 'pnpm verify',
+            ...missingTotalsVerdict(missing),
+          },
+        ],
+      },
+    ],
+    authorMeasured: [],
+  });
+
+  it('keeps the exit code out of it when exactly the uploader is missing, the failure TEST-27 accepts', () => {
+    assert.deepEqual(missingTotalsVerdict(['packages/stream-uploader']), { failed: true, known: true });
+    assert.equal(hasFailure(withRowFor(['packages/stream-uploader'])), false);
+  });
+
+  it('fails the run when e2e alone is missing, which nothing has accepted', () => {
+    // Every missing set used to be known, so a package newly losing its total never moved the exit code.
+    assert.deepEqual(missingTotalsVerdict(['e2e']), { failed: true, known: false });
+    assert.equal(hasFailure(withRowFor(['e2e'])), true);
+  });
+
+  it('fails the run when e2e is missing beside the uploader', () => {
+    assert.deepEqual(missingTotalsVerdict(['e2e', 'packages/stream-uploader']), { failed: true, known: false });
+    assert.equal(hasFailure(withRowFor(['e2e', 'packages/stream-uploader'])), true);
   });
 });
 
