@@ -22,7 +22,9 @@ async function main(): Promise<void> {
   }
   const head = resolved.stdout.trim();
 
-  // The diff is collected first because it is fast and it decides whether the slow ones are owed.
+  // The diff runs first and alone, so a diff that cannot be collected, such as one against a base that
+  // does not resolve, stops the run before the slow collectors start. Nothing reads it to decide whether
+  // they are owed: both always run, side by side.
   const diff = await collectDiff(base, head);
   const [checks, provenance] = await Promise.all([collectChecks(process.cwd()), collectProvenance(base, head)]);
 
