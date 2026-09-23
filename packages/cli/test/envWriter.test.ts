@@ -87,6 +87,18 @@ describe('writeEnvKey', () => {
     assert.match(content, /^STAMP_TTL=3600$/m, 'STAMP_TTL is a different variable');
     assert.match(content, /^STAMP=abc123$/m);
   });
+
+  // A .env entry is one line, so a value carrying a newline would append a second entry. The refusal
+  // keeps that from injecting a key like API_AUTH_TOKEN, and leaves the file untouched.
+  it('refuses a value that would inject a second key', () => {
+    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+
+    assert.throws(() => writeEnvKey(envPath, 'STAMP', 'abc\nAPI_AUTH_TOKEN=stolen'), /newline/);
+
+    const content = readFileSync(envPath, 'utf-8');
+    assert.doesNotMatch(content, /API_AUTH_TOKEN/, 'the second key must not reach the file');
+    assert.doesNotMatch(content, /^STAMP=/m, 'nothing is written when the value is refused');
+  });
 });
 
 describe('assertEnvKeyWritable', () => {
