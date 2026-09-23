@@ -1,6 +1,6 @@
 import { formatSuiteCounts, parseSuiteCounts } from './parseSuiteCounts.js';
 import { describe, run } from './run.js';
-import type { FactGroup } from './types.js';
+import type { Fact, FactGroup } from './types.js';
 import { packagesMissingTotals, packagesWithTests } from './workspacePackages.js';
 
 interface AuditMetadata {
@@ -38,6 +38,26 @@ export function countAdvisoryFindings(report: string): { value: string; failed: 
   // the audit gate, and reading the two as the same number has already produced a wrong claim.
   const total = Object.values(vulnerabilities).reduce<number>((sum, n) => sum + (typeof n === 'number' ? n : 0), 0);
   return { value: String(total), failed: false };
+}
+
+/**
+ * The packages allowed to report no total without failing the run: the uploader alone, whose missing
+ * total TEST-27 of the 2026-07-29 hardening audit registers. Any other package that reports no total is
+ * a new failure and reaches the exit code.
+ */
+const ACCEPTED_NO_TOTAL_PACKAGES: ReadonlySet<string> = new Set(['packages/stream-uploader']);
+
+/**
+ * Whether the packages that reported no total fail the run, and whether that failure is the accepted one.
+ *
+ * `known` exists so a new failure stands out from the one already lived with, and marking every missing
+ * set known hid exactly that: a package newly losing its total never moved the exit code. So only a
+ * missing set that is exactly the accepted one is `known`.
+ */
+export function missingTotalsVerdict(missing: readonly string[]): Pick<Fact, 'failed' | 'known'> {
+  const onlyAccepted =
+    missing.length === ACCEPTED_NO_TOTAL_PACKAGES.size && missing.every((p) => ACCEPTED_NO_TOTAL_PACKAGES.has(p));
+  return { failed: missing.length > 0, known: onlyAccepted };
 }
 
 /**
@@ -108,8 +128,7 @@ export async function collectChecks(repoRoot: string): Promise<FactGroup> {
         // failure would be indistinguishable from the one already accepted.
         value: missing.length === 0 ? 'none' : `${missing.length}: ${missing.join(', ')}`,
         command: describe('pnpm', verifyArgs),
-        failed: missing.length > 0,
-        known: missing.length > 0,
+        ...missingTotalsVerdict(missing),
       },
       {
         key: 'advisory findings',
