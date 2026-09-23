@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 
+import { UPLOAD_RETRY_WINDOW_MS } from '../src/harness/crashArm.js';
 import {
   batchIdPrefix,
+  DEFAULT_IDLE_WAIT_MS,
   DEFAULT_LOCAL_HOST_ADDRESS,
   Host,
   LOCAL_TARGET,
@@ -14,6 +16,7 @@ import {
   reportFailedRestore,
   type Stamp,
 } from '../src/harness/host.js';
+import { DRAIN_TIMEOUT_MS, ORPHAN_REAP_MS, vodFinalizeWaitMs } from '../src/harness/recording.js';
 
 /**
  * `Host.run` retries, and what it retries is the whole point. ssh answers 255 for its own transport
@@ -617,5 +620,25 @@ describe('a restore that failed', () => {
   it('does not throw, whatever it was handed', () => {
     assert.doesNotThrow(() => reportFailedRestore('c', () => undefined)(undefined));
     assert.doesNotThrow(() => reportFailedRestore('c', () => undefined)(null));
+  });
+});
+
+/**
+ * ⛔ The wait every suite's `before` hook opens with. Idle is the previous broadcast finalized and
+ * retired, so it has to cover the whole finalize bound: the last segment's upload and its retry
+ * window come before the reaper's silence clock starts, and the reap and the drain come after it.
+ * A reap plus a drain alone timed a correct deployment out while its last stream was still
+ * finalizing, and blamed the suite that came next.
+ */
+describe('how long a suite waits for the uploader to go idle', () => {
+  it('is the same finalize bound `make:recording` waits on', () => {
+    assert.equal(DEFAULT_IDLE_WAIT_MS, vodFinalizeWaitMs({ segmentSeconds: null, pollMs: 2_000 }));
+  });
+
+  it('covers the last segment’s retry window as well as the reap and the drain', () => {
+    assert.ok(
+      DEFAULT_IDLE_WAIT_MS > ORPHAN_REAP_MS + DRAIN_TIMEOUT_MS + UPLOAD_RETRY_WINDOW_MS,
+      `${DEFAULT_IDLE_WAIT_MS}ms leaves no room for the final segment's upload before the reaper's clock starts`,
+    );
   });
 });
