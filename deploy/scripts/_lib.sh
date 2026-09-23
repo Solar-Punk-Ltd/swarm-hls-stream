@@ -858,8 +858,9 @@ engine_env_file() {
 }
 
 # Create the current profile's engine env when missing, copied from the base
-# engines/<engine>/.env (falling back to .env.sample). Engine ports are NOT
-# shifted by --portSlot, so the new copy needs a manual review.
+# engines/<engine>/.env (falling back to .env.sample). --portSlot shifts SRS's
+# four ports, which are in PORT_VARS, but not OME's OME_SRT_PORT and
+# OME_HLS_PORT, so an OME copy needs its ports reviewed by hand.
 ensure_engine_env() {
   local engine="$1"
   local file base sample
@@ -874,7 +875,7 @@ ensure_engine_env() {
   else
     return 0
   fi
-  log_warn "Created ${file#"$ROOT_DIR"/} for profile '$PROFILE'. Review its ports/secrets (engine ports are not shifted by --portSlot)."
+  log_warn "Created ${file#"$ROOT_DIR"/} for profile '$PROFILE'. Review its ports/secrets (--portSlot shifts the SRS ports, not OME_SRT_PORT or OME_HLS_PORT)."
 }
 
 # Load the env file of every enabled engine as defaults. Runs after load_env so
