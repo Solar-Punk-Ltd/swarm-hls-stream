@@ -13,7 +13,21 @@ interface BatchIdRecord {
   envError?: string;
 }
 
+/** A postage batch id is 32 bytes, so a well-formed one is exactly 64 hex characters. */
+const WELL_FORMED_BATCH_ID = /^[0-9a-fA-F]{64}$/;
+
+/**
+ * The recovery file name, built only from a well-formed id.
+ *
+ * The first 16 characters go into the name and the name is `path.join`ed onto a directory, so an id
+ * carrying `..` or a slash could steer that join outside it. A malformed id therefore contributes
+ * nothing to the path and gets a fixed name instead: never throwing and never losing the id matters
+ * more than an informative name in a case the caller's boundary already prevents.
+ */
 function recoveryFileName(batchIdHex: string): string {
+  if (!WELL_FORMED_BATCH_ID.test(batchIdHex)) {
+    return 'stamp-batch-recovery.txt';
+  }
   return `stamp-batch-${batchIdHex.slice(0, 16)}.txt`;
 }
 
