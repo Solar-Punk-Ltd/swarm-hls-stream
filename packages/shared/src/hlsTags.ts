@@ -24,6 +24,17 @@ export const HLS_GAP = '#EXT-X-GAP';
 export const HLS_ENDLIST = '#EXT-X-ENDLIST';
 
 /**
+ * How many `#EXT-X-DISCONTINUITY` tags the playlist's own window has already slid past, so a client
+ * joining mid-broadcast numbers the discontinuities it can see from the same place as one that has
+ * been watching since the start.
+ *
+ * RFC 8216 §4.3.3.3. It belongs in the header, before the first media entry and before any
+ * `#EXT-X-DISCONTINUITY`: hls.js 1.6.15 parses it into `level.startCC` and reports a playlist that
+ * declares it after a fragment, or twice, as a playlist error.
+ */
+export const HLS_DISCONTINUITY_SEQUENCE = '#EXT-X-DISCONTINUITY-SEQUENCE';
+
+/**
  * The two fully composed tags the client writes when it normalizes a manifest it is assembling
  * from feed slots, where the playlist it serves to hls.js is an EVENT playlist starting at 0
  * regardless of the media sequence the publisher's own window happened to carry.

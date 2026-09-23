@@ -244,14 +244,37 @@ export const config = {
   stateDir: optional('STATE_DIR', './state'),
   maxQueueSize: optionalInt('MAX_QUEUE_SIZE', 100, { min: 1 }),
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000, { min: 1 }),
+  /**
+   * How long something that is expected to be delivering may deliver nothing before this service
+   * stops believing in it.
+   *
+   * ⛔ **Two readers, one question, and the second one LENGTHENS a broadcast rather than reporting on
+   * it.** `/health` answers `segment_stall` past this, and `reasonToRefuseTakeover` reads it as the
+   * window after which a quiet id may be taken. Since the reconnect window it is also the grace an
+   * encoder that has just announced its return gets for its first segment to arrive, so the maximum a
+   * dead broadcast is held is `ORPHAN_REAP_MS + SEGMENT_STALL_MS` rather than `ORPHAN_REAP_MS` alone.
+   * See {@link StreamOrchestrator.holdTheReaperForAFirstSegment}, which also says why it is this
+   * value and not one of its own.
+   */
   segmentStallMs: optionalInt('SEGMENT_STALL_MS', 30000, { min: 1 }),
   fragmentSeconds: optionalNumber('HLS_FRAGMENT', DEFAULT_HLS_FRAGMENT_SECONDS, {
     min: MIN_HLS_FRAGMENT_SECONDS,
     max: MAX_HLS_FRAGMENT_SECONDS,
   }),
   /**
-   * How long a live stream may receive nothing before it is finalized as a VOD, on the assumption
-   * that its engine died without sending `on_unpublish`. See #86.
+   * How long a live stream may receive nothing before it is finalized as a VOD. See #86.
+   *
+   * ⛔ **It is the reconnect window as well, and on the SRS path it is what ends a broadcast nothing
+   * else ends.** An `on_unpublish` reports a disconnect and finalizes nothing, so this governs both
+   * an engine that died without saying anything and an encoder that stopped, dropped or froze: an
+   * encoder back inside it resumes the same session, and one that is not gets its recording here.
+   * `POST /stream/stop` and the post-crash recovery timeout still end a broadcast on their own and
+   * are not governed by this. See `StreamOrchestrator.noteDisconnect`.
+   *
+   * ⚠️ **The maximum a dead broadcast is held is this PLUS `SEGMENT_STALL_MS`**, because an encoder
+   * that announces its return near the end of the window is given one of those for its first segment
+   * to arrive. That grace is measured from this deadline rather than from the announce, so however
+   * many times it announces the end moves by at most one grace.
    *
    * **Deliberately its own value rather than either neighbour above, and lowering it is dangerous.**
    * `SEGMENT_STALL_MS` is a health *reporting* threshold at half this, and ending a broadcast on it

@@ -29,8 +29,11 @@ the ladder's group id and the rung's name** (`src/utils/rungTopic.ts`, a version
 therefore outlives any one session: a rung that restarts mid-broadcast — SRS bouncing a transcoder,
 an encoder reconnecting — comes back onto the feed the master already names, reads its head, and
 numbers its playlist on from there with a single `#EXT-X-DISCONTINUITY` at the seam, rather than
-appearing on a feed nothing points at until it re-announces. Recordings sit back to back on one
-rung's feed and the catalog entry lists the latest. Two things then tie the rungs back together:
+appearing on a feed nothing points at until it re-announces. A session opening over that feed also
+**inherits the playlist at its head into its own recording**, so the head recording carries every
+session the feed has held, oldest first, with an `#EXT-X-DISCONTINUITY` at each seam and the reported
+duration covering the whole broadcast. The live playlists are unchanged by that: they stay a window
+over the current session's own segments. Two things then tie the rungs back together:
 
 - The four rungs merge into a **single catalog entry**, keyed by a shared group id rather than by
   topic. Four uploaders write that entry concurrently, which is safe only because every catalog
@@ -192,8 +195,82 @@ restart: it is a segment that arrived out of order, and it takes its true place 
 
 ⚠️ **The segment the restart lands on carries the discontinuity itself**, whatever the engine
 declared, and only that one segment. The SRS webhook path delivers a segment with no break of its
-own, so on the shipped engine the reset is the only evidence there is. It is one of only two things
-that arm a break at all: the other is the origin declaring one through `markDiscontinuity`.
+own, so on the shipped engine the reset is the only evidence there is. It is one of only three things
+that arm a break at all: the others are the origin declaring one through `markDiscontinuity`, and an
+encoder returning inside the reconnect window through `resumeAfterReconnect`.
+
+### An encoder that disconnects keeps its broadcast for one reap window
+
+⛔ **Owner cases 1, 2, 3 and 6, fixed in the uploader on 2026-09-22.** SRS ends a publish within
+seconds of any interruption — immediately on a clean stop, under five seconds on a torn-down socket,
+under fifteen on a frozen one, all measured live against 6.0.184 — and the uploader used to answer
+that webhook by finalizing. A recording was therefore sealed one or two seconds into every outage a
+broadcaster was about to recover from, and the return opened a second one.
+
+**A disconnect is silence now, not an end.** `on_unpublish` reports it and ends nothing: the live
+playlist at the head simply stops advancing. What decides a broadcast is over is what has always
+decided it for an engine that died without saying anything — `ORPHAN_REAP_MS` (60 s) with no media
+in it.
+
+| What the encoder does        | What a viewer gets                                                                                                                                                                                                                                                                                          |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Comes back inside the window | The same session, the same recording and the same feed, with one `#EXT-X-DISCONTINUITY` at the seam and the dating re-anchored on the clock it returned at. No `#EXT-X-ENDLIST` was written in between, so a player following the feed head is handed the next update of the playlist it is already playing |
+| Does not come back           | The reaper finalizes the broadcast one window after its last segment: closing playlist, recording, and `vod` to the admin. An encoder returning after that starts a **new** session, which inherits the recording at the feed head, so the recording a viewer opens still carries every session             |
+
+So **the admin shows `live` for up to one window after the encoder leaves**, and a clean stop reaches
+its recording about a window later than it used to. That is the cost of the row above it, and it is
+the owner's decision of 2026-09-22.
+
+⛔ **A reconnect buys the first segment time to arrive, and nothing more.** The window runs from the
+last segment rather than from the webhook, so an announce does not move the deadline. What it does
+buy is a grace of `SEGMENT_STALL_MS` for the segment it is about to deliver, capped at one grace past
+the deadline the broadcast already had — without it an announce accepted three seconds before the
+window was up was followed three seconds later by a reap, and the encoder went on publishing into an
+id nothing held any more, because it does not announce again for a publish session it already has. An
+encoder that reconnects every few seconds and never sends a frame therefore still ends, one grace
+later than it would have, rather than being held open for as long as it keeps trying.
+
+⛔ **SRS's own publish timeout is deliberately not lengthened to match.** A clean stop sends an
+explicit goodbye, so no timeout applies to it at all, and a publish SRS still believes in refuses the
+encoder's own reconnect as a stream already busy. The uploader is the only side that can hold
+anything open here.
+
+⚠️ **The seam is armed by the reconnect, not inferred from the numbering.** SRS keeps a source and
+its HLS muxer alive for `hls_dispose × 1.1` ≈ 132 s after an unpublish, so an encoder returning inside
+the window is usually served by the same muxer and its `seq_no` carries straight on — the
+counter-restart detection described above sees nothing to detect. The returning segment publishes one
+above everything already published whatever index it carries, which also means an **in-order** return
+emits no gap entries: nothing was lost, because nothing was being produced. In order is what both
+engines deliver — SRS posts each segment to the webhook as it closes it, and OME's puller walks a
+playlist front to back. A lower index of the resumed run arriving afterwards would take the ordinary
+counter-restart branch and declare a second break and a second re-anchoring — not a gap, because that
+branch also places it at the high-water mark plus one, so the two are contiguous. It is pre-existing
+behaviour for any out-of-order arrival below a published sequence rather than something the reconnect
+path introduced, and nothing is engineered for it.
+
+**Which announces join a live broadcast, and which take the id over a finalized one.** An announce is
+first screened by the takeover rules below, which are unchanged; one that is allowed then joins the
+live session only when it is the publisher that left it. Both sides having proved the publish key is
+the strongest form of that and the one every real deployment takes, because in admin mode and under
+`PUBLISH_KEY_SECRET` every publish proves a key — so an encoder that stopped and came back resumes
+whatever its address did in between. An announce against an incumbent nobody can name resumes if it
+proved the key, and two announces that proved nothing resume unless their addresses are both known
+and different. What is left is a provably different publisher — a key holder taking the id from an
+incumbent that proved nothing, or a stranger admitted because the incumbent went quiet for the stall
+window — and that one finalizes the session it displaces and starts its own, so no publisher's
+recording ever opens with somebody else's media.
+
+⚠️ **Without a publish key, a broadcaster returning from a CHANGED address starts a new session.** The
+two are indistinguishable there — an address is all the evidence a keyless deployment has — and a
+stranger must never join a live recording, so the stall window lets the owner retake the ID rather
+than rejoin the broadcast. Configure `PUBLISH_KEY_SECRET`, or run in admin mode, and every publish
+proves a key: the same broadcaster then resumes across an address change, which is what cases 1 and 2
+ask for and what the owner's deployments do.
+
+The operator stop (`POST /stream/stop`), the recovery timeout and the reap expiry all finalize
+immediately and are unchanged, and so is OME's closing webhook. `/health` lists every id currently
+held for a returning encoder under `disconnectedStreams`; it raises no reason, because a disconnect
+is an ordinary event with a designed answer.
 
 ### A segment that was lost is said with `#EXT-X-GAP`, not with a break
 
@@ -284,11 +361,32 @@ minted epoch is never dated before the segment in front of it either, which matt
 nominal dating had run ahead of the wall clock: a stamp moving backwards is what hls.js reports as a
 parsing error rather than as a restart.
 
-**Both restart paths re-anchor.** The engine re-announcing a stream this service still tracks gets a
-replacement session whose playlist numbers from zero again, so its epoch starts at sequence 0
-(`StreamOrchestrator.reanchorReplacedBroadcast`). Segments resuming inside one session re-anchor at
-the sequence the numbering continues from (`ManifestManager.reanchorDating`). A single-rendition
-stream is a ladder of one and behaves identically.
+**Every restart path re-anchors, and every reconnect does, not only the first of a broadcast.** An
+encoder re-announcing a stream this service still holds resumes that session, so its epoch starts at
+the sequence the numbering continues from; so does one re-announcing a session this service rebuilt
+after its own crash, and so do segments resuming inside one session after the engine's counter
+restarted. The one path that numbers from zero again is a session announced while a stop of that id is
+still finalizing, which is a genuinely new broadcast and takes its epoch at sequence 0
+(`StreamOrchestrator.reanchorReplacedBroadcast`). A single-rendition stream is a ladder of one and
+behaves identically.
+
+⛔ **The rungs of one ladder share a line because they share a RETURN, not because their numbers look
+alike.** A whole-encoder outage stops all four transcoders, so each rung announces its return
+separately, seconds apart; the orchestrator is the only layer that sees those four webhooks as one
+event, so it names the return and every rung of it asks the dating with that name. A rung joins a line
+when the line carries its own return's name, and mints one otherwise, whatever sequence either of them
+is at. The name is a uuid rather than a count, because the epochs it labels ride in the recovery entry
+and the ladder group store and so outlive the process.
+
+Two sequence-shaped rules were tried before this one and both were wrong, which is worth knowing
+before anyone simplifies it. Recognising a return by the clock alone read a second outage on the same
+rung as a sibling crossing the first, because nothing advances while an encoder is away: four fifty
+second outages dated the second return 48 seconds behind and the third 96. Keying on "at or below the
+sequence the line was minted at" fixed that for a lone rendition and failed on a ladder, because the
+epoch list belongs to the whole broadcast and its newest line is usually a sibling's — a rung one
+segment behind then joined the previous return's line about half the time. The engine's own counter
+restarting is a different cause with no witness outside the rung, and it is still judged by the
+clock.
 
 The epochs ride with the group in `state/ladder/groups.json` and with each rung's recovery entry, so
 a crash after a restart comes back on the re-anchored dating rather than re-dating everything after
@@ -370,7 +468,7 @@ The API server starts on port 3000 (default).
 | `MAX_QUEUE_SIZE`         | `100`                | Max queued segments per stream                                                                                                                                                                                                                     |
 | `RECOVERY_TIMEOUT`       | `60000`              | Crash recovery timeout (ms)                                                                                                                                                                                                                        |
 | `SEGMENT_STALL_MS`       | `30000`              | Silence after which `/health` reads degraded                                                                                                                                                                                                       |
-| `ORPHAN_REAP_MS`         | `60000`              | Silence after which a live stream is finalized as an orphan                                                                                                                                                                                        |
+| `ORPHAN_REAP_MS`         | `60000`              | Silence after which a live stream is finalized, and so the reconnect window                                                                                                                                                                        |
 | `UPLOADER_START_GATES`   | `chequebook-warn`    | Which startup gate stops the boot, and on which reading. `chequebook-warn` warns on the chequebook and refuses on a postage batch the node answered about, warning on one it could not read at all. `warn` warns on both, `refuse` refuses on both |
 | `START_GATE_TIMEOUT_MS`  | `20000`              | How long one startup gate's read of one node may take, 600000 at most. Separate from `BEE_REQUEST_TIMEOUT_MS`, which the upload loop derives                                                                                                       |
 | `CHEQUEBOOK_MIN_BZZ`     | `0.5`                | Available chequebook balance every node must hold for the chequebook gate to call it funded, 1000 at most                                                                                                                                          |
@@ -607,9 +705,15 @@ expected to be sending. The route spreads the whole signal set rather than picki
 reading a reason above is derived from is on the same body: `activeStreams`, `staleManifestStreams`,
 `maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`,
 `msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`,
-`msSinceAuthRejection`, `hasIngestedMedia`, `segmentsSkipped`, `openingSegmentsWithheld`,
+`msSinceAuthRejection`, `disconnectedStreams`, `hasIngestedMedia`, `segmentsSkipped`, `openingSegmentsWithheld`,
 `segmentsNeverNamed`, `quarantinedRecoveryEntries`, `fragmentMismatchStreams`, `publisherGopStreams`,
-`postageRefusedPublishers`, `startGateWarnings`, `publishers`, `refusedPublishers` and `engines`. `queueBacklogSeconds` is the
+`postageRefusedPublishers`, `startGateWarnings`, `publishers`, `refusedPublishers` and `engines`. `disconnectedStreams`
+names every live stream whose encoder has gone and has not come back, and raises no reason of its own:
+a disconnect is held for one reap window on purpose, so flagging it would turn every ten second OBS
+restart into `degraded`, while one that never returns already reaches `segment_stall` on the ordinary
+clock. It is a list rather than a count because on a ladder all four rungs appear together for a
+whole-encoder outage and one rung alone is a dead transcoder, which is a different fault.
+`queueBacklogSeconds` is the
 only field that says which of `queue_pressure`'s two triggers fired. `msSinceAuthRejection` beside
 `hasIngestedMedia` is the pair `ingest_refused` is read off, which is what tells a deployment that has
 never worked apart from one whose broadcaster mistyped a key once. `publisherGopStreams` names every
@@ -799,8 +903,10 @@ Everything else follows. Each rung publishes its own media playlists on a topic 
 group and its rung name** — four rungs sharing the master's feed would write over each other and over
 the master, and a rung's feed has to be found again by name after a restart rather than re-minted.
 That topic is stable for the life of the declaration, so a rung that restarts continues the same feed
-above its own last session's head, its recordings sit back to back there, and the entry lists the
-latest. **The admin therefore accepts `live` after `vod`**: a broadcaster who stops and comes back is
+above its own last session's head, and the recording it finalizes opens with the one that was already
+there — so the entry the admin holds points at a recording of the whole broadcast, seams marked,
+however many times it was restarted. **The admin therefore accepts `live` after `vod`**: a
+broadcaster who stops and comes back is
 a stream going live again under a declaration the admin already holds as a recording. (That admin
 change ships from the `feat/ladder-feed-sessions` branch of the streaming-monorepo repository.)
 

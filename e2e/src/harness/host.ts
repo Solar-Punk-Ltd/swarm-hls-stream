@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import type { E2EConfig } from '../config.js';
 
 import type { PublisherRoute } from './publishers.js';
+import { vodFinalizeWaitMs } from './recording.js';
 import { sleep, waitFor } from './wait.js';
 
 const execFileAsync = promisify(execFile);
@@ -593,15 +594,40 @@ export function reportFailedRestore(
   };
 }
 
+/** How often {@link waitForIdle} asks the uploader whether it is idle. */
+const IDLE_POLL_MS = 2_000;
+
+/**
+ * How long {@link waitForIdle} waits by default: the whole finalize bound from `harness/recording.ts`.
+ *
+ * ⛔⛔ **Idle is the previous broadcast finalized and retired, so the wait for it is the finalize
+ * bound, every term of it.** Since the reconnect window of 2026-09-22 a publisher stopping finalizes
+ * nothing: SRS still closes and uploads the segment it was cutting, that upload may retry for its
+ * whole window, and only the last segment to ARRIVE starts the reaper's silence clock. Then the drain
+ * runs. A default of a reap window plus a drain left out that first leg and the poll, which is how
+ * the next suite's `before` hook timed out on a stream that was still correctly finalizing, and named
+ * the wrong suite. 90 s was the number before any of this.
+ *
+ * Derived rather than restated, so this and `make:recording` cannot drift apart.
+ */
+export const DEFAULT_IDLE_WAIT_MS = vodFinalizeWaitMs({ segmentSeconds: null, pollMs: IDLE_POLL_MS });
+
 /**
  * Block until the uploader reports no active streams. The scenarios share one live path on one
  * profile and must run serially (--test-concurrency=1); this guards each test's start against the
  * previous test's stream still draining, which would otherwise be rejected as "already active".
+ *
+ * Every suite here ends with `publisher.stop()` in its `after` and the next one opens with this call,
+ * so a default shorter than {@link DEFAULT_IDLE_WAIT_MS} fails in a `before` hook and names the wrong
+ * suite — twenty-eight call sites of it, none of which passes a timeout of its own.
+ *
+ * A wait that is satisfied returns at the poll it is satisfied on, so the generous ceiling costs a
+ * passing run nothing. See `waitFor`'s own note.
  */
-export async function waitForIdle(host: Host, cfg: E2EConfig, timeoutMs: number = 90_000): Promise<void> {
+export async function waitForIdle(host: Host, cfg: E2EConfig, timeoutMs: number = DEFAULT_IDLE_WAIT_MS): Promise<void> {
   await waitFor(async () => (await uploaderHealth(host, cfg)).activeStreams === 0, {
     timeoutMs,
-    intervalMs: 2_000,
+    intervalMs: IDLE_POLL_MS,
     label: 'uploader idle (activeStreams=0) before starting a new stream',
   });
 }

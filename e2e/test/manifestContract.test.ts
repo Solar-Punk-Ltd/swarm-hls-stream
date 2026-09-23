@@ -233,6 +233,42 @@ describe('the timeline a playlist declares', () => {
   });
 
   /**
+   * ⛔⛔ A playlist declaring breaks in front of its own first entry is saying it does not begin where
+   * the broadcast does, so demanding it declare `#EXT-X-MEDIA-SEQUENCE:0` is demanding it contradict
+   * itself. The shape is a recording glued onto the live window a killed session left at the feed
+   * head: only that window survived, so the recording starts at its numbers and its first entry is an
+   * inherited one with no seam on it.
+   */
+  it('accepts a playlist above sequence zero that declares the breaks running in front of it', () => {
+    const glued = playlist([40, 41, 42], { mediaSequence: 40, breaks: [41] }).replace(
+      '#EXT-X-MEDIA-SEQUENCE:40',
+      '#EXT-X-MEDIA-SEQUENCE:40\n#EXT-X-DISCONTINUITY-SEQUENCE:3',
+    );
+
+    assert.deepEqual(manifestContractFailures(glued, CONTRACT), []);
+  });
+
+  /**
+   * ⛔ And the rule is not loosened for anything else. Zero is still demanded of a playlist that
+   * declares no such header, which is the numbering defect this check exists for.
+   */
+  it('still refuses a playlist above sequence zero that declares nothing in front of it', () => {
+    const bare = playlist([40, 41, 42], { mediaSequence: 40 });
+
+    assert.match(manifestContractFailures(bare, CONTRACT)[0], /rather than 0/);
+  });
+
+  /** A declared count of zero is the same statement as no header at all, and is exempted by neither. */
+  it('refuses it just the same where the header declares zero', () => {
+    const zero = playlist([40, 41, 42], { mediaSequence: 40 }).replace(
+      '#EXT-X-MEDIA-SEQUENCE:40',
+      '#EXT-X-MEDIA-SEQUENCE:40\n#EXT-X-DISCONTINUITY-SEQUENCE:0',
+    );
+
+    assert.match(manifestContractFailures(zero, CONTRACT)[0], /rather than 0/);
+  });
+
+  /**
    * A break excuses a step of any size **forwards** and nothing excuses one that does not move. A
    * media sequence that goes backwards is what hls.js reports as a parsing error, and a stamp that
    * goes backwards with it is a re-anchoring that re-dated media a viewer is already holding.

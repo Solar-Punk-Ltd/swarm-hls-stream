@@ -501,14 +501,20 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     );
   });
 
-  // The other half of the same window, and the more damaging one. When the restarted origin numbers
-  // above where the old session got to, its segments are not absorbed by the duplicate filter, they
-  // are accepted: uploaded, added to the outgoing session's manifest, and shipped inside the VOD that
-  // finalizes it. One broadcast's media published as part of another's recording. The duration of
-  // that VOD is what gives it away, since it can only cover what the first session actually sent.
-  it('keeps the restarted origin out of the VOD that finalizes the session it replaced', async () => {
+  // The other half of the same window. When the restarted origin numbers above where the old session
+  // got to, its segments are not absorbed by the duplicate filter: they are accepted, uploaded and
+  // added to a manifest.
+  //
+  // ⚠️ **Which manifest is what changed.** A re-admission resumes the live session rather than
+  // replacing it, so there is one broadcast and the restarted origin's media belongs in it, after a
+  // break. What must still be true is that nothing is finalized while the broadcast is running and
+  // that the recording, when it comes, is the length of both runs and no more — a recording longer
+  // than what was sent is still the tell, and it is now the only one, since there is no second VOD to
+  // compare against.
+  it('records the restarted origin as part of the broadcast it resumed, and nothing twice', async () => {
     const SEGMENT_SECONDS = 2;
     const FIRST_SESSION_SEGMENTS = 4;
+    const RESTARTED_SEGMENTS = 4;
     const RESTARTED_HIGH = mediaPlaylist(['seg_9.ts', 'seg_10.ts', 'seg_11.ts', 'seg_12.ts'], 9);
     const published: VodEntry[] = [];
     const origin = makeOrigin();
@@ -540,15 +546,22 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     // See CON-19.
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
     origin.restart(RESTARTED_HIGH);
-    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), DELIVERY_TIMEOUT_MS);
+    // Nothing may be finalized while the broadcast is still running, which is the whole of the
+    // reconnect window: the closing below is what ends it.
+    assert.deepEqual(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD),
+      [],
+      'a recording was published while the broadcast was still being fed',
+    );
     await postAdmission(engine, orchestrator, 'closing', RESTART_SECRET, STREAM_URL);
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), DELIVERY_TIMEOUT_MS);
 
     const vods = published.filter((entry) => entry.state === STREAM_STATUS_VOD);
-    assert.ok(vods.length > 0, 'the replaced session never published a VOD, so nothing here was exercised');
+    assert.equal(vods.length, 1, 'one broadcast is one recording, whatever its origin did in the middle');
     assert.equal(
       vods[0].duration,
-      SEGMENT_SECONDS * FIRST_SESSION_SEGMENTS,
-      `the finalized session's recording runs longer than what it was sent, so the restarted origin's media was published inside it; durations: ${vods
+      SEGMENT_SECONDS * (FIRST_SESSION_SEGMENTS + RESTARTED_SEGMENTS),
+      `the recording is not the length of the two runs it holds, so media was published into it twice or lost from it; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
     );
@@ -684,7 +697,14 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     };
   }
 
-  it('keeps the outgoing broadcast out of the session that replaces it', async () => {
+  /**
+   * ⚠️ **One recording rather than two, because a re-admission now resumes the live session instead
+   * of replacing it.** What the floor is for is unchanged and is what this still reads: the stale
+   * playlist the origin is still serving must not be uploaded a second time. The per-body counts
+   * below are that fact, and they were always the sharper half — the durations were an aggregate,
+   * and an aggregate cannot say whose media it is made of.
+   */
+  it('keeps the outgoing broadcast from being uploaded again into the session that resumes', async () => {
     const outgoingStartedAt = new Date(Date.now() - 60_000);
     const reconnectedStartedAt = new Date(Date.now() - 20_000);
     const published: VodEntry[] = [];
@@ -734,27 +754,18 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       DELIVERY_TIMEOUT_MS,
     );
     await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
-    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 0, DELIVERY_TIMEOUT_MS);
 
     const vods = published.filter((entry) => entry.state === STREAM_STATUS_VOD);
     assert.equal(
       vods.length,
-      2,
-      `both sessions have to reach a VOD or there is nothing to compare; durations: ${vods
-        .map((entry) => entry.duration)
-        .join(', ')}`,
+      1,
+      `the resumed broadcast is one recording, not two; durations: ${vods.map((entry) => entry.duration).join(', ')}`,
     );
     assert.equal(
       vods[0].duration,
-      OUTGOING_SEGMENT_SECONDS * OUTGOING_SEGMENTS.length,
-      `the outgoing session's own recording is wrong, so the reconnected one below proves nothing; durations: ${vods
-        .map((entry) => entry.duration)
-        .join(', ')}`,
-    );
-    assert.equal(
-      vods[1].duration,
-      RECONNECTED_SEGMENT_SECONDS * RECONNECTED_SEGMENTS.length,
-      `the reconnected session's recording is not the length of what it broadcast, so the outgoing session's media was published inside it; durations: ${vods
+      OUTGOING_SEGMENT_SECONDS * OUTGOING_SEGMENTS.length + RECONNECTED_SEGMENT_SECONDS * RECONNECTED_SEGMENTS.length,
+      `the recording is not the length of the two runs it holds, so media was published into it twice or lost from it; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
     );
@@ -768,7 +779,7 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     assert.equal(
       uploaded.filter((body) => body.startsWith('outgoing-')).length,
       OUTGOING_SEGMENTS.length,
-      `more of the outgoing broadcast reached Bee than it ever served, so its media was uploaded a second time inside the session that replaced it; uploaded: ${uploaded.join(
+      `more of the outgoing broadcast reached Bee than it ever served, so the origin's stale window was uploaded a second time into the resumed session; uploaded: ${uploaded.join(
         ', ',
       )}`,
     );
@@ -844,20 +855,23 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       DELIVERY_TIMEOUT_MS,
     );
     await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
-    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 0, DELIVERY_TIMEOUT_MS);
 
     const vods = published.filter((entry) => entry.state === STREAM_STATUS_VOD);
     assert.equal(
       vods.length,
-      2,
-      `the undated session never reached a VOD at all, so the floor swallowed a live broadcast; durations: ${vods
+      1,
+      `the undated session never reached a recording at all, so the floor swallowed a live broadcast; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
     );
+    // Both runs, because the resumed session records the whole broadcast. The undecidable segments
+    // are in there on purpose: delivering them costs the stale window once, and dropping them loses a
+    // live broadcast for as long as the origin keeps publishing that way.
     assert.equal(
-      vods[1].duration,
-      RECONNECTED_SEGMENT_SECONDS * RECONNECTED_SEGMENTS.length,
-      `the undated session's media did not all reach its recording, so the floor is dropping segments it cannot judge; durations: ${vods
+      vods[0].duration,
+      OUTGOING_SEGMENT_SECONDS * OUTGOING_SEGMENTS.length + RECONNECTED_SEGMENT_SECONDS * RECONNECTED_SEGMENTS.length,
+      `the undated session's media did not all reach the recording, so the floor is dropping segments it cannot judge; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
     );

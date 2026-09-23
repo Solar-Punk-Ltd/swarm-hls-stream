@@ -3,6 +3,7 @@
 // import path. See ARCH-1.
 export {
   HLS_DISCONTINUITY,
+  HLS_DISCONTINUITY_SEQUENCE,
   HLS_ENDLIST,
   HLS_EXTINF,
   HLS_GAP,

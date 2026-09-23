@@ -9,6 +9,7 @@ import { byteSourceArmRefusal, ladderResolutionRefusal } from '../../src/harness
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { vodFinalizeWaitMs } from '../../src/harness/recording.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
@@ -55,14 +56,6 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  */
 
 /**
- * How long the viewer watches in total.
- *
- * Sized as the lead below plus the tail the ending needs. Everything outside the measured window,
- * the container start and the player's join, is budgeted separately by the harness.
- */
-const WATCH_MINUTES = 6;
-
-/**
  * How long after the arm is launched the broadcaster stops.
  *
  * ⛔ Measured from the launch rather than from playback, because nothing outside the container can
@@ -74,14 +67,44 @@ const WATCH_MINUTES = 6;
 const BEFORE_STOP_MS = 150_000;
 
 /**
+ * How long the uploader may take to turn the stopped broadcast into a recording.
+ *
+ * ⛔ Sized from `harness/recording.ts` rather than from the 90_000 that was here. Since the reconnect
+ * window of 2026-09-22 a clean stop finalizes nothing: SRS's unpublish only holds the session open,
+ * so the recording arrives a reap window plus a drain after the publisher goes, the same bound
+ * scenario D and `make:recording` wait on.
+ */
+const VOD_WAIT_MS = vodFinalizeWaitMs({ segmentSeconds: null, pollMs: 2_000 });
+
+/**
+ * What the client needs after the finalize to poll the catalog and re-render into the ended state.
+ *
+ * ⭐ The 90 s the old arithmetic left it: a 180 s tail against a 90 s finalize. The finalize term is
+ * what moved, not this one.
+ */
+const CLIENT_NOTICE_MS = 90_000;
+
+/**
  * What is left of the watch after the stop, which is the window the ending has to arrive in.
  *
  * Not a constant to tune: it is stated so the arithmetic is visible, and checked below so a change to
- * either number above cannot silently leave the viewer watching a broadcast that never ends inside
- * its own window. `publish-stop-to-vod.test.ts` allows the VOD finalize 90 seconds, and the client
- * then has to poll and re-render, so the tail is several times that.
+ * any number above cannot silently leave the viewer watching a broadcast that never ends inside its
+ * own window. The finalize bound, then the client noticing it.
  */
-const MIN_TAIL_MS = 180_000;
+const MIN_TAIL_MS = VOD_WAIT_MS + CLIENT_NOTICE_MS;
+
+/**
+ * How long the viewer watches in total.
+ *
+ * Sized as the lead above plus the tail the ending needs, rounded up to the whole minutes the arm
+ * takes. Everything outside the measured window, the container start and the player's join, is
+ * budgeted separately by the harness.
+ *
+ * ⛔ Derived, because it was a flat 6 sized against a 90 s finalize and the finalize is now minutes.
+ * A watch that ends before the ending reaches the viewer fails this case on the harness's arithmetic
+ * rather than on the product. Only the viewer watches longer: the publisher still stops at the lead.
+ */
+const WATCH_MINUTES = Math.ceil((BEFORE_STOP_MS + MIN_TAIL_MS) / 60_000);
 
 /**
  * The most `/bytes/` requests an in-tab arm may make across the whole watch.
@@ -94,8 +117,8 @@ const MIN_TAIL_MS = 180_000;
  * gateway viewer made 500, and live in-tab arms have read 3 to 6 across every sitting since.
  *
  * ⛔ Neither of this case's two differences from V1 adds a gateway read, which is why the number is
- * not raised for them. The watch is six minutes rather than four, and the extra two are spent after
- * the switch, so they buy node reads and not gateway ones. And the broadcast ENDS partway through:
+ * not raised for them. The watch is longer than V1's, and everything past V1's four minutes is spent
+ * after the switch, so it buys node reads and not gateway ones. And the broadcast ENDS partway through:
  * once it has, no rung publishes another segment, so there is nothing left for a starved player to
  * fetch from anywhere. A viewer sitting in the ended state makes no segment request at all.
  */
@@ -104,7 +127,6 @@ const MAX_WEEB3_SEGMENT_REQUESTS = 9;
 /** The broadcast has to be established before it is worth ending. */
 const WARMUP_SEGMENTS = 4;
 const SEGMENT_WAIT_MS = 180_000;
-const VOD_WAIT_MS = 90_000;
 const MIN_STAMP_TTL_S = 600;
 
 const cfg = loadConfig();

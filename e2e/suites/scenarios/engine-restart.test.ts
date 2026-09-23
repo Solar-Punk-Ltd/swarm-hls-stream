@@ -24,6 +24,23 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * new broadcaster session connects, the engine re-announces the publish; the uploader finalizes the
  * stale session as a VOD and starts a fresh live stream — a new, distinct catalog entry via the gateway.
  *
+ * ⛔⛔ **THAT LAST SENTENCE STOPPED BEING TRUE ON 2026-09-22 AND THIS SUITE HAS NOT BEEN RE-RUN LIVE
+ * SINCE.** The reconnect window holds a disconnected session open for `ORPHAN_REAP_MS` (60 s), and the
+ * grace this scenario waits before reconnecting is ten seconds on SRS and twenty on OME — well inside
+ * it. So if the engine's shutdown fires its unpublish webhook, the uploader notes a disconnect and
+ * ends nothing, and the reconnecting broadcaster RESUMES the same session: the same feed topic, the
+ * same recording, one `#EXT-X-DISCONTINUITY` at the seam, no VOD during the gap and no second catalog
+ * entry. The waits below for a second distinct live topic would then time out at 180 s, and
+ * `resumedTopic !== firstTopic` would never hold.
+ *
+ * Whether it takes that path depends on something only a live run can settle: whether SRS emits
+ * `on_unpublish` for the source as its container goes down. If it does not, the reap window expires
+ * during the restart and the reconnect is a fresh session exactly as written. The assertions are left
+ * alone rather than guessed at for that reason — reshaping them to the resumed answer would be just as
+ * likely to be wrong, and a suite asserting the wrong one of two is worse than a suite that says so.
+ * What to do: run it once against the redeployed stack, read which of the two happened out of the
+ * uploader log, and rewrite this scenario to that.
+ *
  * ⭐ This is where the two numbers a segment carries come apart, so the resumed session's playlists
  * are read and held to the manifest contract. SRS's own segment counter carries on across the
  * restart, six recordings of this stage having opened at 210, 317, 416, 580, 707 and 850, while the

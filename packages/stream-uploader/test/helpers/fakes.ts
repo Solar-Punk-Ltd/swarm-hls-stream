@@ -1,4 +1,4 @@
-import { Bee, BeeResponseError, FeedIndex } from '@ethersphere/bee-js';
+import { Bee, BeeResponseError, FeedIndex, Topic } from '@ethersphere/bee-js';
 
 import { BeePublisher, BeePublisherPool, shortBatchId, SINGLE_PUBLISHER } from '../../src/libs/BeePublisherPool.js';
 import { Clock, systemClock } from '../../src/libs/Clock.js';
@@ -52,16 +52,32 @@ export interface FakeUploads {
    * Manifest SOC write. Defaults to resolving with a reference for the requested index.
    *
    * The payload is passed too, so a test can read the playlist a viewer would be served rather than
-   * only counting that one was published.
+   * only counting that one was published, and so is the feed it was addressed to — see
+   * {@link topicKey}.
    */
-  uploadPayload?: (index: number, payload: unknown) => Promise<unknown>;
+  uploadPayload?: (index: number, payload: unknown, topic: string) => Promise<unknown>;
   /**
    * What the head of a stream's manifest feed answers, which is what a finalize after a crash asks
    * before it publishes anything. See `StreamUploader.publishedRecordingIndex`.
    *
    * Returning `null` is bee answering 404. The default is {@link CRASHED_MID_BROADCAST}.
    */
-  feedHead?: () => FakeFeedHead | null;
+  feedHead?: (topic: string) => FakeFeedHead | null;
+}
+
+/**
+ * Which feed a read or a write is addressed to, as the one string a test can key a map on.
+ *
+ * ⛔ **Passed because a real bee has one feed per topic and this fake used to have one feed for all
+ * of them.** Every session that reads a head reads it at `Topic.fromString(this.streamRawTopic)`, and
+ * whether two sessions really landed on one topic is the whole question behind a rung's derived topic
+ * and a declared stream's stable one. Without this a test proving a successor inherits its
+ * predecessor's recording would pass just as well if the two were publishing to different feeds,
+ * which is the defect the inheritance exists to prevent. The owner is not part of the key because
+ * every fake here signs with {@link TEST_STREAM_KEY}, so it cannot vary.
+ */
+function topicKey(topic: Topic): string {
+  return topic.toHex();
 }
 
 /** Bee's answer for a feed topic nothing has ever been written to. */
@@ -111,13 +127,13 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
   let refCounter = 0;
   return {
     uploadData: uploads.uploadData ?? (async () => ({ reference: { toHex: () => `ref${refCounter++}` } })),
-    makeFeedReader: () => ({
+    makeFeedReader: (topic: Topic) => ({
       // Both shapes bee-js offers, answered the way bee-js answers them. The index comes from the
       // no-index call and the playlist only from the indexed one, per
       // {@link OVERSIZED_PAYLOAD_WRAPPER}. A read at an index this feed is not at is a defect rather
       // than an empty feed, so it is refused rather than answered.
       downloadPayload: async (opts?: { index?: FeedIndex }) => {
-        const head = uploads.feedHead ? uploads.feedHead() : CRASHED_MID_BROADCAST;
+        const head = uploads.feedHead ? uploads.feedHead(topicKey(topic)) : CRASHED_MID_BROADCAST;
         if (head === null || (opts?.index !== undefined && Number(opts.index.toBigInt()) !== head.index)) {
           throw feedNotFound();
         }
@@ -125,10 +141,10 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
         return { feedIndex: FeedIndex.fromBigInt(BigInt(head.index)), payload: { toUtf8: () => payload } };
       },
     }),
-    makeFeedWriter: () => ({
+    makeFeedWriter: (topic: Topic) => ({
       uploadPayload: async (_stamp: string, data: unknown, opts: { index: number }) =>
         uploads.uploadPayload
-          ? uploads.uploadPayload(opts.index, data)
+          ? uploads.uploadPayload(opts.index, data, topicKey(topic))
           : { reference: { toHex: () => `soc${opts.index}` } },
     }),
   } as unknown as Bee;
@@ -190,6 +206,11 @@ export function makeFakeOrchestrator(overrides: Record<string, unknown> = {}): S
   return {
     startStream: () => true,
     stopStream: async () => {},
+    // ⛔ Here because leaving it out is the exact failure this stub's docblock describes, and it has
+    // now happened a sixth time: an SRS unpublish calls this, the cast hides the missing method from
+    // the compiler, the handler's own catch swallows the `TypeError`, and a test asserting that the
+    // webhook was acted on passes because nothing was acted on at all.
+    noteDisconnect: () => {},
     handleSegment: () => ({ accepted: true }),
     handleSegmentLoss: () => true,
     keepAlive: () => false,
@@ -217,6 +238,7 @@ function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignal
     msSinceStatePersistFailed: null,
     queueBacklogSeconds: 0,
     msSinceAuthRejection: null,
+    disconnectedStreams: [],
     hasIngestedMedia: false,
     segmentsSkipped: 0,
     openingSegmentsWithheld: 0,
