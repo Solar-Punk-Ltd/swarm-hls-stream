@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -12,15 +12,44 @@ import { introducedVersions, lockfileVersions, splitVersion } from '../src/lockf
 import { formatSuiteCounts, parseSuiteCounts } from '../src/parseSuiteCounts.js';
 import { mutationApplicability, surfacesTouched } from '../src/surfaces.js';
 import type { GateFacts } from '../src/types.js';
-import { packagesMissingTotals } from '../src/workspacePackages.js';
+import { packagesMissingTotals, packagesWithTests } from '../src/workspacePackages.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
-/** The directories under `packages/`, read from disk so a package added later is checked too. */
-function packageDirectories(): string[] {
-  return readdirSync(join(REPO_ROOT, 'packages'), { withFileTypes: true })
+/** The directories under `parent`, read from disk so a package added later is checked too. */
+function directoriesUnder(parent: string): string[] {
+  return readdirSync(join(REPO_ROOT, parent), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => `packages/${entry.name}`);
+    .map((entry) => `${parent}/${entry.name}`);
+}
+
+/** Read here rather than through the package, so the tests do not grade the package with its own answer. */
+function manifestHasTestScript(dir: string): boolean {
+  const path = join(REPO_ROOT, dir, 'package.json');
+  if (!existsSync(path)) {
+    return false;
+  }
+  const manifest = JSON.parse(readFileSync(path, 'utf8')) as { scripts?: Record<string, string> };
+  return typeof manifest.scripts?.test === 'string';
+}
+
+/**
+ * The `packages` list of `pnpm-workspace.yaml`, read line by line because the package has no YAML
+ * dependency. It stops at the first line that is not a list item, which is where the list ends.
+ */
+function workspaceEntries(): string[] {
+  const lines = readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8').split('\n');
+  const start = lines.indexOf('packages:');
+  assert.notEqual(start, -1, 'pnpm-workspace.yaml has no packages list');
+  const entries: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    const item = /^\s+-\s+['"]?([^'"]+?)['"]?\s*$/.exec(line);
+    if (!item) {
+      break;
+    }
+    entries.push(item[1]);
+  }
+  return entries;
 }
 
 describe('parseSuiteCounts', () => {
@@ -149,6 +178,39 @@ describe('packagesMissingTotals', () => {
 
   it('is empty when every package reported', () => {
     assert.deepEqual(packagesMissingTotals(['a', 'b'], ['b', 'a']), []);
+  });
+});
+
+describe('packagesWithTests', () => {
+  it('expects a total from e2e and deploy as well as from every package under packages/', () => {
+    const expected = packagesWithTests(REPO_ROOT);
+    const wanted = ['deploy', 'e2e', ...directoriesUnder('packages').filter(manifestHasTestScript)];
+
+    const notExpected = wanted.filter((dir) => !expected.includes(dir));
+    assert.deepEqual(notExpected, []);
+  });
+
+  it('expects exactly the members pnpm-workspace.yaml lists that have a test script', () => {
+    // The standalone list is a literal, and it already went stale once: e2e joined the workspace the
+    // day after the list was written, and its total was never expected. This reads the file pnpm reads.
+    const members = workspaceEntries().flatMap((entry) => {
+      if (entry.endsWith('/*')) {
+        return directoriesUnder(entry.slice(0, -2));
+      }
+      assert.doesNotMatch(entry, /[*?{[!]/, `a workspace entry this check cannot read: ${entry}`);
+      return [entry];
+    });
+    assert.notEqual(members.length, 0);
+
+    assert.deepEqual(packagesWithTests(REPO_ROOT), members.filter(manifestHasTestScript).sort());
+  });
+
+  it('expects e2e under the name pnpm -r test prefixes its lines with', () => {
+    // pnpm -r printed e2e's lines as `e2e <script>: ...` on 2026-09-24. An expected name that differed
+    // from that prefix would put e2e in the missing row on every run, however cleanly it reported.
+    const [e2e] = parseSuiteCounts('e2e test: # tests 12').map((count) => count.packageName);
+
+    assert.ok(packagesWithTests(REPO_ROOT).includes(e2e), `no expected package is named ${e2e}`);
   });
 });
 
@@ -291,7 +353,7 @@ describe('mutationApplicability', () => {
     for (const dir of named) {
       assert.deepEqual(mutationApplicability([`${dir}/src/sample.ts`]), { state: 'applies', uncovered: [] }, dir);
     }
-    for (const dir of packageDirectories().filter((d) => !named.has(d))) {
+    for (const dir of directoriesUnder('packages').filter((d) => !named.has(d))) {
       assert.equal(mutationApplicability([`${dir}/src/sample.ts`]).state, 'unavailable', dir);
     }
   });

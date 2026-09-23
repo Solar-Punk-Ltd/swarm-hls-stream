@@ -1,9 +1,12 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Where `pnpm-workspace.yaml` says packages live. Kept as a literal because reading YAML to find two globs is worse. */
-const WORKSPACE_ROOTS = ['packages', '.'] as const;
-const STANDALONE_PACKAGES = ['deploy'] as const;
+/**
+ * The three entries of `pnpm-workspace.yaml`, kept as literals because reading YAML to find them is
+ * worse. `packages/*` is a directory of packages, and `deploy` and `e2e` are packages themselves.
+ */
+const WORKSPACE_ROOTS = ['packages'] as const;
+const STANDALONE_PACKAGES = ['deploy', 'e2e'] as const;
 
 function hasTestScript(packageJsonPath: string): boolean {
   try {
@@ -28,9 +31,6 @@ export function packagesWithTests(repoRoot: string): string[] {
   const found: string[] = [];
 
   for (const root of WORKSPACE_ROOTS) {
-    if (root === '.') {
-      continue;
-    }
     let entries: string[];
     try {
       entries = readdirSync(join(repoRoot, root));
