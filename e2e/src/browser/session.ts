@@ -57,7 +57,7 @@ export interface ViewerSample {
    *
    * Counted rather than rated, because a rate needs two samples and one of them belongs to whoever
    * is asking. Against **media** time it gives the frame rate that arrived. See
-   * {@link RunSummary.deliveredFps}.
+   * {@link SessionSummary.deliveredFps}.
    */
   decodedFrames: number | null;
   /** `hls.latency` as the shipped QoE overlay reports it, or null before it has a value. */
