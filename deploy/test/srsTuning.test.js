@@ -185,7 +185,10 @@ describe('the SRS latency knobs', () => {
     const shippedRatio = Number(conf.match(/hls_aof_ratio\s+([\d.]+);/)[1]);
     assert.equal(Number((0.5 * shippedRatio).toFixed(3)), 2.5);
     assert.match(conf, /hls_window\s+15;/);
-    assert.match(conf, /latency\s+200;/);
+    // 2000ms since 2026-09-23. At 200 an outside broadcaster's uplink lost 5 to 8.5% of its packets
+    // on 2026-09-22, SRT resent nearly all of them, and SRS dropped the resends as too late, so every
+    // one became a hole in the picture that the ladder then re-encoded into every rung.
+    assert.match(conf, /latency\s+2000;/);
   });
 
   /**
