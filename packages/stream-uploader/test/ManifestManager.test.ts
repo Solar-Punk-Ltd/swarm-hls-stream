@@ -4,7 +4,12 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { BroadcastDating, reanchorEpoch, withEpoch } from '../src/libs/broadcastDating.js';
-import { continuesFrom, LIVE_WINDOW_MAX_BYTES, ManifestManager } from '../src/libs/ManifestManager.js';
+import {
+  continuesFrom,
+  inheritedTimeline,
+  LIVE_WINDOW_MAX_BYTES,
+  ManifestManager,
+} from '../src/libs/ManifestManager.js';
 import { BroadcastAnchor } from '../src/types.js';
 
 import { TEST_ANCHOR } from './helpers/fakes.js';
@@ -1406,11 +1411,12 @@ describe('a session that continues a feed a previous session wrote', () => {
   });
 
   /**
-   * ⛔ The recording lists only this session's own media, numbered from the same place its live
-   * playlists were. The previous session's recording stays whole at its own index and none of it is
-   * named here.
+   * ⛔ A session handed the numbering and nothing else records only its own media. That is the
+   * shape a feed whose head names no media leaves, and it is what keeps such a broadcast's output
+   * exactly what it has always been. A head that DOES name media is inherited as well — see the
+   * glued-recording suite below.
    */
-  it('records only its own segments, numbered from the same place', () => {
+  it('records only its own segments when nothing was inherited, numbered from the same place', () => {
     const manager = continuing();
     feed(manager, 0, 3);
     manager.buildLiveManifest();
@@ -1451,5 +1457,583 @@ describe('a session that continues a feed a previous session wrote', () => {
     recovered.continueFrom(manager.publishedSequenceOffset());
 
     assert.equal(mediaSequenceOf(recovered.buildLiveManifest()), CONTINUE_AT);
+  });
+});
+
+/**
+ * A broadcaster who stops and starts again writes several recordings onto one rung feed, and the
+ * catalogue points at the head. So the head recording opens with the playlist that was there when
+ * this session started, one `#EXT-X-DISCONTINUITY`, then this session's own media.
+ *
+ * ⛔ Every prefix below is playlist TEXT, parsed the way the uploader parses the head it reads off
+ * the feed. A suite that handed the manager a hand-built object would prove the gluing against a
+ * prefix nothing publishes. The two fixtures at the top are the shapes `bee` really answered with
+ * on the 360p rung of stream aa1c366a on 2026-09-21: a closing live playlist and a recording.
+ */
+describe('gluing the recording onto what was already on the feed', () => {
+  const DISCONTINUITY_SEQUENCE_TAG = '#EXT-X-DISCONTINUITY-SEQUENCE';
+  const ENDLIST_TAG = '#EXT-X-ENDLIST';
+  const PLAYLIST_TYPE_VOD_TAG = '#EXT-X-PLAYLIST-TYPE:VOD';
+
+  /** Session one as the feed really held it: 14 entries from 0, a short last one, no break. */
+  const SESSION_ONE = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:2',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '',
+    ...Array.from({ length: 13 }, (_unused, i) => [
+      `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:05:${(21 + i * 2).toString().padStart(2, '0')}.849Z`,
+      '#EXTINF:2,',
+      ref(1000 + i),
+    ]).flat(),
+    `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:05:47.849Z`,
+    '#EXTINF:1.1,',
+    ref(1013),
+    '#EXT-X-ENDLIST',
+    '',
+  ].join('\n');
+
+  /** What session one really holds: thirteen 2s entries and one of 1.1s. */
+  const SESSION_ONE_SECONDS = 13 * 2 + 1.1;
+  const SESSION_ONE_ENTRIES = 14;
+
+  function glued(prefixText: string): ManifestManager {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    const continueAt = continuesFrom(prefixText);
+    const prefix = inheritedTimeline(prefixText);
+    assert.ok(continueAt !== null && prefix !== null, 'the fixture head must be readable');
+    manager.continueFrom(continueAt!);
+    manager.inherit(prefix!);
+    return manager;
+  }
+
+  describe('reading the head', () => {
+    it('carries every timeline line of a recording verbatim, and nothing of its header', () => {
+      const parsed = inheritedTimeline(SESSION_ONE)!;
+
+      assert.equal(parsed.mediaSequence, 0);
+      assert.equal(parsed.targetDuration, 2);
+      assert.equal(parsed.durationSeconds, SESSION_ONE_SECONDS);
+      assert.equal(parsed.lines.length, SESSION_ONE_ENTRIES * 3, 'three lines per entry, none of them a header');
+      assert.equal(parsed.lines[0], `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:05:21.849Z`);
+      assert.equal(parsed.lines.at(-1), ref(1013));
+      assert.ok(!parsed.lines.includes(ENDLIST_TAG), 'the recording writes its own ending');
+      assert.ok(!parsed.lines.some((line) => line.startsWith('#EXT-X-MEDIA-SEQUENCE')));
+    });
+
+    /**
+     * ⛔ A hole and a break are different statements and both are the previous session's to make, so
+     * both come back exactly as they were written. Nothing here re-derives a stamp or renumbers a
+     * gap URI: that media belongs to a session this one never saw.
+     */
+    it('carries gaps, breaks and stamps through untouched', () => {
+      const withHoles = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:3',
+        '#EXT-X-MEDIA-SEQUENCE:14',
+        '',
+        DISCONTINUITY_TAG,
+        `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:06:32.475Z`,
+        '#EXTINF:2,',
+        ref(2000),
+        GAP_TAG,
+        `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:06:34.475Z`,
+        '#EXTINF:2,',
+        'gap-15',
+        `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:06:36.475Z`,
+        '#EXTINF:3,',
+        ref(2002),
+        '#EXT-X-ENDLIST',
+        '',
+      ].join('\n');
+
+      const parsed = inheritedTimeline(withHoles)!;
+
+      assert.equal(parsed.mediaSequence, 14);
+      assert.equal(parsed.targetDuration, 3);
+      assert.equal(parsed.durationSeconds, 5, 'the gap entry’s 2s is a lost segment, not media');
+      assert.equal(parsed.lines[0], DISCONTINUITY_TAG, 'the break opens the timeline and is not a header');
+      assert.ok(parsed.lines.includes(GAP_TAG));
+      assert.ok(parsed.lines.includes('gap-15'), 'the hole keeps the name the previous session gave it');
+    });
+
+    /**
+     * ⚠️ A predecessor that was killed never published a recording, so its head is a live window and
+     * only that window is here to read. Documented rather than worked around: the killed session's
+     * own recovery entry is what recovers the rest of its recording.
+     */
+    it('takes a live window with no ENDLIST for exactly what it is', () => {
+      const manager = withSegments(4, 2);
+      const live = manager.buildLiveManifest();
+
+      const parsed = inheritedTimeline(live)!;
+      assert.equal(parsed.lines.filter((line) => line.startsWith('#EXTINF:')).length, 4);
+      assert.equal(parsed.durationSeconds, 8);
+    });
+
+    it('answers null for a playlist naming no media, and for a payload that is not one', () => {
+      const empty = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:2', '#EXT-X-MEDIA-SEQUENCE:0', ''].join(
+        '\n',
+      );
+
+      assert.equal(inheritedTimeline(empty), null);
+      assert.equal(inheritedTimeline('not a playlist at all'), null);
+      assert.equal(inheritedTimeline(''), null);
+    });
+  });
+
+  describe('the glued recording', () => {
+    it('opens with the previous recording, seams it once, then names its own media', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+      manager.buildLiveManifest();
+
+      const vod = manager.buildVODManifest();
+      const uris = segmentUris(vod);
+
+      assert.equal(uris[0], ref(1000), 'the recording starts at the first session’s first segment');
+      assert.deepEqual(uris.slice(-3), ['ref-0', 'ref-1', 'ref-2']);
+      assert.equal(uris.length, SESSION_ONE_ENTRIES + 3);
+      assert.equal(countOccurrences(vod, DISCONTINUITY_TAG), 1, 'one seam, never two');
+      assert.ok(vod.includes(PLAYLIST_TYPE_VOD_TAG));
+      assert.ok(vod.trimEnd().endsWith(ENDLIST_TAG));
+    });
+
+    /**
+     * ⛔⛔ The defect a review caught on 2026-09-21. This session's first segment can arrive carrying
+     * a break of its own — the origin declared one, or the engine's counter restarted on it — and that
+     * break and the seam are the same join. Two tags there would tell a player there are two encodes
+     * between the sessions and would move every later discontinuity sequence out by one.
+     */
+    it('writes one seam even when its own first segment declares a break of its own', () => {
+      const manager = glued(SESSION_ONE);
+      manager.addSegment(0, 2, 'ref-0', true);
+      manager.addSegment(1, 2, 'ref-1');
+
+      const vod = manager.buildVODManifest();
+      assert.equal(countOccurrences(vod, DISCONTINUITY_TAG), 1, 'the origin′s break and the seam are one join');
+
+      const lines = vod.split('\n');
+      const seam = lines.indexOf(DISCONTINUITY_TAG);
+      assert.equal(lines[seam + 3], 'ref-0', 'and it still sits immediately in front of this session′s media');
+    });
+
+    /**
+     * ⛔ The suppression is positional rather than derived from the seam, which a head naming media
+     * under no `#EXT-X-MEDIA-SEQUENCE` would leave unarmed: `continuesFrom` answers null there, so
+     * nothing offsets the numbering and `isSeam` is false, while the prefix path writes the seam
+     * regardless. Derived, that combination put a second tag back.
+     */
+    it('writes one seam over a head that declared no media sequence at all', () => {
+      const headerless = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:2',
+        '',
+        `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:05:21.849Z`,
+        '#EXTINF:2,',
+        ref(700),
+        '#EXT-X-ENDLIST',
+        '',
+      ].join('\n');
+      assert.equal(continuesFrom(headerless), null, 'nothing offsets the numbering off such a head');
+
+      const manager = new ManifestManager(TEST_ANCHOR);
+      manager.inherit(inheritedTimeline(headerless)!);
+      manager.addSegment(0, 2, 'ref-0', true);
+      manager.addSegment(1, 2, 'ref-1');
+
+      assert.equal(countOccurrences(manager.buildVODManifest(), DISCONTINUITY_TAG), 1);
+    });
+
+    /** The live playlist says the same join once too, from the other builder. */
+    it('writes one seam in the live playlist when its own first segment declares a break', () => {
+      const manager = glued(SESSION_ONE);
+      manager.addSegment(0, 2, 'ref-0', true);
+      manager.addSegment(1, 2, 'ref-1');
+
+      assert.equal(countOccurrences(manager.buildLiveManifest(), DISCONTINUITY_TAG), 1);
+    });
+
+    /**
+     * ⛔ The seam tag sits between the two sessions' media, not on this session's first entry twice.
+     * The `isSeam` tag that a live playlist writes there is deliberately left to the prefix path.
+     */
+    it('puts the one seam immediately before this session’s first segment', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 2, 2);
+
+      const lines = manager.buildVODManifest().split('\n');
+      const seam = lines.indexOf(DISCONTINUITY_TAG);
+
+      assert.equal(lines[seam - 1], ref(1013), 'the previous recording’s last segment is in front of it');
+      assert.equal(lines[seam + 3], 'ref-0', 'this session’s first segment follows its stamp and length');
+    });
+
+    it('declares the prefix’s media sequence, which is where the whole broadcast starts', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+
+      assert.equal(mediaSequenceOf(manager.buildVODManifest()), 0);
+      assert.equal(
+        mediaSequenceOf(manager.buildLiveManifest()),
+        SESSION_ONE_ENTRIES,
+        'the live playlist still carries on from the head, which is what a following viewer needs',
+      );
+    });
+
+    it('declares the longer target duration of the two sessions', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 2, 5.5);
+
+      assert.equal(targetDurationOf(manager.buildVODManifest()), 6);
+      assert.equal(
+        targetDurationOf(manager.buildLiveManifest()),
+        6,
+        'the live window holds only this session, so it declares only this session’s longest',
+      );
+    });
+
+    it('declares the prefix’s own target duration when this session’s segments are shorter', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 2, 0.5);
+
+      assert.equal(targetDurationOf(manager.buildVODManifest()), 2);
+    });
+
+    /**
+     * What the catalogue entry, the rendition announce and the admin's `vod` report all carry. A
+     * length stopping at the last restart would tell a viewer a four-session broadcast is as long as
+     * its last session.
+     */
+    it('reports the whole broadcast’s duration, both sessions', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+
+      assert.equal(manager.getTotalDuration(), SESSION_ONE_SECONDS + 6);
+    });
+
+    /**
+     * ⛔⛔ Gluing a recording must not change how long it is reported to be. A session's own total
+     * never counted a lost segment, since it is never held, but the prefix summed every `#EXTINF`,
+     * gap entries included. So a broadcast that lost two segments reported 12s before its restart and
+     * 16s after the next session glued it, to the catalog and to the admin alike.
+     */
+    it('reports a recording with a lost segment at the length it reported before it was glued', () => {
+      const one = withHole(3, 2, 3);
+      one.buildLiveManifest();
+      const recording = one.buildVODManifest();
+      assert.equal(countOccurrences(recording, GAP_TAG), 2, 'the fixture must carry its holes as gap entries');
+
+      const two = glued(recording);
+
+      assert.equal(
+        two.getTotalDuration(),
+        one.getTotalDuration(),
+        'the glued recording counted the gap entries it inherited as media',
+      );
+      feed(two, 0, 2, 2);
+      assert.equal(two.getTotalDuration(), one.getTotalDuration() + 4, 'and grows by exactly its own media');
+    });
+
+    it('names nothing at all before its own first segment lands', () => {
+      assert.equal(glued(SESSION_ONE).buildVODManifest(), '', 'a session that held nothing publishes no recording');
+    });
+  });
+
+  /**
+   * ⛔ The whole point: session three inherits session two's glued recording, which already carries
+   * session one, so the head recording plays the broadcast from its beginning however many times it
+   * was restarted.
+   */
+  describe('chaining across three sessions', () => {
+    function secondSessionRecording(): string {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+      manager.buildLiveManifest();
+      return manager.buildVODManifest();
+    }
+
+    it('carries the first session through the second’s recording into the third’s', () => {
+      const third = glued(secondSessionRecording());
+      feed(third, 0, 2, 2);
+
+      const vod = third.buildVODManifest();
+      const uris = segmentUris(vod);
+
+      assert.equal(uris[0], ref(1000), 'the first session is still at the front');
+      assert.deepEqual(uris.slice(-2), ['ref-0', 'ref-1']);
+      assert.equal(uris.length, SESSION_ONE_ENTRIES + 3 + 2);
+      assert.equal(countOccurrences(vod, DISCONTINUITY_TAG), 2, 'one seam per join and no more');
+      assert.equal(mediaSequenceOf(vod), 0);
+    });
+
+    it('sums all three sessions into the duration it reports', () => {
+      const third = glued(secondSessionRecording());
+      feed(third, 0, 2, 2);
+
+      assert.equal(third.getTotalDuration(), SESSION_ONE_SECONDS + 6 + 4);
+    });
+  });
+
+  /**
+   * RFC 8216 §4.3.3.3: a window that has slid past a break has to say how many are behind it, or a
+   * client joining now numbers the breaks it can see from a different place than one that has been
+   * watching. hls.js 1.6.15 reads the tag into `level.startCC`.
+   */
+  describe('the discontinuity sequence on live playlists', () => {
+    it('declares nothing at all on a broadcast that opened on an empty feed and never broke', () => {
+      assert.ok(!withSegments(4, 2).buildLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG));
+      assert.ok(!withSegments(4, 2).buildClosingLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG));
+    });
+
+    /**
+     * ⛔⛔ **A break of its own counts even on an empty feed, and this used to answer zero for ever.**
+     * The tag was skipped outright for a session with no offset and nothing inherited, on the
+     * reasoning that such a session numbers its breaks from its own first entry — true only until one
+     * of them slides out of the window. A reconnect seam is an ordinary event now rather than an
+     * engine fault, so a first-session broadcast whose encoder dropped once and came back loses that
+     * seam from its window within a minute and went on declaring nothing. hls.js reads this tag into
+     * `level.startCC` and aligns discontinuity domains across levels from it when it switches rung, so
+     * a ladder under-declaring it lands the switch in the wrong domain.
+     */
+    it('counts its own break once the window has slid past it, on an empty feed too', () => {
+      const manager = withSegments(2, 2);
+      // The encoder came back: this segment opens a resumed run and carries the seam.
+      manager.resumeAfterReconnect('a-return');
+      manager.buildLiveManifest();
+      manager.addSegment(2, 2, ref(2));
+
+      assert.ok(
+        !manager.buildLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG),
+        'the break is inside the window, so nothing is behind it yet and the tag stays absent',
+      );
+
+      // Enough segments that the byte budget slides the window past the seam.
+      for (let index = 3; index < 400; index++) {
+        manager.addSegment(index, 2, ref(index));
+      }
+
+      const live = manager.buildLiveManifest();
+      assert.ok(
+        live.includes(`${DISCONTINUITY_SEQUENCE_TAG}:1`),
+        `the seam left the window uncounted; header was ${live.split('\n').slice(0, 6).join(' / ')}`,
+      );
+      assert.ok(
+        manager.buildClosingLiveManifest().includes(`${DISCONTINUITY_SEQUENCE_TAG}:1`),
+        'and the playlist a viewer is handed when the broadcast ends says the same',
+      );
+      assert.ok(
+        !manager.buildVODManifest().includes(DISCONTINUITY_SEQUENCE_TAG),
+        'while the recording names the broadcast from its start, so nothing precedes it',
+      );
+    });
+
+    /** The seam is ON the first entry of this window, so nothing precedes it and the count is the prefix's. */
+    it('counts only the inherited breaks while this session’s own seam is still in the window', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+
+      assert.ok(
+        !manager.buildLiveManifest().includes(DISCONTINUITY_SEQUENCE_TAG),
+        'session one declared no break, so nothing is behind this window yet',
+      );
+    });
+
+    it('counts the seams of every session behind the window once its own has slid past', () => {
+      const chained = glued(SESSION_ONE);
+      feed(chained, 0, 3, 2);
+      chained.buildLiveManifest();
+      const third = glued(chained.buildVODManifest());
+
+      // Enough segments that the byte budget slides the window past this session's own first one.
+      feed(third, 0, 400, 2);
+      const live = third.buildLiveManifest();
+
+      assert.ok(live.includes(`${DISCONTINUITY_SEQUENCE_TAG}:2`), live.split('\n').slice(0, 6).join('\n'));
+    });
+
+    it('declares it in the header, before the first entry, where hls.js requires it', () => {
+      const chained = glued(SESSION_ONE);
+      feed(chained, 0, 3, 2);
+      chained.buildLiveManifest();
+      const third = glued(chained.buildVODManifest());
+      feed(third, 0, 400, 2);
+
+      const lines = third.buildClosingLiveManifest().split('\n');
+      const tag = lines.findIndex((line) => line.startsWith(DISCONTINUITY_SEQUENCE_TAG));
+      const firstEntry = lines.findIndex((line) => line.startsWith('#EXTINF:'));
+
+      assert.ok(tag > 0 && tag < firstEntry, 'the tag is a header, not part of the timeline');
+      assert.equal(countOccurrences(third.buildClosingLiveManifest(), DISCONTINUITY_SEQUENCE_TAG), 1);
+    });
+
+    /** The recording names its timeline from its own first entry, so nothing precedes it. */
+    it('is absent from the recording, whose count would be zero', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+
+      assert.ok(!manager.buildVODManifest().includes(DISCONTINUITY_SEQUENCE_TAG));
+    });
+
+    /**
+     * ⛔⛔ The counter has to dedupe exactly where {@link segmentLines} does. A first segment carrying
+     * a break of its own publishes ONE tag at the seam, so once it slides out of the window exactly
+     * one break is behind it — counting the seam and the segment's own flag separately said two, and
+     * every fragment a client had already numbered from the first would have been one out.
+     */
+    it('counts its own first segment once when that segment declared a break of its own', () => {
+      const manager = glued(SESSION_ONE);
+      assert.equal(
+        inheritedTimeline(SESSION_ONE)!.lines.filter((line) => line === DISCONTINUITY_TAG).length,
+        0,
+        'the prefix declares no break, so the only one behind the window can be this session′s seam',
+      );
+      manager.addSegment(0, 2, 'ref-0', true);
+      // Enough that the byte budget slides the window past this session's own first segment.
+      for (let i = 1; i < 400; i++) {
+        manager.addSegment(i, 2, ref(i));
+      }
+
+      const live = manager.buildLiveManifest();
+      assert.ok(live.includes(`${DISCONTINUITY_SEQUENCE_TAG}:1`), live.split('\n').slice(0, 6).join('\n'));
+    });
+
+    /**
+     * ⛔⛔ A head left by a session that was killed is a live window, so the breaks earlier in that
+     * broadcast are behind it and are named only by its own header. Dropping it published a number
+     * LOWER than the head a viewer had just been handed, which is the one direction a discontinuity
+     * sequence must never move.
+     */
+    it('carries the head′s own declared count, so it never publishes a lower one', () => {
+      const killedWindow = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:2',
+        '#EXT-X-MEDIA-SEQUENCE:40',
+        `${DISCONTINUITY_SEQUENCE_TAG}:3`,
+        '',
+        `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:05:21.849Z`,
+        '#EXTINF:2,',
+        ref(900),
+        '',
+      ].join('\n');
+      assert.equal(inheritedTimeline(killedWindow)!.discontinuitySequence, 3, 'the header is read, not dropped');
+
+      const manager = glued(killedWindow);
+      feed(manager, 0, 400, 2);
+
+      const live = manager.buildLiveManifest();
+      assert.ok(live.includes(`${DISCONTINUITY_SEQUENCE_TAG}:4`), 'the head′s three, plus this session′s own seam');
+    });
+
+    /**
+     * The recording inherits that header too. A prefix taken from a killed session's window begins
+     * mid-broadcast, so the breaks in front of it are real and the recording has to say so.
+     */
+    it('is declared on a recording glued onto a killed session′s window', () => {
+      const killedWindow = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:2',
+        '#EXT-X-MEDIA-SEQUENCE:40',
+        `${DISCONTINUITY_SEQUENCE_TAG}:3`,
+        '',
+        `${PROGRAM_DATE_TIME_TAG}:2026-09-21T10:05:21.849Z`,
+        '#EXTINF:2,',
+        ref(900),
+        '',
+      ].join('\n');
+      const manager = glued(killedWindow);
+      feed(manager, 0, 2, 2);
+
+      const vod = manager.buildVODManifest();
+      assert.ok(vod.includes(`${DISCONTINUITY_SEQUENCE_TAG}:3`));
+      const lines = vod.split('\n');
+      assert.ok(
+        lines.findIndex((line) => line.startsWith(DISCONTINUITY_SEQUENCE_TAG)) <
+          lines.findIndex((line) => line.startsWith('#EXTINF:')),
+        'and in the header, where hls.js requires it',
+      );
+    });
+
+    /** A recording names the broadcast from its start, so it hands nothing on. */
+    it('is absent again once the killed session′s window has itself been glued into a recording', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 2, 2);
+      manager.buildLiveManifest();
+
+      assert.equal(inheritedTimeline(manager.buildVODManifest())!.discontinuitySequence, 0);
+    });
+  });
+
+  /**
+   * ⛔ The prefix is persisted rather than re-read, for the same reason the offset is: by the time a
+   * recovered session runs, the feed head is its own live playlist.
+   */
+  describe('surviving a crash', () => {
+    it('still glues the recording after the session was rebuilt off disk', () => {
+      const manager = glued(SESSION_ONE);
+      feed(manager, 0, 3, 2);
+      manager.buildLiveManifest();
+
+      const recovered = new ManifestManager(TEST_ANCHOR);
+      const state = manager.getState();
+      recovered.restoreState(state.segments, state.hlsHeaders, manager.inheritedPrefix()!);
+      recovered.continueFrom(manager.publishedSequenceOffset());
+
+      assert.equal(recovered.buildVODManifest(), manager.buildVODManifest());
+      assert.equal(recovered.getTotalDuration(), manager.getTotalDuration());
+    });
+
+    it('hands the recovery entry back exactly what it was given', () => {
+      const parsed = inheritedTimeline(SESSION_ONE)!;
+      const manager = new ManifestManager(TEST_ANCHOR);
+      manager.inherit(parsed);
+
+      assert.deepEqual(manager.inheritedPrefix(), parsed);
+      assert.equal(new ManifestManager(TEST_ANCHOR).inheritedPrefix(), null);
+    });
+
+    /**
+     * An entry written before gap entries stopped counting as media carries a duration that includes
+     * them. The lines it carries are verbatim, so the media they hold is recovered from them rather
+     * than the stale number trusted.
+     */
+    it('re-derives the inherited duration off the lines, not the number an older entry carries', () => {
+      const one = withHole(3, 2, 3);
+      one.buildLiveManifest();
+      const parsed = inheritedTimeline(one.buildVODManifest())!;
+      const written = { ...parsed, durationSeconds: parsed.durationSeconds + 4 };
+
+      const recovered = new ManifestManager(TEST_ANCHOR);
+      recovered.restoreState([], [], written);
+
+      assert.equal(recovered.getTotalDuration(), one.getTotalDuration());
+    });
+  });
+
+  /**
+   * ⛔⛔ A standalone single-rendition stream mints a fresh topic per broadcast and a standalone
+   * ladder a fresh group, so the head is empty and nothing is inherited. Those deployments must
+   * publish exactly what they published before this existed.
+   */
+  it('leaves a broadcast over an empty feed byte-identical to what it always published', () => {
+    const glue = new ManifestManager(TEST_ANCHOR);
+    const plain = new ManifestManager(TEST_ANCHOR);
+    assert.equal(inheritedTimeline(''), null, 'an empty head yields nothing to inherit');
+
+    for (const manager of [glue, plain]) {
+      feed(manager, 0, 6, 2);
+      manager.buildLiveManifest();
+    }
+
+    assert.equal(glue.buildLiveManifest(), plain.buildLiveManifest());
+    assert.equal(glue.buildClosingLiveManifest(), plain.buildClosingLiveManifest());
+    assert.equal(glue.buildVODManifest(), plain.buildVODManifest());
+    assert.equal(glue.getTotalDuration(), plain.getTotalDuration());
   });
 });

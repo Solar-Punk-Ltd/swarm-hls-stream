@@ -18,6 +18,18 @@ import { waitFor } from '../../src/harness/wait.js';
 /**
  * Scenario K — a broadcaster reconnects while the previous session is still draining.
  *
+ * ⛔⛔ **THIS SCENARIO DOES NOT HOLD AS WRITTEN SINCE THE RECONNECT WINDOW OF 2026-09-22, AND IT IS
+ * LEFT UNCHANGED ON PURPOSE.** Its trigger is the engine's unpublish marker, which used to open a
+ * drain window and now opens the reconnect window instead: `noteDisconnect` ends nothing, so the
+ * second publisher resumes the SAME session on the SAME topic, and the waits below for a second
+ * announced topic and for the outgoing session to end cannot come true. Rewriting it needs a live
+ * stack to say what the right shape is — a stop through `POST /stream/stop` is one way to open a real
+ * drain window, and pushing the reconnect past `ORPHAN_REAP_MS` is another, and they prove different
+ * things — so it is a step of its own rather than a guess made here. Until then it is SKIPPED on
+ * SRS, by name and with this reason, rather than left in the scenarios glob to buy a warmup broadcast,
+ * sit out its waits and fail on a correct deployment. OME is unaffected and still runs it: its closing
+ * webhook calls `stopStream` directly, so a stop there still opens a real drain window.
+ *
  * ## Why a unit test models this badly
  *
  * Two `StreamUploader`s exist under one stream id, and which one owns what is decided by wall-clock
@@ -54,8 +66,17 @@ const VOD_WAIT_MS = 150_000;
 const MIN_STAMP_TTL_S = 600;
 
 const cfg = loadConfig();
+/**
+ * ⛔ A reason, not `true`, so the run summary says why K did not run instead of reporting a silent
+ * skip. Lift it with the rewrite the header describes, never on its own.
+ */
+const skip =
+  cfg.engine === 'srs'
+    ? "K's trigger opens SRS's reconnect window, not a drain, since 2026-09-22: the reconnect resumes " +
+      'the same session, so it cannot hold until it is rewritten (see the header)'
+    : false;
 
-describe('K — reconnect during drain: two recordings, and the live one keeps its recovery entry', () => {
+describe('K — reconnect during drain: two recordings, and the live one keeps its recovery entry', { skip }, () => {
   const engine = getEngine(cfg);
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');

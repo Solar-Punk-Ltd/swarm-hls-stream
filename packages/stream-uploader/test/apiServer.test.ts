@@ -121,6 +121,10 @@ describe('api server over http (S0.7 test layer)', () => {
         'msSinceCatalogAnnounceFailed',
         'msSinceStatePersistFailed',
         'msSinceAuthRejection',
+        // Every live stream whose encoder has gone and has not come back, which is a state that was
+        // invisible from outside before a disconnect stopped ending a broadcast. See
+        // `ReconnectWindow.test.ts`.
+        'disconnectedStreams',
         'hasIngestedMedia',
         'segmentsSkipped',
         'openingSegmentsWithheld',

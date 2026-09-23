@@ -360,4 +360,49 @@ describe('what the master is allowed to advertise', () => {
   it('hands back an empty list unchanged rather than inventing a rendition', () => {
     assert.deepEqual(advertisableRenditions([], new LadderLiveness()), []);
   });
+
+  /**
+   * The reconnect window's own case, and the reason this rule counts segments rather than reading a
+   * clock. A whole-encoder disconnect stops SRS's transcoders, so all four rungs go quiet together
+   * and stay quiet for as long as the outage lasts — up to a full reap window, and now deliberately
+   * so, because the session is being held open for the encoder to come back to.
+   *
+   * ⛔ A clock would call every rung dead there and the master would be rewritten, or refused, in the
+   * middle of an outage a broadcast is about to recover from. The count cannot: nothing advanced, so
+   * the reference did not move and no rung is behind it. Property 1 of three, and the one this
+   * change leans on hardest.
+   */
+  it('advertises every rung through an outage in which the whole ladder went quiet', () => {
+    const liveness = new LadderLiveness();
+    const renditions = LADDER.map(rendition);
+    for (let segment = 0; segment < 10; segment++) {
+      everyRungDelivers(liveness);
+    }
+
+    // The outage. Nothing is recorded for any rung, for however long it lasts.
+    assert.deepEqual(
+      advertisableRenditions(renditions, liveness).map((r) => r.name),
+      LADDER,
+      'a ladder that went quiet together lost rungs from its master, so a viewer joining the outage ' +
+        'is offered fewer qualities than the broadcast has',
+    );
+    for (const rung of LADDER) {
+      // ⚠️ Not a lag of zero: rungs deliver one at a time, so each of them is up to one segment
+      // behind the middle at any instant, which the rule's own tolerance of four is sized for. What
+      // an outage must not do is let that lag GROW, and a lag that cannot grow is the whole of the
+      // "count segments, never read a clock" property.
+      assert.equal(liveness.hasStopped(rung, LADDER), false, `${rung} read as dead on a ladder that did not move`);
+      assert.ok(liveness.lagOf(rung, LADDER) < RUNG_DEATH_LAG_SEGMENTS, `${rung} drifted during an outage`);
+    }
+
+    // And the return puts every rung back where it was, one at a time as the transcoders restart.
+    for (const rung of LADDER) {
+      liveness.recordDelivered(rung);
+      assert.deepEqual(
+        advertisableRenditions(renditions, liveness).map((r) => r.name),
+        LADDER,
+        `the master stopped offering a rung while ${rung} was coming back`,
+      );
+    }
+  });
 });

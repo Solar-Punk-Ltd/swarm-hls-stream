@@ -137,13 +137,14 @@ interface VodWaitInputs {
  * upload in flight keeps trying for {@link UPLOAD_RETRY_WINDOW_MS}. That is when the orphan reaper's
  * own window starts, because it measures from the last segment to arrive rather than from the stop.
  *
- * **The rung's stop, sized for the case that actually failed rather than the usual one.** A ladder
- * source's `on_unpublish` clears the authenticated base and stops NOTHING: each rung is one of SRS's
- * own loopback publishers and ends on its own `on_unpublish`, which `engines/srs.ts` answers with
- * `stopStreamQuietly`. When those do not arrive, the only thing that ends a rung is the stall
- * reaper, which fires {@link ORPHAN_REAP_MS} after the last segment and re-arms itself with the
- * remainder when one arrived since. So a full reap window is the worst case, and it is exactly the
- * case a driver's wait has to survive.
+ * **The rung's stop, which is now always the reaper rather than only in the worst case.** A ladder
+ * source's `on_unpublish` clears the authenticated base and stops NOTHING, and since the reconnect
+ * window of 2026-09-22 a RUNG's own `on_unpublish` stops nothing either: `engines/srs.ts` answers it
+ * with `noteDisconnect`, which holds the session open so an encoder coming back rejoins the broadcast
+ * it left. So the only thing that ends any stream is the stall reaper, which fires
+ * {@link ORPHAN_REAP_MS} after the last segment and re-arms itself with the remainder when one
+ * arrived since. A full reap window was the worst case and is now the ordinary one, which is why
+ * this term was already here and why every other wait in the suite has to grow to match.
  *
  * **The drain.** `stopStream` runs `performDrain`, which races the uploader's finalize against
  * {@link DRAIN_TIMEOUT_MS}. The line this waits for is written inside that finalize, so giving up

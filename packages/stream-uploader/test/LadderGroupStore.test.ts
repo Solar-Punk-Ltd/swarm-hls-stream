@@ -99,6 +99,35 @@ describe('LadderGroupStore', () => {
   });
 
   /**
+   * ⛔ The rungs of one return announce seconds apart, so a restart can land between them. What comes
+   * back has to be the whole rule, the name and the rungs that joined it, or the rung still to come
+   * cannot tell this return from a finished one.
+   */
+  it('carries the return in progress across a restart, with the rungs that have joined it', () => {
+    const root = makeTempRoot();
+    const midReturn: RememberedLadder = {
+      ...LADDER,
+      epochs: [{ fromSequence: 2, atMs: STARTED_AT_MS + 50_000, returnToken: 'return-1' }],
+      returnInProgress: { token: 'return-1', resumedRungs: ['video/livestream_360p'] },
+    };
+    storeIn(root).store.remember(BASE, midReturn);
+
+    assert.deepEqual(storeIn(root).store.load(BASE), midReturn);
+  });
+
+  it('drops a damaged return in progress and keeps the rest of the record', () => {
+    const root = makeTempRoot();
+    const { filePath } = storeIn(root);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ [BASE]: { ...LADDER, returnInProgress: { token: 'return-1', resumedRungs: [7] } } }),
+    );
+
+    assert.deepEqual(storeIn(root).store.load(BASE), LADDER);
+  });
+
+  /**
    * A file written before this store kept a start instant. Read as a group with no clock, so the
    * caller mints a late-but-honest one, rather than as nothing, which would mint a second group and
    * list one broadcast twice.

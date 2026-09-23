@@ -1,14 +1,16 @@
-import { buildExtinf, buildProgramDateTime, datingReanchored } from '@swarm-hls-stream/shared';
+import { buildExtinf, buildProgramDateTime, datingReanchored, encoderReturned } from '@swarm-hls-stream/shared';
 
-import { BroadcastAnchor, SegmentEntry } from '../types.js';
+import { BroadcastAnchor, InheritedTimeline, SegmentEntry } from '../types.js';
 import {
   HLS_DISCONTINUITY,
+  HLS_DISCONTINUITY_SEQUENCE,
   HLS_ENDLIST,
   HLS_EXTINF,
   HLS_GAP,
   HLS_M3U,
   HLS_MEDIA_SEQUENCE,
   HLS_PLAYLIST_TYPE_VOD,
+  HLS_PROGRAM_DATE_TIME,
   HLS_TARGET_DURATION,
   HLS_VERSION,
 } from '../utils/hlsTags.js';
@@ -22,6 +24,14 @@ import {
   withEpoch,
 } from './broadcastDating.js';
 import { Logger } from './Logger.js';
+
+/** The engine's own counter going back on itself, which {@link ManifestManager} detects for itself. */
+const COUNTER_RESTARTED = 'counter-restarted' as const;
+/** An encoder coming back inside the reconnect window, which only the orchestrator can know. */
+const ENCODER_RETURNED = 'encoder-returned' as const;
+
+/** Why a broadcast's numbering and dating moved forward without the media doing so. */
+type ReanchorCause = typeof COUNTER_RESTARTED | typeof ENCODER_RETURNED;
 
 /**
  * The most bytes a live manifest may occupy, which is one single-owner chunk.
@@ -111,9 +121,9 @@ function gapUri(sequence: number): string {
  *
  * ⛔ Only two things are read out of the previous playlist, and deliberately nothing else. The
  * sequence its entries are numbered from, and how many entries it lists — every entry carries
- * exactly one `#EXTINF`, gap entries included, so counting those counts entries. Nothing is parsed
- * out of the segment lines: the previous recording stays whole at its own VOD index and this session
- * neither names nor inherits any of its media.
+ * exactly one `#EXTINF`, gap entries included, so counting those counts entries. What the previous
+ * playlist's media IS, as opposed to how far it counted, is {@link inheritedTimeline}'s question,
+ * read separately off the same head and carried only into the recording.
  *
  * Works on a live playlist, a closing one and a recording alike, which matters because any of the
  * three can be the head: a broadcast that ended cleanly leaves the VOD there, one that was killed
@@ -127,6 +137,117 @@ export function continuesFrom(manifest: string): number | null {
 
   const entries = manifest.match(new RegExp(`^${HLS_EXTINF}:`, 'gm'))?.length ?? 0;
   return Number(mediaSequence[1]) + entries;
+}
+
+/** The tags that open a playlist's timeline. Everything from the first of them is media, not header. */
+const TIMELINE_TAGS = [HLS_DISCONTINUITY, HLS_PROGRAM_DATE_TIME, HLS_GAP, HLS_EXTINF];
+
+function isTimelineTag(line: string): boolean {
+  return TIMELINE_TAGS.some((tag) => line === tag || line.startsWith(`${tag}:`));
+}
+
+/** The number a header tag carries, or `fallback` where the playlist declares none. */
+function headerNumber(lines: readonly string[], tag: string, fallback: number): number {
+  const line = lines.find((candidate) => candidate.startsWith(`${tag}:`));
+  if (line === undefined) {
+    return fallback;
+  }
+  const value = Number.parseFloat(line.slice(tag.length + 1));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Everything the playlist at a feed head holds, as the prefix a session opening over it glues its own
+ * recording behind. Null where the playlist names no media.
+ *
+ * ⛔⛔ **The lines come back verbatim.** From the first timeline tag to the entry before
+ * `#EXT-X-ENDLIST`, in the order the previous session wrote them, discontinuities, gap entries and
+ * `#EXT-X-PROGRAM-DATE-TIME` stamps included. Nothing is re-derived, re-dated or re-validated, and
+ * that is the point of doing it as text: the dates belong to media this uploader never saw, taken
+ * from an anchor it does not hold, and a prefix rebuilt from this session's own arithmetic would
+ * publish a different history from the one the previous session already published at its own index.
+ * Blank lines are the only thing dropped, because the recording writes its own separator.
+ *
+ * ⚠️ **Only the head is inherited, so a head without `#EXT-X-ENDLIST` yields only its window.** That
+ * is a previous session that was killed before it finalized: the last thing it published is a live
+ * playlist holding the newest segments that fit the byte budget, and the media that slid out of that
+ * window is not on the head to read. It is deliberately not worked around here. The killed session's
+ * own recovery entry is the path that recovers its whole recording, and a session that went looking
+ * back through earlier feed indices would be guessing at which of them belonged to which broadcast.
+ *
+ * ⚠️ **Only the timeline is carried, so an initialization or key header would be lost.**
+ * `#EXT-X-MAP` and `#EXT-X-KEY` sit above the first timeline tag and are dropped with the rest of the
+ * header. Neither applies to this project: segments are self-contained MPEG-TS with no
+ * initialization section, and nothing here encrypts. A deployment that started publishing fMP4 or
+ * encrypted segments would have to carry them.
+ *
+ * Works on a recording, a closing playlist and a live window alike, because any of the three can be
+ * the head.
+ */
+export function inheritedTimeline(manifest: string): InheritedTimeline | null {
+  const lines = manifest.split('\n').map((line) => line.trim());
+  const opensAt = lines.findIndex(isTimelineTag);
+  if (opensAt === -1) {
+    return null;
+  }
+
+  const endsAt = lines.indexOf(HLS_ENDLIST, opensAt);
+  const timeline = lines.slice(opensAt, endsAt === -1 ? undefined : endsAt).filter((line) => line !== '');
+
+  // Every entry, gap entries included, because a prefix whose only entries are holes still carries
+  // numbering the glued recording has to continue from. What it counts as media is a different
+  // question, which `mediaSecondsOf` answers.
+  if (!timeline.some((line) => line.startsWith(`${HLS_EXTINF}:`))) {
+    return null;
+  }
+
+  const headers = lines.slice(0, opensAt);
+  return {
+    mediaSequence: headerNumber(headers, HLS_MEDIA_SEQUENCE, 0),
+    targetDuration: headerNumber(headers, HLS_TARGET_DURATION, 0),
+    // Absent on a recording, which names its timeline from the start, and on every playlist written
+    // before this project declared it. Zero is what an absent tag already means.
+    discontinuitySequence: headerNumber(headers, HLS_DISCONTINUITY_SEQUENCE, 0),
+    durationSeconds: mediaSecondsOf(timeline),
+    lines: timeline,
+  };
+}
+
+/**
+ * The seconds of media a prefix's timeline holds: every `#EXTINF` except those of gap entries.
+ *
+ * ⛔⛔ **A gap entry is not media, and counting it made a recording longer the moment it was glued.**
+ * `gapLines` writes a lost segment as `#EXT-X-GAP`, its date, then an `#EXTINF` of the configured
+ * length and a name, so the hole occupies its place in the numbering. RFC 8216bis says a gap entry
+ * holds no media, and {@link ManifestManager.getTotalDuration} has never counted one for a session's
+ * own segments, since a lost segment is never held. Summing every `#EXTINF` here reported a
+ * broadcast with one loss as 2 s longer after its next session glued it than before: the catalog's
+ * `duration` and the admin's `vod` report both moved for media nobody uploaded.
+ *
+ * The `#EXT-X-GAP` tag precedes the `#EXTINF` it marks, with the date between them, so the flag is
+ * raised on the tag and consumed by the next `#EXTINF`, the same way `parseManifest` reads one.
+ *
+ * A duration that will not parse contributes nothing rather than poisoning the whole sum with a NaN,
+ * which would reach the admin as the broadcast's reported length.
+ */
+function mediaSecondsOf(timeline: readonly string[]): number {
+  let total = 0;
+  let marksAGap = false;
+  for (const line of timeline) {
+    if (line === HLS_GAP) {
+      marksAGap = true;
+      continue;
+    }
+    if (!line.startsWith(`${HLS_EXTINF}:`)) {
+      continue;
+    }
+    const seconds = Number.parseFloat(line.slice(HLS_EXTINF.length + 1));
+    if (!marksAGap && Number.isFinite(seconds)) {
+      total += seconds;
+    }
+    marksAGap = false;
+  }
+  return total;
 }
 
 /**
@@ -186,6 +307,22 @@ export function continuesFrom(manifest: string): number | null {
  * engine came back at, so the media after the gap carries the time it really happened. That
  * re-anchoring is minted once for the whole ladder, which is what keeps the rungs agreeing across
  * it. See {@link BroadcastEpoch} and `broadcastDating.ts`.
+ *
+ * ## The head recording carries every session this feed has held
+ *
+ * A rung's feed outlives its sessions, so a broadcaster who stops and starts again writes several
+ * recordings onto one feed, and the catalogue points at the head. The head recording therefore opens
+ * with the playlist that was at the head when this session started, carried verbatim as a prefix,
+ * then one `#EXT-X-DISCONTINUITY`, then this session's own media. That prefix is itself a glued
+ * recording, so the fourth session's head recording plays the broadcast from the first. The seams are
+ * the only thing a viewer is told about the joins, and they are what the tag is for: the media either
+ * side of one is a separate encode.
+ *
+ * ⛔ **The live playlists are unchanged.** They stay a sliding window over this session's own
+ * segments, numbered on from the head, and the inherited media is not republished into them: the
+ * viewer following the feed is already holding it. The one thing they gain is an
+ * `#EXT-X-DISCONTINUITY-SEQUENCE`, because a window that has slid past a seam has to say how many
+ * breaks are behind it. See {@link inherit} and {@link inheritedTimeline}.
  *
  * ## A segment that was lost is said out loud, as a gap entry
  *
@@ -271,6 +408,37 @@ export class ManifestManager {
    */
   private sequenceOffset = 0;
 
+  /**
+   * The previous session's recording, which this session's recording opens with. Null on a feed that
+   * held nothing.
+   *
+   * ⛔ Read by {@link buildVODManifest} and by {@link getTotalDuration}, and by nothing else. The live
+   * playlists stay a window over this session's own segments: a viewer following the feed head is
+   * already holding the media in here, and re-publishing it live would hand them their own history
+   * again. The one thing it does change about a live playlist is the
+   * `#EXT-X-DISCONTINUITY-SEQUENCE`, which counts breaks the window has slid past and therefore has
+   * to count these too.
+   */
+  private inherited: InheritedTimeline | null = null;
+
+  /**
+   * Whether the next segment placed opens a run that resumed after the encoder went away and came
+   * back, so it publishes above everything already published and re-anchors the dating there.
+   *
+   * ⛔ **One-shot, and armed from outside rather than detected here, because there is nothing to
+   * detect.** SRS keeps a source and its HLS muxer alive for `hls_dispose x 1.1` after an unpublish,
+   * so an encoder returning inside the reconnect window is served by the same muxer and its index
+   * carries straight on: {@link placeInBroadcast}'s own restart test sees a number above the
+   * high-water mark and correctly concludes nothing restarted. The break is real all the same — the
+   * encoder's clock restarted and the media either side of the gap is not continuous — and the
+   * orchestrator is the only layer that knows it happened. See {@link resumeAfterReconnect}.
+   *
+   * It survives a crash through the recovery entry, beside `pendingDiscontinuity`, because the gap
+   * between arming it and the segment that consumes it is exactly a window in which nothing is
+   * arriving and a restart is most likely.
+   */
+  private resumingAfterReconnect: string | null = null;
+
   constructor(anchor: BroadcastAnchor, dating?: BroadcastDating) {
     this.anchor = anchor;
     this.dating = dating ?? soleRungDating(() => this.anchor);
@@ -297,11 +465,11 @@ export class ManifestManager {
    * recovery entry carries. That is how the offset survives a crash rather than being re-derived from
    * a head which by then is this session's own last playlist.
    *
-   * ⛔ The recording the previous session left is not touched and not inherited. It stays whole at
-   * its own index and this session's own VOD lists only its own segments, from this number. What the
-   * seam buys is the viewer who was following the feed head: they are handed this playlist as the
-   * next update of the one they are playing, and a media sequence that moved backwards would restart
-   * them at the beginning of a recording instead.
+   * ⛔ This moves the **numbering** and nothing else. The previous session's media is carried by
+   * {@link inherit}, which reads the same head, and it reaches the recording alone. What the seam
+   * buys in the live playlists is the viewer who was following the feed head: they are handed this
+   * playlist as the next update of the one they are playing, and a media sequence that moved
+   * backwards would restart them at the beginning of a recording instead.
    *
    * @see sequenceOffset for why nothing but the published numbering moves.
    */
@@ -309,9 +477,64 @@ export class ManifestManager {
     this.sequenceOffset = mediaSequence;
   }
 
+  /**
+   * Open this session's recording with the playlist that was at the feed head, so the head recording
+   * carries the whole broadcast rather than the last session of it.
+   *
+   * Called once, before the first playlist is published, with what {@link inheritedTimeline} read off
+   * the same head {@link continueFrom} took its number from, and again beside {@link restoreState}
+   * for a session rebuilt off disk. After a crash the head is this session's own live playlist, so
+   * the prefix is taken back off the recovery entry rather than re-read — exactly as the offset is.
+   *
+   * ⛔ Chaining is what makes the head recording whole, and it costs nothing: the playlist this
+   * inherits is itself a glued recording, so session three's prefix already carries session one.
+   */
+  public inherit(timeline: InheritedTimeline): void {
+    this.inherited = timeline;
+  }
+
   /** What a recovery entry has to carry for {@link continueFrom} to be re-applied after a crash. */
   public publishedSequenceOffset(): number {
     return this.sequenceOffset;
+  }
+
+  /** What a recovery entry has to carry for {@link inherit} to be re-applied after a crash. */
+  public inheritedPrefix(): InheritedTimeline | null {
+    return this.inherited;
+  }
+
+  /**
+   * The encoder that stopped feeding this session has come back, so the next segment opens a resumed
+   * run: it publishes one above everything already published whatever number its engine gives it,
+   * the numbering carries on from there, and the dating re-anchors at that sequence.
+   *
+   * ⛔ **Whatever the engine's counter did**, which is the whole reason this is told rather than
+   * inferred. See {@link resumingAfterReconnect}.
+   *
+   * ⛔ Publishing at the high-water mark plus one rather than at wherever the index lands is also
+   * what keeps a returning encoder from emitting gap entries across the reconnect: an index that
+   * jumped forward while nobody was listening would otherwise publish that far ahead, and every
+   * sequence in between would be listed as media a viewer cannot have. Nothing was lost — nothing
+   * was being produced — so there is nothing to say. See {@link placeResumed} for what a lower index
+   * of the resumed run arriving afterwards would do, which is a second break rather than a gap, and
+   * is pre-existing behaviour rather than a shape this path introduced.
+   *
+   * @param returnToken which return this is, so the rungs of one ladder date it alike. See
+   * {@link BroadcastEpoch.returnToken}.
+   *
+   * Idempotent: a second call before any segment lands arms the same one shot.
+   */
+  public resumeAfterReconnect(returnToken: string): void {
+    this.resumingAfterReconnect = returnToken;
+  }
+
+  /**
+   * The return the next segment is owed a seam for, or null when none is armed. What the recovery
+   * entry carries across a crash, because a rung that came back and then died still has to date its
+   * first segment on the line its siblings took for that same return.
+   */
+  public armedReturn(): string | null {
+    return this.resumingAfterReconnect;
   }
 
   /** The number `sequence` is written into a playlist as. See {@link sequenceOffset}. */
@@ -399,6 +622,12 @@ export class ManifestManager {
    * hand a second segment the sequence the first one already has.
    */
   private placeInBroadcast(index: number): PlacedSegment {
+    const returning = this.resumingAfterReconnect;
+    if (returning !== null) {
+      this.resumingAfterReconnect = null;
+      return this.placeResumed(index, returning);
+    }
+
     const anchor = this.sequenceAnchor;
     if (anchor === null) {
       this.sequenceAnchor = { index, sequence: 0 };
@@ -430,7 +659,43 @@ export class ManifestManager {
         `sequence ${resumeAt} rather than moving it backwards`,
     );
     this.sequenceAnchor = { index, sequence: resumeAt };
-    this.reanchorDating(resumeAt);
+    this.reanchorDating(resumeAt, COUNTER_RESTARTED);
+    return { sequence: resumeAt, reanchored: true };
+  }
+
+  /**
+   * The first segment after the encoder came back, placed one above everything already published and
+   * dated at the clock it returned at. See {@link resumeAfterReconnect}.
+   *
+   * ⛔ The same forward move {@link placeInBroadcast} makes for a restarted counter, taken without
+   * asking whether the counter restarted. Inside the reconnect window it usually has not, because
+   * SRS's muxer outlives the publish session, so the arriving index carries straight on and the test
+   * above it would place the segment at its own candidate sequence with no break and no re-anchoring
+   * — a playlist telling a viewer that the media across a fifty second outage is continuous.
+   *
+   * A session that has placed nothing of its own yet is the one case that does not move, and it arms
+   * no break either: there is no numbering to carry forward, nothing has been dated, and this segment
+   * IS the session's first, so there is nothing for a break to separate it from. Against an inherited
+   * playlist {@link isSeam} still declares the ordinary session seam there, which is a different
+   * statement and has never been part of the armed-break count.
+   *
+   * ⚠️ **For an in-order return, which is what SRS's per-segment webhook produces.** If a LOWER index
+   * of the resumed run arrived after this one, it would fall through to the counter-restart branch
+   * above and declare a second break and a second re-anchoring. No gap: that branch places it at the
+   * high-water mark plus one as well, so the two are contiguous and {@link gapLines} emits nothing.
+   * The shape is not engineered for — SRS posts each segment as it closes it, in order, and OME's
+   * puller walks a playlist in order — and it is pre-existing behaviour rather than something this
+   * path introduced: an out-of-order arrival below a published sequence has always taken that branch.
+   */
+  private placeResumed(index: number, returnToken: string): PlacedSegment {
+    if (this.sequenceAnchor === null) {
+      this.sequenceAnchor = { index, sequence: 0 };
+      return { sequence: 0, reanchored: false };
+    }
+
+    const resumeAt = this.highestSequence() + 1;
+    this.sequenceAnchor = { index, sequence: resumeAt };
+    this.reanchorDating(resumeAt, ENCODER_RETURNED, returnToken);
     return { sequence: resumeAt, reanchored: true };
   }
 
@@ -445,21 +710,35 @@ export class ManifestManager {
    * run ahead of the wall clock, which is what a segment longer than `HLS_FRAGMENT` accumulates:
    * minting at the clock there would pull a stamp backwards, and hls.js reads that as a parsing
    * error rather than as a restart.
+   *
+   * @param cause what moved the numbering, which decides only which line is written. The two are
+   * different facts about the deployment and an operator reading one of them has different work to
+   * do — a counter that restarted is the engine, an encoder that returned is the broadcaster — and
+   * both are members of the armed-break family the e2e harness counts, because both really are a
+   * break and each is written exactly once per break.
    */
-  private reanchorDating(resumeAt: number): void {
+  private reanchorDating(resumeAt: number, cause: ReanchorCause, returnToken?: string): void {
     const newest = this.segments[this.segments.length - 1];
     const wouldHaveBeen = presentationMsOf(
       this.anchor,
       resumeAt,
       newest === undefined ? null : this.placedMedia(newest),
     );
-    const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen);
+    const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen, returnToken);
     this.anchor = withEpoch(this.anchor, epoch);
-    // Composed in the shared log contract rather than written out here, because the e2e harness
-    // counts this as one of the ways a discontinuity is armed and six suites assert that count is
-    // zero on a clean broadcast. A line reworded here and not read there passes them for ever.
+    const wasAt = new Date(wouldHaveBeen).toISOString();
+    const nowAt = new Date(epoch.atMs).toISOString();
+    // ⛔ Both are composed in the shared log contract, because the e2e harness counts each of them as
+    // one of the ways a discontinuity is armed and six suites assert that count is zero on a clean
+    // broadcast. A line reworded here and not read there passes them for ever.
+    //
+    // ⛔⛔ **They are written HERE, where the seam is placed, and not where the resume was armed.**
+    // An encoder that reconnects six times and delivers nothing arms six times and places no break at
+    // all, so a line written on the arming would put six armings into a count that has to equal the
+    // breaks in the playlist. This runs once per placement by construction: the one-shot is consumed
+    // above it and a counter restart is detected on the arrival that shows it.
     this.logger.info(
-      datingReanchored(resumeAt, new Date(wouldHaveBeen).toISOString(), new Date(epoch.atMs).toISOString()),
+      cause === COUNTER_RESTARTED ? datingReanchored(resumeAt, wasAt, nowAt) : encoderReturned(resumeAt, wasAt, nowAt),
     );
   }
 
@@ -510,26 +789,122 @@ export class ManifestManager {
     const mediaSequence = windowSegments.length > 0 ? this.published(sequenceOf(windowSegments[0])) : 0;
 
     this.sequenceHasBeenPublished = true;
-    return [...this.liveHeaderLines(mediaSequence), ...this.timelineLines(windowSegments)];
+    return [
+      ...this.liveHeaderLines(mediaSequence, this.discontinuitySequence(windowSegments)),
+      ...this.timelineLines(windowSegments),
+    ];
   }
 
+  /**
+   * How many `#EXT-X-DISCONTINUITY` tags fall in front of this window's first entry, which is what
+   * RFC 8216 §4.3.3.3 wants the header to declare.
+   *
+   * Three things can be in front of it and all three are counted. The breaks inside the recording
+   * this session inherited, which are the seams of every session before the last one. The seam this
+   * session's own first segment carries, which is only behind the window once that segment has slid
+   * out of it. And any engine restart this session declared and has since slid past.
+   *
+   * ⛔ **Counted for every session, including one that opened on an empty feed.** It used to answer
+   * zero unconditionally there, on the reasoning that such a session numbers its breaks from its own
+   * first entry — which is true only until one of those breaks slides out of the window. A reconnect
+   * seam is an ordinary event now rather than an engine fault, so a first-session broadcast whose
+   * encoder dropped once and came back drops that seam out of its window within a minute and went on
+   * declaring zero. hls.js aligns discontinuity domains across levels from this tag when it switches
+   * rung, so a ladder under-declaring it puts the switch in the wrong domain.
+   *
+   * A broadcast that has had no break still publishes no tag at all, because the count is zero and
+   * {@link liveHeaderLines} omits it, so nothing about an unbroken playlist changes.
+   */
+  private discontinuitySequence(windowSegments: readonly SegmentEntry[]): number {
+    const first = windowSegments[0];
+    if (first === undefined) {
+      return this.inheritedDiscontinuities();
+    }
+
+    // ⛔ Counted as {@link segmentLines} writes them and not as a separate sum, which is the whole of
+    // why the seam is not added on top here. This session's first segment can carry a break of its
+    // own, and that break IS the seam: one tag goes out for it, so one is counted for it.
+    const openedBelow = this.segments.filter((seg) => sequenceOf(seg) < sequenceOf(first));
+    const ownBreaks = openedBelow.filter((seg) => (this.isSeam(seg) ? true : seg.discontinuity === true)).length;
+    return this.inheritedDiscontinuities() + ownBreaks;
+  }
+
+  /**
+   * The breaks in front of this session's own first entry: the ones the inherited playlist declares,
+   * plus the ones it says had already slid out of ITS window.
+   *
+   * ⛔ The head's own `#EXT-X-DISCONTINUITY-SEQUENCE` counts, and leaving it out published a number
+   * LOWER than the head a viewer had just been handed. A head left by a session that was killed is a
+   * live window, so the breaks earlier in that broadcast are behind it and are named only by that
+   * header. A recording's own is zero, which is what an absent tag already says.
+   */
+  private inheritedDiscontinuities(): number {
+    if (this.inherited === null) {
+      return 0;
+    }
+    return (
+      this.inherited.discontinuitySequence + this.inherited.lines.filter((line) => line === HLS_DISCONTINUITY).length
+    );
+  }
+
+  /**
+   * The recording: every session this feed has carried, this one last, with the joins declared.
+   *
+   * ⛔⛔ **The inherited prefix is written out before this session's own media and its numbering is
+   * what the recording declares**, so a recording naming four sessions starts at the media sequence
+   * the first of them started at. A viewer is never handed this in place of a live playlist — the
+   * client latches a topic finalized at the `#EXT-X-ENDLIST` of the closing live playlist and stops
+   * walking the feed there, so the media sequence it has been given never moves backwards. Verified
+   * 2026-09-21 against `LadderFeedPoller.ingest` and `ManifestStateManager.updateManifest`.
+   *
+   * ⛔ **Exactly one `#EXT-X-DISCONTINUITY` at the seam, whatever this session's first segment
+   * carries.** It is written here, from the prefix path, and the entry that follows it declares none
+   * of its own — not the seam {@link segmentLines} would otherwise put on sequence 0, and not a break
+   * the origin declared or an engine restart armed on that same segment. Those are all one join said
+   * once. Two tags there would tell a player there are two encodes between the sessions and would
+   * move every later `#EXT-X-DISCONTINUITY-SEQUENCE` out by one.
+   *
+   * The recording declares an `#EXT-X-DISCONTINUITY-SEQUENCE` only where the playlist it inherited
+   * did. A prefix taken from a recording names the broadcast from its start, so nothing precedes it
+   * and the absent tag's default of 0 is the truth; a prefix taken from the live window of a session
+   * that was killed begins mid-broadcast, and that window's own header is the only thing that says
+   * how many breaks ran in front of it.
+   */
   public buildVODManifest(): string {
     if (this.segments.length === 0) {
       return '';
     }
 
     this.sequenceHasBeenPublished = true;
+    const prefix = this.inherited;
+    if (prefix === null) {
+      return joinManifest([
+        ...this.hlsHeaders,
+        `${HLS_TARGET_DURATION}:${this.targetDuration}`,
+        HLS_PLAYLIST_TYPE_VOD,
+        // The same numbering the live playlists used, which for a recording naming every segment is 0.
+        // It has to be the same one: a viewer whose live playlist ended is handed the closing playlist
+        // and then the recording, and hls.js reports a media sequence that moves between them as a
+        // parsing error rather than as a change of resource.
+        `${HLS_MEDIA_SEQUENCE}:${this.published(sequenceOf(this.segments[0]))}`,
+        '',
+        ...this.timelineLines(this.segments),
+        HLS_ENDLIST,
+      ]);
+    }
+
     return joinManifest([
       ...this.hlsHeaders,
-      `${HLS_TARGET_DURATION}:${this.targetDuration}`,
+      // The longest segment either side of the seam. A recording declaring less than it holds is a
+      // playlist a client is entitled to refuse, and the prefix's own segments are in this one now.
+      `${HLS_TARGET_DURATION}:${Math.max(prefix.targetDuration, this.targetDuration)}`,
       HLS_PLAYLIST_TYPE_VOD,
-      // The same numbering the live playlists used, which for a recording naming every segment is 0.
-      // It has to be the same one: a viewer whose live playlist ended is handed the closing playlist
-      // and then the recording, and hls.js reports a media sequence that moves between them as a
-      // parsing error rather than as a change of resource.
-      `${HLS_MEDIA_SEQUENCE}:${this.published(sequenceOf(this.segments[0]))}`,
+      `${HLS_MEDIA_SEQUENCE}:${prefix.mediaSequence}`,
+      ...(prefix.discontinuitySequence > 0 ? [`${HLS_DISCONTINUITY_SEQUENCE}:${prefix.discontinuitySequence}`] : []),
       '',
-      ...this.timelineLines(this.segments),
+      ...prefix.lines,
+      HLS_DISCONTINUITY,
+      ...this.timelineLines(this.segments, true),
       HLS_ENDLIST,
     ]);
   }
@@ -563,8 +938,24 @@ export class ManifestManager {
     return this.segments.slice(0, windowStart).filter((seg) => seg.index > announcedThrough).length;
   }
 
+  /**
+   * The media this session's recording holds, which is the whole broadcast and not this session's
+   * share of it.
+   *
+   * ⛔ The inherited prefix counts, because the recording this number is reported alongside names
+   * it. All three readers want the same thing — the catalog entry's `duration`, the rendition
+   * announce and the admin's `vod` report all describe the recording a viewer is about to be handed,
+   * and a length that stopped at the last restart would tell them a four-session broadcast is as long
+   * as its last session.
+   *
+   * ⛔ Gap entries count on neither side, so gluing a recording never changes its length. A lost
+   * segment is never held, so this session's own sum skips it by construction, and the prefix skips
+   * the gap entries a previous session wrote for its own. The report for the glued recording is the
+   * earlier report plus this session's media, exactly.
+   */
   public getTotalDuration(): number {
-    return this.segments.reduce((sum, seg) => sum + seg.duration, 0);
+    const own = this.segments.reduce((sum, seg) => sum + seg.duration, 0);
+    return own + (this.inherited?.durationSeconds ?? 0);
   }
 
   public hasSegments(): boolean {
@@ -589,7 +980,13 @@ export class ManifestManager {
    * the sequence was then. An entry written before the date followed the media carries no instant,
    * and the anchor's own arithmetic is what that entry went out with.
    */
-  public restoreState(segments: SegmentEntry[], hlsHeaders: string[]): void {
+  public restoreState(segments: SegmentEntry[], hlsHeaders: string[], inherited?: InheritedTimeline): void {
+    if (inherited !== undefined) {
+      // ⛔ Re-derived off the lines rather than trusted. An entry written before gap entries stopped
+      // counting as media carries a duration that includes them, and the lines are verbatim, so the
+      // media they hold is exactly recoverable. See `mediaSecondsOf`.
+      this.inherited = { ...inherited, durationSeconds: mediaSecondsOf(inherited.lines) };
+    }
     const firstIndex = segments[0]?.index ?? 0;
     const renumbered = segments.map((seg) => ({ ...seg, sequence: seg.sequence ?? seg.index - firstIndex }));
     this.segments = renumbered.map((seg) => ({ ...seg, presentedAtMs: this.presentedAtMsOf(seg) }));
@@ -644,7 +1041,17 @@ export class ManifestManager {
     // forwards and leaves the sequence above the count.
     const newestSequence =
       this.segments.length === 0 ? 0 : this.published(sequenceOf(this.segments[this.segments.length - 1]));
-    const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestSequence));
+    // Reserved against the widest `#EXT-X-DISCONTINUITY-SEQUENCE` this session could ever declare,
+    // for the same reason the sequence is: the real value depends on where the window starts, which
+    // is the answer this is computing. Over-reserving costs a handful of bytes; under-reserving
+    // spends a budget that is one bee chunk.
+    // Every break this session could possibly declare as behind its window, which is what the header
+    // may have to carry. Unconditional since {@link discontinuitySequence} stopped answering zero for
+    // a session on an empty feed: reserving nothing there under-reserves the moment such a session's
+    // first reconnect seam slides out of the window, and the budget this feeds is one bee chunk.
+    const mostBreaksBehind =
+      this.inheritedDiscontinuities() + 1 + this.segments.filter((seg) => seg.discontinuity === true).length;
+    const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestSequence, mostBreaksBehind));
 
     let spent = 0;
     let length = 0;
@@ -663,11 +1070,18 @@ export class ManifestManager {
     return length;
   }
 
-  private liveHeaderLines(mediaSequence: number): string[] {
+  /**
+   * @param discontinuitySequence breaks in front of this window's first entry. Written out only when
+   *   there are any, so a broadcast opening on an empty feed publishes the playlist it always did,
+   *   byte for byte. RFC 8216 §4.3.3.3 puts the tag in the header, and hls.js 1.6.15 reports one
+   *   declared after a fragment as a playlist error, so it goes beside the media sequence.
+   */
+  private liveHeaderLines(mediaSequence: number, discontinuitySequence: number): string[] {
     return [
       ...this.hlsHeaders,
       `${HLS_TARGET_DURATION}:${this.targetDuration}`,
       `${HLS_MEDIA_SEQUENCE}:${mediaSequence}`,
+      ...(discontinuitySequence > 0 ? [`${HLS_DISCONTINUITY_SEQUENCE}:${discontinuitySequence}`] : []),
       '',
     ];
   }
@@ -675,9 +1089,22 @@ export class ManifestManager {
   /**
    * The lines one segment occupies, in the order RFC 8216 §4.3.2.6 wants them: the break first, then
    * the wall clock the media after the break resumes at, then the segment itself.
+   *
+   * ⛔⛔ **At the seam the tag is one statement, whoever armed it.** This session's first segment can
+   * carry a break of its own — the origin declared one, or the engine's counter restarted on it — and
+   * that break and the seam are the same join: the media here is not a continuation of what came
+   * before it, said once. Two tags there would tell a player there are two encodes between the
+   * sessions and would move every later `#EXT-X-DISCONTINUITY-SEQUENCE` out by one. So the seam
+   * answers for both, and in the glued recording, where the caller has already written it between the
+   * prefix and this media, nothing is written here at all.
+   *
+   * @param seamAlreadyWritten this entry is the one the caller has already written the seam in front
+   *   of, so it declares no break of its own whatever it carries. True only for the first entry of
+   *   this session's media in the glued recording. See {@link buildVODManifest}.
    */
-  private segmentLines(seg: SegmentEntry): string[] {
-    const discontinuity = seg.discontinuity || this.isSeam(seg) ? [HLS_DISCONTINUITY] : [];
+  private segmentLines(seg: SegmentEntry, seamAlreadyWritten = false): string[] {
+    const declares = seamAlreadyWritten ? false : seg.discontinuity === true || this.isSeam(seg);
+    const discontinuity = declares ? [HLS_DISCONTINUITY] : [];
     return [...discontinuity, buildProgramDateTime(this.presentedAtMsOf(seg)), buildExtinf(seg.duration), seg.ref];
   }
 
@@ -687,10 +1114,28 @@ export class ManifestManager {
    * Written by both the live window and the recording, over whatever slice of the held segments each
    * of them names, so a hole reads the same in the playlist a viewer is following and in the one they
    * are handed afterwards.
+   *
+   * ⚠️ **What a head naming media under no `#EXT-X-MEDIA-SEQUENCE` leaves, said outright.**
+   * `continuesFrom` answers null for such a head, so nothing offsets the numbering and {@link isSeam}
+   * is never armed, while {@link inheritedTimeline} still reads its media and the recording still
+   * glues it. The session's live playlists then carry no seam and no
+   * `#EXT-X-DISCONTINUITY-SEQUENCE`, numbering from 0; its recording writes the one seam between the
+   * prefix and this media. Each playlist is self-consistent — the live ones describe a session that
+   * knows of no predecessor, the recording describes the join it actually contains — and the pair is
+   * the best either can be from a head that declared no numbering. No playlist this deployment
+   * publishes is such a head: every builder here writes a media sequence, so this is the shape of a
+   * foreign or truncated head rather than of anything upstream of us.
+   *
+   * @param behindASeam the caller has just written an `#EXT-X-DISCONTINUITY` in front of these lines,
+   *   so the first of them declares none of its own. Positional rather than derived from
+   *   {@link isSeam}, which is exactly the case above: unarmed, while the prefix path writes the seam
+   *   anyway.
    */
-  private timelineLines(held: readonly SegmentEntry[]): string[] {
+  private timelineLines(held: readonly SegmentEntry[], behindASeam = false): string[] {
     return held.flatMap((seg, position) =>
-      position === 0 ? this.segmentLines(seg) : [...this.gapLines(held[position - 1], seg), ...this.segmentLines(seg)],
+      position === 0
+        ? this.segmentLines(seg, behindASeam)
+        : [...this.gapLines(held[position - 1], seg), ...this.segmentLines(seg)],
     );
   }
 

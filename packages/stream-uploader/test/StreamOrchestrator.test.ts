@@ -50,6 +50,13 @@ const RECOVERY_TIMEOUT_MS = 80;
  */
 const SETTLE_CEILING_MS = 4_000;
 
+/**
+ * A window in which something must NOT happen, which is the opposite instrument to the ceiling above
+ * and stays short for that reason: this one is meant to be reached. Long enough for a finalize that
+ * was going to start to have started.
+ */
+const NOTHING_HAPPENED_MS = 300;
+
 /** Frames per hand-built segment, enough for the duration reader to measure a span. */
 const WITHHELD_FRAMES = 8;
 
@@ -69,9 +76,16 @@ async function withCapturedLog(run: (lines: string[]) => Promise<void>): Promise
   }
 }
 
-/** The feed topic of the newest persisted state, which is what tells one session's writes from another's. */
-async function waitForTopic(saved: StreamState[]): Promise<string> {
-  await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+/**
+ * The feed topic of the newest persisted state, which is what tells one session's writes from another's.
+ *
+ * ⛔ Waits for a state written AFTER whatever the caller has already seen, rather than for any state
+ * at all. Sequenced on the count, because a comparison that reads the pre-existing entry answers about
+ * the session before the one it is asking about and passes whatever the code does. `after` is the
+ * length the caller last saw.
+ */
+async function waitForTopic(saved: StreamState[], after = 0): Promise<string> {
+  await waitFor(() => saved.length > after, SETTLE_CEILING_MS);
   return saved[saved.length - 1].streamRawTopic;
 }
 
@@ -519,11 +533,15 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
 
     // Three announces, each fed in the same tick it arrives. CON-1's own account of this race is wrong
     // and the correction is what this test pins: p-queue 8 runs the first job inside `add()`, so two
-    // announces never did both take the fresh-stream path. The window opens on the second one, which
-    // retires the live session and queues its replacement, and that queued write is deferred. Between
+    // announces never did both take the fresh-stream path. The window opened on the second one, which
+    // retired the live session and queued its replacement, and that queued write was deferred. Between
     // there and the microtask that ran it, `activeStreams` held nothing for a stream mid-broadcast, so
     // a segment was refused as an unknown stream and a third announce found the id free and started
     // yet another session over the top of the pending one, which was then never retired or finalized.
+    //
+    // ⚠️ Since a re-announce of a live session resumes it in place, announces two and three retire
+    // nothing at all, so this is now about the registration alone: the session has to be reachable in
+    // the announce's own tick whether that announce spawned it or rejoined it.
     for (const index of [0, 1, 2]) {
       assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, `announce ${index} is accepted`);
       assert.deepEqual(
@@ -533,50 +551,25 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       );
     }
 
-    // Two retirements, so two VODs. A session that is overwritten rather than retired publishes
-    // nothing, which is how the loss shows up.
-    await waitFor(
-      () => published.filter((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD).length >= 2,
-      SETTLE_CEILING_MS,
-    );
-
     assert.equal(orch.getActiveStreamCount(), 1, 'exactly one session holds the id at the end');
+    // Nothing was replaced, so nothing was finalized. Waited out rather than read once, because a
+    // build that retired a session would publish its recording asynchronously and pass an immediate
+    // read.
+    await waitAndConfirmNothingHappened(
+      () => !published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      NOTHING_HAPPENED_MS,
+    );
     await orch.cleanup();
   });
 
-  it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
-    const id = 'live/stream';
-    const published: unknown[] = [];
-    const removed: string[] = [];
-    const orch = startedOrchestrator(published, removed);
-
-    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true);
-    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
-    assert.equal(orch.getActiveStreamCount(), 1, 'first publish starts the stream');
-    // Content, so finalizing the stale session is observable as the VOD it publishes. Recovery-entry
-    // removal cannot serve as that signal any more: the id belongs to the live session by then.
-    orch.handleSegment(id, 0, 2, Buffer.from('one'));
-
-    // Previously this returned false → SRS rejected the broadcaster. It must now be accepted.
-    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 're-announce of an active stream must be accepted');
-
-    await waitFor(
-      () => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
-      SETTLE_CEILING_MS,
-    );
-    assert.ok(
-      published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
-      'the stale session must be finalized on re-announce, not abandoned',
-    );
-    assert.equal(orch.getActiveStreamCount(), 1, 'a fresh stream is active after the re-announce restart');
-    await orch.cleanup();
-  });
-
-  // The outgoing session and the live one share a stream id, and the recovery entry under it now
-  // describes the live one. Anything the outgoing session writes there lands on a broadcast that is
-  // still running: its VOD commit saves an outgoing session's state over the live one's, and the
-  // delete that ends `notifyStop` discards it outright. Both directions, because each fails alone.
-  it('stops touching the recovery entry once another session has replaced it', async () => {
+  /**
+   * The owner's cases 1 and 2, at the layer that decides them. A broadcaster who stops and comes
+   * back, or whose network drops for fifty seconds, re-announces the id their own session is still
+   * holding, and what they must get back is that session: same recording, same feed, no ending
+   * written in between. `ReconnectWindow.test.ts` holds what the resumed playlist then looks like;
+   * this is the one fact this file is about, that the announce is accepted and replaces nothing.
+   */
+  it('resumes a re-announced already-active stream rather than replacing or rejecting it', async () => {
     const id = 'live/stream';
     const published: unknown[] = [];
     const removed: string[] = [];
@@ -591,6 +584,68 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       makeRecordingCatalog(published),
     );
 
+    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+    // Each session mints a feed topic of its own, so the topic is what tells a resumed session from
+    // a replacement without reaching inside the orchestrator for the uploader.
+    const firstTopic = await waitForTopic(saved);
+    const writesBeforeTheReturn = saved.length;
+
+    // Previously this returned false → SRS rejected the broadcaster. It must still be accepted.
+    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 're-announce of an active stream must be accepted');
+    assert.equal(orch.getActiveStreamCount(), 1, 'and one session holds the id, not a replacement beside it');
+
+    // Read off a state the RETURNING run wrote, not off the one already there: an equality against
+    // the pre-resume entry is satisfied whatever the announce did with the session.
+    orch.handleSegment(id, 1, 2, Buffer.from('two'));
+    assert.equal(
+      await waitForTopic(saved, writesBeforeTheReturn),
+      firstTopic,
+      'the broadcaster came back onto a different feed, which is a second recording of one broadcast',
+    );
+    await waitAndConfirmNothingHappened(
+      () => !published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      NOTHING_HAPPENED_MS,
+    );
+    assert.deepEqual(removed, [], 'and the recovery entry still describes the session that is still running');
+    await orch.cleanup();
+  });
+
+  // The outgoing session and the live one share a stream id, and the recovery entry under it now
+  // describes the live one. Anything the outgoing session writes there lands on a broadcast that is
+  // still running: its VOD commit saves an outgoing session's state over the live one's, and the
+  // delete that ends `notifyStop` discards it outright. Both directions, because each fails alone.
+  //
+  // ⚠️ Driven through a stop rather than through a bare re-announce, because a bare one now resumes
+  // the session instead of replacing it. Two sessions under one id exist only while a stop is in
+  // flight, which is exactly the window this hazard lives in.
+  it('stops touching the recovery entry once another session has replaced it', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const removed: string[] = [];
+    const saved: StreamState[] = [];
+    const finalizeStarted: string[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore({
+        remove: (streamId: string) => removed.push(streamId),
+        save: (_streamId: string, state: StreamState) => saved.push(state),
+      }),
+      makeFakeCatalog({
+        addStream: async (entry: unknown) => {
+          if ((entry as PublishedEntry).state === STREAM_STATUS_VOD) {
+            finalizeStarted.push('vod');
+            // Long enough that the re-announce below lands inside this drain rather than after it.
+            await sleep(60);
+          }
+          published.push(entry);
+          return true;
+        },
+      }),
+    );
+
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
@@ -599,9 +654,16 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     // Each uploader owns a freshly generated feed topic, so the topic is what tells the outgoing
     // session's recovery writes apart from the live one's.
     const retiredTopic = saved[saved.length - 1].streamRawTopic;
-    const writesBeforeRetirement = saved.length;
+
+    // The stop that begins the drain. Fire and forget, the way every engine caller sends it.
+    const stopping = orch.stopStream(id);
+    await waitFor(() => finalizeStarted.length > 0, SETTLE_CEILING_MS);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
+    // Read here rather than before the stop, because this announce is the instant the entry changes
+    // hands: `retire()` runs inside it. What the outgoing session wrote while it still owned the
+    // entry is its own business and is not what this is about.
+    const writesBeforeRetirement = saved.length;
     await waitFor(
       () => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
       SETTLE_CEILING_MS,
@@ -615,6 +677,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('two'));
     await waitFor(() => saved.length > writesBeforeRetirement, SETTLE_CEILING_MS);
+    await stopping;
 
     const afterRetirement = saved.slice(writesBeforeRetirement);
     assert.ok(
@@ -663,6 +726,31 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     await orch.cleanup();
   });
 
+  /**
+   * An orchestrator whose VOD write is slow enough that a re-announce lands inside the drain, which
+   * is the only way two sessions hold one id now that a bare re-announce resumes.
+   *
+   * ⛔ It counts only the VOD write. The catalog takes a `live` write as well and the two used to be
+   * counted together here, which made "the finalize has started" true from the first announce: both
+   * cases below then reached their assertions without a replacement existing at all, and passed.
+   */
+  function slowFinalizeOrchestrator(finalizing: string[]): StreamOrchestrator {
+    return makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: { state?: StreamStatus }) => {
+          if (entry.state === STREAM_STATUS_VOD) {
+            finalizing.push('vod');
+            await sleep(60);
+          }
+          return true;
+        },
+      }),
+    );
+  }
+
   // The replacement has to be registered before the finalize rather than after it. Deferring it
   // looks like it only costs latency and does not: a close arriving inside that window finds no
   // uploader to drain, and the deferred spawn then registers one after the close, live for the rest
@@ -670,25 +758,17 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('leaves nothing running when a close arrives while the replaced session is finalizing', async () => {
     const id = 'live/stream';
     const finalizing: string[] = [];
-    const orch = makeTestOrchestrator(
-      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
-      {},
-      makeFakeRecoveryStore(),
-      makeFakeCatalog({
-        addStream: async () => {
-          finalizing.push('vod');
-          await sleep(60);
-        },
-      }),
-    );
+    const orch = slowFinalizeOrchestrator(finalizing);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
-    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    const stopping = orch.stopStream(id);
     await waitFor(() => finalizing.length > 0, SETTLE_CEILING_MS);
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
     await orch.stopStream(id);
+    await stopping;
     // Long enough that a spawn deferred behind the finalize would have landed by now.
     await sleep(150);
 
@@ -708,30 +788,23 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('leaves the replacement visible to the stall signal while the outgoing session finalizes', async () => {
     const id = 'live/stream';
     const finalizing: string[] = [];
-    const orch = makeTestOrchestrator(
-      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
-      {},
-      makeFakeRecoveryStore(),
-      makeFakeCatalog({
-        addStream: async () => {
-          finalizing.push('vod');
-          await sleep(60);
-        },
-      }),
-    );
+    const orch = slowFinalizeOrchestrator(finalizing);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
+    const stopping = orch.stopStream(id);
+    await waitFor(() => finalizing.length > 0, SETTLE_CEILING_MS);
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => finalizing.length > 0 && orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
 
     assert.notEqual(
       orch.getMsSinceStreamActivity(),
       null,
       'the live stream is unreadable to the stall signal for as long as the replaced one takes to finalize',
     );
+    await stopping;
     await orch.cleanup();
   });
 
@@ -2574,11 +2647,11 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
 
   /**
    * The engine re-announcing a stream this process still tracks, which is how SRS comes back from a
-   * restart it did not close first. The replacement session publishes a fresh playlist numbered from
-   * zero, and its opening segment used to be dated at the broadcast's admission however long ago
-   * that was.
+   * restart it did not close first, and how an encoder comes back from a disconnect. The session is
+   * resumed rather than replaced, so the media it already published keeps the dates a viewer was
+   * handed and only the media after the gap moves — which is the whole of what re-anchoring means.
    */
-  it('dates a replacement session’s opening segment at the restart, not at the broadcast’s start', async () => {
+  it('dates the media after a re-announce at the restart, and leaves what it published alone', async () => {
     const published: string[] = [];
     let nowMs = STARTED_AT_MS;
     const orch = makeTestOrchestrator({ wallClock: () => nowMs }, capturingPlaylists(published));
@@ -2592,6 +2665,57 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
     orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     const publishedBefore = published.length;
+    // Index 0 again, which is a counter that restarted. The date must move for the reconnect rather
+    // than for the counter, so `ReconnectWindow.test.ts` runs the same case with the index carrying
+    // on instead; here the point is only that the earlier stamp survives.
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'));
+    await waitFor(() => published.length > publishedBefore, SETTLE_CEILING_MS);
+
+    assert.deepEqual(
+      stampsOf(newestLivePlaylist(published)),
+      [STARTED_AT_MS, RESTARTED_AT_MS],
+      'the resumed session dated its returning segment at the start of the broadcast, so it is behind ' +
+        'real time by the length of the gap',
+    );
+    await orch.cleanup();
+  });
+
+  /**
+   * The other re-announce, the one that really is a replacement: an announce arriving while a stop
+   * of that id is still finalizing. That session's playlist numbers from zero again, so its dating
+   * re-anchors at sequence 0 through `reanchorReplacedBroadcast`, and its opening segment used to be
+   * dated at the broadcast's admission however long ago that was.
+   */
+  it('dates a replacement session’s opening segment at the restart, not at the broadcast’s start', async () => {
+    const published: string[] = [];
+    const finalizeStarted: string[] = [];
+    let nowMs = STARTED_AT_MS;
+    const orch = makeTestOrchestrator(
+      { wallClock: () => nowMs },
+      capturingPlaylists(published),
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: { state?: StreamStatus }) => {
+          if (entry.state === STREAM_STATUS_VOD) {
+            finalizeStarted.push('vod');
+            // Long enough that the re-announce below lands inside this drain rather than after it.
+            await sleep(60);
+          }
+          return true;
+        },
+      }),
+    );
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('before'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 1, SETTLE_CEILING_MS);
+
+    const stopping = orch.stopStream(STREAM_ID);
+    await waitFor(() => finalizeStarted.length > 0, SETTLE_CEILING_MS);
+
+    nowMs = RESTARTED_AT_MS;
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    const publishedBefore = published.length;
     orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'));
     await waitFor(() => published.length > publishedBefore, SETTLE_CEILING_MS);
 
@@ -2601,6 +2725,75 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
       'the replacement session dated its opening segment at the start of the broadcast, so it is behind ' +
         'real time by the length of the gap',
     );
+    await stopping;
+    await orch.cleanup();
+  });
+
+  /**
+   * ⛔⛔ The same replacement, after the session it replaces had re-anchored at a sequence the
+   * replacement then numbers past. The shared record kept that epoch next to the replacement's own
+   * at 0, and the dating takes the highest epoch at or below a sequence rather than the newest added,
+   * so the replacement's sequence 3 was dated from the predecessor's line: a restart ten minutes
+   * earlier, and a date that went backwards in the middle of a live playlist.
+   */
+  it('keeps a replacement session’s dates moving forwards past an epoch its predecessor minted', async () => {
+    const published: string[] = [];
+    const finalizeStarted: string[] = [];
+    let nowMs = STARTED_AT_MS;
+    const orch = makeTestOrchestrator(
+      { wallClock: () => nowMs },
+      capturingPlaylists(published),
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: { state?: StreamStatus }) => {
+          if (entry.state === STREAM_STATUS_VOD) {
+            finalizeStarted.push('vod');
+            // Long enough that the re-announce below lands inside this drain rather than after it.
+            await sleep(60);
+          }
+          return true;
+        },
+      }),
+    );
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(STREAM_ID, 100, 2, Buffer.from('one'));
+    orch.handleSegment(STREAM_ID, 101, 2, Buffer.from('two'));
+    orch.handleSegment(STREAM_ID, 102, 2, Buffer.from('three'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 3, SETTLE_CEILING_MS);
+
+    // The engine's counter restarting inside the first session, which re-anchors it at sequence 3.
+    const predecessorReanchoredAtMs = STARTED_AT_MS + 60_000;
+    nowMs = predecessorReanchoredAtMs;
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after the counter restart'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 4, SETTLE_CEILING_MS);
+    assert.equal(
+      stampsOf(newestLivePlaylist(published))[3],
+      predecessorReanchoredAtMs,
+      'the first session did not re-anchor at sequence 3, so this case has no stale epoch to number past',
+    );
+
+    const stopping = orch.stopStream(STREAM_ID);
+    await waitFor(() => finalizeStarted.length > 0, SETTLE_CEILING_MS);
+
+    nowMs = RESTARTED_AT_MS;
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    for (let index = 0; index < 5; index++) {
+      orch.handleSegment(STREAM_ID, index, 2, Buffer.from(`replacement ${index}`));
+    }
+    const replacementLive = (): number[] => {
+      const stamps = stampsOf(newestLivePlaylist(published));
+      return stamps[0] === RESTARTED_AT_MS ? stamps : [];
+    };
+    await waitFor(() => replacementLive().length === 5, SETTLE_CEILING_MS);
+
+    assert.deepEqual(
+      replacementLive(),
+      [0, 1, 2, 3, 4].map((sequence) => RESTARTED_AT_MS + sequence * STEP_MS),
+      'the replacement dated a sequence from the epoch the session it replaced minted, so its playlist ' +
+        'went back to that restart in the middle of the window',
+    );
+    await stopping;
     await orch.cleanup();
   });
 
