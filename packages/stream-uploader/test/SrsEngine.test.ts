@@ -15,8 +15,10 @@ import { listenOnLoopback } from './helpers/loopbackServer.js';
 const MEDIA_ROOT = '/srv/media';
 const SRS_PREFIX = './objs/nginx/html/';
 
-// The three vectors from the SEC-2 acceptance criteria. Each reaches the handler on an
-// unauthenticated webhook, and the handler reads then deletes whatever the path names.
+// The three vectors from the SEC-2 acceptance criteria. Each reaches the handler as the `file` in a
+// webhook body, and the handler reads then deletes whatever the path names. The token every SRS
+// webhook has had to carry since 2026-07-31 proves who sent the call, not that the path is sane,
+// which is why the containment is tested here.
 const ESCAPING_PATHS = [
   { name: 'an absolute path, which path.resolve would adopt wholesale', file: '/etc/shadow' },
   { name: 'a bare traversal', file: '../../etc/passwd' },
