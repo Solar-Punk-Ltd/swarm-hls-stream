@@ -17,6 +17,7 @@ import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig, HLS_TUNING } from './playerConfig';
 import { exposePlayerForInstrumentation } from './playerTestHandle';
 import { buildSwarmUri } from './playlist';
+import { attachReturningBroadcastRejoin } from './returningBroadcast';
 import { attachRungFailover, attachWatchedRungReporter } from './rungHealth';
 
 import './SwarmHlsPlayer.scss';
@@ -505,12 +506,29 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       ? attachPlaybackStallReporter(video, () => manifestFetcher.feedHealth.recordPlaybackStall(stallTopic))
       : null;
 
+    // ⛔ A broadcast that ended can come back. A declared stream's broadcaster who stops and returns
+    // continues the same feeds at the next index, and both followers keep a slow watch on the slot
+    // after a finished playlist to find that out. This is the half that acts on it: once the return is
+    // announced and this viewer has reached the end of what they were playing, the player restarts,
+    // and the restart bootstraps at the live edge like any other mount. Measured live 2026-09-24: a
+    // viewer who had watched the end was still on it fifteen minutes after the broadcaster returned,
+    // and only a reload found the broadcast live. `returningBroadcast.ts` says why it waits for the end.
+    const returnTopic = toHexTopic(topicString);
+    const detachReturnRejoin =
+      hls && returnTopic
+        ? attachReturningBroadcastRejoin(video, manifestFetcher.feedHealth, returnTopic, () => {
+            console.log('[SwarmHls] the broadcast has come back and this viewer reached the end, rejoining it live');
+            setRestartTrigger((prev) => prev + 1);
+          })
+        : null;
+
     return () => {
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
       detachRateGuard?.();
       detachStallReporter?.();
+      detachReturnRejoin?.();
       detachTestHandle?.();
       detachRungFailover?.();
       detachWatchedRung?.();
