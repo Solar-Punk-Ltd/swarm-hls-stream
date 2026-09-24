@@ -408,8 +408,10 @@ export interface SessionSummary {
    * Each feed state the viewer was shown, once, in the order they first met it.
    *
    * A live session that was never interrupted reads `['live']`. A broadcast that ended cleanly under
-   * a watching viewer ends with `'ended'`, which is the terminal state and the one a viewer scenario
-   * asserts on.
+   * a watching viewer ends with `'ended'`, the state a viewer scenario asserts on. It is not terminal
+   * since 2026-09-24: a broadcaster who comes back takes the client out of it, and the player rejoins
+   * the live broadcast once the viewer reaches the end of what they were playing. This list cannot show
+   * that return, because each state appears once, where it was first met, and `'live'` was met first.
    */
   feedStatesSeen: readonly ViewerFeedState[];
   latency: LatencyVerdict;

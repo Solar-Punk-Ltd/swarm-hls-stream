@@ -385,7 +385,11 @@ export interface BrowserArmResult {
   proof: BrowserArmProof;
   /** Each feed state the viewer was shown, once, in the order they first met it. */
   feedStatesSeen: readonly ViewerFeedState[];
-  /** Whether the viewer was ever told the broadcast had ended, which is the terminal state. */
+  /**
+   * Whether the viewer was ever told the broadcast had ended. Ever, rather than at the end of the arm:
+   * since 2026-09-24 a broadcaster who comes back takes the client out of that state again, and the
+   * player rejoins the live broadcast once the viewer reaches the end of what they were playing.
+   */
   reachedEndedOverlay: boolean;
   /** What the fault did to them, on a scenario arm. Null on a plain watch, which drove no fault. */
   recovery: CrashRecoveryResult | null;
