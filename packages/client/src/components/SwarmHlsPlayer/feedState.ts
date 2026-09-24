@@ -966,10 +966,7 @@ export class FeedHealthTracker {
    * has it at all, since a ladder's end is recorded once against its group.
    */
   recordFeedResumed(topicId: string): void {
-    for (const rung of this.rungsOfGroup.get(topicId) ?? []) {
-      this.endUnservedRun(rung);
-    }
-    this.update(topicId, (health) => ({ ...HEALTHY, stallsAtMs: health.stallsAtMs }));
+    this.clearEnd(topicId);
 
     for (const listener of [...this.feedResumedListeners]) {
       try {
@@ -978,6 +975,42 @@ export class FeedHealthTracker {
         console.error('Feed resumed listener threw:', error);
       }
     }
+  }
+
+  /**
+   * A fresh session's first read found this feed's playlist open, while an end is still recorded
+   * against it. That end was left by an earlier session, and the broadcaster has come back since.
+   *
+   * ⛔ The tracker outlives every player on the page, so an end recorded while one viewer watched is
+   * still recorded after they leave. A viewer who came back through the app after the broadcaster had
+   * returned was told the broadcast had ended over a live picture, because only a watch cleared an end
+   * and the watch went with the session that ran it.
+   *
+   * Cleared the way {@link recordFeedResumed} clears it, and announced to nobody. This is not a return
+   * any watch saw: the viewer has only just arrived and watched nothing yet, so there is nothing to
+   * rejoin, and a rejoin armed here would fire at the end of the live broadcast they go on to watch and
+   * restart them into its recording.
+   *
+   * Nothing at all happens to a feed that has not ended. A restart into a stall reads the same open
+   * playlist a fresh session does, and the stall it already reported has to survive that read. See
+   * `ManifestFetcher.handleInitialFetch`.
+   */
+  forgetStaleEnd(topicId: string): void {
+    if (!this.topics.get(topicId)?.hasEnded) {
+      return;
+    }
+    this.clearEnd(topicId);
+  }
+
+  /**
+   * Out of {@link FEED_STATE_ENDED}, with the waits that came before the end forgotten along with it.
+   * What both {@link recordFeedResumed} and {@link forgetStaleEnd} do, and says why.
+   */
+  private clearEnd(topicId: string): void {
+    for (const rung of this.rungsOfGroup.get(topicId) ?? []) {
+      this.endUnservedRun(rung);
+    }
+    this.update(topicId, (health) => ({ ...HEALTHY, stallsAtMs: health.stallsAtMs }));
   }
 
   /**

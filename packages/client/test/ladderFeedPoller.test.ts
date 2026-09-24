@@ -430,6 +430,62 @@ describe('LadderFeedPoller', () => {
       }
     });
 
+    /**
+     * ⛔ The tracker outlives every session on the page. A viewer who watched the ladder end, went
+     * elsewhere in the app, and came back after the broadcaster returned found the end still recorded
+     * against the group, because only a watch cleared it and the watch stopped with the session that
+     * ran it: "This broadcast has ended" over a live picture. Two sessions on one tracker here, as the
+     * page has.
+     */
+    it('clears an end an earlier session left once a fresh session finds the ladder live', async () => {
+      const gateway = finishedLadder();
+      const { tracker, resumed } = makeWatchedTracker();
+      const earlier = watchingPoller(gateway, tracker);
+      await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the earlier session to see the end');
+      // What `unregisterLadder` does when that viewer leaves.
+      earlier.stop(RUNGS);
+      for (const topic of RUNGS) {
+        state.clear(topic.toString());
+      }
+
+      // The broadcaster comes back while nobody is watching.
+      for (const topic of RUNGS) {
+        gateway.publishFeedHead(topic, FINISHED_AT + 1, manifest(3));
+      }
+      const later = watchingPoller(gateway, tracker);
+
+      try {
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_LIVE, 'the stale end to be cleared');
+        assert.deepEqual(resumed, [], 'a stale end was announced as a return, which would arm a rejoin');
+      } finally {
+        later.stop(RUNGS);
+      }
+    });
+
+    /** The other direction: a fresh session that finds the ladder still finished keeps the end. */
+    it('keeps an end an earlier session left while the ladder is still finished', async () => {
+      const gateway = finishedLadder();
+      const { tracker } = makeWatchedTracker();
+      const earlier = watchingPoller(gateway, tracker);
+      await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the earlier session to see the end');
+      earlier.stop(RUNGS);
+      for (const topic of RUNGS) {
+        state.clear(topic.toString());
+        gateway.publishFeedHead(topic, FINISHED_AT, manifest(2, true));
+      }
+      const later = watchingPoller(gateway, tracker);
+
+      try {
+        await waitFor(
+          () => RUNGS.every((topic) => segmentCount(state, topic) === 2),
+          'the fresh session to read every finished rung',
+        );
+        assert.equal(tracker.state(groupHex), FEED_STATE_ENDED);
+      } finally {
+        later.stop(RUNGS);
+      }
+    });
+
     /** The viewer who opened a recording, rather than the one who watched it finish. */
     it('watches a ladder whose feeds had already finished when it was opened', async () => {
       const gateway = new FakeGateway();
