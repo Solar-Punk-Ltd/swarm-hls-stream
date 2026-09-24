@@ -1,6 +1,8 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { feedSlotPath, nextFeedRequest } from '@swarm-hls-stream/shared';
 
+import { absoluteGatewayUrl } from './gatewayUrl';
+
 /**
  * The one media line in a preview's playlist, always absolute against the gateway.
  *
@@ -10,17 +12,25 @@ import { feedSlotPath, nextFeedRequest } from '@swarm-hls-stream/shared';
  * blob id are both consumed, so nothing downstream can work out which gateway was meant. The line has
  * to name it here or it cannot be named at all.
  *
+ * ⛔ Absolute includes the gateway itself. A deployed viewer's gateway is its own `/bee` proxy, a
+ * rooted path rather than a URL, and joining it onto the line as it stood made every card on every
+ * deployed viewer ask for `/bee/bytes/<ref>`, which the fragment loader refuses as naming no gateway.
+ * Seen 2026-09-24 as a page of blank cards. So the gateway is resolved against the page's own
+ * address, the rule the player's `absoluteBytesBase` already follows.
+ *
  * A bare reference is what the uploader writes, and what every manifest published since 2026-08-13
  * holds. The other two shapes come from content published before that, when `MANIFEST_ACCESS_URL`
  * could prepend either a full URL or a rooted path, and only the rooted one reached hls.js
  * unresolved because the caller used to pass it through untouched. All three are still handled,
  * since a recording keeps whatever its manifest was published with.
+ *
+ * @param pageOrigin the viewer page's own origin, which a rooted gateway is a path on.
  */
-export function previewSegmentUrl(uri: string, gatewayUrl: string): string {
+export function previewSegmentUrl(uri: string, gatewayUrl: string, pageOrigin: string): string {
   if (uri.startsWith('http://') || uri.startsWith('https://')) {
     return uri;
   }
-  return uri.startsWith('/') ? `${gatewayUrl}${uri}` : `${gatewayUrl}/bytes/${uri}`;
+  return absoluteGatewayUrl(gatewayUrl, uri.startsWith('/') ? uri : `/bytes/${uri}`, pageOrigin);
 }
 
 /**
