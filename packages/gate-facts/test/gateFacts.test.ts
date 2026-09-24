@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { countAdvisoryFindings, missingTotalsVerdict } from '../src/collectChecks.js';
 import { totalLines } from '../src/collectDiff.js';
-import { distArgs, summarise, type VersionProvenance } from '../src/collectProvenance.js';
+import { distArgs, summarise, type VersionProvenance, wholeDaysSince } from '../src/collectProvenance.js';
 import { readCommandLine } from '../src/commandLine.js';
 import { formatFacts, hasFailure } from '../src/formatFacts.js';
 import { introducedVersions, lockfileVersions, splitVersion } from '../src/lockfileVersions.js';
@@ -583,6 +583,20 @@ describe('provenance summary', () => {
   it('treats exactly two weeks as not fresh, the window of the owner dependency rule', () => {
     assert.equal(summarise([entry('boundary@1.0.0', 'signed', true, 14)]).fresh, 'none');
     assert.match(summarise([entry('boundary@1.0.0', 'signed', true, 13)]).fresh, /boundary@1\.0\.0 \(13d\)/);
+  });
+
+  it('lists a version published 13.5 days ago as fresh, counting the whole days elapsed', () => {
+    // Rounding read 13.5 days as 14, so a version still under two weeks old went unflagged.
+    const now = Date.parse('2026-09-24T12:00:00Z');
+    const published = new Date(now - 13.5 * 86_400_000).toISOString();
+
+    const ageDays = wholeDaysSince(published, now);
+
+    assert.match(summarise([entry('young@1.0.0', 'signed', true, ageDays)]).fresh, /young@1\.0\.0 \(13d\)/);
+  });
+
+  it('reads a publish date that does not parse as unknown rather than as an age', () => {
+    assert.equal(wholeDaysSince('not a date', Date.parse('2026-09-24T12:00:00Z')), null);
   });
 
   it('builds the fresh row from age, not from signature state', () => {
