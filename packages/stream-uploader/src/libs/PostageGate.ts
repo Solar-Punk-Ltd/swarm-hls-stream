@@ -35,9 +35,9 @@ import { GateCollector, GateFinding } from './StartGates.js';
  *
  * ⛔ **This gate still refuses by default, and it is the only one that does, but only about a batch
  * the node answered for.** The owner ruled the two gates apart on 2026-09-17: a chequebook under its
- * floor is a node that publishes slowly, while a batch that is full or expired fails every write
- * while the broadcast looks live to the room, the viewer and the catalog, and the recording it was
- * meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
+ * floor is a node that publishes slowly, while an immutable batch that is full, or any batch that
+ * has expired, fails every write while the broadcast looks live to the room, the viewer and the
+ * catalog, and the recording it was meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
  * same way, in his words: "PostageGate refuses only a batch the node answered about and warns on an
  * unreadable one." A `usable=false`, a batch under the time floor, an immutable batch over the
  * utilization ceiling and a 4xx are the node answering, and they still end the boot under the shipped
