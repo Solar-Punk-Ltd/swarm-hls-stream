@@ -563,9 +563,10 @@ describe('FeedHealthTracker bounds', () => {
 });
 
 /**
- * A broadcast that ends is not a fault, and it is the one state here that never resolves. The other
- * two describe something being retried behind the overlay; this one describes there being nothing
- * left to retry, so it has to survive everything that would otherwise clear or overwrite it.
+ * A broadcast that ends is not a fault. The other states describe something being retried behind the
+ * overlay, and this one describes there being nothing left to retry, so it has to survive everything
+ * that would otherwise clear or overwrite it. The one thing that lifts it is the broadcaster coming
+ * back to the same feed, which a slow watch on the finished feed finds and records.
  */
 describe('FeedHealthTracker on a broadcast that has ended', () => {
   it('says the broadcast ended', () => {
@@ -627,6 +628,104 @@ describe('FeedHealthTracker on a broadcast that has ended', () => {
     tracker.recordFeedEnded('some-other-broadcast');
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  /**
+   * ⛔ The live failure this exists for, 2026-09-24. A declared stream's encoder dropped for longer
+   * than the reconnect window, the uploader finalized the broadcast, and the broadcaster came back on
+   * the same feeds eighty-one seconds later. A viewer who had watched it end was still being told it
+   * had ended fifteen minutes after that, while a viewer who opened the page fresh played it live.
+   */
+  it('lifts once the broadcaster is found publishing to the feed again', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordFeedResumed(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED, FEED_STATE_LIVE]);
+  });
+
+  it('ends again when the broadcast that came back finishes too', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+    tracker.recordFeedEnded(TOPIC);
+    tracker.recordFeedResumed(TOPIC);
+
+    tracker.recordFeedEnded(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED, FEED_STATE_LIVE, FEED_STATE_ENDED]);
+  });
+
+  /**
+   * A feed sits on unserved slots for the whole reconnect window before the uploader finishes it, and
+   * the end then hides that run. Finding the broadcaster back means a slot was served, so the run is
+   * over, and a viewer must not be told the broadcast is still waiting to continue once it has.
+   */
+  it('comes back live rather than as the stall the broadcaster left behind', () => {
+    const { tracker, clock } = makeTracker();
+    unservedPastWindow(tracker, clock);
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordFeedResumed(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE, 'the run from before the end outlived the return');
+  });
+
+  /** The player rejoins on this, because a state leaving `ended` can also be an eviction. */
+  it('tells a resume listener which feed came back', () => {
+    const { tracker } = makeTracker();
+    const resumed: string[] = [];
+    tracker.onFeedResumed((topicId) => resumed.push(topicId));
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordFeedResumed(TOPIC);
+
+    assert.deepEqual(resumed, [TOPIC]);
+  });
+
+  it('says nothing to a resume listener about a feed that merely ended', () => {
+    const { tracker } = makeTracker();
+    const resumed: string[] = [];
+    tracker.onFeedResumed((topicId) => resumed.push(topicId));
+
+    tracker.recordFeedEnded(TOPIC);
+    tracker.recordGatewayResponse(TOPIC);
+    tracker.recordGatewayReachable();
+
+    assert.deepEqual(resumed, []);
+  });
+
+  it('stops telling a resume listener that has gone', () => {
+    const { tracker } = makeTracker();
+    const resumed: string[] = [];
+    const stopListening = tracker.onFeedResumed((topicId) => resumed.push(topicId));
+
+    stopListening();
+    tracker.recordFeedResumed(TOPIC);
+
+    assert.deepEqual(resumed, []);
+  });
+
+  it('does not let one resume listener that throws keep the return from the others', () => {
+    const { tracker } = makeTracker();
+    const realConsoleError = console.error;
+    console.error = () => {};
+    const resumed: string[] = [];
+    try {
+      tracker.onFeedResumed(() => {
+        throw new Error('a restart this listener drives failed');
+      });
+      tracker.onFeedResumed((topicId) => resumed.push(topicId));
+
+      tracker.recordFeedResumed(TOPIC);
+
+      assert.deepEqual(resumed, [TOPIC]);
+    } finally {
+      console.error = realConsoleError;
+    }
   });
 });
 
@@ -925,6 +1024,59 @@ describe('FeedHealthTracker on a ladder, where the faults land on rungs and the 
 
     tracker.recordFeedEnded(GROUP);
     assert.equal(tracker.state(GROUP), FEED_STATE_ENDED);
+  });
+
+  /**
+   * A ladder's end is recorded once against the group and its return is found on a rung, so the group
+   * leaves `ended` only when it is told itself. `LadderFeedPoller` tells both.
+   */
+  it('takes the group back out of ended when its broadcaster comes back', () => {
+    const { tracker, seen } = makeLadder();
+    tracker.recordFeedEnded(GROUP);
+
+    tracker.recordFeedResumed(RUNG_1080);
+    assert.equal(tracker.state(GROUP), FEED_STATE_ENDED, 'a rung coming back was read as the whole ladder');
+
+    tracker.recordFeedResumed(GROUP);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED, FEED_STATE_LIVE]);
+  });
+
+  /**
+   * ⛔ The rung a viewer is on decides the unserved half of the group's state, and every rung sat on
+   * unserved slots for the whole reconnect window before the ladder finished. The rungs are found back
+   * one watch at a time, up to a whole watch interval apart when the uploader writes one just after its
+   * watch looked, so the rung the viewer is on is not necessarily the one found first. Its run from
+   * before the end is over all the same, because the broadcast it was waiting on is back.
+   */
+  it('comes back live on the rung the viewer is on, even when another rung is found back first', () => {
+    const { tracker, clock, seen } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_360);
+    tracker.recordFeedEnded(GROUP);
+
+    tracker.recordFeedResumed(RUNG_360);
+    tracker.recordFeedResumed(GROUP);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'the viewer was told the broadcast that came back was waiting');
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_ENDED, FEED_STATE_LIVE]);
+  });
+
+  /** What a ladder's return clears is the wait from before the end, and nothing a rung is failing at now. */
+  it('leaves a gateway every rung is failing to reach as the reconnection it is', () => {
+    const { tracker } = makeLadder();
+    tracker.recordFeedEnded(GROUP);
+    tracker.recordGatewayFailure(RUNG_1080);
+    tracker.recordGatewayFailure(RUNG_360);
+
+    tracker.recordFeedResumed(GROUP);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_RECONNECTING);
   });
 
   /** A stream with no ladder has no members, and folding nothing must leave it exactly as it was. */
