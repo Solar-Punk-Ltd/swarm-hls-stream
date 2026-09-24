@@ -402,6 +402,13 @@ export class LadderFeedPoller {
     }
 
     this.stateManager.setIndex(entry.hexTopic, index);
+    // This session's first read found the rung open, so an end still recorded against it or its group
+    // was left by an earlier session and is over. Forgotten without announcing a return. See
+    // `FeedHealthTracker.forgetStaleEnd`.
+    this.feedHealth.forgetStaleEnd(entry.hexTopic);
+    if (entry.group !== null) {
+      this.feedHealth.forgetStaleEnd(entry.group);
+    }
     return true;
   }
 

@@ -698,6 +698,52 @@ describe('FeedHealthTracker on a broadcast that has ended', () => {
     assert.deepEqual(resumed, []);
   });
 
+  /**
+   * ⛔ The tracker outlives every player on the page, so an end recorded while one viewer watched is
+   * still recorded after they leave. A viewer who came back through the app once the broadcaster had
+   * returned was told the broadcast had ended over a live picture, because only a watch cleared an end
+   * and the watch went with the session that ran it.
+   */
+  it('forgets an end an earlier session left once a fresh read finds the feed open', () => {
+    const { tracker, seen, watch } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+    watch();
+
+    tracker.forgetStaleEnd(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+    assert.deepEqual(seen, [FEED_STATE_ENDED, FEED_STATE_LIVE]);
+  });
+
+  /**
+   * ⛔ Silently. A viewer who has only just arrived has watched nothing yet, so there is nothing to
+   * rejoin, and a rejoin armed here would fire at the end of the live broadcast they go on to watch
+   * and restart them into its recording.
+   */
+  it('announces nothing when it forgets a stale end', () => {
+    const { tracker } = makeTracker();
+    const resumed: string[] = [];
+    tracker.onFeedResumed((topicId) => resumed.push(topicId));
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.forgetStaleEnd(TOPIC);
+
+    assert.deepEqual(resumed, []);
+  });
+
+  /**
+   * A restart into a stall reads the same open playlist a fresh session does, and the stall it has
+   * already reported has to survive that read. So a feed that has not ended is left exactly as it is.
+   */
+  it('leaves a feed that has not ended exactly as it was', () => {
+    const { tracker, clock } = makeTracker();
+    unservedPastWindow(tracker, clock);
+
+    tracker.forgetStaleEnd(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
+  });
+
   it('stops telling a resume listener that has gone', () => {
     const { tracker } = makeTracker();
     const resumed: string[] = [];
@@ -1064,6 +1110,27 @@ describe('FeedHealthTracker on a ladder, where the faults land on rungs and the 
     tracker.recordFeedResumed(GROUP);
 
     assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'the viewer was told the broadcast that came back was waiting');
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_ENDED, FEED_STATE_LIVE]);
+  });
+
+  /**
+   * An earlier session's rungs waited through the reconnect window before the end, and that wait is
+   * as stale as the end is once a fresh session finds the ladder open again. Forgetting only the end
+   * would show the next viewer "Waiting for the broadcast to continue" instead, until a rung was
+   * served.
+   */
+  it('forgets a stale end on a ladder without reporting the wait from before it as a stall', () => {
+    const { tracker, clock, seen } = makeLadder();
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_360);
+    tracker.recordFeedEnded(GROUP);
+
+    tracker.forgetStaleEnd(GROUP);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'the wait from before the end outlived it');
     assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_ENDED, FEED_STATE_LIVE]);
   });
 

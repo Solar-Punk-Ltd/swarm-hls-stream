@@ -809,6 +809,10 @@ export class ManifestFetcher {
     }
     if (shouldContinue) {
       this.stateManager.setIndex(hexTopic, extractFeedIndex(response.headers));
+      // A mount's first read found the feed open, so an end still recorded against it was left by an
+      // earlier mount and is over. Forgotten without announcing a return, and only once the read has
+      // proved usable. See `FeedHealthTracker.forgetStaleEnd`.
+      this.feedHealth.forgetStaleEnd(hexTopic);
     } else if (parsed.isFinalized) {
       // Read only here, and forgivingly. A finished head was never asked for its index before, and a
       // gateway that leaves the header off still has a recording worth playing, so a missing index

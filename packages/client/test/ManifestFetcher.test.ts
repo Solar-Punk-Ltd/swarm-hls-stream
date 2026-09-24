@@ -1681,15 +1681,49 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
     assert.deepEqual(resumed, []);
   });
 
-  /** The viewer who opened the recording afterwards, whose first read is already the finished playlist. */
-  it('watches a recording opened after it finished, from the slot its head resolved to', async () => {
-    manager.clear(hexTopic);
+  /** What a fresh mount's head read answers, and where it says the head is. */
+  function headAnswers(body: string, index: bigint): void {
     const headUrl = `${BEE_URL}/feeds/${OWNER}/${hexTopic}`;
     const answerFromFixture = globalThis.fetch;
     globalThis.fetch = async (input: RequestInfo | URL) =>
       String(input) === headUrl
-        ? new Response(finished(FINISHED_AT), { headers: { 'Swarm-Feed-Index': FINISHED_AT.toString(16) } })
+        ? new Response(body, { headers: { 'Swarm-Feed-Index': index.toString(16) } })
         : answerFromFixture(input);
+  }
+
+  /**
+   * ⛔ The tracker outlives every mount, so an end recorded while one viewer watched is still recorded
+   * when they come back through the app. After the broadcaster returned, the new mount read the feed
+   * open and the overlay still said the broadcast had ended, because only a watch cleared an end and
+   * the watch was torn down with the mount that ran it.
+   */
+  it('clears an end an earlier mount left once a fresh mount finds the feed live', async () => {
+    await watchItEnd();
+    // The earlier mount's teardown, which ends its watch with it.
+    manager.clear(hexTopic);
+    headAnswers(manifestForIndex(FINISHED_AT + 1n), FINISHED_AT + 1n);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE, 'a fresh mount of a live broadcast was told it had ended');
+    assert.deepEqual(resumed, [], 'a stale end was announced as a return, which would arm a rejoin');
+  });
+
+  /** The other direction: a fresh mount that finds the feed still finished keeps the end. */
+  it('keeps an end an earlier mount left while the feed is still finished', async () => {
+    await watchItEnd();
+    manager.clear(hexTopic);
+    headAnswers(finished(FINISHED_AT), FINISHED_AT);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.equal(health.state(hexTopic), FEED_STATE_ENDED);
+  });
+
+  /** The viewer who opened the recording afterwards, whose first read is already the finished playlist. */
+  it('watches a recording opened after it finished, from the slot its head resolved to', async () => {
+    manager.clear(hexTopic);
+    headAnswers(finished(FINISHED_AT), FINISHED_AT);
 
     const manifest = await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     assert.match(manifest, /#EXT-X-ENDLIST/, 'the fixture never served a finished recording, so this proves nothing');
