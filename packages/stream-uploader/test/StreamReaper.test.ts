@@ -15,6 +15,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { Logger } from '../src/libs/Logger.js';
+import { LOG_LEVEL_DEBUG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LogLevel } from '../src/libs/logLevels.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
@@ -468,5 +470,75 @@ describe('a live stream whose engine dies without saying so (#86)', () => {
     await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
 
     assert.equal(orch.getActiveStreamCount(), 0, 'a resumed stream that is abandoned again must still be reaped');
+  });
+});
+
+interface CapturedLine {
+  level: LogLevel;
+  line: string;
+}
+
+/** Every line written while `run` is in flight, at every level, with the previous options restored afterwards. */
+async function linesDuring(run: () => Promise<void>): Promise<CapturedLine[]> {
+  const captured: CapturedLine[] = [];
+  const logger = Logger.getInstance();
+  const previous = logger.configure({ level: LOG_LEVEL_DEBUG, sink: (level, line) => captured.push({ level, line }) });
+  try {
+    await run();
+  } finally {
+    logger.configure(previous);
+  }
+  return captured;
+}
+
+function linesAboutTheStream(lines: readonly CapturedLine[], level: LogLevel): CapturedLine[] {
+  return lines.filter((captured) => captured.level === level && captured.line.includes(STREAM_ID));
+}
+
+describe('what a reap says about why the broadcast ended', () => {
+  /**
+   * On SRS every broadcast that ends normally ends here. `on_unpublish` only reports the disconnect,
+   * so the recording is sealed by the reaper one window after the last segment. Seen live on the test
+   * stage on 2026-09-24: each clean end of a four-rung ladder wrote four warnings saying the engine
+   * may have died, while SRS had reported every rung leaving. A warning on every ordinary end teaches
+   * an operator to read past warnings, which is the one habit this log cannot afford.
+   */
+  it('logs an encoder that left and never came back as the ordinary end of a broadcast', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    const lines = await linesDuring(async () => {
+      orch.noteDisconnect(STREAM_ID);
+      await clock.advance(REAP_MS + 1);
+      await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    });
+
+    assert.deepEqual(linesAboutTheStream(lines, LOG_LEVEL_WARN), [], 'an encoder that left is not a warning');
+    assert.ok(
+      linesAboutTheStream(lines, LOG_LEVEL_INFO).some((captured) => captured.line.includes(`${REAP_MS / 1000}s`)),
+      'the end is logged with the reconnect window the encoder did not come back inside',
+    );
+  });
+
+  it('still warns when the engine stopped delivering without ever reporting a disconnect', async () => {
+    const harness = makeHarness();
+    const { orch, clock, published } = harness;
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await startAndFeed(harness, 0);
+
+    const lines = await linesDuring(async () => {
+      await clock.advance(REAP_MS + 1);
+      await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+    });
+
+    assert.equal(
+      linesAboutTheStream(lines, LOG_LEVEL_WARN).length,
+      1,
+      'an engine that went quiet without a word is still worth a warning',
+    );
   });
 });
