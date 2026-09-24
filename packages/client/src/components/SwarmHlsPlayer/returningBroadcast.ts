@@ -14,11 +14,13 @@ import type { FeedHealthTracker } from './feedState';
 /**
  * How near the end of what it holds a paused player has to be to count as having watched all of it.
  *
- * Half of the one second segment the stage has published since 2026-09-01. A viewer paused inside it
- * has seen everything but part of one segment, so moving them to the live edge takes nothing from
- * them. A player that simply ran out of media stops within a frame or two of the end of its buffer,
- * far inside this. A viewer paused anywhere earlier still holds half a second or more they have not
- * watched, and that viewer is the one this exists not to move.
+ * Less than one segment at either length this project cuts: one second on the light client profile,
+ * and two on the in-browser profile, which is what the stage this was found on runs. A viewer paused
+ * inside it has seen everything but part of one segment, whichever profile they are watching, so
+ * moving them to the live edge takes nothing from them. A player that simply ran out of media stops
+ * within a frame or two of the end of its buffer, far inside this. A viewer paused anywhere earlier
+ * still holds half a second or more they have not watched, and that viewer is the one this exists not
+ * to move.
  */
 export const END_OF_PLAYBACK_MARGIN_S = 0.5;
 
