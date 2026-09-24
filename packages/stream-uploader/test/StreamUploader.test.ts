@@ -1465,6 +1465,44 @@ describe('segments the live window outran before anything published them', () =>
     assert.deepEqual(counters.segmentsUploadedByRung, {}, 'a dropped segment must not also count as one that landed');
   });
 
+  /**
+   * ⛔ The other half of telling the catalog a rung delivered. Without it the master takes a rung whose
+   * uploads are being refused back on every segment that happens to land, which is what rewrote it 793
+   * times on 2026-09-23. See `RUNG_READMIT_AFTER_SEGMENTS`.
+   */
+  it('tells the catalog its rung dropped a segment, so a refused rung is not taken back on a stray success', async () => {
+    const dropped: Array<[string, string]> = [];
+    const watching = makeFakeCatalog({
+      recordRungUploadFailed: (group: string, rung: string) => {
+        dropped.push([group, rung]);
+      },
+    });
+    const uploader = uploaderWith(makeBee({ fail: permanentError }), {
+      streamCatalog: watching,
+      ladder: { group: 'group-1', rung: { name: '1080p', width: 1920, height: 1080, configuredKbps: 6000 } },
+    });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    assert.deepEqual(dropped, [['group-1', '1080p']]);
+  });
+
+  it('tells the catalog nothing about a dropped segment on a stream that has no ladder', async () => {
+    const dropped: string[] = [];
+    const watching = makeFakeCatalog({
+      recordRungUploadFailed: (_group: string, rung: string) => {
+        dropped.push(rung);
+      },
+    });
+    const uploader = uploaderWith(makeBee({ fail: permanentError }), { streamCatalog: watching });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    assert.deepEqual(dropped, [], 'a single-rendition stream has no rung whose uploads this could be about');
+  });
+
   /** Under no rung, for the reason the uploaded breakdown leaves a rung-less segment out of its own. */
   it('counts a single-rendition drop in the total and under no rung', async () => {
     const metrics = new ServiceMetrics();

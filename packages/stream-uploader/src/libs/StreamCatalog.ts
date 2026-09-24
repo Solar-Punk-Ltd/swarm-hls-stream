@@ -139,6 +139,13 @@ export class StreamCatalog implements LadderRegistry {
     this.republishIfLadderShapeChanged(group, liveness.liveRungs());
   }
 
+  /** One segment of this rung was dropped. See {@link LadderRegistry.recordRungUploadFailed}. */
+  public recordRungUploadFailed(group: string, rung: string): void {
+    const liveness = this.livenessOf(group);
+    liveness.recordUploadFailed(rung);
+    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+  }
+
   /**
    * Rewrite the master when the set of producing rungs changes, and only then.
    *

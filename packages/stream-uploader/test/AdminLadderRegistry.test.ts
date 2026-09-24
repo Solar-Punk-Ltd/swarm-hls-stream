@@ -409,6 +409,25 @@ describe('what a delivery does in admin mode', () => {
     assert.equal(harness.posted.length, postsAfterAnnounce, 'a rung dying is nothing the admin has to be asked about');
   });
 
+  /**
+   * ⛔ 2026-09-23 in admin mode: the master is the same master and the rule the same `LadderLiveness`, so
+   * a rung whose uploads are being refused stays out when one of its segments still lands.
+   */
+  it('keeps a rung whose uploads are being refused out of the master when one of its segments lands', async () => {
+    const harness = await announcedLadder();
+    for (let round = 0; round < ROUNDS_TO_KILL_A_RUNG; round++) {
+      harness.deliver(HEALTHY);
+      harness.registry.recordRungUploadFailed(DECLARED_TOPIC, '720p');
+    }
+    await waitFor(() => harness.masters.length > 1, SETTLE_CEILING_MS);
+    const afterTheDrop = harness.masters.length;
+
+    harness.deliver(BOTH_RUNGS);
+
+    await waitAndConfirmNothingHappened(() => harness.masters.length === afterTheDrop, NOTHING_HAPPENS_WINDOW_MS);
+    assert.doesNotMatch(harness.masters.at(-1)!.playlist, /topic-720p/, 'one stray segment put the rung back');
+  });
+
   /** Nothing has been merged yet, so there is no ladder to write a master from and nothing to correct. */
   it('writes nothing before the ladder has ever announced', async () => {
     const harness = makeRegistry();
