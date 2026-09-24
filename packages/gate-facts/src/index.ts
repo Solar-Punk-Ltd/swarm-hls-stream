@@ -1,20 +1,13 @@
 import { collectChecks } from './collectChecks.js';
 import { collectDiff } from './collectDiff.js';
 import { collectProvenance } from './collectProvenance.js';
+import { readCommandLine } from './commandLine.js';
 import { formatFacts, hasFailure } from './formatFacts.js';
 import { run } from './run.js';
 import type { GateFacts } from './types.js';
 
-const DEFAULT_BASE = 'feat/ai-hardening';
-
-function argValue(flag: string): string | undefined {
-  const index = process.argv.indexOf(flag);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
 async function main(): Promise<void> {
-  const base = argValue('--base') ?? DEFAULT_BASE;
-  const supplied = argValue('--head');
+  const { base, head: supplied } = readCommandLine(process.argv);
   // Resolved rather than echoed, so the artifact names a commit and not a branch that has since moved.
   const resolved = await run('git', ['rev-parse', '--short', supplied ?? 'HEAD']);
   if (resolved.exitCode !== 0) {

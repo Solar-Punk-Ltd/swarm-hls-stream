@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { countAdvisoryFindings, missingTotalsVerdict } from '../src/collectChecks.js';
 import { totalLines } from '../src/collectDiff.js';
 import { distArgs, summarise, type VersionProvenance } from '../src/collectProvenance.js';
+import { readCommandLine } from '../src/commandLine.js';
 import { formatFacts, hasFailure } from '../src/formatFacts.js';
 import { introducedVersions, lockfileVersions, splitVersion } from '../src/lockfileVersions.js';
 import { formatSuiteCounts, parseSuiteCounts } from '../src/parseSuiteCounts.js';
@@ -507,7 +508,7 @@ describe('provenance summary', () => {
 
 describe('formatFacts', () => {
   const facts: GateFacts = {
-    base: 'feat/ai-hardening',
+    base: 'main',
     head: 'abc1234',
     headSupplied: false,
     groups: [{ title: 'Checks', facts: [{ key: 'pnpm verify', value: 'exit 0', command: 'pnpm verify' }] }],
@@ -584,5 +585,20 @@ describe('formatFacts', () => {
 
     assert.equal(hasFailure(known), false);
     assert.match(formatFacts(known), /\*\*1: pkg\*\* \(known, see the register\)/);
+  });
+});
+
+describe('readCommandLine', () => {
+  it('compares against main when no base is given', () => {
+    // The default used to be a branch that no longer exists, so a run without --base stopped at its
+    // first git call.
+    assert.deepEqual(readCommandLine(['node', 'src/index.ts']), { base: 'main', head: undefined });
+  });
+
+  it('takes the base and the head named on the command line', () => {
+    assert.deepEqual(readCommandLine(['node', 'src/index.ts', '--base', 'release', '--head', 'abc1234']), {
+      base: 'release',
+      head: 'abc1234',
+    });
   });
 });
