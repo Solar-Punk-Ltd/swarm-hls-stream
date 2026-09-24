@@ -2,6 +2,7 @@ import { Rendition } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
 import { ADMIN_STATE_VOD, AdminApiClient, RenditionReportResponse } from './AdminApiClient.js';
+import { isFinishedLadder, recordedRungs, recordingDuration } from './LadderCompletion.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
 import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
@@ -17,6 +18,8 @@ interface AdminLadderRegistryOptions {
    */
   now?: () => number;
 }
+
+const NO_RUNGS: ReadonlySet<string> = new Set();
 
 /**
  * The ladder registry admin mode uses: the admin holds the merge state, and this writes the master.
@@ -65,6 +68,15 @@ interface AdminLadderRegistryOptions {
  * So a finished ladder whose stream the admin does not yet hold as `vod` is reported as a flip too:
  * the admin accepts `vod -> vod`, so saying it twice costs a round trip, and saying it never costs the
  * recording its listing.
+ *
+ * ## Why a rung that will not finish is judged here and not by the admin
+ *
+ * The admin counts a ladder finished only when every rung it holds has an index, and its rendition
+ * route refuses any field it does not know, so it cannot be told that a rung will not finish. On
+ * 2026-09-23 that rung was 1080p, whose batch refused its recording, and the ladder never finished.
+ * So this registry holds the mark itself, judges the ladder by `LadderCompletion`, and reports the flip
+ * off that judgement and the status the admin holds. What outlives this process is the admin's `vod`:
+ * once it holds one, a master names only rungs with a recording, whatever a later announce reports.
  */
 export class AdminLadderRegistry implements LadderRegistry {
   private readonly logger = Logger.getInstance();
@@ -90,6 +102,19 @@ export class AdminLadderRegistry implements LadderRegistry {
   /** The catalog write index behind {@link merged}, by group, and absent while no answer carried one. */
   private readonly newestFeedIndex = new Map<string, number>();
 
+  /** The stream's status in the answer {@link merged} came from, by group, or null when it did not say. */
+  private readonly heldStatus = new Map<string, string | null>();
+
+  /**
+   * Rungs this process knows will not finish, by group. See {@link recordRungUnfinished}.
+   *
+   * ⚠️ In memory only, which is enough for the one decision it serves: whether the broadcast that rung
+   * belonged to has finished. Cleared once the admin holds the stream as `vod`, because a declared
+   * stream is one ladder for many broadcasts, and a mark kept into the next one would list it as a
+   * recording before its own rungs finished.
+   */
+  private readonly unfinished = new Map<string, Set<string>>();
+
   constructor(options: AdminLadderRegistryOptions) {
     this.client = options.client;
     this.masterWriter = options.masterWriter;
@@ -112,6 +137,28 @@ export class AdminLadderRegistry implements LadderRegistry {
    * window in which one resolves somewhere else.
    */
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement> {
+    return this.reportAndPublish(identity, rendition);
+  }
+
+  /**
+   * Record that this rung ended without a recording, report the rung to the admin as it stands, and
+   * write the master from the ladder that comes back. See {@link LadderRegistry.recordRungUnfinished}.
+   *
+   * Reported rather than judged off the ladder held here, so it also works in a process that holds
+   * nothing: a rung whose recovery entry is retried at the next boot and fails again is marked by a
+   * process that never saw the rest of its ladder. The report carries no index, and the admin keeps
+   * the index it holds for a rung that reports on the same feed without one, so it cannot change what
+   * the admin says this rung recorded.
+   *
+   * The mark goes on first and stays even when the report fails, because it is this process's own
+   * knowledge: a sibling that finishes afterwards still finds it and finishes the ladder.
+   */
+  public async recordRungUnfinished(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement> {
+    this.markUnfinished(identity.group, rendition.name);
+    return this.reportAndPublish(identity, rendition);
+  }
+
+  private async reportAndPublish(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement> {
     const adminStreamId = identity.adminStreamId;
     if (adminStreamId === undefined) {
       // Unreachable from the live path: the engine resolves the declaration before anything starts and
@@ -130,32 +177,80 @@ export class AdminLadderRegistry implements LadderRegistry {
       );
     }
 
-    const ladder = this.adopt(identity.group, rendition.name, report);
+    const group = identity.group;
+    if (rendition.index !== undefined) {
+      this.unfinished.get(group)?.delete(rendition.name);
+    }
+    this.adopt(group, rendition.name, report);
+    if (report.streamStatus === ADMIN_STATE_VOD) {
+      this.unfinished.delete(group);
+    }
 
-    const advertised = advertisableRenditions(ladder, this.livenessOf(identity.group));
-    const published = await this.masterWriter.publish(identity.group, advertised);
+    const advertised = advertisableRenditions(this.offeredRungs(group), this.livenessOf(group));
+    const published = await this.masterWriter.publish(group, advertised);
     if (published) {
       // Only what the feed took, for the reason {@link MasterRewriteSchedule} states: a shape recorded
       // here that never landed is a correction a later rung death will never attempt.
-      this.rewrites.recordAdvertised(identity.group, ladderShape(advertised.map((r) => r.name)));
+      this.rewrites.recordAdvertised(group, ladderShape(advertised.map((r) => r.name)));
     }
 
-    // A ladder that is finished and not yet `vod` at the admin is owed a report whether or not this
-    // is the announce that finished it — see the class doc. Null status is a body that did not say,
-    // and then only the flip decides, which is what the contract guarantees on its own.
-    const finishedButUnreported =
-      report.ladder.finished && report.streamStatus !== null && report.streamStatus !== ADMIN_STATE_VOD;
+    return { masterIndex: published?.index ?? null, ...this.recordingOf(report, group) };
+  }
 
+  /**
+   * Whether this answer is the moment the ladder became a recording, and how long the recording plays.
+   *
+   * The admin raises `flippedToFinished` on the report that completed ITS merge, where every rung has an
+   * index, and it cannot see a rung that will not finish. So the flip is read off `LadderCompletion`'s
+   * judgement of the ladder in this answer and the status the admin holds: finished and not yet held as
+   * `vod` is a flip to report, and held as `vod` is not. That includes the report on which the admin's
+   * own merge first finishes because the rung left out finished after all, which adds that rung to the
+   * master and is not a second ending. Judged on this answer's own ladder, the way the admin's flag is.
+   */
+  private recordingOf(
+    report: RenditionReportResponse,
+    group: string,
+  ): Pick<RenditionAnnouncement, 'flippedToFinished' | 'duration'> {
+    const heldAsRecording = report.streamStatus === ADMIN_STATE_VOD;
+    const finished = isFinishedLadder(report.renditions, this.markedUnfinished(group));
+    // A finished ladder not yet `vod` at the admin is owed a report whether or not this is the announce
+    // that finished it, as the class doc says. Null status is a body that did not say, and then only the
+    // admin's own flip decides, which cannot see a rung that will not finish.
+    const finishedButUnreported = finished && report.streamStatus !== null && !heldAsRecording;
     return {
-      masterIndex: published?.index ?? null,
-      flippedToFinished: report.ladder.flippedToFinished || finishedButUnreported,
-      duration: report.ladder.duration,
+      flippedToFinished: (report.ladder.flippedToFinished && !heldAsRecording) || finishedButUnreported,
+      duration:
+        finished && !report.ladder.finished
+          ? recordingDuration(recordedRungs(report.renditions))
+          : report.ladder.duration,
     };
   }
 
   /**
+   * The rungs a master for this ladder may name before the liveness filter: every rung while the ladder
+   * is live, and only those with a recording once it is one. A viewer of a recording must never be
+   * offered a rung whose feed holds nothing but a live playlist that will not end.
+   */
+  private offeredRungs(group: string): Rendition[] {
+    const ladder = this.merged.get(group) ?? [];
+    const isRecording =
+      this.heldStatus.get(group) === ADMIN_STATE_VOD || isFinishedLadder(ladder, this.markedUnfinished(group));
+    return isRecording ? recordedRungs(ladder) : ladder;
+  }
+
+  private markedUnfinished(group: string): ReadonlySet<string> {
+    return this.unfinished.get(group) ?? NO_RUNGS;
+  }
+
+  private markUnfinished(group: string, rung: string): void {
+    const marked = this.unfinished.get(group) ?? new Set<string>();
+    marked.add(rung);
+    this.unfinished.set(group, marked);
+  }
+
+  /**
    * Take an answer as the ladder this process holds for a group, unless a newer one has already been
-   * taken, and say which ladder the master is to be written from.
+   * taken. The master is written from whichever ladder that leaves held.
    *
    * ⛔ Ordered by the admin's catalog write index and never by arrival. Four rungs report concurrently,
    * the admin merges them in one order, and their answers can land here in another. Writing each master
@@ -164,23 +259,22 @@ export class AdminLadderRegistry implements LadderRegistry {
    * broadcast can go its whole length without producing. An answer carrying no index is taken as it
    * comes, which is what every answer was before the index was read.
    */
-  private adopt(group: string, rung: string, report: RenditionReportResponse): Rendition[] {
+  private adopt(group: string, rung: string, report: RenditionReportResponse): void {
     const newest = this.newestFeedIndex.get(group);
     if (report.feedIndex !== null && newest !== undefined && report.feedIndex < newest) {
-      const held = this.merged.get(group);
-      if (held !== undefined) {
+      if (this.merged.has(group)) {
         this.logger.log(
           `[AdminLadderRegistry] The answer to ${rung} of ladder ${group} is an older merge (catalog index ` +
             `${report.feedIndex}) than one already applied (${newest}); the master is written from the newer ladder`,
         );
-        return held;
+        return;
       }
     }
     this.merged.set(group, report.renditions);
+    this.heldStatus.set(group, report.streamStatus);
     if (report.feedIndex !== null) {
       this.newestFeedIndex.set(group, report.feedIndex);
     }
-    return report.renditions;
   }
 
   public recordRungDelivered(group: string, rung: string): void {
@@ -219,7 +313,7 @@ export class AdminLadderRegistry implements LadderRegistry {
       // announce can land a newer merge in between — and writing the older one over the master that
       // announce just published would take a rung back off the ladder until something else moved.
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
-      const advertised = advertisableRenditions(this.merged.get(group) ?? [], this.livenessOf(group));
+      const advertised = advertisableRenditions(this.offeredRungs(group), this.livenessOf(group));
       const published = await this.masterWriter.publish(group, advertised);
       if (published) {
         this.logger.log(

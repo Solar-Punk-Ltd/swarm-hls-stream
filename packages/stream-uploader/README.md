@@ -42,6 +42,13 @@ over the current session's own segments. Two things then tie the rungs back toge
   is the group id — it is the only place the whole ladder is known, since each uploader holds just
   its own rung. The catalog entry's `topic` points at the master, so one URL yields every rung.
 
+The ladder becomes a recording once every rung has either finalized or stopped without a recording,
+and at least one of them finalized. A rung stops without one when its stop fails, as 1080p's did on
+2026-09-23 when its full postage batch refused its recording: before this, the entry stayed `live`
+with no index for good. The finished entry and its master then name only the rungs that have a
+recording, and `unfinishedRungs` names the rest. A rung that finishes later, when its recovery entry
+is retried at the next boot, is added to the recording then, and nothing announces a second ending.
+
 Each rung's `BANDWIDTH` in the master is measured from real segments rather than copied from the
 encoder's target, and is re-announced when it drifts more than 15% (at most every 30s, since the
 catalog is one feed shared by every stream). What tells a player that two rungs share a timeline is
@@ -923,7 +930,10 @@ land out of order cannot leave an older merge on the master.
 
 `live` and `vod` are then reported for the **ladder** rather than for a rung. `live` goes out once the
 first master has landed, which may be said more than once and is accepted. `vod` goes out from the
-rung whose own report finished the ladder, and its `index` is **the final master's index in the
+rung whose own report finished the ladder, or from the failed stop of a rung that could not finish
+when that is what finishes it. The admin cannot hold that a rung will not finish, because its
+rendition route refuses fields it does not know, so this service judges such a ladder itself. Its
+`index` is **the final master's index in the
 declared topic's feed** — never a rung's own VOD index, which names a position in a feed no viewer
 opens. Its `duration` is the ladder's. It is said again by any later announce that finds the ladder
 finished while the admin still holds the stream as anything but `vod`: the admin answers the flip

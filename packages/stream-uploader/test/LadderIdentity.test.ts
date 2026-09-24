@@ -424,6 +424,7 @@ describe('a ladder in admin mode', () => {
           announces.push({ identity, rendition });
           return { masterIndex: null, flippedToFinished: false, duration: null };
         },
+        recordRungUnfinished: async () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
         recordRungDelivered: () => {},
       },
     };

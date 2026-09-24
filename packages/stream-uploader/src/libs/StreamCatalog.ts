@@ -8,6 +8,7 @@ import { extractHttpStatus, getErrorMessage, isFeedAbsent, retryUntilDeadlineAsy
 import { BeePublisher, BeePublisherPool, safeUrl } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
 import { ErrorHandler } from './ErrorHandler.js';
+import { hasRecording, isFinishedLadder, recordedRungs, recordingDuration } from './LadderCompletion.js';
 import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
 import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
@@ -59,6 +60,21 @@ export interface StreamEntry {
    */
   group?: string;
   renditions?: Rendition[];
+  /**
+   * Rungs of this ladder whose session ended without a recording, by name, and absent while there are
+   * none. See `LadderRegistry.recordRungUnfinished`.
+   *
+   * ⛔ Kept beside `renditions` rather than as a mark on a rendition, so that a finished entry's
+   * `renditions` names only rungs that have a recording. A viewer built before this field existed reads
+   * nothing but `renditions`, and every rung it finds there on a finished entry is one it can play.
+   */
+  unfinishedRungs?: string[];
+}
+
+/** What merging one rung into its ladder says about that rung, beyond its own record. */
+interface RungMerge {
+  /** The rung's session ended without a recording, so the ladder is not to wait for it. */
+  unfinished?: boolean;
 }
 
 export class StreamCatalog implements LadderRegistry {
@@ -430,6 +446,28 @@ export class StreamCatalog implements LadderRegistry {
    * the `ladderFinalized` line below is written after the write and only when it really flipped.
    */
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement> {
+    return this.mergeIntoLadder(identity, rendition, {});
+  }
+
+  /**
+   * Record that this rung ended without a recording, so its ladder no longer waits for it. See
+   * {@link LadderRegistry.recordRungUnfinished}.
+   *
+   * The same merge and the same two writes as {@link upsertRendition}, master first, so the
+   * `ladderFinalized` line keeps its one meaning: said once, after the write that made the entry a
+   * recording, whichever path that write came from. On 2026-09-23 it would have been a sibling's
+   * announce, because 1080p stopped two seconds before the last three rungs finalized. Stopping after
+   * them, this is the write that finishes the ladder.
+   */
+  public async recordRungUnfinished(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement> {
+    return this.mergeIntoLadder(identity, rendition, { unfinished: true });
+  }
+
+  private async mergeIntoLadder(
+    identity: LadderIdentity,
+    rendition: Rendition,
+    merge: RungMerge,
+  ): Promise<RenditionAnnouncement> {
     let flippedToVod = false;
     let shapeThatLanded: string | null = null;
     let masterIndex: number | null = null;
@@ -438,8 +476,13 @@ export class StreamCatalog implements LadderRegistry {
     await this.queue.add(async () => {
       await this.writeFeed(async (previous) => {
         const held = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
+        if (merge.unfinished && held === undefined) {
+          // No rung of this ladder was ever listed, so nothing waits for this one and no viewer can
+          // find the ladder. An entry written now would list a broadcast that was never announced.
+          return null;
+        }
         const wasVod = held?.state === STREAM_STATUS_VOD;
-        const entry = buildLadderEntry(identity, previous, rendition);
+        const entry = buildLadderEntry(identity, previous, rendition, merge);
         // ⛔ The guard's own input, which has never been recorded and is why scenario H has cost
         // three sittings. Every round has been able to see the DECISION (`Ladder … finalized to VOD`)
         // and never the STATE it was made from, so each explanation had to be reasoned rather than
@@ -449,6 +492,7 @@ export class StreamCatalog implements LadderRegistry {
             `${held === undefined ? 'no entry' : `state=${held.state} renditions=${held.renditions?.length ?? 0}`}` +
             `, this announce carries ${rendition.name}` +
             `${rendition.index === undefined ? ' with no index' : ` at index ${rendition.index}`}` +
+            `${merge.unfinished ? ' that will not finish' : ''}` +
             `, so the entry becomes ${entry.state}`,
         );
         flippedToVod = entry.state === STREAM_STATUS_VOD && !wasVod;
@@ -536,7 +580,10 @@ export class StreamCatalog implements LadderRegistry {
     return rewritten;
   }
 
-  private async writeFeed(update: (previous: StreamEntry[]) => StreamEntry[] | Promise<StreamEntry[]>): Promise<void> {
+  /** @param update the entries to write, or null when it found nothing to change, which writes nothing. */
+  private async writeFeed(
+    update: (previous: StreamEntry[]) => StreamEntry[] | null | Promise<StreamEntry[] | null>,
+  ): Promise<void> {
     let previous: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
@@ -544,6 +591,9 @@ export class StreamCatalog implements LadderRegistry {
     }
 
     const state = await update(previous);
+    if (state === null) {
+      return;
+    }
 
     const nextIndex = this.feedIndex ? this.feedIndex.next() : FeedIndex.fromBigInt(BigInt(0));
     const publisher = this.publisher;
@@ -621,17 +671,29 @@ export class StreamCatalog implements LadderRegistry {
 /**
  * The ladder's entry after merging one rung's latest state into it.
  *
- * A ladder goes to VOD only once every rung it has announced has finalized. Doing it per rung
- * would flip the whole entry to VOD on the first one to drain, and the other three are still live.
+ * A ladder goes to VOD once every rung it has announced has finalized or is known not to finish, and
+ * at least one of them finalized. See `LadderCompletion`. Doing it per rung would flip the whole entry
+ * to VOD on the first one to drain, and the other three are still live.
+ *
+ * ⛔ A finished entry's `renditions` names only rungs that have a recording, and `topic`, `index` and
+ * `duration` are all read off those, so nothing in it or built from it offers a viewer a rung with
+ * nothing to play. A rung that did not finish is named in `unfinishedRungs` instead.
  */
-export function buildLadderEntry(identity: LadderIdentity, previous: StreamEntry[], rendition: Rendition): StreamEntry {
+export function buildLadderEntry(
+  identity: LadderIdentity,
+  previous: StreamEntry[],
+  rendition: Rendition,
+  merge: RungMerge = {},
+): StreamEntry {
   const existing = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
-  const renditions = mergeRendition(existing?.renditions ?? [], rendition);
+  const merged = mergeRendition(existing?.renditions ?? [], rendition);
+  const unfinishedRungs = unfinishedAfter(existing?.unfinishedRungs ?? [], merged, rendition.name, merge);
+  const finished = isFinishedLadder(merged, new Set(unfinishedRungs));
+  const renditions = finished ? recordedRungs(merged) : merged;
 
   // Lowest rung first: it is the cheapest to bootstrap, and it is what a client that knows
   // nothing about `renditions` will play when it follows `topic`.
   const primary = renditions[0];
-  const finished = renditions.every((r) => r.index !== undefined);
 
   const entry: StreamEntry = {
     title: identity.title,
@@ -644,12 +706,37 @@ export function buildLadderEntry(identity: LadderIdentity, previous: StreamEntry
     renditions,
   };
 
+  if (unfinishedRungs.length > 0) {
+    entry.unfinishedRungs = unfinishedRungs;
+  }
+
   if (finished) {
     entry.index = primary.index;
-    entry.duration = Math.max(...renditions.map((r) => r.duration ?? 0));
+    entry.duration = recordingDuration(renditions);
   }
 
   return entry;
+}
+
+/**
+ * The rungs still known not to finish once this merge is in.
+ *
+ * ⛔ The mark survives every later merge of its rung that carries no index, because that is what a rung
+ * recovered at the next boot sends before it finalizes, and dropping the mark there would turn a
+ * finished recording back into a live broadcast. It goes only once the rung has a recording to point
+ * at. A rung that already has one is never marked, since the ladder can offer that recording.
+ */
+function unfinishedAfter(
+  held: readonly string[],
+  merged: readonly Rendition[],
+  rung: string,
+  merge: RungMerge,
+): string[] {
+  const record = merged.find((rendition) => rendition.name === rung);
+  if (record !== undefined && hasRecording(record)) {
+    return held.filter((name) => name !== rung);
+  }
+  return merge.unfinished && !held.includes(rung) ? [...held, rung] : [...held];
 }
 
 /**

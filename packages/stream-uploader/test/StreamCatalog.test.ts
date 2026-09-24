@@ -1045,6 +1045,173 @@ describe('StreamCatalog ladder write path', () => {
 });
 
 /**
+ * A ladder whose rung ended without a recording, after the orchestrator has told the catalog so.
+ *
+ * ⛔⛔⛔ 2026-09-23: 1080p's batch refused its recording and the ladder stayed `live` for good. The
+ * orchestrator end of it is `FinishWithoutFailedRung.test.ts`. These pin what the entry does with the
+ * mark afterwards, which is where scenario H lives: a rung recovered at the next boot announces itself
+ * without an index before it finalizes.
+ */
+describe('StreamCatalog and a rung that will not finish', () => {
+  const identity = { title: 'title', owner: 'owner', group: 'group-1', mediatype: MEDIA_TYPE_VIDEO };
+  const TOP_RUNG = '1080p';
+  const THE_OTHER_THREE = ['360p', '480p', '720p'];
+
+  const live = (name: string): Rendition => {
+    const height = Number.parseInt(name, 10);
+    return {
+      name,
+      width: Math.round((height * 16) / 9),
+      height,
+      topic: `rung-${name}`,
+      bandwidth: height * 5000,
+      avgBandwidth: height * 4000,
+    };
+  };
+  const finished = (name: string, index: number): Rendition => ({ ...live(name), index, duration: 12 });
+
+  /** A ladder entry as a reader parses it back out of the feed. */
+  interface LadderEntry {
+    state: string;
+    index?: number;
+    renditions?: Rendition[];
+    unfinishedRungs?: string[];
+  }
+  const entryIn = (writes: CapturedWrite[]) => (JSON.parse(writes[writes.length - 1].payload) as LadderEntry[])[0];
+
+  interface Recording {
+    catalog: StreamCatalog;
+    writes: CapturedWrite[];
+    /** The rung names of every master written, in order. */
+    masters: string[][];
+  }
+
+  /** Four rungs live, then 1080p recorded as one that will not finish and the other three finalized. */
+  async function recordingWithoutTheTopRung(): Promise<Recording> {
+    const writes: CapturedWrite[] = [];
+    const masters: string[][] = [];
+    const masterWriter = {
+      publish: async (group: string, renditions: Rendition[]) => {
+        masters.push(renditions.map((rendition) => rendition.name));
+        return { topic: group, index: masters.length - 1 };
+      },
+    } as unknown as MasterFeedWriter;
+    const catalog = new StreamCatalog(
+      makePublishers(feedbackBee(writes)),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      undefined,
+      masterWriter,
+    );
+    await catalog.init();
+
+    for (const name of [...THE_OTHER_THREE, TOP_RUNG]) {
+      await catalog.upsertRendition(identity, live(name));
+    }
+    await catalog.recordRungUnfinished(identity, live(TOP_RUNG));
+    for (const [at, name] of THE_OTHER_THREE.entries()) {
+      await catalog.upsertRendition(identity, finished(name, 7 + at));
+    }
+    assert.equal(entryIn(writes).state, 'vod', 'the fixture was supposed to leave a finished recording');
+    return { catalog, writes, masters };
+  }
+
+  it('stays live while a sibling that can still finish has not', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+    await catalog.upsertRendition(identity, live('360p'));
+    await catalog.upsertRendition(identity, live(TOP_RUNG));
+
+    await catalog.recordRungUnfinished(identity, live(TOP_RUNG));
+
+    assert.equal(entryIn(writes).state, 'live', '360p is still broadcasting, so the ladder is not a recording yet');
+    assert.deepEqual(entryIn(writes).unfinishedRungs, [TOP_RUNG]);
+  });
+
+  it('keeps the recording finished when that rung re-announces without an index, as a recovered rung does', async () => {
+    const { catalog, writes, masters } = await recordingWithoutTheTopRung();
+
+    const lines = await logLinesDuring(() => catalog.upsertRendition(identity, live(TOP_RUNG)));
+
+    const entry = entryIn(writes);
+    assert.equal(entry.state, 'vod', 'a finished recording was advertised as live again because one rung re-announced');
+    assert.deepEqual(
+      entry.renditions?.map((rendition) => rendition.name),
+      THE_OTHER_THREE,
+    );
+    assert.deepEqual(entry.unfinishedRungs, [TOP_RUNG], 'the mark has to survive an announce that carries no index');
+    assert.deepEqual(masters.at(-1), THE_OTHER_THREE, 'the recording′s master offered a rung with no recording');
+    assert.equal(lines.filter((line) => line.includes('finalized to VOD')).length, 0);
+  });
+
+  it('adds the rung to the recording when it finishes after all, without a second flip', async () => {
+    const { catalog, writes, masters } = await recordingWithoutTheTopRung();
+
+    const lines = await logLinesDuring(() => catalog.upsertRendition(identity, finished(TOP_RUNG, 20)));
+
+    const entry = entryIn(writes);
+    assert.equal(entry.state, 'vod');
+    assert.deepEqual(
+      entry.renditions?.map((rendition) => rendition.name),
+      [...THE_OTHER_THREE, TOP_RUNG],
+    );
+    assert.equal(entry.unfinishedRungs, undefined, 'a rung with a recording is not one the recording lacks');
+    assert.deepEqual(masters.at(-1), [...THE_OTHER_THREE, TOP_RUNG]);
+    assert.equal(entry.index, masters.length - 1, 'the entry follows the master that names the fourth rung');
+    assert.equal(
+      lines.filter((line) => line.includes('finalized to VOD')).length,
+      0,
+      'the broadcast ended once, when the other three finished',
+    );
+  });
+
+  it('does not mark a rung that already has a recording, which the ladder can go on offering', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+    await catalog.upsertRendition(identity, live('360p'));
+    await catalog.upsertRendition(identity, finished(TOP_RUNG, 9));
+
+    await catalog.recordRungUnfinished(identity, live(TOP_RUNG));
+    await catalog.upsertRendition(identity, finished('360p', 7));
+
+    const entry = entryIn(writes);
+    assert.equal(entry.state, 'vod');
+    assert.deepEqual(
+      entry.renditions?.map((rendition) => [rendition.name, rendition.index]),
+      [
+        ['360p', 7],
+        [TOP_RUNG, 9],
+      ],
+    );
+    assert.equal(entry.unfinishedRungs, undefined);
+  });
+
+  it('does not list a ladder none of whose rungs finished as a recording', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+    await catalog.upsertRendition(identity, live(TOP_RUNG));
+
+    await catalog.recordRungUnfinished(identity, live(TOP_RUNG));
+
+    assert.equal(entryIn(writes).state, 'live', 'a recording with no rung in it has nothing to play');
+  });
+
+  it('writes nothing for a ladder no rung of which was ever listed', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+
+    const announced = await catalog.recordRungUnfinished(identity, live(TOP_RUNG));
+
+    assert.deepEqual(writes, [], 'an entry written now would list a broadcast nobody announced');
+    assert.deepEqual(announced, { masterIndex: null, flippedToFinished: false, duration: null });
+  });
+});
+
+/**
  * A rung dying is corrected by rewriting the master from the segment path, and that write can fail
  * like any other. What must not happen is that the failure is recorded as a correction: the shape a
  * rewrite was attempted for used to be stamped as advertised before the write ran, so a master that
