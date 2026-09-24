@@ -123,12 +123,7 @@ export async function collectChecks(repoRoot: string): Promise<FactGroup> {
         key: 'packages that reported no total',
         // A package absent from the row above is the failure this artifact exists to prevent: the
         // reader counts the packages listed and sees a complete set, because nothing says otherwise.
-        // The uploader missing on its own is `known`, because TEST-27 records it. Its test script sends
-        // node's TAP reporter, which carries the totals, to `.test-summary.tap` and only the dot reporter
-        // to stdout, so pnpm's output never holds them, and the `assert-test-floor: N tests in M suites`
-        // line it prints instead is not one `parseSuiteCounts` reads. Without `known` this row alone
-        // would make every run exit non-zero, and a new failure would be indistinguishable from the one
-        // already accepted.
+        // The uploader missing on its own is `known`, because TEST-27 records it.
         value: missing.length === 0 ? 'none' : `${missing.length}: ${missing.join(', ')}`,
         command: describe('pnpm', verifyArgs),
         ...missingTotalsVerdict(missing),

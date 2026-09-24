@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +55,42 @@ function workspaceEntries(): string[] {
   return entries;
 }
 
+const FLOOR_SCRIPT = join(REPO_ROOT, 'packages/stream-uploader/scripts/assert-test-floor.mjs');
+
+interface Counts {
+  tests: number;
+  suites: number;
+}
+
+/**
+ * Runs the uploader's own floor script on a passing TAP summary and hands its output on the way
+ * `pnpm -r test` does: both streams, since pnpm prefixes the child's stderr into the same output as its
+ * stdout, each line under the package's prefix.
+ */
+function floorScriptOutput(summary: Counts, floor: Counts): { status: number | null; output: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'gate-facts-floor-'));
+  try {
+    const tap = join(dir, 'summary.tap');
+    writeFileSync(tap, `# tests ${summary.tests}\n# suites ${summary.suites}\n# pass ${summary.tests}\n# fail 0\n`);
+    const result = spawnSync(process.execPath, [FLOOR_SCRIPT, tap], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        UPLOADER_TEST_FLOOR_TESTS: String(floor.tests),
+        UPLOADER_TEST_FLOOR_SUITES: String(floor.suites),
+      },
+    });
+    const output = `${result.stdout}${result.stderr}`
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => `packages/stream-uploader test: ${line}`)
+      .join('\n');
+    return { status: result.status, output };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe('parseSuiteCounts', () => {
   it('reads the TAP totals every node:test package prints', () => {
     // Deliberately NOT a full-pass suite. When tests and passed are equal, swapping which capture
@@ -72,6 +110,61 @@ describe('parseSuiteCounts', () => {
     const output = 'packages/client test:       Tests  25 passed (27)';
 
     assert.deepEqual(parseSuiteCounts(output), [{ packageName: 'packages/client', tests: 27, passed: 25, failed: 0 }]);
+  });
+
+  it('reads the uploader total from the line its test floor prints', () => {
+    // Verbatim from the verification box's log of main at 8c5c583a. The line names tests and suites and
+    // no pass count, so none is invented for it.
+    const output = 'packages/stream-uploader test: assert-test-floor: 1826 tests in 331 suites, floor 1092/211';
+
+    assert.deepEqual(parseSuiteCounts(output), [
+      { packageName: 'packages/stream-uploader', tests: 1826, failed: 0, suites: 331 },
+    ]);
+  });
+
+  it('reads what the uploader floor script prints when a run holds its floor', () => {
+    // The sample above is one run. This drives the script itself, so a change to the line it prints
+    // turns this red instead of dropping the uploader out of the artifact again.
+    const { status, output } = floorScriptOutput({ tests: 12, suites: 3 }, { tests: 10, suites: 2 });
+
+    assert.equal(status, 0, output);
+    assert.deepEqual(parseSuiteCounts(output), [
+      { packageName: 'packages/stream-uploader', tests: 12, failed: 0, suites: 3 },
+    ]);
+  });
+
+  it('reads no total out of what the floor script prints when it refuses a run', () => {
+    // The refusal names the counts it refused, and reading those as a total would report a truncated
+    // run as a counted one.
+    const { status, output } = floorScriptOutput({ tests: 9, suites: 3 }, { tests: 10, suites: 2 });
+
+    assert.equal(status, 1, output);
+    assert.match(output, /below the committed floor/);
+    assert.deepEqual(parseSuiteCounts(output), []);
+  });
+
+  it('counts the uploader once when its TAP totals reach the output beside its floor line', () => {
+    // Today only a file receives them. A run that printed them as well must neither list the package
+    // twice nor add the two readings together.
+    const output = [
+      'packages/stream-uploader test: # tests 1826',
+      'packages/stream-uploader test: # suites 331',
+      'packages/stream-uploader test: # pass 1826',
+      'packages/stream-uploader test: # fail 0',
+      'packages/stream-uploader test: assert-test-floor: 1826 tests in 331 suites, floor 1092/211',
+    ].join('\n');
+
+    assert.deepEqual(parseSuiteCounts(output), [
+      { packageName: 'packages/stream-uploader', tests: 1826, passed: 1826, failed: 0, suites: 331 },
+    ]);
+  });
+
+  it('renders a total with no pass count as the tests and suites it ran, never as a pass count', () => {
+    const floorOnly = formatSuiteCounts([{ packageName: 'uploader', tests: 1826, failed: 0, suites: 331 }]);
+    assert.equal(floorOnly, 'uploader 1826 tests in 331 suites');
+
+    const both = formatSuiteCounts([{ packageName: 'uploader', tests: 1826, passed: 1826, failed: 0, suites: 331 }]);
+    assert.equal(both, 'uploader 1826/1826 in 331 suites');
   });
 
   it('keeps every package separate across an interleaved run', () => {
@@ -169,9 +262,9 @@ describe('lockfileVersions', () => {
 describe('packagesMissingTotals', () => {
   it('names a package that ran and reported nothing', () => {
     // The uploader's test script sends node's TAP reporter, which carries the totals, to
-    // `.test-summary.tap` and only the dot reporter to stdout, so its TAP totals never reach pnpm's
-    // output. Without this the artifact listed five packages where the workspace had six and nothing
-    // said which was gone.
+    // `.test-summary.tap` and only the dot reporter to stdout, so until its floor line was read it
+    // reported nothing. Without this the artifact listed five packages where the workspace had six and
+    // nothing said which was gone.
     const expected = ['deploy', 'packages/cli', 'packages/stream-uploader'];
     const reported = ['deploy', 'packages/cli'];
 
