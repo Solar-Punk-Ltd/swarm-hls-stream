@@ -73,7 +73,7 @@ export async function fetchPreviewManifest(
  * A live entry keeps the search: its rungs are still being written, so a slot would be an old
  * playlist rather than the newest one.
  */
-export function finishedRungIndex(entry: PreviewEntry, rungTopic: string): number | undefined {
+function finishedRungIndex(entry: PreviewEntry, rungTopic: string): number | undefined {
   if (entry.state !== STREAM_STATUS_VOD) {
     return undefined;
   }
