@@ -173,6 +173,8 @@ export function makeFakeCatalog(overrides: Record<string, unknown> = {}): Stream
     // for. Missing, every rung announce in every orchestrator test died with a TypeError the error
     // handler swallowed, and fifteen tests passed over it — the fourth time this fake went stale.
     upsertRendition: async () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
+    // Called by the orchestrator for a rung whose stop failed. The same neutral answer, for the same reason.
+    recordRungUnfinished: async () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
     ...overrides,
   } as unknown as StreamCatalog;
 }

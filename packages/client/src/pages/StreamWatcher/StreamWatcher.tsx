@@ -5,6 +5,7 @@ import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
 import { useAppContext } from '@/providers/App';
 import { ROUTES } from '@/routes';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED } from '@/types/stream';
+import { playableRenditions } from '@/utils/playableRenditions';
 import { scheduledStartLabel } from '@/utils/scheduledStart';
 
 import './StreamWatcher.scss';
@@ -67,7 +68,7 @@ export function StreamWatcher() {
           topicString={topic}
           mediaType={mediatype}
           enableQoeOverlay={enableQoeOverlay}
-          renditions={stream?.renditions}
+          renditions={playableRenditions(stream)}
           level={level}
         />
       )}
