@@ -64,7 +64,7 @@ hashes, which that gate reads as a client predating the stamp and answers with a
 
 - **Stream Browser**: Fetches the stream catalog from Swarm feeds, displays up to 10 streams sorted by state (live first) and timestamp
 - **Stream Preview**: The catalog entry's uploaded `thumbnail` when it has one, otherwise a frame decoded from the stream's first segment. Includes live and upcoming badges plus duration display
-- **Scheduled streams**: An entry whose `state` is `scheduled` has been announced but never broadcast, so nothing is written under its topic yet. Its card renders the uploaded image or the placeholder and never probes for a manifest, and its watch page says the stream has not started instead of starting a player against a feed that does not exist
+- **Scheduled streams**: An entry whose `state` is `scheduled` has been announced but never broadcast, so nothing is written under its topic yet. Its card renders the uploaded image or the placeholder and never probes for a manifest, and its watch page says the stream has not started instead of starting a player against a feed that does not exist. While the entry is scheduled the watch page reads the catalog again every 5 seconds, sharing the browse page's poll, and starts the player as soon as the entry turns live
 - **HLS Playback**: Video and audio stream playback via custom hls.js loaders
 - **Gateway Selector**: Runtime Bee node URL switching via UI modal, persisted to localStorage
 
