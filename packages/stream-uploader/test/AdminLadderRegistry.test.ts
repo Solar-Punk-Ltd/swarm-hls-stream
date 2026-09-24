@@ -415,7 +415,7 @@ describe('what a delivery does in admin mode', () => {
    */
   it('keeps a rung whose uploads are being refused out of the master when one of its segments lands', async () => {
     const harness = await announcedLadder();
-    for (let round = 0; round < ROUNDS_TO_KILL_A_RUNG; round++) {
+    for (let round = 0; round < ROUNDS_TO_KILL_A_RUNG; round += 1) {
       harness.deliver(HEALTHY);
       harness.registry.recordRungUploadFailed(DECLARED_TOPIC, '720p');
     }

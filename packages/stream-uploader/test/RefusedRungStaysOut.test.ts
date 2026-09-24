@@ -32,7 +32,7 @@ import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
 
 import { makeFakeBee, makeFakeRecoveryStore, TEST_ANCHOR, testPublisher } from './helpers/fakes.js';
 
-const TEST_STREAM_KEY = '0'.repeat(63) + '1';
+const TEST_STREAM_KEY = `${'0'.repeat(63)}1`;
 const GROUP = 'group-1';
 
 /** The uploader announces as the address of the key it signs with, so the ladder has to be keyed the same way. */
@@ -78,10 +78,12 @@ function catalogFeed(payloads: string[]): Bee {
   const latest = () => (payloads.length === 0 ? [] : JSON.parse(payloads[payloads.length - 1]));
   return {
     makeFeedReader: () => ({
-      downloadPayload: async (options?: { index?: FeedIndex }) =>
-        options?.index
-          ? { payload: { toJSON: latest } }
-          : { feedIndex: FeedIndex.fromBigInt(BigInt(payloads.length)), payload: { toJSON: latest } },
+      downloadPayload: async (options?: { index?: FeedIndex }) => {
+        if (options?.index) {
+          return { payload: { toJSON: latest } };
+        }
+        return { feedIndex: FeedIndex.fromBigInt(BigInt(payloads.length)), payload: { toJSON: latest } };
+      },
     }),
     isConnected: async () => true,
     makeFeedWriter: () => ({
@@ -128,11 +130,18 @@ async function announcedLadder(): Promise<Ladder> {
 
   let landsNext = true;
   let references = 0;
+  const nextReference = (): number => {
+    const current = references;
+    references += 1;
+    return current;
+  };
   const bee = makeFakeBee({
-    uploadData: async () =>
-      landsNext
-        ? { reference: { toHex: () => `ref${references++}` } }
-        : Promise.reject({ status: PAYMENT_REQUIRED, message: 'batch is overissued' }),
+    uploadData: async () => {
+      if (!landsNext) {
+        return Promise.reject({ status: PAYMENT_REQUIRED, message: 'batch is overissued' });
+      }
+      return { reference: { toHex: () => `ref${nextReference()}` } };
+    },
     feedHead: () => null,
   });
   const uploader = new StreamUploader({
@@ -152,12 +161,14 @@ async function announcedLadder(): Promise<Ladder> {
     await uploader.segmentQueue.onIdle();
     await (uploader as unknown as UploaderQueues).manifestQueue.onIdle();
     await (catalog as unknown as Queued).queue.onIdle();
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
   };
 
   // ⚠️ Fed before it is announced, for the reason `StreamCatalog.test.ts` gives: a rung reaching the
   // liveness tracker changes the ladder's shape, and before any announce a shape change writes nothing.
-  for (let warmup = 0; warmup < WARMUP_ROUNDS; warmup++) {
+  for (let warmup = 0; warmup < WARMUP_ROUNDS; warmup += 1) {
     for (const rendition of LADDER) {
       catalog.recordRungDelivered(GROUP, rendition.name);
     }
@@ -178,7 +189,9 @@ async function announcedLadder(): Promise<Ladder> {
       }
       await settle();
       landsNext = lands;
-      uploader.handleSegment(segmentIndex++, 1, Buffer.from(`1080p-segment-${segmentIndex}`));
+      const segmentAt = segmentIndex;
+      segmentIndex += 1;
+      uploader.handleSegment(segmentAt, 1, Buffer.from(`1080p-segment-${segmentIndex}`));
       await settle();
     },
   };
@@ -213,7 +226,7 @@ describe('a rung whose uploads are being refused', () => {
     await quietly(async () => {
       const ladder = await announcedLadder();
 
-      for (let round = 0; round < REFUSING_ROUNDS; round++) {
+      for (let round = 0; round < REFUSING_ROUNDS; round += 1) {
         await ladder.round(landsWhileTheBatchIsFull(round));
       }
 
@@ -232,7 +245,7 @@ describe('a rung whose uploads are being refused', () => {
   it('is not put back by the first segment that lands once the refusals stop', async () => {
     await quietly(async () => {
       const ladder = await announcedLadder();
-      for (let round = 0; round < REFUSING_ROUNDS; round++) {
+      for (let round = 0; round < REFUSING_ROUNDS; round += 1) {
         await ladder.round(landsWhileTheBatchIsFull(round));
       }
       assert.equal(ladder.offeredSince().at(-1), false, 'the refused rung was supposed to be out by now');
@@ -250,11 +263,11 @@ describe('a rung whose uploads are being refused', () => {
   it(`is put back once it has landed ${RUNG_READMIT_AFTER_SEGMENTS} segments in a row, which is it working again`, async () => {
     await quietly(async () => {
       const ladder = await announcedLadder();
-      for (let round = 0; round < REFUSING_ROUNDS; round++) {
+      for (let round = 0; round < REFUSING_ROUNDS; round += 1) {
         await ladder.round(landsWhileTheBatchIsFull(round));
       }
 
-      for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed++) {
+      for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed += 1) {
         await ladder.round(true);
         assert.equal(ladder.offeredSince().at(-1), false, `offered again after only ${landed} segments in a row`);
       }
