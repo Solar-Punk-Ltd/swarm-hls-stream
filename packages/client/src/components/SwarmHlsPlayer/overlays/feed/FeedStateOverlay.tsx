@@ -16,7 +16,12 @@ import './FeedStateOverlay.scss';
  * because they ask different things of the viewer: a gateway that is not answering usually comes
  * back on its own, a feed that has stopped advancing while its gateway answers usually does not, a
  * connection too slow to keep up is neither of those and often recovers, and a broadcast that has
- * ended is never coming back.
+ * ended has nothing left to retry.
+ *
+ * An ended broadcast can still come back, because a declared stream's broadcaster may return to the
+ * same feeds. The player watches for that slowly and rejoins on its own once the viewer has reached
+ * the end of what they were playing. It is rare and can take minutes, so the message does not ask
+ * anybody to wait for it.
  */
 const MESSAGE: Record<Exclude<FeedState, typeof FEED_STATE_LIVE>, string> = {
   [FEED_STATE_RECONNECTING]: 'Reconnecting to the stream',
@@ -44,8 +49,9 @@ export const FeedStateOverlay: React.FC<FeedStateOverlayProps> = ({ state }) => 
 
   return (
     <div className="swarm-hls-feed-state" role="status" aria-live="polite">
-      {/* The pulsing dot means something is still being attempted, so an ended broadcast does not
-          get one. It is the only state here that a viewer can act on by leaving. */}
+      {/* The pulsing dot means something is being retried soon enough to be worth waiting for, so an
+          ended broadcast does not get one. The slow watch for its broadcaster coming back is not
+          that, and it is the only state here that a viewer can act on by leaving. */}
       {state !== FEED_STATE_ENDED && <span className="swarm-hls-feed-state__dot" aria-hidden="true" />}
       {MESSAGE[state]}
     </div>
