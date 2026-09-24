@@ -404,3 +404,51 @@ describe('the generator tells a node that answered an error from a node holding 
     assert.doesNotMatch(stdout, /unreadable/, 'the status line curl appends was parsed as part of the body');
   });
 });
+
+/**
+ * ⛔ The ceiling is about a batch that refuses when it fills, and only an immutable one does. A mutable
+ * batch overwrites the oldest chunks of a full bucket and keeps accepting uploads. The uploader's
+ * `PostageGate` holds only immutable batches to it, and this script has to agree, or it refuses to
+ * write a line the container would start on.
+ */
+describe('the generator holds only immutable batches to the utilization ceiling', () => {
+  /** One node, the 720p rung's, answering with this batch in place of the healthy fixture. */
+  function sandboxWith720p(batchOverrides) {
+    const batch = { ...healthy(BATCHES['720p']), ...batchOverrides };
+    return publisherSandbox({ bodies: { [PORTS['720p']]: JSON.stringify({ stamps: [batch] }) } });
+  }
+
+  it('writes a mutable batch past the ceiling into the line, since a full mutable batch overwrites rather than refusing', async () => {
+    const { exitCode, stdout, stderr } = await generate(
+      sandboxWith720p({ utilizationRatio: 0.95, immutableFlag: false }),
+    );
+
+    assert.equal(exitCode, 0, `${stdout}${stderr}`);
+    assert.match(stdout, new RegExp(`720p@http://127\\.0\\.0\\.1:${PORTS['720p']}<${BATCHES['720p'].slice(0, 8)}…>`));
+    assert.match(stdout, /95\.0% used.*mutable/, 'the reading does not say why its fullness did not count');
+  });
+
+  it('still refuses an immutable batch past the ceiling', async () => {
+    const { exitCode, stdout, stderr } = await generate(
+      sandboxWith720p({ utilizationRatio: 0.95, immutableFlag: true }),
+    );
+
+    assert.notEqual(exitCode, 0, 'an immutable batch over the ceiling was written into the line');
+    assert.match(`${stdout}${stderr}`, /95\.0% used, ceiling is 90\.0%/);
+  });
+
+  /** Absence is a refusal rather than a default: a batch that does not say is held to the ceiling. */
+  it('holds a batch that does not say whether it is mutable to the ceiling', async () => {
+    const { exitCode, stdout, stderr } = await generate(sandboxWith720p({ utilizationRatio: 0.95 }));
+
+    assert.notEqual(exitCode, 0, 'a batch of unknown mutability over the ceiling was written into the line');
+    assert.match(`${stdout}${stderr}`, /95\.0% used, ceiling is 90\.0%/);
+  });
+
+  it('still refuses a mutable batch under the time floor', async () => {
+    const { exitCode, stdout, stderr } = await generate(sandboxWith720p({ immutableFlag: false, batchTTL: 3600 }));
+
+    assert.notEqual(exitCode, 0, 'a mutable batch under the floor was written into the line');
+    assert.match(`${stdout}${stderr}`, /1\.0h left, floor is 12\.0h/);
+  });
+});
