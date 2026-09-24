@@ -26,7 +26,11 @@ export const FEED_STATE_RECONNECTING = 'reconnecting';
 export const FEED_STATE_STALLED = 'stalled';
 /** The gateway serves what it is asked for, more slowly than the player consumes it. */
 export const FEED_STATE_DEGRADED = 'degraded';
-/** The broadcaster ended the stream. The only terminal state: nothing is left to retry. */
+/**
+ * The broadcaster ended the stream, and nothing is left to retry. Not terminal since 2026-09-24: a
+ * declared stream's broadcaster can come back to the same feeds, and the client then leaves this state
+ * and rejoins the live broadcast once the viewer reaches the end of what they were playing.
+ */
 export const FEED_STATE_ENDED = 'ended';
 
 export type ViewerFeedState =
