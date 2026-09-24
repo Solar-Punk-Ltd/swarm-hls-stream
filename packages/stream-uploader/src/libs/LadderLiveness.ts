@@ -37,6 +37,21 @@
  * among the dead and none of them reads as dead. Ruled 2026-09-01: past
  * {@link MAX_RUNGS_DROPPED_AT_ONCE} nothing is dropped anyway. Both say a ladder losing most of
  * itself is a broadcast ending rather than rungs failing, which is not this class's job.
+ *
+ * ## ⚠️ Where the two rules now differ, and why the client does not follow
+ *
+ * Deciding that a rung has STOPPED is still the client's rule exactly, all three properties included.
+ * Deciding when it may come BACK is not, since 2026-09-24. The client never takes a rung back: hls.js
+ * cannot restore a level it removed, so a rung the player dropped stays dropped for that viewer's
+ * session. This rule took a rung back on the first segment it delivered, and a rung whose uploads are
+ * being refused still delivers one now and then, which is how the master flipped 793 times on
+ * 2026-09-23. So a rung that fell behind while its uploads were being refused is held out until it
+ * lands {@link RUNG_READMIT_AFTER_SEGMENTS} segments in a row. A rung that fell behind with nothing
+ * refused, such as a transcoder that stopped and came back, still returns on its first segment.
+ *
+ * The client needs no counterpart. Its removal cannot flap, a viewer who joins later reads this rule's
+ * master, and the client could not apply the rule anyway: it sees whether a rung's feed advances, never
+ * an upload being refused.
  */
 
 /**
@@ -48,6 +63,25 @@
  * move with it**, or the master and the player will disagree about which rungs exist.
  */
 export const RUNG_DEATH_LAG_SEGMENTS = 4;
+
+/**
+ * How many segments in a row a rung whose uploads were being refused must land before the master
+ * offers it again.
+ *
+ * ⛔⛔⛔ Measured live 2026-09-23. 1080p's postage batch was full, so most of its uploads were refused
+ * and one landed now and then. The rule took the rung back on each one that landed and dropped it again
+ * {@link RUNG_DEATH_LAG_SEGMENTS} of the ladder's segments later, and between 16:17 and 20:14 the
+ * master was rewritten 793 times, flipping between three rungs and four about every 18 seconds, and
+ * every rewrite was a catalog write too.
+ *
+ * Twice {@link RUNG_DEATH_LAG_SEGMENTS}, because taking a rung back is the costlier of the two mistakes.
+ * A viewer offered a rung that freezes them waits out the player's failover, while a rung kept out a
+ * little longer only means one quality is not offered for a few more seconds. So readmission asks for
+ * twice the evidence a drop does, and it bounds the flapping as well: a rung that still has one upload
+ * in every eight refused never comes back. In time it is eight segments of whatever length the
+ * deployment cuts, which on the 2 s segments that ladder ran is sixteen seconds of clean uploads.
+ */
+export const RUNG_READMIT_AFTER_SEGMENTS = 2 * RUNG_DEATH_LAG_SEGMENTS;
 
 /**
  * How many rungs may be dropped at once before the right conclusion is that the broadcast ended.
@@ -95,6 +129,15 @@ export class LadderLiveness {
   private readonly referenceAtLastDelivery = new Map<string, number>();
 
   /**
+   * Segments landed in a row since this rung last had an upload refused, for every rung that has had
+   * one refused and has not yet landed {@link RUNG_READMIT_AFTER_SEGMENTS} since.
+   */
+  private readonly landedSinceRefusal = new Map<string, number>();
+
+  /** Rungs the ladder left behind while their uploads were being refused, held out until they recover. */
+  private readonly heldOut = new Set<string>();
+
+  /**
    * One segment reached Swarm on this rung.
    *
    * The reference is stamped **after** this rung's own count has moved, so a rung that has just
@@ -103,6 +146,49 @@ export class LadderLiveness {
   public recordDelivered(rung: string): void {
     this.delivered.set(rung, (this.delivered.get(rung) ?? 0) + 1);
     this.referenceAtLastDelivery.set(rung, this.reference([...this.delivered.keys()]));
+    this.countLandedAfterRefusal(rung);
+    this.holdOutRefusedRungsLeftBehind();
+  }
+
+  /**
+   * One segment of this rung spent its whole retry window and never reached Swarm.
+   *
+   * A count of events, like every other input here, and never a clock: it is the other half of
+   * {@link recordDelivered}, and together they say whether this rung's uploads are working.
+   */
+  public recordUploadFailed(rung: string): void {
+    this.landedSinceRefusal.set(rung, 0);
+    this.holdOutRefusedRungsLeftBehind();
+  }
+
+  private countLandedAfterRefusal(rung: string): void {
+    const landed = this.landedSinceRefusal.get(rung);
+    if (landed === undefined) {
+      return;
+    }
+    if (landed + 1 < RUNG_READMIT_AFTER_SEGMENTS) {
+      this.landedSinceRefusal.set(rung, landed + 1);
+      return;
+    }
+    this.landedSinceRefusal.delete(rung);
+    this.heldOut.delete(rung);
+  }
+
+  /**
+   * Hold out every rung whose uploads are being refused and that the ladder has now left
+   * {@link RUNG_DEATH_LAG_SEGMENTS} behind, which is the moment the ordinary rule drops it.
+   *
+   * ⛔ Only once it is that far behind, never on a refusal alone. A rung that has one upload refused
+   * and keeps pace with the ladder never falls behind, and dropping it for that one segment would take
+   * a working quality away from every viewer.
+   */
+  private holdOutRefusedRungsLeftBehind(): void {
+    const known = [...this.delivered.keys()];
+    for (const rung of this.landedSinceRefusal.keys()) {
+      if (this.lagOf(rung, known) >= RUNG_DEATH_LAG_SEGMENTS) {
+        this.heldOut.add(rung);
+      }
+    }
   }
 
   /**
@@ -123,9 +209,12 @@ export class LadderLiveness {
     return Math.max(0, this.reference(rungs) - sinceOwnLast);
   }
 
-  /** Whether the ladder has delivered {@link RUNG_DEATH_LAG_SEGMENTS} segments this rung has not. */
+  /**
+   * Whether the ladder has delivered {@link RUNG_DEATH_LAG_SEGMENTS} segments this rung has not, or it
+   * is held out because its uploads were being refused when that happened and it has not recovered.
+   */
   public hasStopped(rung: string, rungs: readonly string[]): boolean {
-    return this.lagOf(rung, rungs) >= RUNG_DEATH_LAG_SEGMENTS;
+    return this.lagOf(rung, rungs) >= RUNG_DEATH_LAG_SEGMENTS || this.heldOut.has(rung);
   }
 
   /**

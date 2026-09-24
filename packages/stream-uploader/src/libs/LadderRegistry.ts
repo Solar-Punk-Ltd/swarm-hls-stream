@@ -92,4 +92,14 @@ export interface LadderRegistry {
    * that can notice a rung *stopping*, which no announce ever reports. See `LadderLiveness`.
    */
   recordRungDelivered(group: string, rung: string): void;
+
+  /**
+   * One segment of this rung spent its whole retry window and never reached Swarm.
+   *
+   * Called from the uploader's segment path at the moment the segment is dropped, which is the moment
+   * the per-rung drop counter moves, whatever bee answered. A full postage batch is the cause measured
+   * on 2026-09-23, a node that is down drops segments the same way, and a viewer offered the rung is
+   * failed the same way by both. See `LadderLiveness.recordUploadFailed`.
+   */
+  recordRungUploadFailed(group: string, rung: string): void;
 }

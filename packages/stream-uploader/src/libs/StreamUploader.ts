@@ -533,6 +533,12 @@ export class StreamUploader {
       this.consecutiveSegmentFailures += 1;
       this.logger.error(segmentUploadFailed(this.streamId, segmentIndex));
       this.metrics?.recordSegmentDropped(this.ladder?.rung.name);
+      if (this.ladder) {
+        // The other half of `recordRungDelivered` below. Without it the master takes a rung whose
+        // uploads are being refused back on every segment that happens to land. See
+        // `RUNG_READMIT_AFTER_SEGMENTS`.
+        this.ladderRegistry.recordRungUploadFailed(this.ladder.group, this.ladder.rung.name);
+      }
       this.persistState();
       return;
     }

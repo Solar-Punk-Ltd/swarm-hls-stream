@@ -426,6 +426,7 @@ describe('a ladder in admin mode', () => {
         },
         recordRungUnfinished: async () => ({ masterIndex: null, flippedToFinished: false, duration: null }),
         recordRungDelivered: () => {},
+        recordRungUploadFailed: () => {},
       },
     };
   }

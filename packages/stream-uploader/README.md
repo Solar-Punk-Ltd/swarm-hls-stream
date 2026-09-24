@@ -65,6 +65,12 @@ delivered segments rather than read a clock, compare against a middle rung rathe
 and measure each rung's lag from where the ladder stood at its own last delivery. A master naming no
 renditions at all is never written, because that is an unplayable stream rather than a degraded one.
 
+The one place the two rules differ is taking a rung back, which the player never does. A rung that
+fell behind while its uploads were being refused, a full postage batch being the measured cause,
+comes back into the master only after landing eight segments in a row (`RUNG_READMIT_AFTER_SEGMENTS`).
+On 2026-09-23 each stray segment such a rung landed put it back, and the master was rewritten 793
+times in four hours, flipping between three rungs and four.
+
 ⛔ A rung dying is not a rendition announcement, so nothing on the announce path asks this question.
 The segment path asks it on every delivery and rewrites the master only when the set of live rungs
 actually changes. A version of this filter shipped correct, tested and deployed, and never ran once,

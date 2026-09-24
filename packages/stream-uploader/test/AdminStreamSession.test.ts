@@ -819,6 +819,7 @@ describe('a rung of a declared ladder', () => {
       recordRungDelivered: (_group, rung) => {
         delivered.push(rung);
       },
+      recordRungUploadFailed: () => {},
       recordRungUnfinished: async (identity, rendition) => {
         const upsert = { adminStreamId: identity.adminStreamId, group: identity.group, rendition };
         unfinished.push(upsert);

@@ -168,6 +168,8 @@ export function makeFakeCatalog(overrides: Record<string, unknown> = {}): Stream
     getMsSinceIndexSaveFailed: () => null,
     // Called from the uploader's segment path, so every fake needs it or the segment path throws.
     recordRungDelivered: () => {},
+    // The same path's other outcome, a segment that never landed.
+    recordRungUploadFailed: () => {},
     // Where a rung registers its record when no other ladder registry is configured. A neutral answer: no
     // master written and no flip, which is the real catalog's answer for a rung it holds no entry
     // for. Missing, every rung announce in every orchestrator test died with a TypeError the error
