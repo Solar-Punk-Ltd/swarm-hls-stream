@@ -93,6 +93,36 @@ describe('client image serving the weeb-3 shared worker runtime', () => {
 });
 
 /**
+ * Which files a browser may keep, and which it has to ask about again on every load.
+ *
+ * ⛔ The failure this exists for, 2026-09-24: right after the tester's viewer was redeployed, a
+ * browser that had visited before kept its old `index.html` for hours, and that page asked for
+ * `assets/index-dZpFGtzr.js`, which the new container no longer had, so the viewer never loaded.
+ * nginx served the page with only Last-Modified and an ETag, and without a Cache-Control a browser
+ * may reuse a response by heuristic for a tenth of its age.
+ */
+describe('client image caching what is safe to cache', () => {
+  it('serves index.html with no-cache, so every load asks whether the page changed', () => {
+    assert.match(locationBlock('= /index.html'), /add_header\s+Cache-Control\s+"no-cache";/);
+  });
+
+  /**
+   * The app's own routes reach the page through the fallback, whose last argument is an internal
+   * redirect to `/index.html`, and that redirect is answered by the exact match above.
+   */
+  it('routes the fallback to the same /index.html the no-cache block answers', () => {
+    assert.match(locationBlock('/'), /try_files\s+\$uri\s+\$uri\/\s+\/index\.html;/);
+  });
+
+  // The control. Vite names every file under /assets/ by its content hash, so a new build gets new names.
+  it('keeps the hashed assets long-lived and immutable', () => {
+    const assets = locationBlock('/assets/');
+    assert.match(assets, /expires\s+1y;/);
+    assert.match(assets, /add_header\s+Cache-Control\s+"public, immutable";/);
+  });
+});
+
+/**
  * The client image recording which sources it was built from, served as `/build-stamp.json`.
  *
  * ⛔ The failure this exists for is the client-side twin of the 2026-09-01 uploader sitting.
