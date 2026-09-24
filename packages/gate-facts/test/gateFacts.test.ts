@@ -330,9 +330,15 @@ describe('missingTotalsVerdict', () => {
     authorMeasured: [],
   });
 
-  it('keeps the exit code out of it when exactly the uploader is missing, the failure TEST-27 accepts', () => {
-    assert.deepEqual(missingTotalsVerdict(['packages/stream-uploader']), { failed: true, known: true });
-    assert.equal(hasFailure(withRowFor(['packages/stream-uploader'])), false);
+  it('passes the run when every package reported a total', () => {
+    assert.deepEqual(missingTotalsVerdict([]), { failed: false, known: false });
+    assert.equal(hasFailure(withRowFor([])), false);
+  });
+
+  it('fails the run when the uploader alone is missing, now that its total is read', () => {
+    // The uploader was the one accepted gap, so a run that lost its total used to exit 0.
+    assert.deepEqual(missingTotalsVerdict(['packages/stream-uploader']), { failed: true, known: false });
+    assert.equal(hasFailure(withRowFor(['packages/stream-uploader'])), true);
   });
 
   it('fails the run when e2e alone is missing, which nothing has accepted', () => {
