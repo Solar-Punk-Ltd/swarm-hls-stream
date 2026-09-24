@@ -407,15 +407,30 @@ describe('createOmeEngine origin restart (CON-16)', () => {
    * An origin whose segment bodies carry the session they belong to, so what reached Bee says which
    * session produced it. Both sessions number from `#EXT-X-MEDIA-SEQUENCE:0`, which is what a
    * restarted OME serves and what puts the new indexes at or below the ones already delivered.
+   *
+   * `shutDown` is the first half of a restart, for a test that has to say what the origin serves
+   * between its old session going and the new one producing media: nothing, answered 404 until
+   * `restart`. A real OME whose session is gone answers its playlist with 404. See CON-20.
    */
-  function makeOrigin(): { fetcher: Fetcher; restart(next?: string): void; playlistPolls(): number } {
+  function makeOrigin(): {
+    fetcher: Fetcher;
+    shutDown(): void;
+    restart(next?: string): void;
+    playlistPolls(): number;
+  } {
     let session = 's1';
     let playlist = SESSION_PLAYLIST;
     let playlistPolls = 0;
+    let isDown = false;
     const fetcher = (async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url === PLAYLIST_URL) {
         playlistPolls++;
+      }
+      if (isDown) {
+        return { ok: false, status: 404, text: async () => '' } as Response;
+      }
+      if (url === PLAYLIST_URL) {
         return { ok: true, status: 200, text: async () => playlist } as Response;
       }
       const body = `${session}-${url.slice(url.lastIndexOf('/') + 1)}`;
@@ -428,7 +443,11 @@ describe('createOmeEngine origin restart (CON-16)', () => {
 
     return {
       fetcher,
+      shutDown: () => {
+        isDown = true;
+      },
       restart: (next?: string) => {
+        isDown = false;
         session = 's2';
         if (next) {
           playlist = next;
@@ -517,6 +536,8 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     const RESTARTED_SEGMENTS = 4;
     const RESTARTED_HIGH = mediaPlaylist(['seg_9.ts', 'seg_10.ts', 'seg_11.ts', 'seg_12.ts'], 9);
     const published: VodEntry[] = [];
+    const uploaded: string[] = [];
+    const uploadedFrom = (session: string): number => uploaded.filter((body) => body.startsWith(`${session}-`)).length;
     const origin = makeOrigin();
     const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: RESTART_SECRET,
@@ -525,6 +546,10 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     const orchestrator = makeTestOrchestrator(
       {},
       {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
         uploadPayload: async (index: number) => {
           await sleep(FINALIZE_LATENCY_MS);
           return { reference: { toHex: () => `soc${index}` } };
@@ -537,15 +562,32 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
     await waitFor(() => published.length > 0, DELIVERY_TIMEOUT_MS);
 
-    // The announce comes first and the restarted origin serves media second, which is the order OME
-    // gives: the admission webhook is admission control, so the republish does not produce a segment
-    // until this call has answered it. Restarting ahead of the announce instead leaves the replaced
-    // puller polling an origin nothing has told the engine about, and its high-water is below these
-    // indexes, so it delivers them into the session they replace. That window is real but no signal
-    // closes it, since a jump from 3 to 9 is what rolling the playlist window forward looks like too.
-    // See CON-19.
+    // The origin goes down, the announce comes, and only then does the restarted origin serve media,
+    // which is the order OME gives: the admission webhook is admission control, so the republish does
+    // not produce a segment until this call has answered it. Restarting ahead of the announce instead
+    // leaves the replaced puller polling an origin nothing has told the engine about, and its
+    // high-water is below these indexes, so it delivers them into the session they replace. That
+    // window is real but no signal closes it, since a jump from 3 to 9 is what rolling the playlist
+    // window forward looks like too. See CON-19.
+    //
+    // Down is what a restarted origin serves in between, and this test depends on it. The resumed puller
+    // first polls on a zero-delay timer armed inside the announce, and this test restarts the origin
+    // only once the announce's HTTP reply is back, so nothing orders the two. On a contended machine
+    // the poll came first, found the first session's playlist still up and undated, and the resumed
+    // session took the first run a second time: 24 seconds recorded where 16 were sent, on the
+    // verification box on 2026-09-23. No real OME serves that. A restarted one has no playlist yet,
+    // and one still holding a dropped session stamps every segment with `#EXT-X-PROGRAM-DATE-TIME`,
+    // which the handover floor skips. See CON-20. The wait makes that early poll happen on every run.
+    origin.shutDown();
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
+    // The replaced puller was stopped inside that announce, so every poll from here is the resumed one's.
+    const pollsWhenAnnounced = origin.playlistPolls();
+    await waitFor(() => origin.playlistPolls() > pollsWhenAnnounced, DELIVERY_TIMEOUT_MS);
     origin.restart(RESTARTED_HIGH);
+    // The closing stops the puller, so it waits for the restarted run to reach Bee first. Sent straight
+    // after the restart it raced the resumed puller's next poll, and a closing handled first records the
+    // first run alone. Same condition the CON-20 tests below wait on.
+    await waitFor(() => uploadedFrom('s2') === RESTARTED_SEGMENTS, DELIVERY_TIMEOUT_MS);
     // Nothing may be finalized while the broadcast is still running, which is the whole of the
     // reconnect window: the closing below is what ends it.
     assert.deepEqual(
@@ -564,6 +606,21 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       `the recording is not the length of the two runs it holds, so media was published into it twice or lost from it; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
+    );
+    // The duration is an aggregate and cannot say whose media it holds. The first run uploaded twice
+    // with the restarted run lost comes to the same 16 seconds and passed it. Every body names the
+    // origin session that served it, so these two can tell.
+    assert.equal(
+      uploadedFrom('s1'),
+      FIRST_SESSION_SEGMENTS,
+      `the first session's segments did not reach Bee exactly once each, so the recording holds some of them twice or lost some; uploaded: ${uploaded.join(
+        ', ',
+      )}`,
+    );
+    assert.equal(
+      uploadedFrom('s2'),
+      RESTARTED_SEGMENTS,
+      `the restarted run did not reach Bee exactly once per segment; uploaded: ${uploaded.join(', ')}`,
     );
   });
 
