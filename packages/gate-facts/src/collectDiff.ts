@@ -37,9 +37,9 @@ async function git(args: string[]): Promise<string> {
 /**
  * Resolve a base ref that exists, preferring the local branch and falling back to its remote.
  *
- * A CI checkout is shallow and single-branch, so a bare `feat/ai-hardening` resolves on a developer's
- * machine and not on the runner. Failing over to `origin/` makes the same invocation work in both,
- * and failing loudly when neither resolves beats measuring against nothing.
+ * A CI checkout is shallow and single-branch, so a bare branch name such as `main` resolves on a
+ * developer's machine and not on the runner. Failing over to `origin/` makes the same invocation work
+ * in both, and failing loudly when neither resolves beats measuring against nothing.
  */
 async function resolveBase(base: string): Promise<string> {
   for (const candidate of [base, `origin/${base}`]) {

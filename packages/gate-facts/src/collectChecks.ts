@@ -41,23 +41,13 @@ export function countAdvisoryFindings(report: string): { value: string; failed: 
 }
 
 /**
- * The packages allowed to report no total without failing the run: the uploader alone, whose missing
- * total TEST-27 of the 2026-07-29 hardening audit registers. Any other package that reports no total is
- * a new failure and reaches the exit code.
- */
-const ACCEPTED_NO_TOTAL_PACKAGES: ReadonlySet<string> = new Set(['packages/stream-uploader']);
-
-/**
- * Whether the packages that reported no total fail the run, and whether that failure is the accepted one.
+ * Whether the packages that reported no total fail the run.
  *
- * `known` exists so a new failure stands out from the one already lived with, and marking every missing
- * set known hid exactly that: a package newly losing its total never moved the exit code. So only a
- * missing set that is exactly the accepted one is `known`.
+ * None of them is `known`. The uploader was the one accepted gap until its floor line was read, so a
+ * package missing its total is always a new failure and reaches the exit code.
  */
 export function missingTotalsVerdict(missing: readonly string[]): Pick<Fact, 'failed' | 'known'> {
-  const onlyAccepted =
-    missing.length === ACCEPTED_NO_TOTAL_PACKAGES.size && missing.every((p) => ACCEPTED_NO_TOTAL_PACKAGES.has(p));
-  return { failed: missing.length > 0, known: onlyAccepted };
+  return { failed: missing.length > 0, known: false };
 }
 
 /**
@@ -123,12 +113,6 @@ export async function collectChecks(repoRoot: string): Promise<FactGroup> {
         key: 'packages that reported no total',
         // A package absent from the row above is the failure this artifact exists to prevent: the
         // reader counts the packages listed and sees a complete set, because nothing says otherwise.
-        // The uploader missing on its own is `known`, because TEST-27 records it. Its test script sends
-        // node's TAP reporter, which carries the totals, to `.test-summary.tap` and only the dot reporter
-        // to stdout, so pnpm's output never holds them, and the `assert-test-floor: N tests in M suites`
-        // line it prints instead is not one `parseSuiteCounts` reads. Without `known` this row alone
-        // would make every run exit non-zero, and a new failure would be indistinguishable from the one
-        // already accepted.
         value: missing.length === 0 ? 'none' : `${missing.length}: ${missing.join(', ')}`,
         command: describe('pnpm', verifyArgs),
         ...missingTotalsVerdict(missing),
