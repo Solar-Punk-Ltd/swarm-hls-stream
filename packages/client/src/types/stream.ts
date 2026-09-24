@@ -31,6 +31,10 @@ export interface Stream {
   title: string;
   /** Ladder identity, present only on streams the encoder produced more than one rendition of. */
   group?: string;
+  /**
+   * The ladder's rungs. On a finished entry the uploader names only the rungs that recorded, while an
+   * entry the admin layer holds can still list a rung with no index. See `playableRenditions`.
+   */
   renditions?: Rendition[];
   /**
    * A Swarm reference to a still image for this stream, served at `{gateway}/bzz/{thumbnail}/`.

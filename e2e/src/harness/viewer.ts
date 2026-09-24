@@ -21,7 +21,10 @@ export interface CatalogEntry {
   duration?: number;
   mediatype: string;
   timestamp: number;
-  /** Present on a ladder entry: one per rung, each with its own session topic. */
+  /**
+   * Present on a ladder entry: one per rung, each with its own session topic. On a finished entry, only
+   * the rungs that recorded, since a rung whose stop failed moves to `unfinishedRungs`.
+   */
   renditions?: { name: string; topic: string }[];
 }
 
