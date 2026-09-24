@@ -480,9 +480,9 @@ describe('provenance summary', () => {
     assert.equal(summarise(few).unsigned, '3: p0@1.0.0, p1@1.0.0, p2@1.0.0');
   });
 
-  it('treats exactly the threshold as not fresh', () => {
-    assert.equal(summarise([entry('boundary@1.0.0', 'signed', true, 30)]).fresh, 'none');
-    assert.match(summarise([entry('boundary@1.0.0', 'signed', true, 29)]).fresh, /boundary@1\.0\.0 \(29d\)/);
+  it('treats exactly two weeks as not fresh, the window of the owner dependency rule', () => {
+    assert.equal(summarise([entry('boundary@1.0.0', 'signed', true, 14)]).fresh, 'none');
+    assert.match(summarise([entry('boundary@1.0.0', 'signed', true, 13)]).fresh, /boundary@1\.0\.0 \(13d\)/);
   });
 
   it('builds the fresh row from age, not from signature state', () => {

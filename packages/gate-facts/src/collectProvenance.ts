@@ -6,10 +6,10 @@ import { CollectionError, type FactGroup } from './types.js';
 const REGISTRY_CONCURRENCY = 12;
 
 /**
- * Wider than the owner's dependency rule, which flags a version published less than about two weeks
- * ago, so the fresh row lists every version that rule would flag and some it would not.
+ * The window of the owner's dependency rule, which flags a version published less than about two weeks
+ * ago, so the fresh row lists the versions that rule flags.
  */
-const FRESH_DAYS = 30;
+const FRESH_DAYS = 14;
 
 const REGISTRY_TIMEOUT_MS = 60 * 1000;
 
