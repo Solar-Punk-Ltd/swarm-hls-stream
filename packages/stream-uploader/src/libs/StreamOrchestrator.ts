@@ -1956,16 +1956,38 @@ export class StreamOrchestrator {
         return;
       }
 
-      this.logger.warn(
-        `[StreamOrchestrator] No segments for ${streamId} in ${Math.round(idleMs)}ms and no stop was ever sent; ` +
-          'finalizing it as a VOD. Either its encoder disconnected and did not return within the window, ' +
-          'or its engine died without sending on_unpublish',
-      );
+      this.logReap(streamId, idleMs);
       this.metrics.recordStreamReaped();
       void this.stopStream(streamId).catch((error) =>
         this.errorHandler.handleError(error, `StreamOrchestrator.stallReap - ${streamId}`),
       );
     }, delayMs);
+  }
+
+  /**
+   * Say why the reaper is ending this broadcast, at the level the cause deserves.
+   *
+   * ⛔ **On SRS this is how every ordinary broadcast ends**, so it must not read as a fault. An
+   * `on_unpublish` only records the disconnect in {@link streamDisconnectedAt} and the reconnect window
+   * does the rest. Until 2026-09-24 both causes shared one warning that said the engine may have died,
+   * and the test stage wrote four of them at every clean end of a four-rung ladder while SRS had
+   * reported each rung leaving. The warning stays for the case that earns it: an engine that stopped
+   * delivering and never reported a disconnect at all.
+   */
+  private logReap(streamId: string, idleMs: number): void {
+    if (this.streamDisconnectedAt.has(streamId)) {
+      this.logger.info(
+        `[StreamOrchestrator] The encoder feeding ${streamId} left and did not come back within the ` +
+          `${Math.round(this.config.orphanReapMs / 1000)}s reconnect window, so its broadcast ends here and ` +
+          'is finalized as a VOD',
+      );
+      return;
+    }
+
+    this.logger.warn(
+      `[StreamOrchestrator] No segments for ${streamId} in ${Math.round(idleMs)}ms and no disconnect was ` +
+        'ever reported, so its engine stopped delivering without saying so. Finalizing it as a VOD',
+    );
   }
 
   /** If the engine never reconnects, finalize the recovered stream as a VOD rather than hold it live. */
