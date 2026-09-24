@@ -14,8 +14,15 @@ export const FEED_STATE_STALLED = 'stalled';
 export const FEED_STATE_DEGRADED = 'degraded';
 
 /**
- * The broadcaster ended the stream. The only terminal state here: the other three describe something
- * still being retried, and this one describes there being nothing left to retry.
+ * The broadcaster ended the stream. The other three describe something still being retried, and this
+ * one describes there being nothing left to retry, so nothing a gateway does moves a feed out of it.
+ *
+ * ⛔ **Not terminal, although it was written as terminal until 2026-09-24.** A declared stream's feeds
+ * outlive its session: a broadcaster who stops and comes back continues the same feeds at the next
+ * index, and the admin accepts `live` after `vod`. A viewer who had watched such a broadcast end was
+ * still being told it had ended fifteen minutes after it came back. So the followers keep a slow watch
+ * on the slot after a finished playlist, and {@link FeedHealthTracker.recordFeedResumed} is what takes
+ * a topic back out of this state when that slot is served a playlist that is still open.
  */
 export const FEED_STATE_ENDED = 'ended';
 
@@ -203,7 +210,10 @@ interface TopicHealth {
    * decides the overlay, and the two answer different questions. See {@link UNSERVED_SLOT_STALL_MS}.
    */
   unservedSinceMs: number | null;
-  /** Whether the broadcaster published a manifest that ends the playlist. Never goes back to false. */
+  /**
+   * Whether the broadcaster published a manifest that ends the playlist. Goes back to false only when
+   * the broadcaster is found publishing to the feed again. See {@link FeedHealthTracker.recordFeedResumed}.
+   */
   hasEnded: boolean;
   /** When the picture last stopped, most recent last, trimmed by {@link recentStalls}. */
   stallsAtMs: readonly number[];
@@ -438,6 +448,8 @@ export class FeedHealthTracker {
 
   private readonly rungStoppedListeners = new Set<(rungTopicId: string) => void>();
 
+  private readonly feedResumedListeners = new Set<(topicId: string) => void>();
+
   /**
    * @param now A monotonic clock. `Date.now` is not one: a system clock correction during an outage
    *   moves every deadline already scheduled against it, either releasing the backoff at once or
@@ -669,6 +681,26 @@ export class FeedHealthTracker {
     };
   }
 
+  /**
+   * Watch for a finished feed whose broadcaster has come back, which is what a player rejoins on.
+   *
+   * ⛔ Announced from here rather than read off {@link subscribe} as a state leaving
+   * {@link FEED_STATE_ENDED}, because that is not the only way a state leaves it. An ended topic can
+   * be evicted past {@link TRACKED_TOPIC_LIMIT} or forgotten by {@link clear}, and both read as `live`
+   * afterwards. A player that restarted on either would be handed the finished recording again from
+   * its first second. Only a watch that was served an open playlist calls {@link recordFeedResumed},
+   * and only that is announced.
+   *
+   * @param listener Called with the topic that came back, which for a ladder is each rung and then its
+   *   group, so a listener filters for the topic it plays.
+   */
+  onFeedResumed(listener: (topicId: string) => void): () => void {
+    this.feedResumedListeners.add(listener);
+    return () => {
+      this.feedResumedListeners.delete(listener);
+    };
+  }
+
   private healthFor(topicId: string): TopicHealth | undefined {
     const rungs = this.rungsOfGroup.get(topicId);
     if (rungs === undefined) {
@@ -825,6 +857,20 @@ export class FeedHealthTracker {
     }
   }
 
+  /**
+   * No longer waiting on an unwritten slot, with everything else it recorded kept.
+   *
+   * Guarded for the reason {@link endHold} gives: a write that changes nothing still moves the topic
+   * in the eviction order.
+   */
+  private endUnservedRun(topicId: string): void {
+    const health = this.topics.get(topicId);
+    if (health === undefined || (health.unservedSinceMs === null && health.unservedSlotPolls === 0)) {
+      return;
+    }
+    this.update(topicId, (current) => ({ ...current, unservedSlotPolls: 0, unservedSinceMs: null }));
+  }
+
   /** Back to healthy as far as reaching the gateway goes: nothing counted against it, nothing owed. */
   private forgetFailures(topicId: string): void {
     this.update(topicId, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
@@ -849,7 +895,9 @@ export class FeedHealthTracker {
    * A slot was served. Forgets both runs, since serving one ends either.
    *
    * An ended broadcast is kept rather than forgotten. Forgetting it would read as `live` again, and
-   * the last thing a finished stream does is serve the manifest that finished it.
+   * the last thing a finished stream does is serve the manifest that finished it. What does forget it
+   * is {@link recordFeedResumed}, on evidence a served slot alone cannot give: an open playlist in the
+   * slot after the finished one.
    *
    * ⭐ A run of playback stalls is kept for the opposite reason: serving a slot does not disprove it.
    * Through the whole of the fourteen-minute collapse the gateway kept serving, 384 slots against 34
@@ -882,9 +930,54 @@ export class FeedHealthTracker {
     }));
   }
 
-  /** The broadcaster published a manifest that ends the playlist. Terminal, and not a fault. */
+  /**
+   * The broadcaster published a manifest that ends the playlist. Not a fault, and it outlasts
+   * everything a gateway can do. Only the broadcaster coming back ends it: see {@link recordFeedResumed}.
+   */
   recordFeedEnded(topicId: string): void {
     this.update(topicId, (health) => ({ ...health, hasEnded: true }));
+  }
+
+  /**
+   * The broadcaster is publishing to a feed that had finished: the slot after its finished playlist
+   * was served one that is still open.
+   *
+   * ⭐ The one thing that takes a topic back out of {@link FEED_STATE_ENDED}. A declared stream's
+   * broadcaster who stops and comes back continues the same feed at the next index, so a finished
+   * playlist is the end of a session rather than of the feed. Measured live 2026-09-24: finalized at
+   * 18:41:57 UTC, back at 18:43:18, and a viewer who had watched it end was still told it had ended
+   * fifteen minutes later, because nothing on this side ever looked past the finished playlist.
+   *
+   * A slot was served to learn this, so it forgets what {@link recordGatewayResponse} forgets and keeps
+   * the stalls for the reason given there. The unserved run matters most. A ladder rung sits on
+   * unserved slots for the whole reconnect window before the uploader finishes it, the finished slot
+   * ends its walk before anything records it as served, and the end hides the run from then on.
+   * Without this a ladder that came back would be announced as still waiting to continue.
+   *
+   * ⛔ **For a ladder's group, every rung's run ends with it, not only the rung that was found back.**
+   * The rungs are found back one watch at a time, up to a whole watch interval apart when the uploader
+   * writes a rung just after its watch looked, and the rung a viewer is on decides the unserved half
+   * of the group's state. So the group would read as waiting until the viewer's own rung happened to
+   * be asked again. Those runs were waiting on the broadcast that has just come back, so they are over
+   * whichever rung showed it. Failures are left alone: they describe the gateway, not the broadcaster.
+   *
+   * Announced to {@link onFeedResumed} whether or not this topic was recorded as ended. A viewer who
+   * opened a recording never had the end recorded on the single-rendition path, and a ladder rung never
+   * has it at all, since a ladder's end is recorded once against its group.
+   */
+  recordFeedResumed(topicId: string): void {
+    for (const rung of this.rungsOfGroup.get(topicId) ?? []) {
+      this.endUnservedRun(rung);
+    }
+    this.update(topicId, (health) => ({ ...HEALTHY, stallsAtMs: health.stallsAtMs }));
+
+    for (const listener of [...this.feedResumedListeners]) {
+      try {
+        listener(topicId);
+      } catch (error) {
+        console.error('Feed resumed listener threw:', error);
+      }
+    }
   }
 
   /**
