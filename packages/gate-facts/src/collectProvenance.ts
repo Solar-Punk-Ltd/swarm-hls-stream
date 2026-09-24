@@ -6,10 +6,10 @@ import { CollectionError, type FactGroup } from './types.js';
 const REGISTRY_CONCURRENCY = 12;
 
 /**
- * Wider than the owner's dependency rule, which flags a version published less than about two weeks
- * ago, so the fresh row lists every version that rule would flag and some it would not.
+ * The window of the owner's dependency rule, which flags a version published less than about two weeks
+ * ago, so the fresh row lists the versions that rule flags.
  */
-const FRESH_DAYS = 30;
+const FRESH_DAYS = 14;
 
 const REGISTRY_TIMEOUT_MS = 60 * 1000;
 
@@ -61,6 +61,15 @@ async function readDist(spec: string): Promise<{ signature: SignatureState; atte
   }
 }
 
+/** Whole days elapsed between the registry's publish timestamp and `now`, or null when the date does not parse. */
+export function wholeDaysSince(published: string, now: number): number | null {
+  // A registry clock a few minutes ahead of this one is not a negative age.
+  const days = Math.floor(Math.max(0, now - Date.parse(published)) / 86_400_000);
+  // An unparseable date yields NaN, which loses every comparison and would drop the version out of
+  // the fresh bucket while reporting nothing. Unknown is a state, not a number.
+  return Number.isFinite(days) ? days : null;
+}
+
 async function readAgeDays(name: string, version: string): Promise<number | null> {
   const result = await run('npm', ['view', name, 'time', '--json'], REGISTRY_TIMEOUT_MS);
   try {
@@ -69,10 +78,7 @@ async function readAgeDays(name: string, version: string): Promise<number | null
     if (!published) {
       return null;
     }
-    const days = Math.round((Date.now() - Date.parse(published)) / 86_400_000);
-    // An unparseable date yields NaN, which loses every comparison and would drop the version out of
-    // the fresh bucket while reporting nothing. Unknown is a state, not a number.
-    return Number.isFinite(days) ? days : null;
+    return wholeDaysSince(published, Date.now());
   } catch {
     return null;
   }

@@ -2,8 +2,11 @@
 interface SuiteCount {
   packageName: string;
   tests: number;
-  passed: number;
+  /** Absent when the package's total does not say, as the uploader's floor line does not. */
+  passed?: number;
   failed: number;
+  /** Present only when the package's total names it, which only the uploader's floor line does. */
+  suites?: number;
 }
 
 /**
@@ -21,6 +24,15 @@ const TAP_TOTAL = /^(\S+)\s+test:\s+#\s+(tests|pass|fail)\s+(\d+)\s*$/;
 const VITEST_TOTAL = /^(\S+)\s+test:\s+Tests\s+(\d+)\s+passed\s+\((\d+)\)\s*$/;
 
 /**
+ * The uploader sends node's TAP reporter, which carries the totals, to `.test-summary.tap` and only the
+ * dot reporter to stdout. What does reach this output is the line its `scripts/assert-test-floor.mjs`
+ * prints once a run holds the floor, `assert-test-floor: 1826 tests in 331 suites, floor 1092/211`. The
+ * script prints that line only when no test failed. A refusal names its counts in other words, and pnpm
+ * prefixes it into this stream from stderr, so the words around the counts are part of the match.
+ */
+const FLOOR_TOTAL = /^(\S+)\s+test:\s+assert-test-floor:\s+(\d+)\s+tests\s+in\s+(\d+)\s+suites,\s+floor\s+\S+\s*$/;
+
+/**
  * Read per-package totals out of a whole-workspace test run.
  *
  * Returns one entry per package that reported a total, in first-seen order. A package that ran but
@@ -35,7 +47,7 @@ export function parseSuiteCounts(output: string): SuiteCount[] {
     if (existing) {
       return existing;
     }
-    const created: SuiteCount = { packageName: name, tests: 0, passed: 0, failed: 0 };
+    const created: SuiteCount = { packageName: name, tests: 0, failed: 0 };
     byPackage.set(name, created);
     return created;
   };
@@ -46,6 +58,14 @@ export function parseSuiteCounts(output: string): SuiteCount[] {
       const entry = forPackage(vitest[1]);
       entry.passed = Number(vitest[2]);
       entry.tests = Number(vitest[3]);
+      continue;
+    }
+
+    const floor = FLOOR_TOTAL.exec(line);
+    if (floor) {
+      const entry = forPackage(floor[1]);
+      entry.tests = Number(floor[2]);
+      entry.suites = Number(floor[3]);
       continue;
     }
 
@@ -67,12 +87,18 @@ export function parseSuiteCounts(output: string): SuiteCount[] {
   return [...byPackage.values()];
 }
 
+/** A total that names no pass count reads as the tests it ran, never as a pass count nobody reported. */
+function formatSuiteCount(c: SuiteCount): string {
+  const total = c.passed === undefined ? `${c.tests} tests` : `${c.passed}/${c.tests}`;
+  const suites = c.suites === undefined ? '' : ` in ${c.suites} suites`;
+  const failed = c.failed > 0 ? ` (${c.failed} FAILED)` : '';
+  return `${c.packageName} ${total}${suites}${failed}`;
+}
+
 /** Renders as the description should quote it, so a mismatch is a string comparison rather than arithmetic. */
 export function formatSuiteCounts(counts: SuiteCount[]): string {
   if (counts.length === 0) {
     return 'no package reported a total';
   }
-  return counts
-    .map((c) => `${c.packageName} ${c.passed}/${c.tests}${c.failed > 0 ? ` (${c.failed} FAILED)` : ''}`)
-    .join(', ');
+  return counts.map(formatSuiteCount).join(', ');
 }
