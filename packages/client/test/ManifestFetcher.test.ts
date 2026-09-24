@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
 import {
+  FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
@@ -99,6 +100,22 @@ async function settle(ticks = 50): Promise<void> {
   for (let tick = 0; tick < ticks; tick++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+}
+
+/**
+ * Waits for something a timer does rather than a walk. A finished feed's watch asks on its own
+ * interval, so there is no walk for {@link ManifestFetcher.settled} to await, and a tick budget would
+ * have to guess how many intervals fit in it.
+ */
+async function waitFor(predicate: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.fail(`timed out waiting for ${what}`);
 }
 
 const manager = ManifestStateManager.getInstance();
@@ -1520,6 +1537,202 @@ describe('the probe landing on the recording instead of the manifest that ended 
     }
 
     assert.match(manager.serialize(hexTopic, ''), /#EXT-X-ENDLIST/);
+  });
+});
+
+/**
+ * ⛔⛔ The single-rendition half of the failure measured live on 2026-09-24. A declared stream's
+ * broadcaster who stops and comes back continues the same feed at the next index, and this path read
+ * nothing past the playlist that finished it. hls.js stops reloading a playlist that carries ENDLIST,
+ * so nothing here would ever have asked again: a viewer who watched the end was told it had ended for
+ * as long as they stayed, and only a reload found the broadcast live.
+ */
+describe('a single-rendition broadcast that comes back after it ended', () => {
+  /** Where the publisher wrote the playlist that finished the broadcast. */
+  const FINISHED_AT = START_INDEX + 1n;
+  /** Short enough that several watches land inside a test. */
+  const WATCH_MS = 5;
+
+  let fetcher: ManifestFetcher;
+  let health: FeedHealthTracker;
+  let requested: bigint[];
+  /** What the publisher has written, by slot. Anything else is refused as not written yet. */
+  let written: Map<bigint, string>;
+  let resumed: string[];
+
+  function finished(index: bigint): string {
+    return [manifestForIndex(index), '#EXT-X-ENDLIST'].join('\n');
+  }
+
+  beforeEach(() => {
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+
+    health = new FeedHealthTracker(() => 0);
+    resumed = [];
+    health.onFeedResumed((topicId) => resumed.push(topicId));
+    fetcher = new ManifestFetcher(manager, health, undefined, NO_JITTER, undefined, WATCH_MS);
+    fetcher.beeUrl = BEE_URL;
+    requested = [];
+    written = new Map([[FINISHED_AT, finished(FINISHED_AT)]]);
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const index = requestedIndex(String(input));
+      assert.notEqual(index, undefined, `a slot outside the fixture was requested: ${String(input)}`);
+      requested.push(index!);
+      const body = written.get(index!);
+      return body === undefined ? new Response('not found', { status: 404 }) : new Response(body);
+    };
+  });
+
+  afterEach(async () => {
+    // Before the stub is restored, and the reason this is here at all: a watch left running would ask
+    // for its next slot during whichever test runs after this one.
+    manager.clear(hexTopic);
+    await fetcher.settled();
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+  });
+
+  /** The viewer who was watching: their walk reads the finished playlist, and the broadcast ends. */
+  async function watchItEnd(): Promise<void> {
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await fetcher.settled();
+    assert.equal(
+      health.state(hexTopic),
+      FEED_STATE_ENDED,
+      'the fixture never ended the broadcast, so this proves nothing',
+    );
+  }
+
+  it('reports the broadcast back once the slot after the finished playlist holds an open one', async () => {
+    await watchItEnd();
+
+    written.set(FINISHED_AT + 1n, manifestForIndex(FINISHED_AT + 1n));
+
+    await waitFor(() => resumed.includes(hexTopic), 'the broadcaster coming back to be announced');
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
+  });
+
+  /** Nothing changes for a broadcast that never comes back, and the watch asks for one slot only. */
+  it('keeps a broadcast that never comes back ended, asking only for the slot after its end', async () => {
+    await watchItEnd();
+    const endedAfter = requested.length;
+    const WATCHES = 3;
+
+    await waitFor(() => requested.length - endedAfter >= WATCHES, 'several watches');
+
+    assert.deepEqual([...new Set(requested.slice(endedAfter))], [FINISHED_AT + 1n]);
+    assert.equal(health.state(hexTopic), FEED_STATE_ENDED);
+    assert.deepEqual(resumed, []);
+  });
+
+  /**
+   * A finished playlist in the next slot is the broadcaster finishing again, not coming back. Taking it
+   * for a return would restart a viewer into the finished recording from its first second.
+   */
+  it('steps past a second finished playlist rather than taking it for the broadcaster', async () => {
+    await watchItEnd();
+    written.set(FINISHED_AT + 1n, finished(FINISHED_AT + 1n));
+
+    await waitFor(() => requested.includes(FINISHED_AT + 2n), 'the watch to move past the second finished playlist');
+    assert.equal(health.state(hexTopic), FEED_STATE_ENDED, 'a finished playlist was read as a return');
+    assert.deepEqual(resumed, []);
+
+    written.set(FINISHED_AT + 2n, manifestForIndex(FINISHED_AT + 2n));
+
+    await waitFor(() => resumed.includes(hexTopic), 'the broadcaster coming back to be announced');
+  });
+
+  /** A 200 that is not a playlist is not the broadcaster, for the same reason. */
+  it('does not take an answer that is not a playlist for the broadcaster', async () => {
+    await watchItEnd();
+    written.set(FINISHED_AT + 1n, '<html><body>Sign in to continue</body></html>');
+    const endedAfter = requested.length;
+    const WATCHES = 3;
+
+    await waitFor(() => requested.length - endedAfter >= WATCHES, 'several watches');
+
+    assert.equal(health.state(hexTopic), FEED_STATE_ENDED);
+    assert.deepEqual(resumed, []);
+  });
+
+  /** The viewer who opened the recording afterwards, whose first read is already the finished playlist. */
+  it('watches a recording opened after it finished, from the slot its head resolved to', async () => {
+    manager.clear(hexTopic);
+    const headUrl = `${BEE_URL}/feeds/${OWNER}/${hexTopic}`;
+    const answerFromFixture = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL) =>
+      String(input) === headUrl
+        ? new Response(finished(FINISHED_AT), { headers: { 'Swarm-Feed-Index': FINISHED_AT.toString(16) } })
+        : answerFromFixture(input);
+
+    const manifest = await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    assert.match(manifest, /#EXT-X-ENDLIST/, 'the fixture never served a finished recording, so this proves nothing');
+
+    written.set(FINISHED_AT + 1n, manifestForIndex(FINISHED_AT + 1n));
+
+    await waitFor(() => resumed.includes(hexTopic), 'the broadcaster coming back to be announced');
+  });
+
+  /**
+   * A finished head read without the index header used to play and still does. The index is only what
+   * the watch starts from, so without one there is no watch rather than no recording.
+   */
+  it('still plays a recording whose head names no index, and watches nothing', async () => {
+    manager.clear(hexTopic);
+    const headUrl = `${BEE_URL}/feeds/${OWNER}/${hexTopic}`;
+    const answerFromFixture = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL) =>
+      String(input) === headUrl ? new Response(finished(FINISHED_AT)) : answerFromFixture(input);
+
+    const manifest = await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 10));
+
+    assert.match(manifest, /#EXT-X-ENDLIST/);
+    assert.deepEqual(requested, [], 'a watch started from an index nobody named');
+  });
+
+  it('leaves nothing running once its topic is torn down during the watch', async () => {
+    await watchItEnd();
+    manager.clear(hexTopic);
+    const tornDownAfter = requested.length;
+    written.set(FINISHED_AT + 1n, manifestForIndex(FINISHED_AT + 1n));
+
+    await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 10));
+
+    assert.equal(requested.length, tornDownAfter, 'a torn down topic went on being watched');
+    assert.deepEqual(resumed, [], 'a torn down watch reported the broadcaster back');
+  });
+
+  /**
+   * Nothing cancels a read already in flight, so the answer to one that outlives the teardown is
+   * dropped where it lands. Recorded, it would tell the mount that replaced this one that a broadcaster
+   * it never watched had come back.
+   */
+  it('drops the answer to a watch read that lands after the teardown', async () => {
+    const gate = deferred<void>();
+    let isHeld = false;
+    const answerFromFixture = globalThis.fetch;
+    // Armed before the broadcast ends, since nothing but the watch ever asks for this slot.
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      if (requestedIndex(String(input)) === FINISHED_AT + 1n) {
+        isHeld = true;
+        await gate.promise;
+      }
+      return answerFromFixture(input);
+    };
+    await watchItEnd();
+
+    await waitFor(() => isHeld, 'a watch read pinned in flight');
+    manager.clear(hexTopic);
+    written.set(FINISHED_AT + 1n, manifestForIndex(FINISHED_AT + 1n));
+    gate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 5));
+
+    assert.deepEqual(resumed, [], 'an answer that outlived its topic was recorded');
+    assert.equal(health.state(hexTopic), FEED_STATE_ENDED);
   });
 });
 

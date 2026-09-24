@@ -355,3 +355,70 @@ describe('a cached manifest belongs to the gateway it was built for', () => {
     assert.doesNotMatch(second, /10077/);
   });
 });
+
+/**
+ * Work bound to one generation of a topic, ended by the teardown that ends that generation.
+ *
+ * ⛔ A generation is enough for a fetch that lands after a teardown, because a fetch runs to its end
+ * and can compare generations there. A timer between two ticks runs nothing that could compare
+ * anything, so the watch a finished feed keeps would stay scheduled past a teardown for its whole
+ * interval. This is what ends it at the teardown itself.
+ */
+describe('work that belongs to a topic until it is torn down', () => {
+  const TOPIC = 'teardown-hook';
+  const OTHER_TOPIC = 'a-topic-nobody-tore-down';
+  let state: ManifestStateManager;
+  let tornDown: number;
+  const countTeardown = () => {
+    tornDown += 1;
+  };
+
+  beforeEach(() => {
+    state = ManifestStateManager.getInstance();
+    state.clear();
+    tornDown = 0;
+  });
+
+  it('is told when its topic is torn down', () => {
+    state.onTeardown(TOPIC, countTeardown);
+
+    state.clear(TOPIC);
+
+    assert.equal(tornDown, 1);
+  });
+
+  it('is told once, and not again on a later teardown of the same topic', () => {
+    state.onTeardown(TOPIC, countTeardown);
+
+    state.clear(TOPIC);
+    state.clear(TOPIC);
+
+    assert.equal(tornDown, 1);
+  });
+
+  it('is not told about a different topic being torn down', () => {
+    state.onTeardown(TOPIC, countTeardown);
+
+    state.clear(OTHER_TOPIC);
+
+    assert.equal(tornDown, 0);
+  });
+
+  /** Whether or not anything was ever written against the topic, which a watch never does. */
+  it('is told when every topic is torn down at once', () => {
+    state.onTeardown(TOPIC, countTeardown);
+
+    state.clear();
+
+    assert.equal(tornDown, 1);
+  });
+
+  it('is not told once it has let go', () => {
+    const letGo = state.onTeardown(TOPIC, countTeardown);
+
+    letGo();
+    state.clear(TOPIC);
+
+    assert.equal(tornDown, 0);
+  });
+});
