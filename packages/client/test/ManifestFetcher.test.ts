@@ -1615,6 +1615,29 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
     assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
   });
 
+  /**
+   * Every wait is drawn through this fetcher's own jitter, which is what spreads viewers who saw the
+   * same end, and what a test injects over. Counted through the jitter's source: nothing else this
+   * fixture does draws from it, since there is no stagger bound and no backoff to spread.
+   */
+  it('draws the wait before every ask through the jitter the fetcher was built with', async () => {
+    let draws = 0;
+    const counting = new RequestJitter(0, () => {
+      draws += 1;
+      return 0;
+    });
+    fetcher = new ManifestFetcher(manager, health, undefined, counting, undefined, WATCH_MS);
+    fetcher.beeUrl = BEE_URL;
+    await watchItEnd();
+    const endedAfter = requested.length;
+    const WATCHES = 3;
+
+    await waitFor(() => requested.length - endedAfter >= WATCHES, 'several watches');
+
+    const asks = requested.length - endedAfter;
+    assert.ok(draws === asks || draws === asks + 1, `${draws} waits were drawn through the fetcher for ${asks} asks`);
+  });
+
   /** Nothing changes for a broadcast that never comes back, and the watch asks for one slot only. */
   it('keeps a broadcast that never comes back ended, asking only for the slot after its end', async () => {
     await watchItEnd();

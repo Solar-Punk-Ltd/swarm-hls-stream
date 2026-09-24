@@ -3,7 +3,7 @@ import { extractFeedIndex, nextFeedRequest } from '@swarm-hls-stream/shared';
 
 import { TimedResponse } from '@/utils/fetchWithTimeout';
 
-import { FEED_RETURN_WATCH_INTERVAL_MS, FeedReturnWatch } from './feedReturn';
+import { FeedReturnWatch } from './feedReturn';
 import { FeedHealthTracker } from './feedState';
 import { ManifestStateManager } from './ManifestManagement';
 import { parseManifest } from './playlist';
@@ -87,8 +87,12 @@ export class LadderFeedPoller {
      * this to the same feed health and jitter the single-rendition path backs off through.
      */
     private readonly backoffMs: (hexTopic: string) => number = () => 0,
-    /** How long a finished rung waits between asks for its broadcaster. Injected only by tests. */
-    private readonly returnWatchIntervalMs: number = FEED_RETURN_WATCH_INTERVAL_MS,
+    /**
+     * The wait before each ask a finished rung makes for its broadcaster, called once per ask so every
+     * wait is drawn afresh. The fetcher wires it to its own jitter, the way it wires {@link backoffMs}.
+     * Left out, each rung's watch draws through its own default, which spreads the same way.
+     */
+    private readonly returnWatchWaitMs?: () => number,
   ) {}
 
   public start(owner: string, topics: Topic[], groupHexTopic: string | null = null): void {
@@ -453,7 +457,7 @@ export class LadderFeedPoller {
       entry.topic,
       finishedAt,
       () => this.recordReturn(entry),
-      this.returnWatchIntervalMs,
+      this.returnWatchWaitMs,
     );
     entry.returnWatch.start();
   }
