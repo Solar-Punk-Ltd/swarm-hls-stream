@@ -822,10 +822,11 @@ export class StreamUploader {
 
       // ⛔ Reported only by the rung whose own report finished the ladder, and only once. A rung
       // draining while its siblings are still live ends its own recording and nothing more: the
-      // broadcast is over when the LAST of them finalizes, which is the only report the admin answers
-      // with a flip. A rung announcing the end off its own drain would take three live rungs off the
-      // air in the admin's list. This is `StreamCatalog.upsertRendition`'s `flippedToVod` rule, read
-      // off the other side of a wire rather than off a feed read.
+      // broadcast is over when the LAST of them finalizes, or when the last one outstanding is a rung
+      // whose stop failed, and then `announceUnfinished` reports the flip instead of this. A rung
+      // announcing the end off its own drain would take three live rungs off the air in the admin's
+      // list. This is `StreamCatalog.upsertRendition`'s `flippedToVod` rule, read off the other side
+      // of a wire rather than off a feed read.
       if (announced && announced.flippedToFinished && announced.masterIndex !== null) {
         await this.reportAdminState(
           this.ladderRecordingReport(announced, announced.masterIndex),

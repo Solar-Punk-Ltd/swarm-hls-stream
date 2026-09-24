@@ -56,9 +56,10 @@ the pair of numbers on every segment line, and they are the subject of the next 
 
 The master also stops advertising a rung that has stopped being produced. A rung the ladder has
 delivered four segments past is dropped from the next master write, and it is put back the moment it
-delivers again, so a viewer joining during an outage is not offered a quality with nothing behind it.
-Measured live on 2026-09-01: dropped 6.9s after the rung went down, restored 11.3s after it came
-back. The rule is `LadderLiveness`, and it is deliberately a copy of the player's own rule in
+delivers again, unless its uploads were being refused, which the next paragraph covers. So a viewer
+joining during an outage is not offered a quality with nothing behind it. Measured live on
+2026-09-01: dropped 6.9s after the rung went down, restored 11.3s after it came back. The rule is
+`LadderLiveness`, and how it drops a rung is deliberately a copy of the player's own rule in
 `packages/client/src/components/SwarmHlsPlayer/feedState.ts` rather than a second independent one.
 That file took eight attempts to get right and all three of its properties are load bearing: count
 delivered segments rather than read a clock, compare against a middle rung rather than the leader,
