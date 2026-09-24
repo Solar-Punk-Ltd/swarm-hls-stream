@@ -57,6 +57,7 @@ export function StreamList() {
             mediatype={stream.mediatype}
             title={stream.title}
             index={stream.index}
+            renditions={stream.renditions}
             thumbnail={stream.thumbnail}
             scheduledStartTime={stream.scheduledStartTime}
           />

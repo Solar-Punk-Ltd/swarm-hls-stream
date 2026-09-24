@@ -13,12 +13,12 @@ import Pqueue from 'p-queue';
 
 import playIcon from '@/assets/icons/playIcon.png';
 import DefaultPreviewImage from '@/assets/images/defaultPreviewImage.png';
-import { fetchPreviewManifest } from '@/components/StreamPreview/previewManifest';
+import { fetchPreviewManifest, rungSlotsKey } from '@/components/StreamPreview/previewManifest';
 import { previewMode, thumbnailFailed, thumbnailImageUrl } from '@/components/StreamPreview/previewMode';
 import { previewSourceFrom } from '@/components/StreamPreview/previewSource';
 import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
 import { useAppContext } from '@/providers/App';
-import { MediaType, STREAM_STATUS_LIVE, STREAM_STATUS_SCHEDULED, StreamState } from '@/types/stream';
+import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_SCHEDULED, StreamState } from '@/types/stream';
 import { formatDuration } from '@/utils/format';
 import { scheduledStartLabel } from '@/utils/scheduledStart';
 import { previewSegmentUrl } from '@/utils/thumbnailManifest';
@@ -36,6 +36,8 @@ interface StreamPreviewProps {
   title: string;
   /** The SOC index of this stream's final manifest, published by the uploader on a finished stream. */
   index?: number;
+  /** A ladder's rungs, which on a finished entry name the slot each rung's final playlist is at. */
+  renditions?: Rendition[];
   /** A Swarm reference to a still image the publisher uploaded. Absent or '' when there is none. */
   thumbnail?: string;
   /** Only ever set on a scheduled entry, and null there until a time is fixed. */
@@ -53,6 +55,7 @@ export const StreamPreview = ({
   mediatype,
   title,
   index,
+  renditions,
   thumbnail,
   scheduledStartTime,
 }: StreamPreviewProps) => {
@@ -82,6 +85,12 @@ export const StreamPreview = ({
   const isScheduled = state === STREAM_STATUS_SCHEDULED;
   const startsAt = scheduledStartLabel(scheduledStartTime);
 
+  // Read through a ref, not a dependency: the catalog poll hands back a fresh array every time, and
+  // `slotsKey` is what the effect reacts to. The player keys its ladder the same way.
+  const renditionsRef = useRef(renditions);
+  renditionsRef.current = renditions;
+  const slotsKey = rungSlotsKey({ state, renditions });
+
   useEffect(() => {
     // The card already knows what it is showing, so nothing is fetched and no queue slot is taken.
     // This is the whole saving for a scheduled stream: its manifest feed does not exist, and ten
@@ -102,7 +111,11 @@ export const StreamPreview = ({
       }
 
       try {
-        const { res, segments } = await fetchPreviewManifest(gatewayUrl, { owner, topic, index }, abort.signal);
+        const { res, segments } = await fetchPreviewManifest(
+          gatewayUrl,
+          { owner, topic, index, state, renditions: renditionsRef.current },
+          abort.signal,
+        );
 
         // Split from the check below, because the two used to share an early return and only one of
         // them is a reason to leave the spinner up. An aborted card is being unmounted and nobody is
@@ -194,7 +207,7 @@ export const StreamPreview = ({
         blobUrl = null;
       }
     };
-  }, [owner, topic, gatewayUrl, index, mode]);
+  }, [owner, topic, gatewayUrl, index, state, slotsKey, mode]);
 
   return (
     <div className="stream-preview" onClick={() => navigate(`/watch/${mediatype}/${owner}/${topic}`)}>
