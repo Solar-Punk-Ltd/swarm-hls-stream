@@ -730,8 +730,8 @@ describe('a replacement session on a declared topic waits for the session it rep
  * session exactly as a declared one does, so the head resume and the predecessor gate are both owed
  * here too. Nothing is written to the stream catalog, and the admin is told instead — but the two
  * reports are now statements about the LADDER: `live` once a master a viewer can open has landed, and
- * `vod` once every rung of the ladder has finalized, carrying the master's index rather than this
- * rung's own.
+ * `vod` once every rung of the ladder has finalized or is known not to finish, carrying the master's
+ * index rather than this rung's own.
  *
  * ⛔ The rung registers its own record through the ladder registry, which is the only thing that can
  * see the other three rungs. That is why the flip is read off an answer rather than off this session's

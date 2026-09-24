@@ -41,7 +41,8 @@ rather than the healthiest one its node holds.
 - The master drops a rung by the shipped rule: once the ladder has delivered four segments past the
   rung's last delivery, at most one rung at a time. Nothing about the drop is a clock. It is triggered
   by the next segment another rung lands, so a drained rung disappears from the master within a few
-  segments of the surviving rungs. The rung comes back on its next delivered segment. A viewer already
+  segments of the surviving rungs. The rung comes back on its next delivered segment, or, since
+  2026-09-24, after eight in a row when its uploads were being refused (`RUNG_READMIT_AFTER_SEGMENTS`). A viewer already
   watching never gets a removed level back, that is an hls.js limit the repo documents.
 - The batch id per rung is read once at process start from `BEE_PUBLISHERS`. Changing it means
   rewriting the profile's env file and redeploying the uploader container. The harness can only stop,
