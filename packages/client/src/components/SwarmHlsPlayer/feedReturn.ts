@@ -2,11 +2,13 @@ import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { nextFeedRequest } from '@swarm-hls-stream/shared';
 
 import { TimedResponse } from '@/utils/fetchWithTimeout';
+import { RequestJitter } from '@/utils/requestJitter';
 
 import { parseManifest } from './playlist';
 
 /**
- * How long a finished feed waits between asking whether its broadcaster has come back.
+ * The longest a finished feed waits between asking whether its broadcaster has come back. Each wait
+ * is drawn inside it, see {@link feedReturnWatchWaitMs}.
  *
  * ## Why a finished feed is asked anything at all
  *
@@ -19,13 +21,14 @@ import { parseManifest } from './playlist';
  *
  * ## What it costs
  *
- * One request per finished feed per interval, for as long as the page stays open, whether the viewer
+ * One request per finished feed per wait, for as long as the page stays open, whether the viewer
  * watched the broadcast end or opened its recording afterwards. Every one that finds nothing is a
  * Swarm retrieval the gateway attempts and fails, so this is paid by the gateway rather than by the
- * viewer. At thirty seconds that is **0.033 requests a second** for a single rendition and **0.13**
- * for the four rung ladder, which watches every rung. The same ladder walked live asks 5.3 a second,
- * four rungs at the 750ms poll interval, so the watch is one fortieth of it. An hour on an old
- * recording costs 120 requests for a single rendition and 480 for the ladder.
+ * viewer. A wait is drawn between 22.5 and 30 seconds, 26.25 on average, which is **0.038 requests a
+ * second** for a single rendition and **0.15** for the four rung ladder, which watches every rung. The
+ * same ladder walked live asks 5.3 a second, four rungs at the 750ms poll interval, so the watch is
+ * about one thirty-fifth of it. An hour on an old recording costs about 137 requests for a single
+ * rendition and 549 for the ladder, and never more than 160 and 640.
  *
  * ## Why thirty seconds
  *
@@ -34,12 +37,37 @@ import { parseManifest } from './playlist';
  * viewer who stays learns of the return within half that again. Asking faster would be paid on every
  * recording anybody watches, and almost none of those feeds is ever written again.
  *
- * ⚠️ **Not spread across viewers.** Every viewer who saw a broadcast end starts this watch within a
- * poll of the same moment, so their asks land together every interval, and so do their rejoins when
- * the broadcaster returns. `RequestJitter` exists for exactly that shape and is not applied here. Not
- * measured either way.
+ * ## Why each wait is drawn
+ *
+ * Every viewer who saw a broadcast end starts this watch within a poll of the same moment. With one
+ * fixed wait their asks would land on the gateway together every interval, and their rejoins would
+ * land together when the broadcaster returned, each of them a restart that reads the feed head, the
+ * slowest request there is. So each wait is drawn afresh through `RequestJitter.spread`, which takes
+ * up to a quarter off, the fraction the manifest backoff takes for the same reason: a wait every viewer
+ * computes identically. Two viewers who started together are up to 7.5 seconds apart after one ask, and
+ * because every ask draws again they do not fall back into step. Not measured, like the backoff
+ * fraction it shares.
  */
 export const FEED_RETURN_WATCH_INTERVAL_MS = 30_000;
+
+/**
+ * The wait before one ask for a finished feed's broadcaster, drawn afresh for every ask.
+ *
+ * Never longer than the interval and never shorter than three quarters of it, because a spread only
+ * ever brings a wait forward. See {@link FEED_RETURN_WATCH_INTERVAL_MS} for why it is drawn at all.
+ *
+ * @param jitter The follower's own, so a test that injects one decides every wait it draws.
+ * @param intervalMs The longest the wait can be. Shortened only by tests.
+ */
+export function feedReturnWatchWaitMs(
+  jitter: RequestJitter,
+  intervalMs: number = FEED_RETURN_WATCH_INTERVAL_MS,
+): number {
+  return jitter.spread(intervalMs);
+}
+
+/** What a watch draws its waits from when the follower holding it hands it no draw of its own. */
+const UNINJECTED_JITTER = new RequestJitter();
 
 /** Nothing is behind the finished playlist yet, or the gateway gave no usable answer about it. */
 interface FeedStillFinished {
@@ -120,12 +148,16 @@ export class FeedReturnWatch {
     private finishedAt: FeedIndex,
     /** Called once, when the feed is found open again, and never after {@link stop}. */
     private readonly onReturned: () => void,
-    private readonly intervalMs: number = FEED_RETURN_WATCH_INTERVAL_MS,
+    /**
+     * The wait before the next ask, called once per ask so that every wait is drawn afresh. Each
+     * follower hands in a draw through its own jitter, which is also what a test injects over.
+     */
+    private readonly nextWaitMs: () => number = () => feedReturnWatchWaitMs(UNINJECTED_JITTER),
   ) {}
 
-  /** Asks for the first time one interval from now. The broadcaster has only just finished. */
+  /** Asks for the first time one wait from now. The broadcaster has only just finished. */
   start(): void {
-    this.askAfterInterval();
+    this.askAfterWait();
   }
 
   /**
@@ -138,14 +170,14 @@ export class FeedReturnWatch {
     this.timer = undefined;
   }
 
-  private askAfterInterval(): void {
+  private askAfterWait(): void {
     if (this.isStopped) {
       return;
     }
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.ask();
-    }, this.intervalMs);
+    }, this.nextWaitMs());
   }
 
   private async ask(): Promise<void> {
@@ -165,6 +197,6 @@ export class FeedReturnWatch {
     if (answer.kind === 'finishedAgain') {
       this.finishedAt = answer.index;
     }
-    this.askAfterInterval();
+    this.askAfterWait();
   }
 }

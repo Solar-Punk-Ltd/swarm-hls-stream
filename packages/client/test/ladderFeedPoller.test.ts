@@ -359,7 +359,14 @@ describe('LadderFeedPoller', () => {
     }
 
     function watchingPoller(gateway: FakeGateway, tracker: FeedHealthTracker): LadderFeedPoller {
-      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker, () => 0, WATCH_MS);
+      const poller = new LadderFeedPoller(
+        state,
+        gateway.fetchResource,
+        POLL_MS,
+        tracker,
+        () => 0,
+        () => WATCH_MS,
+      );
       poller.start(OWNER, RUNGS, groupHex);
       return poller;
     }

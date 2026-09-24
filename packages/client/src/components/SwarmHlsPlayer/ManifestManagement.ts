@@ -17,7 +17,7 @@ import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 import { RequestJitter } from '@/utils/requestJitter';
 
-import { FEED_RETURN_WATCH_INTERVAL_MS, FeedReturnWatch } from './feedReturn';
+import { FEED_RETURN_WATCH_INTERVAL_MS, FeedReturnWatch, feedReturnWatchWaitMs } from './feedReturn';
 import { FeedHealthTracker, UNSERVED_POLLS_PROBE_CEILING } from './feedState';
 import { LadderFeedPoller } from './LadderFeedPoller';
 import { absoluteBytesBase, buildMasterPlaylist, isMasterPlaylist, masterVariants, parseSwarmUri } from './playlist';
@@ -475,22 +475,24 @@ export class ManifestFetcher {
      */
     pollIntervalMs?: number,
     /**
-     * How long a finished feed waits between asks for its broadcaster, on both paths. Injected only by
-     * tests, so a return is driven rather than waited out. See {@link FEED_RETURN_WATCH_INTERVAL_MS}.
+     * The longest a finished feed waits between asks for its broadcaster, on both paths, with every
+     * wait drawn inside it through {@link jitter}. Injected only by tests, so a return is driven rather
+     * than waited out. See {@link FEED_RETURN_WATCH_INTERVAL_MS}.
      */
     private readonly returnWatchIntervalMs: number = FEED_RETURN_WATCH_INTERVAL_MS,
   ) {
     // The poller fetches through this instance rather than holding a URL of its own, so switching
     // gateway mid-session moves the walk with it. It also shares this instance's feed health and
     // computes its backoff through the same jitter, so a ladder outage records and paces exactly as
-    // the single-rendition path does rather than polling a dead gateway flat.
+    // the single-rendition path does rather than polling a dead gateway flat. A finished rung's watch
+    // draws its waits through that jitter too, as the single rendition's does.
     this.poller = new LadderFeedPoller(
       stateManager,
       (path) => this.fetchResource(path),
       pollIntervalMs,
       this.feedHealth,
       (hexTopic) => this.jitter.spread(this.feedHealth.backoffRemainingMs(hexTopic)),
-      returnWatchIntervalMs,
+      () => this.drawReturnWatchWaitMs(),
     );
   }
 
@@ -1021,13 +1023,21 @@ export class ManifestFetcher {
         this.stopWatchingForReturn(hexTopic);
         this.feedHealth.recordFeedResumed(hexTopic);
       },
-      this.returnWatchIntervalMs,
+      () => this.drawReturnWatchWaitMs(),
     );
     this.returnWatches.set(hexTopic, {
       watch,
       letGoOfTeardown: this.stateManager.onTeardown(hexTopic, () => this.stopWatchingForReturn(hexTopic)),
     });
     watch.start();
+  }
+
+  /**
+   * The wait before one ask of any watch this fetcher runs, a ladder rung's or a single rendition's.
+   * Drawn through {@link jitter} on every call, so viewers who saw one broadcast end drift apart.
+   */
+  private drawReturnWatchWaitMs(): number {
+    return feedReturnWatchWaitMs(this.jitter, this.returnWatchIntervalMs);
   }
 
   /** Ends this topic's watch, whichever of the teardown or the return got there first. */

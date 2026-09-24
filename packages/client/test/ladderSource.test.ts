@@ -162,6 +162,46 @@ describe('the ladder entry points', () => {
       }
       assert.equal(health.state(hexSource), FEED_STATE_ENDED);
     });
+
+    /**
+     * Each finished rung watches for its broadcaster, and every wait it takes is drawn through this
+     * fetcher's own jitter, as the single rendition's is. Counted through the jitter's source: nothing
+     * else here draws from it, since there is no stagger bound and no backoff to spread.
+     */
+    it('draws the wait before every ask of every finished rung through the jitter the fetcher was built with', async () => {
+      const WATCH_MS = 5;
+      let draws = 0;
+      const counting = new RequestJitter(0, () => {
+        draws += 1;
+        return 0;
+      });
+      const watching = new ManifestFetcher(manager, health, undefined, counting, POLL_MS, WATCH_MS);
+      watching.beeUrl = BEE_URL;
+      stubFetch(buildMasterPlaylist(OWNER, LADDER), (path) => {
+        if (RUNG_TOPICS.some((hex) => path === `feeds/${OWNER}/${hex}`)) {
+          return feedResponse(`${mediaPlaylist('rung-seg.ts')}\n#EXT-X-ENDLIST`);
+        }
+        return null;
+      });
+      const asks = () => requested.filter((path) => path.startsWith('soc/')).length;
+
+      try {
+        await watching.fetchSource(`${OWNER}/${SOURCE_TOPIC}`);
+        for (let tick = 0; tick < 2_000 && asks() < RUNG_TOPICS.length * 3; tick++) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+
+        const asked = asks();
+        assert.ok(asked >= RUNG_TOPICS.length * 3, `the finished rungs asked ${asked} times`);
+        // One draw per ask, plus one per rung for a wait in progress when this reads.
+        assert.ok(
+          draws >= asked && draws <= asked + RUNG_TOPICS.length,
+          `${draws} waits were drawn through the fetcher for ${asked} asks`,
+        );
+      } finally {
+        watching.unregisterLadder(`${OWNER}/${SOURCE_TOPIC}`);
+      }
+    });
   });
 
   describe('a catalog entry written before masters were published', () => {
