@@ -250,8 +250,9 @@ services:
       # What the two startup gates below do about a node they cannot read, and how long each of their
       # reads gets. The owner ruled the two apart on 2026-09-17, so `chequebook-warn`, the default,
       # has the chequebook gate warning and starting while the postage gate still refuses a batch
-      # that the node answered about as full or expired. `warn` has both gates warning. `refuse` has
-      # both gates refusing. The coordinator is always waited for when it does not answer. Under
+      # that the node answered about as expired, unusable or, when it is immutable, full. `warn` has
+      # both gates warning. `refuse` has both gates refusing. The coordinator is always waited for
+      # when it does not answer. Under
       # `refuse`, an unavailable rung node is waited for too. Under either warning mode, an unavailable
       # non-coordinator rung becomes a warning and the service starts degraded. This is D16 of the
       # same day.
