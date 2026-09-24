@@ -7,6 +7,8 @@ import {
   type Segment,
 } from '@swarm-hls-stream/shared';
 
+import { absoluteGatewayUrl } from '@/utils/gatewayUrl';
+
 /**
  * Playlist text and feed URIs — the pure half of the Swarm HLS loader.
  *
@@ -35,7 +37,7 @@ export { buildMasterPlaylist, buildSwarmUri, parseManifest, parseSwarmUri, type 
  * answers it with index.html. A URI that already carries a scheme is returned untouched instead.
  */
 export function absoluteBytesBase(beeUrl: string, origin: string): string {
-  return new URL(`${beeUrl.replace(/\/+$/, '')}/bytes`, origin).href;
+  return absoluteGatewayUrl(beeUrl, '/bytes', origin);
 }
 
 /**

@@ -51,7 +51,7 @@ import { BeePublisher } from './BeePublisherPool.js';
 import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
-import { LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
+import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { continuesFrom, inheritedTimeline, ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -533,6 +533,12 @@ export class StreamUploader {
       this.consecutiveSegmentFailures += 1;
       this.logger.error(segmentUploadFailed(this.streamId, segmentIndex));
       this.metrics?.recordSegmentDropped(this.ladder?.rung.name);
+      if (this.ladder) {
+        // The other half of `recordRungDelivered` below. Without it the master takes a rung whose
+        // uploads are being refused back on every segment that happens to land. See
+        // `RUNG_READMIT_AFTER_SEGMENTS`.
+        this.ladderRegistry.recordRungUploadFailed(this.ladder.group, this.ladder.rung.name);
+      }
       this.persistState();
       return;
     }
@@ -816,17 +822,14 @@ export class StreamUploader {
 
       // ⛔ Reported only by the rung whose own report finished the ladder, and only once. A rung
       // draining while its siblings are still live ends its own recording and nothing more: the
-      // broadcast is over when the LAST of them finalizes, which is the only report the admin answers
-      // with a flip. A rung announcing the end off its own drain would take three live rungs off the
-      // air in the admin's list. This is `StreamCatalog.upsertRendition`'s `flippedToVod` rule, read
-      // off the other side of a wire rather than off a feed read.
+      // broadcast is over when the LAST of them finalizes, or when the last one outstanding is a rung
+      // whose stop failed, and then `announceUnfinished` reports the flip instead of this. A rung
+      // announcing the end off its own drain would take three live rungs off the air in the admin's
+      // list. This is `StreamCatalog.upsertRendition`'s `flippedToVod` rule, read off the other side
+      // of a wire rather than off a feed read.
       if (announced && announced.flippedToFinished && announced.masterIndex !== null) {
         await this.reportAdminState(
-          {
-            state: ADMIN_STATE_VOD,
-            index: announced.masterIndex,
-            duration: announced.duration ?? this.manifestManager.getTotalDuration(),
-          },
+          this.ladderRecordingReport(announced, announced.masterIndex),
           'so the recording is in the feed and the admin does not know it, which the recovery entry lets the next boot retry',
         );
         // ⛔⛔⛔ After the report and only when the ladder really flipped, which is the same rule the
@@ -892,6 +895,42 @@ export class StreamUploader {
     // that a reconnect replaced, since two drains await this one promise.
     this.metrics?.recordStreamFinalized();
     this.clearRecoveryEntry();
+  }
+
+  /**
+   * Tell this rung's ladder that the rung ended without a recording, so the ladder stops waiting for it.
+   *
+   * ⛔⛔⛔ 2026-09-23: 1080p's batch refused its recording, the orchestrator force-stopped it, and the
+   * ladder stayed `live` for good, because a ladder finished only once every rung carried an index. See
+   * `LadderCompletion`.
+   *
+   * ⛔ Called by the orchestrator once this session's stop has failed, and only when no newer session
+   * holds this id. That is why nothing here asks whether this session still owns its recovery entry,
+   * the guard every other report in this class passes: the failed drain gave the entry up so that it
+   * survives for the next boot, and the next boot is how this rung can still finish and join the
+   * recording then.
+   *
+   * In admin mode the flip this causes is reported here, after the master naming the recording landed,
+   * exactly as `completeFinalize` reports the flip a finalize causes.
+   */
+  public async announceUnfinished(): Promise<void> {
+    if (!this.ladder) {
+      return;
+    }
+
+    this.logger.warn(
+      `[StreamUploader] ${this.streamId} stopped without a recording, so ladder ${this.ladder.group} no longer ` +
+        `waits for its ${this.ladder.rung.name} rung`,
+    );
+    const announced = await this.ladderRegistry.recordRungUnfinished(this.ladderIdentity(), this.buildRendition());
+
+    if (this.admin && announced.flippedToFinished && announced.masterIndex !== null) {
+      await this.sendAdminState(
+        this.ladderRecordingReport(announced, announced.masterIndex),
+        'so the ladder is a recording in its master and the admin still lists it as live',
+      );
+      this.logger.log(ladderFinalized(this.ladder.group));
+    }
   }
 
   /**
@@ -1279,7 +1318,6 @@ export class StreamUploader {
    * two off one feed is the replacement waiting, not this session stopping. See {@link retire}.
    */
   private async reportAdminState(report: AdminStateReport, whatIsLost: string): Promise<void> {
-    const admin = this.admin!;
     if (!this.ownsRecoveryEntry) {
       this.logger.warn(
         `[StreamUploader] Not reporting ${report.state} for ${this.streamId}: a newer session holds it, ` +
@@ -1288,10 +1326,28 @@ export class StreamUploader {
       return;
     }
 
+    await this.sendAdminState(report, whatIsLost);
+  }
+
+  /** {@link reportAdminState} without its guard, for the one caller that has settled it another way. */
+  private async sendAdminState(report: AdminStateReport, whatIsLost: string): Promise<void> {
+    const admin = this.admin!;
     const outcome = await admin.client.reportState(admin.id, report);
     if (!stateWasReported(outcome)) {
       throw new Error(`Could not report ${report.state} for stream ${this.streamId} to the admin API, ${whatIsLost}`);
     }
+  }
+
+  /**
+   * The `vod` report for a ladder that has just become a recording, at its MASTER's index for the reason
+   * `completeFinalize` gives.
+   */
+  private ladderRecordingReport(announced: RenditionAnnouncement, masterIndex: number): AdminStateReport {
+    return {
+      state: ADMIN_STATE_VOD,
+      index: masterIndex,
+      duration: announced.duration ?? this.manifestManager.getTotalDuration(),
+    };
   }
 
   /**
@@ -1315,21 +1371,23 @@ export class StreamUploader {
     this.lastAnnounceAttemptAt = Date.now();
 
     this.logger.log(publishingRendition(rendition.name, this.ladder!.group));
-    const announced = await this.ladderRegistry.upsertRendition(
-      {
-        title: this.getFormattedDate(),
-        owner: this.streamSigner.publicKey().address().toHex(),
-        group: this.ladder!.group,
-        mediatype: this.mediatype,
-        // Absent standalone, where the catalog never reads it. In admin mode it is what addresses the
-        // report, and it is the ladder's rather than this rung's: one declared stream is one ladder.
-        adminStreamId: this.admin?.id,
-      },
-      rendition,
-    );
+    const announced = await this.ladderRegistry.upsertRendition(this.ladderIdentity(), rendition);
 
     this.driftBaselineBps = rendition.bandwidth;
     return announced;
+  }
+
+  /** What this rung shares with every other rung of its ladder, which is what the ladder is merged under. */
+  private ladderIdentity(): LadderIdentity {
+    return {
+      title: this.getFormattedDate(),
+      owner: this.streamSigner.publicKey().address().toHex(),
+      group: this.ladder!.group,
+      mediatype: this.mediatype,
+      // Absent standalone, where the catalog never reads it. In admin mode it is what addresses the
+      // report, and it is the ladder's rather than this rung's: one declared stream is one ladder.
+      adminStreamId: this.admin?.id,
+    };
   }
 
   private async refreshBandwidthIfDrifted(): Promise<void> {

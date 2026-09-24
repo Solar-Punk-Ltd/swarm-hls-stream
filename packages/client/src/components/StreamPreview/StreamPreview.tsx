@@ -160,7 +160,7 @@ export const StreamPreview = ({
         }
 
         const seg = source.firstSegment;
-        const segUrl = previewSegmentUrl(seg.uri, gatewayUrl);
+        const segUrl = previewSegmentUrl(seg.uri, gatewayUrl, window.location.origin);
 
         // Spelled from the shared constants rather than by hand. These six literals were the last
         // place a tag rename could pass every type check and every test and still leave the preview

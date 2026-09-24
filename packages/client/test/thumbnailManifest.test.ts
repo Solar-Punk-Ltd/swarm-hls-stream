@@ -75,19 +75,45 @@ describe('thumbnailManifestUrl', () => {
  * which is why it went unnoticed: `.env.latbench` sets a full URL and `.env.sample` leaves it empty.
  */
 describe('previewSegmentUrl', () => {
+  const PAGE_ORIGIN = 'http://viewer.example:10064';
+
+  /**
+   * The gateway every deployed viewer is handed, and the case these tests used to miss.
+   *
+   * The deploy builds the viewer with `VITE_READER_BEE_URL=/bee` (`deploy/Dockerfile.client`,
+   * `deploy/scripts/deploy.sh`), so the viewer reaches Bee through its own nginx proxy and the
+   * gateway a card holds is a rooted path, not a URL. Joined onto a media line as it was, every card
+   * on every deployed viewer asked hls.js for `/bee/bytes/<ref>`, the fragment loader refused it as
+   * naming no gateway, and the card fell back to the placeholder. Seen on 2026-09-24 on the tester's
+   * deployment: four blank cards, and three of them loaded once the viewer was pointed at the same
+   * proxy by its absolute address.
+   */
+  const VIEWER_PROXY_GATEWAY = '/bee';
+
   it('sends a rooted path to the gateway, not to whatever origin the page came from', () => {
-    expect(previewSegmentUrl('/bytes/abc123', GATEWAY)).toBe(`${GATEWAY}/bytes/abc123`);
+    expect(previewSegmentUrl('/bytes/abc123', GATEWAY, PAGE_ORIGIN)).toBe(`${GATEWAY}/bytes/abc123`);
   });
 
   it('addresses a bare swarm reference under the gateway bytes endpoint', () => {
-    expect(previewSegmentUrl('abc123', GATEWAY)).toBe(`${GATEWAY}/bytes/abc123`);
+    expect(previewSegmentUrl('abc123', GATEWAY, PAGE_ORIGIN)).toBe(`${GATEWAY}/bytes/abc123`);
+  });
+
+  it("addresses a bare reference through the viewer's own proxy by the page's address", () => {
+    expect(previewSegmentUrl('abc123', VIEWER_PROXY_GATEWAY, PAGE_ORIGIN)).toBe(`${PAGE_ORIGIN}/bee/bytes/abc123`);
+  });
+
+  it("sends a rooted path through the viewer's own proxy by the page's address", () => {
+    expect(previewSegmentUrl('/bytes/abc123', VIEWER_PROXY_GATEWAY, PAGE_ORIGIN)).toBe(
+      `${PAGE_ORIGIN}/bee/bytes/abc123`,
+    );
   });
 
   it.each([
     ['http', 'http://other-gw:1633/bytes/abc123'],
     ['https', 'https://other-gw/bytes/abc123'],
   ])('leaves an absolute %s uri alone, since the uploader already named a gateway', (_scheme, uri) => {
-    expect(previewSegmentUrl(uri, GATEWAY)).toBe(uri);
+    expect(previewSegmentUrl(uri, GATEWAY, PAGE_ORIGIN)).toBe(uri);
+    expect(previewSegmentUrl(uri, VIEWER_PROXY_GATEWAY, PAGE_ORIGIN)).toBe(uri);
   });
 
   /**
@@ -96,15 +122,18 @@ describe('previewSegmentUrl', () => {
    * the check was reading as a scheme test while only testing a prefix.
    */
   it('does not mistake a reference beginning with the letters http for an absolute url', () => {
-    expect(previewSegmentUrl('httpabc123', GATEWAY)).toBe(`${GATEWAY}/bytes/httpabc123`);
+    expect(previewSegmentUrl('httpabc123', GATEWAY, PAGE_ORIGIN)).toBe(`${GATEWAY}/bytes/httpabc123`);
   });
 
   // Every result has to be something hls.js will not try to resolve, which is what makes the blob
   // base irrelevant. `buildAbsoluteURL` returns a reference with a scheme unchanged.
-  it.each([['/bytes/abc123'], ['abc123'], ['http://other-gw/bytes/abc123']])(
-    'returns an absolute url for %s, so hls.js has nothing left to resolve',
-    (uri) => {
-      expect(previewSegmentUrl(uri, GATEWAY)).toMatch(/^https?:\/\//);
-    },
-  );
+  it.each([
+    ['/bytes/abc123', GATEWAY],
+    ['abc123', GATEWAY],
+    ['http://other-gw/bytes/abc123', GATEWAY],
+    ['/bytes/abc123', VIEWER_PROXY_GATEWAY],
+    ['abc123', VIEWER_PROXY_GATEWAY],
+  ])('returns an absolute url for %s through %s, so hls.js has nothing left to resolve', (uri, gateway) => {
+    expect(previewSegmentUrl(uri, gateway, PAGE_ORIGIN)).toMatch(/^https?:\/\//);
+  });
 });
