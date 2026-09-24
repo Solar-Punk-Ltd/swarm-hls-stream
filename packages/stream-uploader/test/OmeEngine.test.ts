@@ -517,6 +517,8 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     const RESTARTED_SEGMENTS = 4;
     const RESTARTED_HIGH = mediaPlaylist(['seg_9.ts', 'seg_10.ts', 'seg_11.ts', 'seg_12.ts'], 9);
     const published: VodEntry[] = [];
+    const uploaded: string[] = [];
+    const uploadedFrom = (session: string): number => uploaded.filter((body) => body.startsWith(`${session}-`)).length;
     const origin = makeOrigin();
     const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: RESTART_SECRET,
@@ -525,6 +527,10 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     const orchestrator = makeTestOrchestrator(
       {},
       {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
         uploadPayload: async (index: number) => {
           await sleep(FINALIZE_LATENCY_MS);
           return { reference: { toHex: () => `soc${index}` } };
@@ -546,6 +552,10 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     // See CON-19.
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
     origin.restart(RESTARTED_HIGH);
+    // The closing stops the puller, so it waits for the restarted run to reach Bee first. Sent straight
+    // after the restart it raced the resumed puller's next poll, and a closing handled first records the
+    // first run alone. Same condition the CON-20 tests below wait on.
+    await waitFor(() => uploadedFrom('s2') === RESTARTED_SEGMENTS, DELIVERY_TIMEOUT_MS);
     // Nothing may be finalized while the broadcast is still running, which is the whole of the
     // reconnect window: the closing below is what ends it.
     assert.deepEqual(
@@ -564,6 +574,21 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       `the recording is not the length of the two runs it holds, so media was published into it twice or lost from it; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
+    );
+    // The duration is an aggregate and cannot say whose media it holds. The first run uploaded twice
+    // with the restarted run lost comes to the same 16 seconds and passed it. Every body names the
+    // origin session that served it, so these two can tell.
+    assert.equal(
+      uploadedFrom('s1'),
+      FIRST_SESSION_SEGMENTS,
+      `the first session's segments did not reach Bee exactly once each, so the recording holds some of them twice or lost some; uploaded: ${uploaded.join(
+        ', ',
+      )}`,
+    );
+    assert.equal(
+      uploadedFrom('s2'),
+      RESTARTED_SEGMENTS,
+      `the restarted run did not reach Bee exactly once per segment; uploaded: ${uploaded.join(', ')}`,
     );
   });
 
