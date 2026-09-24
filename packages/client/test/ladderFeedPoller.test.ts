@@ -8,10 +8,12 @@ import {
   FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
+  FEED_STATE_STALLED,
   FeedHealthTracker,
   FeedState,
   RUNG_DEATH_LAG_SEGMENTS,
   UNSERVED_POLLS_PROBE_CEILING,
+  UNSERVED_SLOT_STALL_MS,
 } from '../src/components/SwarmHlsPlayer/feedState.js';
 import { LadderFeedPoller } from '../src/components/SwarmHlsPlayer/LadderFeedPoller.js';
 import { ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
@@ -214,6 +216,11 @@ describe('LadderFeedPoller', () => {
     }
   });
 
+  /**
+   * What remains after ENDLIST is the watch for the broadcaster coming back, which asks once per
+   * `FEED_RETURN_WATCH_INTERVAL_MS` rather than once per poll. That interval is thirty seconds here,
+   * so nothing it asks can land inside this test.
+   */
   it('stops walking a rung once its playlist is finalized', async () => {
     const topic = Topic.fromString('group-1-720p');
     const gateway = new FakeGateway();
@@ -229,7 +236,7 @@ describe('LadderFeedPoller', () => {
 
       const afterStop = gateway.requests.length;
       await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.equal(gateway.requests.length, afterStop, 'no further requests after ENDLIST');
+      assert.equal(gateway.requests.length, afterStop, 'a finished rung was still polled at the live cadence');
     } finally {
       poller.stop([topic]);
     }
@@ -307,6 +314,234 @@ describe('LadderFeedPoller', () => {
       } finally {
         poller.stop([topic]);
       }
+    });
+  });
+
+  /**
+   * ⛔⛔ **A finished ladder is not necessarily over.** Live, 2026-09-24: a declared stream's encoder
+   * dropped for longer than the reconnect window, the uploader finalized all four rungs at 18:41:57
+   * UTC, and the broadcaster came back at 18:43:18 with every rung resuming its feed at the next
+   * index. The viewer who had watched it end sat on "This broadcast has ended" for more than fifteen
+   * minutes, because this walk stopped on ENDLIST for good. A viewer who opened the page afterwards
+   * played the broadcast live.
+   */
+  describe('watching a finished ladder for its broadcaster coming back', () => {
+    const groupHex = Topic.fromString('group-1').toString();
+    const RUNGS = ['group-1-360p', 'group-1-720p'].map((name) => Topic.fromString(name));
+    /** Where the uploader wrote each rung's finished playlist. */
+    const FINISHED_AT = 1;
+    /** Short enough that several watches land inside a test, and still five polls long. */
+    const WATCH_MS = 10;
+
+    /** A ladder the uploader has closed, with nothing written after the finished playlists yet. */
+    function finishedLadder(): FakeGateway {
+      const gateway = new FakeGateway();
+      gateway.missingSlotStatus = 404;
+      for (const topic of RUNGS) {
+        gateway.publishFeedHead(topic, 0, manifest(1));
+        gateway.publishSoc(topic, FINISHED_AT, manifest(2, true));
+      }
+      return gateway;
+    }
+
+    /** Every rung writing `body` at `index`, the way the uploader resumes a declared stream's rungs. */
+    function publishOnEveryRung(gateway: FakeGateway, index: number, body: string): void {
+      for (const topic of RUNGS) {
+        gateway.publishSoc(topic, index, body);
+      }
+    }
+
+    function makeWatchedTracker() {
+      const tracker = new FeedHealthTracker();
+      const resumed: string[] = [];
+      tracker.onFeedResumed((topicId) => resumed.push(topicId));
+      return { tracker, resumed };
+    }
+
+    function watchingPoller(gateway: FakeGateway, tracker: FeedHealthTracker): LadderFeedPoller {
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker, () => 0, WATCH_MS);
+      poller.start(OWNER, RUNGS, groupHex);
+      return poller;
+    }
+
+    it('reports the broadcast back once the slot after the finished playlist holds an open one', async () => {
+      const gateway = finishedLadder();
+      const { tracker, resumed } = makeWatchedTracker();
+      const poller = watchingPoller(gateway, tracker);
+
+      try {
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the ladder to end');
+
+        publishOnEveryRung(gateway, FINISHED_AT + 1, manifest(3));
+
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_LIVE, 'the ladder to come back');
+        assert.ok(resumed.includes(groupHex), 'the group, which is the topic a player listens on, was never told');
+      } finally {
+        poller.stop(RUNGS);
+      }
+    });
+
+    /**
+     * The whole of a live end as a viewer on one rung lives it. Every rung waits on its publisher
+     * through the reconnect window, the ladder finishes, and the broadcaster comes back. The viewer is
+     * told the broadcast is waiting, then that it has ended, and then nothing.
+     *
+     * ⛔ Found back on the rung the viewer is NOT on, which is the order that failed: the rungs' watches
+     * find the return one at a time, and the viewer's own rung still carried its wait from before the
+     * end, so the group came back reading as waiting to continue.
+     */
+    it('comes back live for the viewer on a rung, rather than as the wait before the end', async () => {
+      let clockMs = 0;
+      const tracker = new FeedHealthTracker(() => clockMs);
+      const seen: FeedState[] = [];
+      tracker.subscribe(groupHex, (feedState) => seen.push(feedState));
+      const gateway = new FakeGateway();
+      gateway.missingSlotStatus = 404;
+      for (const topic of RUNGS) {
+        gateway.publishFeedHead(topic, 0, manifest(1));
+      }
+      const [foundFirst, watchedByTheViewer] = RUNGS;
+      const poller = watchingPoller(gateway, tracker);
+
+      try {
+        await waitFor(
+          () => RUNGS.every((topic) => tracker.unservedPollsRecorded(topic.toString()) > 0),
+          'every rung to wait on its publisher',
+        );
+        tracker.watchRung(groupHex, watchedByTheViewer.toString());
+        clockMs += UNSERVED_SLOT_STALL_MS;
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_STALLED, 'the viewer to be told it is waiting');
+
+        publishOnEveryRung(gateway, FINISHED_AT, manifest(2, true));
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the ladder to end');
+        gateway.publishSoc(foundFirst, FINISHED_AT + 1, manifest(3));
+        await waitFor(() => tracker.state(groupHex) !== FEED_STATE_ENDED, 'the ladder to come back');
+
+        assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_ENDED, FEED_STATE_LIVE]);
+      } finally {
+        poller.stop(RUNGS);
+      }
+    });
+
+    /** The viewer who opened a recording, rather than the one who watched it finish. */
+    it('watches a ladder whose feeds had already finished when it was opened', async () => {
+      const gateway = new FakeGateway();
+      gateway.missingSlotStatus = 404;
+      for (const topic of RUNGS) {
+        gateway.publishFeedHead(topic, FINISHED_AT, manifest(2, true));
+      }
+      const { tracker, resumed } = makeWatchedTracker();
+      const poller = watchingPoller(gateway, tracker);
+
+      try {
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the recording to be read as ended');
+
+        publishOnEveryRung(gateway, FINISHED_AT + 1, manifest(3));
+
+        await waitFor(() => resumed.includes(groupHex), 'the broadcaster coming back to be announced');
+        assert.equal(tracker.state(groupHex), FEED_STATE_LIVE);
+      } finally {
+        poller.stop(RUNGS);
+      }
+    });
+
+    /**
+     * A finished playlist in the next slot is the broadcaster finishing again, not coming back. Taking
+     * it for a return would restart a viewer into the finished recording from its first second.
+     */
+    it('steps past a second finished playlist rather than taking it for the broadcaster', async () => {
+      const gateway = finishedLadder();
+      const { tracker, resumed } = makeWatchedTracker();
+      const poller = watchingPoller(gateway, tracker);
+
+      try {
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the ladder to end');
+
+        publishOnEveryRung(gateway, FINISHED_AT + 1, manifest(3, true));
+        await waitFor(
+          () => RUNGS.every((topic) => gateway.requests.includes(socPath(topic, FINISHED_AT + 2))),
+          'every rung to move its watch past the second finished playlist',
+        );
+        assert.equal(tracker.state(groupHex), FEED_STATE_ENDED, 'a finished playlist was read as a return');
+        assert.deepEqual(resumed, []);
+
+        publishOnEveryRung(gateway, FINISHED_AT + 2, manifest(4));
+
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_LIVE, 'the ladder to come back');
+      } finally {
+        poller.stop(RUNGS);
+      }
+    });
+
+    /** Nothing changes for a broadcast that never comes back, and the watch asks for one slot only. */
+    it('keeps a ladder that never comes back ended, asking only for the slot after its end', async () => {
+      const gateway = finishedLadder();
+      const { tracker, resumed } = makeWatchedTracker();
+      const poller = watchingPoller(gateway, tracker);
+      const slotsAfterTheEnd = new Set(RUNGS.map((topic) => socPath(topic, FINISHED_AT + 1)));
+      const WATCHES_PER_RUNG = 3;
+
+      try {
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the ladder to end');
+        const endedAfter = gateway.requests.length;
+        const watchesSinceTheEnd = () => gateway.requests.slice(endedAfter);
+
+        await waitFor(
+          () =>
+            watchesSinceTheEnd().filter((path) => slotsAfterTheEnd.has(path)).length >= WATCHES_PER_RUNG * RUNGS.length,
+          'several watches on every rung',
+        );
+
+        assert.deepEqual(
+          watchesSinceTheEnd().filter((path) => !slotsAfterTheEnd.has(path)),
+          [],
+          'the watch asked for something other than the slot after the end',
+        );
+        assert.equal(tracker.state(groupHex), FEED_STATE_ENDED);
+        assert.deepEqual(resumed, []);
+      } finally {
+        poller.stop(RUNGS);
+      }
+    });
+
+    it('leaves nothing running once stopped during the watch', async () => {
+      const gateway = finishedLadder();
+      const { tracker, resumed } = makeWatchedTracker();
+      const poller = watchingPoller(gateway, tracker);
+
+      await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the ladder to end');
+      poller.stop(RUNGS);
+      const stoppedAfter = gateway.requests.length;
+      publishOnEveryRung(gateway, FINISHED_AT + 1, manifest(3));
+
+      await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 10));
+
+      assert.equal(gateway.requests.length, stoppedAfter, 'a stopped ladder went on being watched');
+      assert.deepEqual(resumed, [], 'a stopped watch reported the broadcaster back');
+    });
+
+    /**
+     * Nothing cancels a read already in flight, so the answer to one that outlives the teardown is
+     * dropped where it lands. Recorded, it would tell whichever session replaced this one that a
+     * broadcaster it never watched had come back.
+     */
+    it('drops the answer to a watch read that lands after the teardown', async () => {
+      const gateway = finishedLadder();
+      const { tracker, resumed } = makeWatchedTracker();
+      const [rung] = RUNGS;
+      const heldSlot = socPath(rung, FINISHED_AT + 1);
+      // Armed before the walk starts, since nothing but the watch ever asks for this slot.
+      const release = gateway.hold(heldSlot);
+      const poller = watchingPoller(gateway, tracker);
+
+      await waitFor(() => gateway.requests.includes(heldSlot), 'a watch read pinned in flight');
+      poller.stop(RUNGS);
+      gateway.publishSoc(rung, FINISHED_AT + 1, manifest(3));
+      release();
+      await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 5));
+
+      assert.deepEqual(resumed, [], 'an answer that outlived its watch was recorded');
+      assert.equal(tracker.state(groupHex), FEED_STATE_ENDED);
     });
   });
 
