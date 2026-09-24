@@ -517,7 +517,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     const detachReturnRejoin =
       hls && returnTopic
         ? attachReturningBroadcastRejoin(video, manifestFetcher.feedHealth, returnTopic, () => {
-            console.log('[SwarmHls] the broadcast has come back and this viewer reached the end, rejoining it live');
+            console.info('[SwarmHls] the broadcast has come back and this viewer reached the end, rejoining it live');
             setRestartTrigger((prev) => prev + 1);
           })
         : null;
