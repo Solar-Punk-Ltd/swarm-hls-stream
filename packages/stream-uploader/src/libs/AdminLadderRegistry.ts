@@ -177,7 +177,7 @@ export class AdminLadderRegistry implements LadderRegistry {
       );
     }
 
-    const group = identity.group;
+    const { group } = identity;
     if (rendition.index !== undefined) {
       this.unfinished.get(group)?.delete(rendition.name);
     }
