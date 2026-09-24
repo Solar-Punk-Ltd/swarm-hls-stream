@@ -3,6 +3,7 @@ import useSWR from 'swr';
 
 import { StreamList } from '@/components/StreamList/StreamList';
 import { useAppContext } from '@/providers/App';
+import { CATALOG_POLL_INTERVAL_MS } from '@/providers/catalogPoll';
 
 import { CATALOG_VIEW_MESSAGE, catalogViewFrom } from './catalogView';
 
@@ -18,8 +19,8 @@ export function StreamBrowser() {
   // `error` belongs to the node now selected instead of the one the viewer has left.
   const { data, error, isLoading } = useSWR(['app-state', gatewayUrl], fetchAppState, {
     revalidateOnFocus: true,
-    refreshInterval: 5000,
-    dedupingInterval: 5000,
+    refreshInterval: CATALOG_POLL_INTERVAL_MS,
+    dedupingInterval: CATALOG_POLL_INTERVAL_MS,
     shouldRetryOnError: true,
   });
 
