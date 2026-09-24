@@ -63,7 +63,8 @@ async function readDist(spec: string): Promise<{ signature: SignatureState; atte
 
 /** Whole days elapsed between the registry's publish timestamp and `now`, or null when the date does not parse. */
 export function wholeDaysSince(published: string, now: number): number | null {
-  const days = Math.floor((now - Date.parse(published)) / 86_400_000);
+  // A registry clock a few minutes ahead of this one is not a negative age.
+  const days = Math.floor(Math.max(0, now - Date.parse(published)) / 86_400_000);
   // An unparseable date yields NaN, which loses every comparison and would drop the version out of
   // the fresh bucket while reporting nothing. Unknown is a state, not a number.
   return Number.isFinite(days) ? days : null;

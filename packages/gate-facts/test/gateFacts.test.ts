@@ -599,6 +599,13 @@ describe('provenance summary', () => {
     assert.equal(wholeDaysSince('not a date', Date.parse('2026-09-24T12:00:00Z')), null);
   });
 
+  it('reads a publish time a few minutes ahead of this clock as zero days, not a negative age', () => {
+    const now = Date.parse('2026-09-24T12:00:00Z');
+    const published = new Date(now + 5 * 60_000).toISOString();
+
+    assert.equal(wholeDaysSince(published, now), 0);
+  });
+
   it('builds the fresh row from age, not from signature state', () => {
     const summary = summarise([entry('young@1.0.0', 'signed', true, 3), entry('old-bare@1.0.0', 'unsigned', false)]);
 
