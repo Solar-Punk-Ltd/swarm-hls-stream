@@ -36,7 +36,7 @@ interface StreamPreviewProps {
   title: string;
   /** The SOC index of this stream's final manifest, published by the uploader on a finished stream. */
   index?: number;
-  /** A ladder's rungs, which on a finished entry name the slot each rung's final playlist is at. */
+  /** A ladder's rungs, which on a finished entry name the slot each recorded rung's final playlist is at. */
   renditions?: Rendition[];
   /** A Swarm reference to a still image the publisher uploaded. Absent or '' when there is none. */
   thumbnail?: string;
