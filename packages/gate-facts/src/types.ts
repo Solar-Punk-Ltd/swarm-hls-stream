@@ -57,9 +57,9 @@ export interface GateFacts {
  * A collector could not take its measurement.
  *
  * Thrown rather than returned, because the whole point of this artifact is that a measurement which
- * did not happen must never render as a measurement that came back clean. A fresh clone has no local
- * `feat/ai-hardening`, so every `git` call against it fails, and the first version of this package
- * reported that as a change touching zero files, zero source lines and no surfaces, then exited 0.
+ * did not happen must never render as a measurement that came back clean. Against a base that does not
+ * resolve, every `git` call fails, and the first version of this package reported that as a change
+ * touching zero files, zero source lines and no surfaces, then exited 0.
  */
 export class CollectionError extends Error {
   constructor(command: string, detail: string) {
