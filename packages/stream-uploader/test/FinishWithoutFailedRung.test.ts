@@ -36,7 +36,7 @@ import { rungTopicFor } from '../src/utils/rungTopic.js';
 import { makeFakeRecoveryStore, makeTestOrchestrator } from './helpers/fakes.js';
 import { waitFor } from './helpers/waiting.js';
 
-const TEST_STREAM_KEY = '0'.repeat(63) + '1';
+const TEST_STREAM_KEY = `${'0'.repeat(63)}1`;
 const SETTLE_CEILING_MS = 4_000;
 
 const BASE = 'live/stream';
@@ -89,10 +89,12 @@ function catalogFeed(payloads: string[]): Bee {
   const latest = () => (payloads.length === 0 ? [] : JSON.parse(payloads[payloads.length - 1]));
   return {
     makeFeedReader: () => ({
-      downloadPayload: async (options?: { index?: FeedIndex }) =>
-        options?.index
-          ? { payload: { toJSON: latest } }
-          : { feedIndex: FeedIndex.fromBigInt(BigInt(payloads.length)), payload: { toJSON: latest } },
+      downloadPayload: async (options?: { index?: FeedIndex }) => {
+        if (options?.index) {
+          return { payload: { toJSON: latest } };
+        }
+        return { feedIndex: FeedIndex.fromBigInt(BigInt(payloads.length)), payload: { toJSON: latest } };
+      },
     }),
     isConnected: async () => true,
     makeFeedWriter: () => ({
@@ -154,10 +156,12 @@ function orchestratorWhose1080pCannotFinish(
     { ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC), ...config },
     {
       feedHead: () => null,
-      uploadPayload: async (index, payload, topic) =>
-        topic === refusedTopic() && String(payload).includes(HLS_ENDLIST)
-          ? refusedByAFullBatch()
-          : { reference: { toHex: () => `soc${index}` } },
+      uploadPayload: async (index, payload, topic) => {
+        if (topic === refusedTopic() && String(payload).includes(HLS_ENDLIST)) {
+          return refusedByAFullBatch();
+        }
+        return { reference: { toHex: () => `soc${index}` } };
+      },
     },
     makeFakeRecoveryStore(),
     catalog,

@@ -422,7 +422,7 @@ describe('a rung whose uploads are being refused', () => {
   /** The ladder moves on while every upload of the refused rung fails, until it has left it behind. */
   function leftBehindWhileRefused(liveness: LadderLiveness): void {
     everyRungDelivers(liveness);
-    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
       everyRungDelivers(liveness, THE_REST);
       liveness.recordUploadFailed(REFUSED);
     }
@@ -460,7 +460,7 @@ describe('a rung whose uploads are being refused', () => {
     const liveness = new LadderLiveness();
     leftBehindWhileRefused(liveness);
 
-    for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed++) {
+    for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed += 1) {
       landsOnce(liveness);
       assert.equal(liveness.hasStopped(REFUSED, LADDER), true, `back after only ${landed} segments in a row`);
     }
@@ -474,7 +474,7 @@ describe('a rung whose uploads are being refused', () => {
     const liveness = new LadderLiveness();
     leftBehindWhileRefused(liveness);
 
-    for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed++) {
+    for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed += 1) {
       landsOnce(liveness);
     }
     liveness.recordUploadFailed(REFUSED);
@@ -493,7 +493,7 @@ describe('a rung whose uploads are being refused', () => {
 
     everyRungDelivers(liveness, THE_REST);
     liveness.recordUploadFailed(REFUSED);
-    for (let segment = 0; segment < 3 * RUNG_READMIT_AFTER_SEGMENTS; segment++) {
+    for (let segment = 0; segment < 3 * RUNG_READMIT_AFTER_SEGMENTS; segment += 1) {
       landsOnce(liveness);
       assert.equal(liveness.hasStopped(REFUSED, LADDER), false, `dropped ${segment} segments after one refusal`);
     }
@@ -503,7 +503,7 @@ describe('a rung whose uploads are being refused', () => {
   it('leaves a rung that fell behind with nothing refused to come back on its first segment', () => {
     const liveness = new LadderLiveness();
     everyRungDelivers(liveness);
-    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
       everyRungDelivers(liveness, THE_REST);
     }
 
@@ -517,7 +517,7 @@ describe('a rung whose uploads are being refused', () => {
     const liveness = new LadderLiveness();
     everyRungDelivers(liveness);
 
-    for (let segment = 0; segment < 3 * RUNG_READMIT_AFTER_SEGMENTS; segment++) {
+    for (let segment = 0; segment < 3 * RUNG_READMIT_AFTER_SEGMENTS; segment += 1) {
       for (const rung of LADDER) {
         liveness.recordUploadFailed(rung);
       }
@@ -535,7 +535,7 @@ describe('a rung whose uploads are being refused', () => {
   it('counts toward the limit, so two rungs held out together are both kept', () => {
     const liveness = new LadderLiveness();
     everyRungDelivers(liveness);
-    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
       everyRungDelivers(liveness, ['360p', '480p']);
       liveness.recordUploadFailed('720p');
       liveness.recordUploadFailed(REFUSED);
