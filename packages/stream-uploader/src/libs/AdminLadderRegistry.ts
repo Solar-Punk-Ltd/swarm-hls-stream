@@ -3,7 +3,7 @@ import { getErrorMessage } from '../utils/common.js';
 
 import { ADMIN_STATE_VOD, AdminApiClient, RenditionReportResponse } from './AdminApiClient.js';
 import { isFinishedLadder, recordedRungs, recordingDuration } from './LadderCompletion.js';
-import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
+import { advertisableRenditions, LadderLivenessBook } from './LadderLiveness.js';
 import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter } from './MasterFeedWriter.js';
@@ -85,7 +85,7 @@ export class AdminLadderRegistry implements LadderRegistry {
   private readonly rewrites: MasterRewriteSchedule;
 
   /** How far each ladder's rungs have got, one tracker per group. */
-  private readonly liveness = new Map<string, LadderLiveness>();
+  private readonly liveness = new LadderLivenessBook();
 
   /**
    * The ladder the admin last merged, by group.
@@ -186,7 +186,7 @@ export class AdminLadderRegistry implements LadderRegistry {
       this.unfinished.delete(group);
     }
 
-    const advertised = advertisableRenditions(this.offeredRungs(group), this.livenessOf(group));
+    const advertised = advertisableRenditions(this.offeredRungs(group), this.liveness.of(group));
     const published = await this.masterWriter.publish(group, advertised);
     if (published) {
       // Only what the feed took, for the reason {@link MasterRewriteSchedule} states: a shape recorded
@@ -278,16 +278,12 @@ export class AdminLadderRegistry implements LadderRegistry {
   }
 
   public recordRungDelivered(group: string, rung: string): void {
-    const liveness = this.livenessOf(group);
-    liveness.recordDelivered(rung);
-    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+    this.republishIfLadderShapeChanged(group, this.liveness.recordDelivered(group, rung));
   }
 
   /** One segment of this rung was dropped. See {@link LadderRegistry.recordRungUploadFailed}. */
   public recordRungUploadFailed(group: string, rung: string): void {
-    const liveness = this.livenessOf(group);
-    liveness.recordUploadFailed(rung);
-    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+    this.republishIfLadderShapeChanged(group, this.liveness.recordUploadFailed(group, rung));
   }
 
   /**
@@ -320,7 +316,7 @@ export class AdminLadderRegistry implements LadderRegistry {
       // announce can land a newer merge in between — and writing the older one over the master that
       // announce just published would take a rung back off the ladder until something else moved.
       // `StreamCatalog` gets the same freshness by reading its catalog entry inside its own write.
-      const advertised = advertisableRenditions(this.offeredRungs(group), this.livenessOf(group));
+      const advertised = advertisableRenditions(this.offeredRungs(group), this.liveness.of(group));
       const published = await this.masterWriter.publish(group, advertised);
       if (published) {
         this.logger.log(
@@ -343,15 +339,5 @@ export class AdminLadderRegistry implements LadderRegistry {
     } finally {
       this.rewrites.endRewrite(group, shape);
     }
-  }
-
-  private livenessOf(group: string): LadderLiveness {
-    const existing = this.liveness.get(group);
-    if (existing) {
-      return existing;
-    }
-    const created = new LadderLiveness();
-    this.liveness.set(group, created);
-    return created;
   }
 }

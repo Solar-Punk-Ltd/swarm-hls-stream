@@ -244,6 +244,44 @@ export class LadderLiveness {
   }
 }
 
+/**
+ * Every ladder's liveness by group, and the rungs each one treats as live after a segment's outcome.
+ *
+ * One definition for both ladder registries. They differ in where a ladder's merge lives and how a
+ * master is rewritten, never in how a rung is judged, and the per-segment bookkeeping was two
+ * identical copies until 2026-09-24, when a second kind of segment outcome would have made it four.
+ */
+export class LadderLivenessBook {
+  private readonly byGroup = new Map<string, LadderLiveness>();
+
+  /** This ladder's liveness, created the first time the ladder is asked about. */
+  public of(group: string): LadderLiveness {
+    const existing = this.byGroup.get(group);
+    if (existing) {
+      return existing;
+    }
+    const created = new LadderLiveness();
+    this.byGroup.set(group, created);
+    return created;
+  }
+
+  /** One segment of this rung reached Swarm. Answers the rungs the ladder now treats as live. */
+  public recordDelivered(group: string, rung: string): string[] {
+    return this.afterSegment(group, (liveness) => liveness.recordDelivered(rung));
+  }
+
+  /** One segment of this rung was dropped after its whole retry window. Answers the live rungs. */
+  public recordUploadFailed(group: string, rung: string): string[] {
+    return this.afterSegment(group, (liveness) => liveness.recordUploadFailed(rung));
+  }
+
+  private afterSegment(group: string, record: (liveness: LadderLiveness) => void): string[] {
+    const liveness = this.of(group);
+    record(liveness);
+    return liveness.liveRungs();
+  }
+}
+
 /** Named so a caller reads as filtering renditions rather than as knowing about rung names. */
 interface NamedRendition {
   readonly name: string;
