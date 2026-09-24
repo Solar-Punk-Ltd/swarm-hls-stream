@@ -24,6 +24,7 @@
  */
 
 import { Bee } from '@ethersphere/bee-js';
+import { ladderFinalized } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -37,6 +38,7 @@ import {
   StateReportOutcome,
 } from '../src/libs/AdminApiClient.js';
 import { LadderRegistry, RenditionAnnouncement } from '../src/libs/LadderRegistry.js';
+import { Logger } from '../src/libs/Logger.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, Rendition, StreamState } from '../src/types.js';
 
@@ -182,6 +184,19 @@ async function drain(uploader: StreamUploader): Promise<void> {
 async function feedOneSegment(uploader: StreamUploader, index: number): Promise<void> {
   uploader.handleSegment(index, 2, Buffer.from(`seg${index}`));
   await drain(uploader);
+}
+
+/** Every line logged while `run` runs, with the previous sink restored afterwards. */
+async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const logger = Logger.getInstance();
+  const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+  try {
+    await run();
+  } finally {
+    logger.configure(previous);
+  }
+  return lines;
 }
 
 describe('the feed index a declared topic resumes from', () => {
@@ -715,8 +730,8 @@ describe('a replacement session on a declared topic waits for the session it rep
  * session exactly as a declared one does, so the head resume and the predecessor gate are both owed
  * here too. Nothing is written to the stream catalog, and the admin is told instead — but the two
  * reports are now statements about the LADDER: `live` once a master a viewer can open has landed, and
- * `vod` once every rung of the ladder has finalized, carrying the master's index rather than this
- * rung's own.
+ * `vod` once every rung of the ladder has finalized or is known not to finish, carrying the master's
+ * index rather than this rung's own.
  *
  * ⛔ The rung registers its own record through the ladder registry, which is the only thing that can
  * see the other three rungs. That is why the flip is read off an answer rather than off this session's
@@ -745,6 +760,8 @@ describe('a rung of a declared ladder', () => {
     catalogEntries: unknown[];
     reports: AdminStateReport[];
     upserts: Upsert[];
+    /** Every record of this rung registered as one that will not finish. */
+    unfinished: Upsert[];
     delivered: string[];
   }
 
@@ -754,6 +771,10 @@ describe('a rung of a declared ladder', () => {
      * nothing.
      */
     announce?: (upsert: Upsert, attempt: number) => RenditionAnnouncement;
+    /** What the registry answers when the rung is recorded as one that will not finish. Defaults to no master and no flip. */
+    unfinished?: (upsert: Upsert) => RenditionAnnouncement;
+    /** Answer for each state report in turn, so a failure can be driven. Defaults to accepting every one. */
+    reportOutcome?: (report: AdminStateReport) => StateReportOutcome;
     /** How long a failed announce waits before the next manifest publish re-attempts it. */
     catalogAnnounceRetryMs?: number;
     feedHead?: () => FakeFeedHead | null;
@@ -764,6 +785,7 @@ describe('a rung of a declared ladder', () => {
     const catalogEntries: unknown[] = [];
     const reports: AdminStateReport[] = [];
     const upserts: Upsert[] = [];
+    const unfinished: Upsert[] = [];
     const delivered: string[] = [];
 
     const bee = makeFakeBee({
@@ -778,7 +800,7 @@ describe('a rung of a declared ladder', () => {
       describe: () => 'http://admin.test:9877',
       reportState: async (_id: string, report: AdminStateReport) => {
         reports.push(report);
-        return STATE_REPORT_ACCEPTED;
+        return options.reportOutcome?.(report) ?? STATE_REPORT_ACCEPTED;
       },
     } as unknown as AdminApiClient;
 
@@ -796,6 +818,12 @@ describe('a rung of a declared ladder', () => {
       },
       recordRungDelivered: (_group, rung) => {
         delivered.push(rung);
+      },
+      recordRungUploadFailed: () => {},
+      recordRungUnfinished: async (identity, rendition) => {
+        const upsert = { adminStreamId: identity.adminStreamId, group: identity.group, rendition };
+        unfinished.push(upsert);
+        return options.unfinished?.(upsert) ?? { masterIndex: null, flippedToFinished: false, duration: null };
       },
     };
 
@@ -822,7 +850,7 @@ describe('a rung of a declared ladder', () => {
       catalogAnnounceRetryMs: options.catalogAnnounceRetryMs,
     });
 
-    return { uploader, published, catalogEntries, reports, upserts, delivered };
+    return { uploader, published, catalogEntries, reports, upserts, unfinished, delivered };
   }
 
   /**
@@ -963,6 +991,80 @@ describe('a rung of a declared ladder', () => {
     );
     assert.equal(session.upserts.length, 2, 'the rung still announced itself finished, which is what flips the ladder');
     assert.equal(session.upserts[1].rendition.index, session.published.at(-1)?.index);
+  });
+
+  /**
+   * ⛔⛔⛔ 2026-09-23, admin mode's half. A rung whose stop failed has no recording, and the ladder it
+   * belonged to has to stop waiting for it, or three rungs' recording stays listed as live for good.
+   */
+  describe('a rung whose stop failed', () => {
+    it('registers itself as it stands, with no index, under the declared ladder and stream', async () => {
+      const session = newLadderSession();
+      await feedOneSegment(session.uploader, 0);
+
+      await session.uploader.announceUnfinished();
+
+      assert.deepEqual(
+        session.unfinished.map((upsert) => [upsert.group, upsert.adminStreamId, upsert.rendition.name]),
+        [[DECLARED_TOPIC, ADMIN_STREAM_ID, '720p']],
+      );
+      assert.equal(session.unfinished[0].rendition.topic, RUNG_TOPIC, 'the record names the rung′s own feed');
+      assert.equal(session.unfinished[0].rendition.index, undefined, 'a rung with no recording has no index to name');
+    });
+
+    /**
+     * ⛔ The drain that failed has already retired this session, which is the guard every other report
+     * here passes. It is passed over on purpose: the orchestrator calls this only when no newer session
+     * took the id, and a guard that held here would leave the recording listed as live.
+     */
+    it('reports vod at the master′s index, once, when marking it is what finishes the ladder', async () => {
+      const session = newLadderSession({
+        unfinished: () => ({ masterIndex: 6, flippedToFinished: true, duration: 12 }),
+      });
+      await feedOneSegment(session.uploader, 0);
+      session.uploader.retire();
+
+      const lines = await logLinesDuring(() => session.uploader.announceUnfinished());
+
+      assert.deepEqual(session.reports, [
+        { state: ADMIN_STATE_LIVE },
+        { state: ADMIN_STATE_VOD, index: 6, duration: 12 },
+      ]);
+      assert.equal(
+        lines.filter((line) => line.includes(ladderFinalized(DECLARED_TOPIC))).length,
+        1,
+        'one broadcast ended, so the flip is announced exactly once',
+      );
+    });
+
+    it('reports nothing when the ladder is still waiting for other rungs', async () => {
+      const session = newLadderSession();
+      await feedOneSegment(session.uploader, 0);
+
+      const lines = await logLinesDuring(() => session.uploader.announceUnfinished());
+
+      assert.deepEqual(
+        session.reports.map((report) => report.state),
+        [ADMIN_STATE_LIVE],
+        'three of its rungs are still publishing, so the broadcast stays live',
+      );
+      assert.equal(lines.filter((line) => line.includes(ladderFinalized(DECLARED_TOPIC))).length, 0);
+    });
+
+    /** Reported only after the report landed, as a finalize's flip is: a line claiming it first is a flip nobody took. */
+    it('does not say the ladder finalized when the vod report could not be delivered', async () => {
+      const session = newLadderSession({
+        unfinished: () => ({ masterIndex: 6, flippedToFinished: true, duration: 12 }),
+        reportOutcome: (report) => (report.state === ADMIN_STATE_VOD ? STATE_REPORT_FAILED : STATE_REPORT_ACCEPTED),
+      });
+      await feedOneSegment(session.uploader, 0);
+
+      const lines = await logLinesDuring(async () => {
+        await assert.rejects(() => session.uploader.announceUnfinished(), /admin API/);
+      });
+
+      assert.equal(lines.filter((line) => line.includes(ladderFinalized(DECLARED_TOPIC))).length, 0);
+    });
   });
 
   /**

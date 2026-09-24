@@ -4,8 +4,10 @@ import { describe, it } from 'node:test';
 import {
   advertisableRenditions,
   LadderLiveness,
+  LadderLivenessBook,
   MAX_RUNGS_DROPPED_AT_ONCE,
   RUNG_DEATH_LAG_SEGMENTS,
+  RUNG_READMIT_AFTER_SEGMENTS,
 } from '../src/libs/LadderLiveness.js';
 
 /**
@@ -404,5 +406,180 @@ describe('what the master is allowed to advertise', () => {
         `the master stopped offering a rung while ${rung} was coming back`,
       );
     }
+  });
+});
+
+/**
+ * ⛔⛔⛔ The one place this rule is no longer the client's. Measured live 2026-09-23: 1080p's batch was
+ * full, most of its uploads were refused and one landed now and then, and each one that landed put the
+ * rung back in the master for another four of the ladder's segments. The master was rewritten 793
+ * times in four hours. `RefusedRungStaysOut.test.ts` drives that through a real uploader.
+ */
+describe('a rung whose uploads are being refused', () => {
+  const REFUSED = '1080p';
+  const THE_REST = ['360p', '480p', '720p'];
+
+  /** The ladder moves on while every upload of the refused rung fails, until it has left it behind. */
+  function leftBehindWhileRefused(liveness: LadderLiveness): void {
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
+      everyRungDelivers(liveness, THE_REST);
+      liveness.recordUploadFailed(REFUSED);
+    }
+  }
+
+  /** One of the refused rung's segments lands, beside one from each of the others. */
+  function landsOnce(liveness: LadderLiveness): void {
+    everyRungDelivers(liveness, THE_REST);
+    liveness.recordDelivered(REFUSED);
+  }
+
+  it('is dropped once the ladder leaves it behind, as any stopped rung is', () => {
+    const liveness = new LadderLiveness();
+
+    leftBehindWhileRefused(liveness);
+
+    assert.equal(liveness.hasStopped(REFUSED, LADDER), true);
+  });
+
+  it('is not put back by one segment that lands', () => {
+    const liveness = new LadderLiveness();
+    leftBehindWhileRefused(liveness);
+
+    landsOnce(liveness);
+
+    assert.equal(
+      liveness.hasStopped(REFUSED, LADDER),
+      true,
+      'one stray segment through a full batch put the rung back in front of every viewer',
+    );
+    assert.equal(liveness.liveRungs().includes(REFUSED), false);
+  });
+
+  it(`comes back after ${RUNG_READMIT_AFTER_SEGMENTS} segments in a row, and not one sooner`, () => {
+    const liveness = new LadderLiveness();
+    leftBehindWhileRefused(liveness);
+
+    for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed += 1) {
+      landsOnce(liveness);
+      assert.equal(liveness.hasStopped(REFUSED, LADDER), true, `back after only ${landed} segments in a row`);
+    }
+    landsOnce(liveness);
+
+    assert.equal(liveness.hasStopped(REFUSED, LADDER), false, 'a rung whose uploads work again stayed out');
+    assert.deepEqual(liveness.liveRungs().sort(), [...LADDER].sort());
+  });
+
+  it('starts the run again from nothing when another upload is refused', () => {
+    const liveness = new LadderLiveness();
+    leftBehindWhileRefused(liveness);
+
+    for (let landed = 1; landed < RUNG_READMIT_AFTER_SEGMENTS; landed += 1) {
+      landsOnce(liveness);
+    }
+    liveness.recordUploadFailed(REFUSED);
+    landsOnce(liveness);
+
+    assert.equal(liveness.hasStopped(REFUSED, LADDER), true, 'a refusal in the middle of the run was forgotten');
+  });
+
+  /**
+   * ⛔ A refusal alone drops nothing. A rung that has one segment refused and keeps pace otherwise is a
+   * working quality, and dropping it would take it away from every viewer for a segment's loss.
+   */
+  it('is never dropped for a refusal it keeps pace through', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    everyRungDelivers(liveness, THE_REST);
+    liveness.recordUploadFailed(REFUSED);
+    for (let segment = 0; segment < 3 * RUNG_READMIT_AFTER_SEGMENTS; segment += 1) {
+      landsOnce(liveness);
+      assert.equal(liveness.hasStopped(REFUSED, LADDER), false, `dropped ${segment} segments after one refusal`);
+    }
+  });
+
+  /** A transcoder that stopped and came back refused nothing, so it is offered again as soon as it delivers. */
+  it('leaves a rung that fell behind with nothing refused to come back on its first segment', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
+      everyRungDelivers(liveness, THE_REST);
+    }
+
+    landsOnce(liveness);
+
+    assert.equal(liveness.hasStopped(REFUSED, LADDER), false);
+  });
+
+  /** Property 1 again: every rung refused together advances nothing, so nothing falls behind. */
+  it('holds nothing out when every rung′s uploads are refused together', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    for (let segment = 0; segment < 3 * RUNG_READMIT_AFTER_SEGMENTS; segment += 1) {
+      for (const rung of LADDER) {
+        liveness.recordUploadFailed(rung);
+      }
+    }
+    everyRungDelivers(liveness);
+
+    assert.deepEqual(
+      liveness.liveRungs().sort(),
+      [...LADDER].sort(),
+      'a node outage for the whole ladder cost it rungs',
+    );
+  });
+
+  /** Held out is still stopped, so the owner's limit of 2026-09-01 counts it like any other. */
+  it('counts toward the limit, so two rungs held out together are both kept', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
+      everyRungDelivers(liveness, ['360p', '480p']);
+      liveness.recordUploadFailed('720p');
+      liveness.recordUploadFailed(REFUSED);
+    }
+
+    assert.deepEqual(liveness.liveRungs().sort(), [...LADDER].sort());
+    assert.equal(
+      advertisableRenditions(
+        LADDER.map((name) => ({ name })),
+        liveness,
+      ).length,
+      LADDER.length,
+    );
+  });
+});
+
+/**
+ * The per-ladder book both ladder registries keep. It only routes a segment's outcome to that
+ * ladder's own tracker and answers the live set, so these check the routing, and the rule itself is
+ * covered above.
+ */
+describe('the liveness book both ladder registries keep', () => {
+  it('keeps one tracker per ladder and hands the same one back', () => {
+    const book = new LadderLivenessBook();
+
+    assert.equal(book.of('ladder-a'), book.of('ladder-a'));
+    assert.notEqual(book.of('ladder-a'), book.of('ladder-b'));
+  });
+
+  it("answers each segment's outcome with the rungs its own ladder now treats as live", () => {
+    const book = new LadderLivenessBook();
+    for (const rung of LADDER) {
+      book.recordDelivered('ladder-a', rung);
+    }
+
+    let live: string[] = [];
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
+      for (const rung of ['360p', '480p', '720p']) {
+        book.recordDelivered('ladder-a', rung);
+      }
+      live = book.recordUploadFailed('ladder-a', '1080p');
+    }
+
+    assert.deepEqual(live, ['360p', '480p', '720p'], 'the refused rung was still answered as live');
+    assert.deepEqual(book.recordDelivered('ladder-b', '360p'), ['360p'], 'a second ladder saw the first one');
   });
 });

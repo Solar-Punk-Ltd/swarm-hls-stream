@@ -47,7 +47,10 @@ export interface RenditionAnnouncement {
    * to name.
    */
   masterIndex: number | null;
-  /** Whether this announce is the moment every rung of the ladder had finalized, and none before it. */
+  /**
+   * Whether this announce is the moment the ladder became a recording, and none before it: every rung
+   * has finalized or is known not to finish, and at least one finalized. See `LadderCompletion`.
+   */
   flippedToFinished: boolean;
   /** Playing time of the finished recording in seconds, when the ladder flipped. */
   duration: number | null;
@@ -69,6 +72,19 @@ export interface LadderRegistry {
   upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement>;
 
   /**
+   * This rung's session ended without a recording, so the ladder is not to wait for it: merge the rung
+   * as it last announced itself, record that it will not finish, and say what that achieved.
+   *
+   * ⛔ The record has to survive every later announce of this rung that carries no index. A rung
+   * recovered at the next boot announces itself before it finalizes, and that announce must not turn a
+   * finished recording back into a live broadcast. An announce WITH an index replaces the record, and
+   * the recording then names that rung too.
+   *
+   * @param rendition the rung as it stands, with no index: it has no recording to point at.
+   */
+  recordRungUnfinished(identity: LadderIdentity, rendition: Rendition): Promise<RenditionAnnouncement>;
+
+  /**
    * One segment of this rung reached Swarm.
    *
    * Called from the uploader's segment path beside the per-rung metric, because that is the one place
@@ -76,4 +92,14 @@ export interface LadderRegistry {
    * that can notice a rung *stopping*, which no announce ever reports. See `LadderLiveness`.
    */
   recordRungDelivered(group: string, rung: string): void;
+
+  /**
+   * One segment of this rung spent its whole retry window and never reached Swarm.
+   *
+   * Called from the uploader's segment path at the moment the segment is dropped, which is the moment
+   * the per-rung drop counter moves, whatever bee answered. A full postage batch is the cause measured
+   * on 2026-09-23, a node that is down drops segments the same way, and a viewer offered the rung is
+   * failed the same way by both. See `LadderLiveness.recordUploadFailed`.
+   */
+  recordRungUploadFailed(group: string, rung: string): void;
 }

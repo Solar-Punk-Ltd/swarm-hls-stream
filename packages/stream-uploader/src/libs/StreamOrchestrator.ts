@@ -2618,8 +2618,36 @@ export class StreamOrchestrator {
     // over too once no sibling is left. The early return above is the other case and must not: the
     // id there belongs to a live successor publishing into the same ladder.
     this.releaseLadder(streamId);
+    if (outcome.state === STREAM_LIFECYCLE_FAILED) {
+      await this.announceUnfinished(streamId, uploader);
+    }
 
     this.logger.info(`[StreamOrchestrator] ${streamStopped(streamId)}`);
+  }
+
+  /**
+   * Tell a rung's ladder that its stop failed, so the ladder no longer waits for a recording that will
+   * not come.
+   *
+   * ⛔⛔⛔ 2026-09-23: 1080p's recording was refused by its full batch and this class force-stopped it
+   * two seconds before its siblings finalized, and the ladder then stayed `live` for good. See
+   * `LadderCompletion`.
+   *
+   * Only from the exit where no newer session took this id, which is also why `finalizeRetiredSession`
+   * never calls it: a session replaced under its id has a successor on the same rung, and that one can
+   * still finish. A drain that timed out is included, because the retired uploader it abandons never
+   * announces its recording even if it goes on to publish one, and the recovery entry it keeps is what
+   * adds the rung to the recording at the next boot.
+   *
+   * Never throws: this rung is already out of the live maps, and the stop that called this has an
+   * outcome of its own to answer with.
+   */
+  private async announceUnfinished(streamId: string, uploader: StreamUploader): Promise<void> {
+    try {
+      await uploader.announceUnfinished();
+    } catch (error) {
+      this.errorHandler.handleError(error, `StreamOrchestrator.announceUnfinished - ${streamId}`);
+    }
   }
 
   /**

@@ -417,9 +417,10 @@ export class LadderFeedPoller {
    * last rung to finalize is what ends the group. The single-rendition walk records both against the
    * same topic and needs none of this.
    *
-   * All rungs rather than any, mirroring the uploader's own rule (a ladder goes to VOD only once
-   * every announced rung has finalized): one finalized rung beside live ones is a rung retired, not
-   * a broadcast over.
+   * All rungs rather than any: one finalized rung beside live ones is a rung retired, not a broadcast
+   * over. This was the uploader's own rule too until 2026-09-24, when it learned to finish a ladder
+   * without a rung whose stop failed. That mark lives in the catalog, which this poller never reads,
+   * so on such a ladder the dead rung never finalizes here and a live viewer is not shown the end.
    */
   private recordGroupEndedIfComplete(group: string | null): void {
     if (group === null) {
