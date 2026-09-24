@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   advertisableRenditions,
   LadderLiveness,
+  LadderLivenessBook,
   MAX_RUNGS_DROPPED_AT_ONCE,
   RUNG_DEATH_LAG_SEGMENTS,
   RUNG_READMIT_AFTER_SEGMENTS,
@@ -548,5 +549,37 @@ describe('a rung whose uploads are being refused', () => {
       ).length,
       LADDER.length,
     );
+  });
+});
+
+/**
+ * The per-ladder book both ladder registries keep. It only routes a segment's outcome to that
+ * ladder's own tracker and answers the live set, so these check the routing, and the rule itself is
+ * covered above.
+ */
+describe('the liveness book both ladder registries keep', () => {
+  it('keeps one tracker per ladder and hands the same one back', () => {
+    const book = new LadderLivenessBook();
+
+    assert.equal(book.of('ladder-a'), book.of('ladder-a'));
+    assert.notEqual(book.of('ladder-a'), book.of('ladder-b'));
+  });
+
+  it("answers each segment's outcome with the rungs its own ladder now treats as live", () => {
+    const book = new LadderLivenessBook();
+    for (const rung of LADDER) {
+      book.recordDelivered('ladder-a', rung);
+    }
+
+    let live: string[] = [];
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment += 1) {
+      for (const rung of ['360p', '480p', '720p']) {
+        book.recordDelivered('ladder-a', rung);
+      }
+      live = book.recordUploadFailed('ladder-a', '1080p');
+    }
+
+    assert.deepEqual(live, ['360p', '480p', '720p'], 'the refused rung was still answered as live');
+    assert.deepEqual(book.recordDelivered('ladder-b', '360p'), ['360p'], 'a second ladder saw the first one');
   });
 });

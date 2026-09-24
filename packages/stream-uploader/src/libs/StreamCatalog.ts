@@ -9,7 +9,7 @@ import { BeePublisher, BeePublisherPool, safeUrl } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { hasRecording, isFinishedLadder, recordedRungs, recordingDuration } from './LadderCompletion.js';
-import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
+import { advertisableRenditions, LadderLivenessBook } from './LadderLiveness.js';
 import { LadderIdentity, LadderRegistry, RenditionAnnouncement } from './LadderRegistry.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
@@ -113,7 +113,7 @@ export class StreamCatalog implements LadderRegistry {
    * list and should stay that way: what a master is ALLOWED to say is a catalog decision, and the
    * writer's job is to write what it is given.
    */
-  private readonly liveness = new Map<string, LadderLiveness>();
+  private readonly liveness = new LadderLivenessBook();
 
   /**
    * When a rung dying may rewrite this ladder's master, and what a rewrite that did not land costs.
@@ -134,16 +134,12 @@ export class StreamCatalog implements LadderRegistry {
    * place a delivery is known to have actually landed rather than been attempted.
    */
   public recordRungDelivered(group: string, rung: string): void {
-    const liveness = this.livenessOf(group);
-    liveness.recordDelivered(rung);
-    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+    this.republishIfLadderShapeChanged(group, this.liveness.recordDelivered(group, rung));
   }
 
   /** One segment of this rung was dropped. See {@link LadderRegistry.recordRungUploadFailed}. */
   public recordRungUploadFailed(group: string, rung: string): void {
-    const liveness = this.livenessOf(group);
-    liveness.recordUploadFailed(rung);
-    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+    this.republishIfLadderShapeChanged(group, this.liveness.recordUploadFailed(group, rung));
   }
 
   /**
@@ -208,16 +204,6 @@ export class StreamCatalog implements LadderRegistry {
     } finally {
       this.rewrites.endRewrite(group, shape);
     }
-  }
-
-  private livenessOf(group: string): LadderLiveness {
-    const existing = this.liveness.get(group);
-    if (existing) {
-      return existing;
-    }
-    const created = new LadderLiveness();
-    this.liveness.set(group, created);
-    return created;
   }
 
   /**
@@ -507,7 +493,7 @@ export class StreamCatalog implements LadderRegistry {
         // ⛔ A master naming a rung nothing is producing offers a viewer a quality with nothing
         // behind it. The player moves them off within about seven seconds, so this is the last few
         // seconds of that harm rather than all of it, and it is harm a stream need not cause.
-        const advertised = advertisableRenditions(entry.renditions ?? [], this.livenessOf(identity.group));
+        const advertised = advertisableRenditions(entry.renditions ?? [], this.liveness.of(identity.group));
         // Remembered here because this is the path that always runs: a ladder that never announces
         // has no master for a rung death to correct, and no owner to write it as.
         this.lastIdentity.set(identity.group, identity);
@@ -570,7 +556,7 @@ export class StreamCatalog implements LadderRegistry {
           return previous;
         }
 
-        const advertised = advertisableRenditions(entry.renditions ?? [], this.livenessOf(identity.group));
+        const advertised = advertisableRenditions(entry.renditions ?? [], this.liveness.of(identity.group));
         const published = await this.masterWriter?.publish(identity.group, advertised);
         if (!published) {
           return previous;
