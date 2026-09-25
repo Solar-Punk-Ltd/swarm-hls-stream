@@ -1018,17 +1018,17 @@ export class ManifestFetcher {
       return;
     }
 
-    const watch = new FeedReturnWatch(
-      (path) => this.fetchResource(path),
+    const watch = new FeedReturnWatch({
+      fetchResource: (path) => this.fetchResource(path),
       owner,
       topic,
       finishedAt,
-      () => {
+      onReturned: () => {
         this.stopWatchingForReturn(hexTopic);
         this.feedHealth.recordFeedResumed(hexTopic);
       },
-      () => this.drawReturnWatchWaitMs(),
-    );
+      nextWaitMs: () => this.drawReturnWatchWaitMs(),
+    });
     this.returnWatches.set(hexTopic, {
       watch,
       letGoOfTeardown: this.stateManager.onTeardown(hexTopic, () => this.stopWatchingForReturn(hexTopic)),

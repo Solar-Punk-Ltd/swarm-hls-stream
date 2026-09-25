@@ -129,6 +129,24 @@ async function askWhetherFeedReturned(
   return parsed.isFinalized ? { kind: 'finishedAgain', index } : { kind: 'returned', index };
 }
 
+/** The finished feed a {@link FeedReturnWatch} asks about, and whom it tells when the feed opens again. */
+interface FeedReturnWatchOptions {
+  /** The holding follower's own read of one path off the gateway. */
+  readonly fetchResource: (path: string) => Promise<TimedResponse>;
+  readonly owner: string;
+  readonly topic: Topic;
+  /** The slot whose playlist finished the feed. */
+  readonly finishedAt: FeedIndex;
+  /** Called once, when the feed is found open again, and never after {@link FeedReturnWatch.stop}. */
+  readonly onReturned: () => void;
+  /**
+   * The wait before the next ask, called once per ask so that every wait is drawn afresh. Each
+   * follower hands in a draw through its own jitter, which is also what a test injects over. Left out,
+   * the watch draws through a jitter of its own, which spreads the same way.
+   */
+  readonly nextWaitMs?: () => number;
+}
+
 /**
  * A slow watch on one finished feed, for its broadcaster coming back.
  *
@@ -139,21 +157,15 @@ async function askWhetherFeedReturned(
 export class FeedReturnWatch {
   private isStopped = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** Starts at the slot whose playlist finished the feed, and moves past any finished playlist after it. */
+  private finishedAt: FeedIndex;
+  private readonly nextWaitMs: () => number;
 
-  constructor(
-    private readonly fetchResource: (path: string) => Promise<TimedResponse>,
-    private readonly owner: string,
-    private readonly topic: Topic,
-    /** The slot whose playlist finished the feed. Moves forward past any finished playlist after it. */
-    private finishedAt: FeedIndex,
-    /** Called once, when the feed is found open again, and never after {@link stop}. */
-    private readonly onReturned: () => void,
-    /**
-     * The wait before the next ask, called once per ask so that every wait is drawn afresh. Each
-     * follower hands in a draw through its own jitter, which is also what a test injects over.
-     */
-    private readonly nextWaitMs: () => number = () => feedReturnWatchWaitMs(UNINJECTED_JITTER),
-  ) {}
+  /** @param feed The finished feed to ask about, and whom to tell when it opens again. */
+  constructor(private readonly feed: FeedReturnWatchOptions) {
+    this.finishedAt = feed.finishedAt;
+    this.nextWaitMs = feed.nextWaitMs ?? (() => feedReturnWatchWaitMs(UNINJECTED_JITTER));
+  }
 
   /** Asks for the first time one wait from now. The broadcaster has only just finished. */
   start(): void {
@@ -181,7 +193,8 @@ export class FeedReturnWatch {
   }
 
   private async ask(): Promise<void> {
-    const answer = await askWhetherFeedReturned(this.fetchResource, this.owner, this.topic, this.finishedAt);
+    const { fetchResource, owner, topic } = this.feed;
+    const answer = await askWhetherFeedReturned(fetchResource, owner, topic, this.finishedAt);
 
     // Re-checked after the await, for the reason `LadderFeedPoller.advance` gives about responses that
     // land after a teardown. An answer that outlived its watch belongs to a session that is gone.
@@ -191,7 +204,7 @@ export class FeedReturnWatch {
 
     if (answer.kind === 'returned') {
       this.isStopped = true;
-      this.onReturned();
+      this.feed.onReturned();
       return;
     }
     if (answer.kind === 'finishedAgain') {
