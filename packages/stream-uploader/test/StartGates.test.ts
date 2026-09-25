@@ -406,10 +406,10 @@ describe('a deployment with one node for everything', () => {
  * ⛔⛔⛔ **The two gates are not the same risk, and the owner ruled them apart on 2026-09-17.**
  *
  * A chequebook under its floor is a node that will publish slowly and noisily, and the ruling that
- * opened this branch was that it must not stop a start. A postage batch that is full or expired is
- * different in kind: every write against it fails while the broadcast looks live to the room, the
- * viewer and the catalog, and the recording it was meant to keep is never bought. So the default
- * configuration is the chequebook gate warning and the postage gate refusing.
+ * opened this branch was that it must not stop a start. An immutable postage batch that is full, or
+ * any batch that has expired, is different in kind: every write against it fails while the broadcast
+ * looks live to the room, the viewer and the catalog, and the recording it was meant to keep is never
+ * bought. So the default configuration is the chequebook gate warning and the postage gate refusing.
  *
  * One setting still carries it, with three values that each say what they do rather than one value
  * meaning two things: `chequebook-warn` is the default, `warn` is both warning, `refuse` is both

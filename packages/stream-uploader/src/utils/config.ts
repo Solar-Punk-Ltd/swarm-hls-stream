@@ -49,10 +49,12 @@ const DEFAULT_STAMP_MIN_TTL_HOURS = 12;
 const MAX_STAMP_MIN_TTL_HOURS = 24 * 365;
 
 /**
- * How full a postage batch may be before the uploader will start on it.
+ * How full an immutable postage batch may be before the uploader will start on it.
  *
  * An immutable batch that reaches capacity stops accepting chunks, and that arrives as a failed
- * upload rather than as a warning. 0.9 leaves a tenth of the batch for the run ahead.
+ * upload rather than as a warning. 0.9 leaves a tenth of the batch for the run ahead. A mutable batch
+ * is never held to it: a full bucket there overwrites its oldest chunks rather than refusing, so the
+ * gate reads its fullness and starts anyway.
  *
  * ⚠️ It is deliberately a ceiling on a ratio rather than a byte figure, because how fast a batch
  * fills depends on the rung: across the shipped ladder 1080p burns roughly seven times the bytes of

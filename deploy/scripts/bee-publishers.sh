@@ -18,8 +18,10 @@
 # ## What it refuses
 #
 # The same two conditions `PostageGate` refuses at startup, with the same numbers, deliberately: a
-# batch under the TTL floor or over the utilization ceiling. Refusing here means an operator learns it
-# while editing config rather than from a service that will not come up. It also refuses a node with
+# batch under the TTL floor, or an immutable batch over the utilization ceiling. A mutable batch is
+# never held to the ceiling, because a full bucket overwrites its oldest chunks rather than refusing
+# an upload. Refusing here means an operator learns it while editing config rather than from a
+# service that will not come up. It also refuses a node with
 # no usable batch at all, and a ladder whose rungs this script has no node for.
 #
 # ⛔ It never prints a whole batch id. The line it writes carries them, because that is what the line
@@ -297,6 +299,11 @@ if not isinstance(body, dict) or not isinstance(body.get("stamps"), list):
 
 stamps = body["stamps"]
 
+def immutable(batch):
+    """Only an explicit false makes a batch mutable, the rule PostageGate reads it by. A batch that
+    does not say is held to the ceiling of the kind that refuses when full."""
+    return batch.get("immutableFlag") is not False
+
 def why_not(batch):
     """Every reason a batch cannot carry a broadcast, so a refusal lists them all at once."""
     reasons = []
@@ -314,7 +321,7 @@ def why_not(batch):
         reasons.append(f"{ttl / 3600.0:.1f}h left, floor is {min_ttl_s / 3600.0:.1f}h")
     if not isinstance(ratio, (int, float)):
         reasons.append("no readable utilizationRatio")
-    elif ratio > max_util:
+    elif ratio > max_util and immutable(batch):
         reasons.append(f"{ratio * 100.0:.1f}% used, ceiling is {max_util * 100.0:.1f}%")
     return reasons
 
@@ -354,12 +361,14 @@ if len(batch_id) != 64 or any(c not in "0123456789abcdefABCDEF" for c in batch_i
     sys.exit(0)
 
 among = f" (chose the longest-lived of {len(usable)})" if len(usable) > 1 else ""
-print("OK\t{id}\t{short} {pct:.1f}% used, {ttl:.1f}h left, depth {depth}{among}".format(
+kind = "" if immutable(chosen) else ", mutable so the ceiling does not apply"
+print("OK\t{id}\t{short} {pct:.1f}% used, {ttl:.1f}h left, depth {depth}{kind}{among}".format(
     id=batch_id,
     short=batch_id[:8],
     pct=chosen["utilizationRatio"] * 100.0,
     ttl=chosen["batchTTL"] / 3600.0,
     depth=chosen.get("depth", "?"),
+    kind=kind,
     among=among,
 ))
 ')"

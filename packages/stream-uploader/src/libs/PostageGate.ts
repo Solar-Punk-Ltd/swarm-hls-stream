@@ -18,7 +18,11 @@ import { GateCollector, GateFinding } from './StartGates.js';
  *
  * - **It fills.** An immutable batch that reaches its capacity stops accepting chunks. The shipped
  *   latbench batch was measured on 2026-08-31 sitting at **90.6% utilization**, immutable, with
- *   nothing anywhere reading that number.
+ *   nothing anywhere reading that number. ⛔ A mutable batch never does: a full bucket overwrites its
+ *   oldest chunks and the upload succeeds. So the utilization ceiling is held against immutable
+ *   batches only. On 2026-09-24 the tester's 720p rung paid with a mutable batch at 88.3%, and the
+ *   next long broadcast would have left that uploader refusing to restart for a failure a mutable
+ *   batch cannot have.
  * - **It expires.** A batch's remaining time is bought, and it runs out. Uploads against an expired
  *   batch fail, and the data it was paying for stops being kept.
  *
@@ -31,12 +35,12 @@ import { GateCollector, GateFinding } from './StartGates.js';
  *
  * ⛔ **This gate still refuses by default, and it is the only one that does, but only about a batch
  * the node answered for.** The owner ruled the two gates apart on 2026-09-17: a chequebook under its
- * floor is a node that publishes slowly, while a batch that is full or expired fails every write
- * while the broadcast looks live to the room, the viewer and the catalog, and the recording it was
- * meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
+ * floor is a node that publishes slowly, while an immutable batch that is full, or any batch that
+ * has expired, fails every write while the broadcast looks live to the room, the viewer and the
+ * catalog, and the recording it was meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
  * same way, in his words: "PostageGate refuses only a batch the node answered about and warns on an
- * unreadable one." A `usable=false`, a batch under the time floor, a batch over the utilization
- * ceiling and a 4xx are the node answering, and they still end the boot under the shipped
+ * unreadable one." A `usable=false`, a batch under the time floor, an immutable batch over the
+ * utilization ceiling and a 4xx are the node answering, and they still end the boot under the shipped
  * `chequebook-warn`. A timeout, a 5xx and an answer with no readable fields are no reading at all,
  * and under that mode they are warned about and the uploader starts, because a rung whose node is
  * not talking has said nothing about any batch. `warn` has both gates warning about both readings,
@@ -131,14 +135,14 @@ export class PostageGate {
     if (batch.ttlSeconds < this.minTtlSeconds) {
       return { message: this.expiringRefusal(publisher, batch), reading: 'answered' };
     }
-    if (batch.utilization > this.maxUtilization) {
+    if (batch.immutable && batch.utilization > this.maxUtilization) {
       return { message: this.fullRefusal(publisher, batch), reading: 'answered' };
     }
 
     this.logger.info(
       `[PostageGate] ${publisher.rung} ${safeUrl(publisher.url)} batch ${shortBatchId(publisher.stamp)}: ` +
         `${percent(batch.utilization)} used, ${hours(batch.ttlSeconds)}h left ` +
-        `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)`,
+        `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)${mutableNote(batch)}`,
     );
     return null;
   }
@@ -216,6 +220,8 @@ interface BatchReading {
   readonly ttlSeconds: number;
   /** 0 to 1, which is bee-js's `usage`. Its `utilization` is the raw count in the fullest bucket. */
   readonly utilization: number;
+  /** False only when the node said the batch is mutable, the one kind that never refuses when full. */
+  readonly immutable: boolean;
 }
 
 interface FundingLogger {
@@ -238,6 +244,9 @@ interface FundingLogger {
  * ⚠️ A negative TTL never arrives here. bee reports -1 for a batch whose lifetime it cannot work out,
  * and bee-js clamps that to one second on the way through, so an expired batch is refused by the
  * floor below rather than read as unreadable.
+ *
+ * ⛔ Mutability is read the same way round. Only an explicit `false` makes a batch mutable, so a
+ * batch that does not say is held to the ceiling of the kind that refuses when full.
  */
 function parseBatch(batch: PostageBatch): BatchReading | null {
   const ttl = numberOf(secondsOf(batch.duration));
@@ -249,7 +258,15 @@ function parseBatch(batch: PostageBatch): BatchReading | null {
     usable: batch.usable === true,
     ttlSeconds: ttl,
     utilization: usage,
+    immutable: batch.immutableFlag !== false,
   };
+}
+
+/** Why a mutable batch's reading passed whatever its fullness, said on the line that records it. */
+function mutableNote(batch: BatchReading): string {
+  return batch.immutable
+    ? ''
+    : ', mutable, so a full bucket overwrites its oldest chunks rather than refusing and the utilization ceiling does not apply';
 }
 
 /**

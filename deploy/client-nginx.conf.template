@@ -14,6 +14,15 @@ server {
     try_files $uri $uri/ /index.html;
   }
 
+  # ⛔ The page is never reused without asking. It names the bundle by content hash, so a browser
+  # keeping an old copy after a redeploy asks for a bundle the new container no longer has and the
+  # viewer does not load, seen 2026-09-24. `no-cache` still lets a browser keep the page, it only has
+  # to revalidate with the ETag first, which costs a 304. Every app route reaches this block too,
+  # because the fallback above ends in an internal redirect to /index.html.
+  location = /index.html {
+    add_header Cache-Control "no-cache";
+  }
+
   # weeb-3's SharedWorker runtime, copied into dist/ by the client's `prebuild`. From 0.0.341001 the
   # in-tab node lives entirely in a SharedWorker the package loads from /weeb-3/worker.js, and a
   # SharedWorker script has to be same-origin, so these bytes are ours to serve.
