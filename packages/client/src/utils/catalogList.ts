@@ -136,12 +136,18 @@ export function nextStreamList({ held, heldSlot, fetched, fetchedSlot, isSameGat
     return isValidCatalog && fetchedSlot > heldSlot ? streams : null;
   }
 
-  if (streams.length === 0) {
-    return null;
+  return hasNewerLastEntry(held, streams) ? streams : null;
+}
+
+/**
+ * The older rule, for a read whose slot is not known: a list that holds streams is newer when nothing
+ * is on screen or its last entry is newer than the last one held. A list with no streams never is.
+ */
+function hasNewerLastEntry(held: Stream[], fetched: Stream[]): boolean {
+  const latestFetched = fetched[fetched.length - 1];
+  if (!latestFetched) {
+    return false;
   }
-
-  const latestFetched = streams[streams.length - 1];
   const latestHeld = held[held.length - 1];
-
-  return !latestHeld || latestFetched.timestamp > latestHeld.timestamp ? streams : null;
+  return !latestHeld || latestFetched.timestamp > latestHeld.timestamp;
 }
