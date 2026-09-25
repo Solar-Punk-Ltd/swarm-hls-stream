@@ -1668,14 +1668,17 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
     assert.deepEqual(resumed, []);
   });
 
-  /** What a fresh mount's head read answers, and where it says the head is. */
-  function headAnswers(body: string, index: bigint): void {
+  /** What a fresh mount's head read answers, and where it says the head is, or null for a head that does not say. */
+  function headAnswers(body: string, index: bigint | null): void {
     const headUrl = `${BEE_URL}/feeds/${OWNER}/${hexTopic}`;
     const answerFromFixture = globalThis.fetch;
-    globalThis.fetch = async (input: RequestInfo | URL) =>
-      String(input) === headUrl
-        ? new Response(body, { headers: { 'Swarm-Feed-Index': index.toString(16) } })
-        : answerFromFixture(input);
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      if (String(input) !== headUrl) {
+        return answerFromFixture(input);
+      }
+      const headers = index === null ? undefined : { 'Swarm-Feed-Index': index.toString(16) };
+      return new Response(body, { headers });
+    };
   }
 
   /**
@@ -1726,10 +1729,7 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
    */
   it('still plays a recording whose head names no index, and watches nothing', async () => {
     manager.clear(hexTopic);
-    const headUrl = `${BEE_URL}/feeds/${OWNER}/${hexTopic}`;
-    const answerFromFixture = globalThis.fetch;
-    globalThis.fetch = async (input: RequestInfo | URL) =>
-      String(input) === headUrl ? new Response(finished(FINISHED_AT)) : answerFromFixture(input);
+    headAnswers(finished(FINISHED_AT), null);
 
     const manifest = await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     await sleep(WATCH_MS * 10);
