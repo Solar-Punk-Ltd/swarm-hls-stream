@@ -520,7 +520,9 @@ async function handleStreams(
       // Measured on the 157 stage on 2026-09-25: an RTMP publish of an undeclared topic with `_720p`
       // on the end and no key ran until it was stopped.
       if (!isLoopbackPublisher(payload)) {
-        logger.warn(`[SRS] Refused ${streamId} on vhost '${payload.vhost}': a name the uploader never ingests, sent from off the host`);
+        logger.warn(
+          `[SRS] Refused ${streamId} on vhost '${payload.vhost}': a name the uploader never ingests, sent from off the host`,
+        );
         // Reported rather than observed. SRS_REJECT rides inside a 200. See OBS-15.
         streamOrchestrator.recordAuthRejection();
         srsResponse(res, SRS_REJECT);
