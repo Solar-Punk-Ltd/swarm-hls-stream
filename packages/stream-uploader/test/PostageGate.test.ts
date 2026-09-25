@@ -143,6 +143,84 @@ describe('PostageGate', () => {
     ).assertUsable();
   });
 
+  /**
+   * ⛔ Only an immutable batch refuses when it fills. A mutable one overwrites the oldest chunks of a
+   * full bucket and keeps accepting uploads, so a boot refused on its fullness is a stage refused for
+   * a failure that cannot happen. Read on 157.90.34.105 on 2026-09-24: the tester's 720p rung paid
+   * with mutable batch e15d9a62 at 88.3% used, one long broadcast away from an uploader that would
+   * not restart.
+   */
+  it('clears a mutable batch past the ceiling, because a full mutable batch overwrites rather than refusing', async () => {
+    const reads: Reads = { asked: [] };
+    await new PostageGate(
+      [publisher('720p', 'http://c:1633', 'c'.repeat(64), batch({ usage: 1, immutableFlag: false }), reads)],
+      MIN_TTL_S,
+      MAX_UTILIZATION,
+      silent,
+    ).assertUsable();
+  });
+
+  it('says in its reading that a mutable batch past the ceiling was cleared, and why', async () => {
+    const reads: Reads = { asked: [] };
+    const lines: string[] = [];
+    await new PostageGate(
+      [publisher('720p', 'http://c:1633', 'c'.repeat(64), batch({ usage: 0.95, immutableFlag: false }), reads)],
+      MIN_TTL_S,
+      MAX_UTILIZATION,
+      { info: (line) => lines.push(line) },
+    ).assertUsable();
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /95\.0% used/);
+    assert.match(lines[0], /mutable/);
+    assert.match(lines[0], /overwrites/);
+  });
+
+  it('still refuses a mutable batch that expires before the floor', async () => {
+    const reads: Reads = { asked: [] };
+    const message = await refusalFrom([
+      publisher(
+        '720p',
+        'http://c:1633',
+        'c'.repeat(64),
+        batch({ immutableFlag: false, duration: Duration.fromSeconds(MIN_TTL_S - 1) }),
+        reads,
+      ),
+    ]);
+
+    assert.match(message, /floor is 24\.0h/);
+  });
+
+  it('still refuses a mutable batch the node says it cannot spend', async () => {
+    const reads: Reads = { asked: [] };
+    const message = await refusalFrom([
+      publisher('720p', 'http://c:1633', 'c'.repeat(64), batch({ immutableFlag: false, usable: false }), reads),
+    ]);
+
+    assert.match(message, /usable=false/);
+  });
+
+  /**
+   * Absence is a refusal rather than a default, here as everywhere else in the gate. A batch that does
+   * not say it is mutable is held to the ceiling of the kind that refuses when full, because reading
+   * the missing flag as mutable would clear exactly the batch this ceiling exists to stop.
+   */
+  it('holds a batch that does not say whether it is mutable to the immutable ceiling', async () => {
+    const reads: Reads = { asked: [] };
+    const message = await refusalFrom([
+      publisher(
+        '1080p',
+        'http://d:1633',
+        'd'.repeat(64),
+        batch({ usage: 0.95, immutableFlag: undefined as unknown as boolean }),
+        reads,
+      ),
+    ]);
+
+    assert.match(message, /95\.0% used/);
+    assert.match(message, /ceiling is 90\.0%/);
+  });
+
   it('refuses a batch that expires before the floor', async () => {
     const reads: Reads = { asked: [] };
     const message = await refusalFrom([

@@ -57,9 +57,9 @@ const START_GATE_MODE_ENV = 'UPLOADER_START_GATES';
  *
  * ⛔ The two are not the same risk, which is why one value covers both rather than one meaning each.
  * A chequebook under its floor is a node that publishes slowly and noisily, and not starting over it
- * is what the first half of that day's ruling removed. A batch that is full or expired fails every
- * write while the broadcast looks live to the room, the viewer and the catalog, and the recording it
- * was meant to buy is never kept, so that one still stops the boot.
+ * is what the first half of that day's ruling removed. An immutable batch that is full, or any batch
+ * that has expired, fails every write while the broadcast looks live to the room, the viewer and the
+ * catalog, and the recording it was meant to buy is never kept, so that one still stops the boot.
  */
 export const START_GATE_CHEQUEBOOK_WARN = 'chequebook-warn';
 

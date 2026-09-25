@@ -65,6 +65,14 @@ so this covers every card on the page.
 Shipped in `1ccb891`, with the address spelled by `feedSlotPath` in the shared package (`da6b043`)
 rather than a second copy of the rule.
 
+**2026-09-25, the rung this fix never reached.** A ladder's catalog topic is its master playlist, so
+on a ladder the fix addressed the master and the card then read the first rung's playlist by head
+lookup. On 2026-09-24 a 10.1 hour ladder recording's rung lookup outlasted the preview's 10 second
+limit and its card stayed blank. A finished entry names each recorded rung's final slot in
+`Rendition.index`, and the card now reads the rung there (`finishedRungIndex` in
+[`previewManifest.ts`](../../packages/client/src/components/StreamPreview/previewManifest.ts)). A
+live ladder keeps the search, for the reason in section 3.
+
 ### 3. Live thumbnails, which genuinely have nothing to go on
 
 `notifyStart` publishes a live entry with **no index at all**, unlike the VOD entry. So a live
