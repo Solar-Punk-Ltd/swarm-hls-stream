@@ -22,7 +22,7 @@ import type { FeedHealthTracker } from './feedState';
  * still holds half a second or more they have not watched, and that viewer is the one this exists not
  * to move.
  */
-export const END_OF_PLAYBACK_MARGIN_S = 0.5;
+const END_OF_PLAYBACK_MARGIN_S = 0.5;
 
 /** What the rule reads off a media element, so that it can be decided without one. */
 export interface PlaybackPosition {
