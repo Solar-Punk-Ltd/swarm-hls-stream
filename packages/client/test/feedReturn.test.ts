@@ -28,7 +28,7 @@ describe('the wait before each ask for a broadcaster coming back', () => {
   it('falls between twenty-two and a half and thirty seconds, on the real random source', () => {
     const jitter = new RequestJitter();
     const seen = new Set<number>();
-    for (let draw = 0; draw < 2_000; draw++) {
+    for (let draw = 0; draw < 2_000; draw += 1) {
       const waitMs = feedReturnWatchWaitMs(jitter);
       assert.ok(waitMs > 22_500 && waitMs <= 30_000, `${waitMs}ms is outside (22500, 30000]`);
       seen.add(waitMs);
