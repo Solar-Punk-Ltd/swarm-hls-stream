@@ -458,14 +458,14 @@ export class LadderFeedPoller {
    */
   private watchForReturn(owner: string, entry: PolledTopic, finishedAt: FeedIndex): void {
     entry.returnWatch?.stop();
-    entry.returnWatch = new FeedReturnWatch(
-      this.fetchResource,
+    entry.returnWatch = new FeedReturnWatch({
+      fetchResource: this.fetchResource,
       owner,
-      entry.topic,
+      topic: entry.topic,
       finishedAt,
-      () => this.recordReturn(entry),
-      this.returnWatchWaitMs,
-    );
+      onReturned: () => this.recordReturn(entry),
+      nextWaitMs: this.returnWatchWaitMs,
+    });
     entry.returnWatch.start();
   }
 

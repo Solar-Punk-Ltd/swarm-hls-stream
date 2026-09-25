@@ -64,17 +64,17 @@ describe('the wait before each ask for a broadcaster coming back', () => {
       asked.push(path);
       throw new Error(`Failed to fetch: ${path}`);
     };
-    const watch = new FeedReturnWatch(
-      neverWritten,
-      OWNER,
-      TOPIC,
-      FeedIndex.fromBigInt(1n),
-      () => {},
-      () => {
+    const watch = new FeedReturnWatch({
+      fetchResource: neverWritten,
+      owner: OWNER,
+      topic: TOPIC,
+      finishedAt: FeedIndex.fromBigInt(1n),
+      onReturned: () => {},
+      nextWaitMs: () => {
         draws += 1;
         return 1;
       },
-    );
+    });
 
     watch.start();
     try {
