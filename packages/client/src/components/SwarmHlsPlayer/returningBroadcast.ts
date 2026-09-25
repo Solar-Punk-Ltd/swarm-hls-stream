@@ -54,7 +54,7 @@ export function hasReachedEndOfPlayback(position: PlaybackPosition): boolean {
 
 /** Seconds buffered ahead of `at` in the range that holds it, or null when no range does. */
 export function bufferedAheadOf(buffered: TimeRanges, at: number): number | null {
-  for (let index = 0; index < buffered.length; index++) {
+  for (let index = 0; index < buffered.length; index += 1) {
     if (at >= buffered.start(index) && at <= buffered.end(index)) {
       return buffered.end(index) - at;
     }
