@@ -654,8 +654,9 @@ describe('the admin publish gate with the ABR ladder on', () => {
 
   /**
    * A name on the ABR vhost that is no configured rung is nothing the uploader can place on a ladder.
-   * Accepted so SRS keeps running, ingested never — and, in admin mode, never looked up either: a
-   * lookup per stray name would let anyone who can reach the webhook probe the admin's declarations.
+   * From the transcode loopback it is accepted so SRS keeps running, and ingested never. In admin mode
+   * it is never looked up either: a lookup per stray name would let anyone who can reach the webhook
+   * probe the admin's declarations.
    */
   it('ingests nothing for a stray name on the ABR vhost', async () => {
     let lookups = 0;
@@ -670,5 +671,45 @@ describe('the admin publish gate with the ABR ladder on', () => {
         assert.equal(lookups, 0);
       },
     );
+  });
+
+  /**
+   * ⛔ Off the host a stray is refused, because nothing checks a key or a declaration for it. Accepted,
+   * it was an unauthenticated stream SRS held for anyone who could reach the ingest, and on the ingest
+   * vhost SRS transcoded it as well. RTMP has no passphrase in front of that. Measured on the 157 stage
+   * on 2026-09-25: an RTMP publish of an undeclared topic with `_720p` on the end and no key ran until
+   * it was stopped.
+   */
+  it('refuses a rung name published to the ingest vhost from off the host, and looks nothing up', async () => {
+    let lookups = 0;
+    await withSrsLadder(
+      () => {
+        lookups += 1;
+        return answersDraft()();
+      },
+      async ({ calls, post }) => {
+        assert.equal(await post(source({ stream: RUNG })), 1);
+        assert.deepEqual(calls.starts, []);
+        assert.equal(lookups, 0);
+        assert.equal(calls.authRejections, 1, 'a refused publish has to be visible on /health. See OBS-15');
+      },
+    );
+  });
+
+  it('refuses a stray name on the ABR vhost from off the host', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      assert.equal(await post(rung({ stream: 'not-a-rung', ip: STRANGER })), 1);
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1);
+    });
+  });
+
+  /** The transcoder's own rendition whose `?vhost=` missed is still accepted, and logged as misrouted. */
+  it('still accepts a rendition the transcoder misrouted onto the ingest vhost', async () => {
+    await withSrsLadder(answersDraft(), async ({ calls, post }) => {
+      assert.equal(await post(source({ stream: RUNG, ip: LOOPBACK })), 0);
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 0);
+    });
   });
 });

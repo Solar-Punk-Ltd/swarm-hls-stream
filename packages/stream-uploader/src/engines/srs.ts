@@ -329,8 +329,9 @@ function isLoopbackPublisher(payload: SrsStreamPayload): boolean {
  *   is admitted only by that loopback origin and by its base stream having authenticated, and in
  *   admin mode it publishes under the declaration that base resolved. See {@link reasonToRefuseRung}.
  * `stray` a rendition whose `?vhost=` missed the ABR vhost, or a name on the ABR vhost that is no
- *   configured rung. Neither is ingested. A misrouted rendition is logged loudly, because otherwise
- *   the only symptom is a stream that never appears.
+ *   configured rung. Neither is ingested. From loopback it is accepted, and a misrouted rendition is
+ *   logged loudly, because otherwise the only symptom is a stream that never appears. From anywhere
+ *   else it is refused, since nothing authenticates it.
  */
 type LadderStreamRole =
   | { kind: 'single' }
@@ -512,8 +513,22 @@ async function handleStreams(
     }
 
     if (role.kind === 'stray') {
-      // Not a stream the uploader publishes. Accept so SRS keeps running, ingest nothing. The
-      // misrouted case is loud because otherwise the only symptom is a stream that never appears.
+      // ⛔ Refused off the host, because no key and no declaration is ever checked for a stray. Only
+      // the transcoder publishing from loopback has a reason to send one, a misconfigured rendition.
+      // Accepted from anywhere, SRS held an unauthenticated stream for whoever reached the ingest,
+      // and transcoded it when it landed on the ingest vhost, with no passphrase in front of RTMP.
+      // Measured on the 157 stage on 2026-09-25: an RTMP publish of an undeclared topic with `_720p`
+      // on the end and no key ran until it was stopped.
+      if (!isLoopbackPublisher(payload)) {
+        logger.warn(`[SRS] Refused ${streamId} on vhost '${payload.vhost}': a name the uploader never ingests, sent from off the host`);
+        // Reported rather than observed. SRS_REJECT rides inside a 200. See OBS-15.
+        streamOrchestrator.recordAuthRejection();
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+      // From loopback it is not a stream the uploader publishes. Accept so SRS keeps running, ingest
+      // nothing. The misrouted case is loud because otherwise the only symptom is a stream that never
+      // appears.
       if (role.misroutedRendition && abr) {
         logMisroutedRendition(streamId, payload.vhost, abr.vhost);
       } else {
