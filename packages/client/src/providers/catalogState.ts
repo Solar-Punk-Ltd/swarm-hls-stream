@@ -1,4 +1,5 @@
 import { Stream } from '@/types/stream';
+import type { CatalogSnapshot } from '@/utils/catalogFeed';
 import { nextStreamList } from '@/utils/catalogList';
 
 /**
@@ -11,6 +12,16 @@ export interface CatalogRead {
   gateway: string;
   /** The parsed catalog, or null when the gateway had nothing newer to give. */
   streams: unknown;
+  /** The feed slot {@link streams} was read from, or null without a body or when the gateway did not say. */
+  slot: bigint | null;
+}
+
+/** What one poll of `gateway` hands to the stream list, from what the catalog reader returned. */
+export function toCatalogRead(gateway: string, snapshot: CatalogSnapshot | null): CatalogRead {
+  if (snapshot === null) {
+    return { gateway, streams: null, slot: null };
+  }
+  return { gateway, streams: JSON.parse(snapshot.body), slot: snapshot.slot };
 }
 
 /** The streams on screen and the gateway that served them, held together so they cannot disagree. */

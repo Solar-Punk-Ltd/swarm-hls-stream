@@ -24,6 +24,21 @@ const MAX_WALK_PER_READ = 32;
  */
 const SLOT_NOT_WRITTEN_YET = 404;
 
+/** One catalog body, and the feed slot it was read from. */
+export interface CatalogSnapshot {
+  body: string;
+  /**
+   * The slot the body was read from, or null when the gateway did not say which.
+   *
+   * ⛔ Travels with the body rather than being read off {@link CatalogFeedReader.getIndex} afterwards,
+   * because two reads can be in flight on one gateway at once and the one that lands last is not
+   * always the newer. The app's first read runs beside the browse page's first poll, both start with
+   * no position and resolve the head on their own, and the reader's position is whichever of them
+   * wrote it last. Only this says which of two bodies is newer.
+   */
+  slot: bigint | null;
+}
+
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
 class CatalogFetchError extends Error {
   constructor(url: string, readonly status: number) {
@@ -100,12 +115,13 @@ export class CatalogFeedReader {
   }
 
   /**
-   * The newest catalog body, or null when there is nothing newer than the last read.
+   * The newest catalog body and the slot it was read from, or null when there is nothing newer than
+   * the last read.
    *
    * Null rather than a repeat of the previous body, so a caller can skip re-rendering an unchanged
    * list. Both existing callers already ignore a non-array, so null is inert for them.
    */
-  public async read(gatewayUrl: string, signal?: AbortSignal): Promise<string | null> {
+  public async read(gatewayUrl: string, signal?: AbortSignal): Promise<CatalogSnapshot | null> {
     // Pinned before the first await and carried through, so every write this read makes is checked
     // against the reader it started on rather than against whatever the reader is by then.
     const generation = this.generation;
@@ -118,7 +134,7 @@ export class CatalogFeedReader {
     // whose own type is derived from that field is circular, and TypeScript widens it to `any` rather
     // than refusing, so the overload that guarantees a slot request would have been silently lost.
     let cursor: FeedIndex = this.index;
-    let newest: string | null = null;
+    let newest: CatalogSnapshot | null = null;
 
     for (let step = 0; step < MAX_WALK_PER_READ; step++) {
       const request = nextFeedRequest(this.owner, this.topic, cursor);
@@ -173,7 +189,7 @@ export class CatalogFeedReader {
       }
       cursor = request.index;
       this.index = cursor;
-      newest = response.text;
+      newest = { body: response.text, slot: cursor.toBigInt() };
     }
     return newest;
   }
@@ -185,7 +201,11 @@ export class CatalogFeedReader {
    * only thing that knows which slot it resolved to. Without it this reader would have to keep
    * resolving the head, which is the cost being removed.
    */
-  private async readHead(gatewayUrl: string, generation: number, signal?: AbortSignal): Promise<string | null> {
+  private async readHead(
+    gatewayUrl: string,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<CatalogSnapshot | null> {
     const request = nextFeedRequest(this.owner, this.topic, null);
     const response = await this.fetcher(`${gatewayUrl}/${request.path}`, { signal });
     // A catalog nobody has broadcast to has no head, which is nothing to show rather than a fault.
@@ -197,13 +217,15 @@ export class CatalogFeedReader {
     }
 
     const resolved = resolvedFeedIndex(response.headers);
-    // A body without a usable index is still the catalog, so it is returned. The position stays null
-    // and the next read resolves the head again, which is slow rather than wrong. A head resolved on
-    // a gateway the viewer has since left is treated the same way, for the stronger reason that the
-    // node now being asked has its own numbering. See {@link generation}.
-    if (resolved !== null && generation === this.generation) {
-      this.index = FeedIndex.fromBigInt(BigInt(resolved));
+    const slot = resolved === null ? null : BigInt(resolved);
+    // A body without a usable index is still the catalog, so it is returned without a slot. The
+    // position stays null and the next read resolves the head again, which is slow rather than wrong.
+    // A head resolved on a gateway the viewer has since left keeps no position either, for the
+    // stronger reason that the node now being asked has its own numbering. See {@link generation}.
+    // Its slot is still handed back, because the slot describes the body rather than this reader.
+    if (slot !== null && generation === this.generation) {
+      this.index = FeedIndex.fromBigInt(slot);
     }
-    return response.text;
+    return { body: response.text, slot };
   }
 }
