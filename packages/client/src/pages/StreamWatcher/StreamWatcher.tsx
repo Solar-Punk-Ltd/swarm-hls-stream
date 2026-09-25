@@ -1,11 +1,10 @@
-import { useEffect } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import useSWR from 'swr';
 
 import { Button, ButtonVariant } from '@/components/Button/Button';
 import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
 import { useAppContext } from '@/providers/App';
 import { watchPageCatalogPollMs } from '@/providers/catalogPoll';
+import { useCatalogPoll } from '@/providers/useCatalogPoll';
 import { ROUTES } from '@/routes';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED } from '@/types/stream';
 import { playableRenditions } from '@/utils/playableRenditions';
@@ -27,7 +26,7 @@ export function StreamWatcher() {
   }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { streamList, isStreamListLoaded, fetchAppState, setNewStreamList, gatewayUrl } = useAppContext();
+  const { streamList, isStreamListLoaded } = useAppContext();
 
   // The ladder lives in the catalog, keyed by the primary feed the browser links to. Current
   // entries name the master, older ones the lowest rung. Waiting for the first catalog read
@@ -35,20 +34,8 @@ export function StreamWatcher() {
   // it keeps a deep link from starting single-rendition and rebuilding a second later.
   const stream = streamList.find((entry) => entry.owner === owner && entry.topic === topic);
 
-  // Above the early return, because a hook may not be skipped on some renders. The key is the browse
-  // page's own, so the two pages share one poll rather than running two against the gateway, and a
-  // null key is SWR's way of not polling at all.
-  const pollMs = watchPageCatalogPollMs(stream?.state);
-  const { data } = useSWR(pollMs === null ? null : ['app-state', gatewayUrl], fetchAppState, {
-    refreshInterval: pollMs ?? 0,
-    dedupingInterval: pollMs ?? 0,
-    revalidateOnFocus: true,
-    shouldRetryOnError: true,
-  });
-
-  useEffect(() => {
-    if (data) setNewStreamList(data);
-  }, [data, setNewStreamList]);
+  // Above the early return, because a hook may not be skipped on some renders.
+  useCatalogPoll(watchPageCatalogPollMs(stream?.state));
 
   const handleBackButtonClick = () => {
     navigate(ROUTES.STREAM_BROWSER);
