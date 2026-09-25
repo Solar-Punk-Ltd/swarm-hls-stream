@@ -29,6 +29,11 @@ export interface StreamCatalog {
   streams: Stream[];
   /** Null before any read has landed. */
   gateway: string | null;
+  /**
+   * The feed slot {@link streams} was read from, which the next read on the same gateway has to be
+   * newer than. Null before any read has landed, and when the gateway did not say.
+   */
+  slot: bigint | null;
 }
 
 interface SelectedGatewayRef {
@@ -51,11 +56,16 @@ export function catalogUpdater(
       return held;
     }
 
-    return {
-      streams:
-        nextStreamList({ held: held.streams, fetched: read.streams, isSameGateway: held.gateway === read.gateway }) ??
-        held.streams,
-      gateway: read.gateway,
-    };
+    const streams = nextStreamList({
+      held: held.streams,
+      heldSlot: held.slot,
+      fetched: read.streams,
+      fetchedSlot: read.slot,
+      isSameGateway: held.gateway === read.gateway,
+    });
+
+    return streams === null
+      ? { streams: held.streams, gateway: read.gateway, slot: held.slot }
+      : { streams, gateway: read.gateway, slot: read.slot };
   };
 }

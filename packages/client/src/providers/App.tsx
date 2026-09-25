@@ -71,7 +71,7 @@ function loadGatewayUrl(): string {
 }
 
 export const AppContextProvider = ({ children }: Props) => {
-  const [catalog, setCatalog] = useState<StreamCatalog>({ streams: [], gateway: null });
+  const [catalog, setCatalog] = useState<StreamCatalog>({ streams: [], gateway: null, slot: null });
   const [isStreamListLoaded, setIsStreamListLoaded] = useState(false);
   const [gatewayUrl, setGatewayUrlState] = useState<string>(() => {
     const url = loadGatewayUrl();
