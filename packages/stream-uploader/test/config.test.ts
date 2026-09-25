@@ -81,6 +81,13 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
     fallback: 20000,
     refused: ['0', '-1', '20s', '600001'],
   },
+  {
+    name: 'CHEQUEBOOK_RECHECK_MS',
+    field: 'chequebookRecheckMs',
+    sample: '30000',
+    fallback: 60000,
+    refused: ['0', '-1', '999', '1m', '3600001'],
+  },
 ];
 
 const requiredEnv = (): Record<string, string> =>
