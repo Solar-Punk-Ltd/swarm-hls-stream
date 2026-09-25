@@ -97,12 +97,12 @@ const STILL_FINISHED: FeedStillFinished = { kind: 'stillFinished' };
  * this deployment has (see `probePastRefusal` in `refusedSlot.ts`), and a miss by address is one
  * chunk the gateway does not hold.
  *
- * Shared by both followers for the reason `probePastRefusal` is: what a read of the slot means is one
- * question, and what each follower does with the answer is its own.
+ * Both followers ask it through {@link FeedReturnWatch}, for the reason `probePastRefusal` is shared:
+ * what a read of the slot means is one question, and what each follower does with the answer is its own.
  *
  * @param finishedAt The slot whose playlist finished the feed. Only the slot after it is read.
  */
-export async function askWhetherFeedReturned(
+async function askWhetherFeedReturned(
   fetchResource: (path: string) => Promise<TimedResponse>,
   owner: string,
   topic: Topic,
