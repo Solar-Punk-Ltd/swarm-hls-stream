@@ -192,6 +192,10 @@ export class FeedReturnWatch {
     }, this.nextWaitMs());
   }
 
+  /**
+   * Asks once, then acts on the answer: a return goes to `onReturned` and ends the watch, a playlist
+   * that finished again moves the watch past it, and anything else waits for the next ask.
+   */
   private async ask(): Promise<void> {
     const { fetchResource, owner, topic } = this.feed;
     const answer = await askWhetherFeedReturned(fetchResource, owner, topic, this.finishedAt);

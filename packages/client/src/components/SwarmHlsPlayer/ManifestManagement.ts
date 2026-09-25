@@ -287,6 +287,11 @@ export class ManifestStateManager {
     };
   }
 
+  /**
+   * Tears one topic down, or every topic when none is named: forgets what it holds, moves it to a new
+   * {@link generation} so that a read issued before the teardown can tell it was, and ends the work
+   * bound to it through {@link onTeardown}, a finished feed's watch among it.
+   */
   clear(topicId?: string): void {
     if (topicId) {
       this.topics.delete(topicId);
