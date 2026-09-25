@@ -311,7 +311,7 @@ if [ "${#broken_services[@]}" -eq 0 ]; then
       'gates warned on: '*)
         echo "" >&2
         echo "${services[$index]} started, ${confirmed[$index]}." >&2
-        echo "  Its startup gates could not clear those, and UPLOADER_START_GATES let it start anyway. It answers /health 503 until they clear. A chequebook warning goes by itself within CHEQUEBOOK_RECHECK_MS of the node being funded. A postage warning needs a restart on a batch that clears." >&2
+        echo "  Its startup gates could not clear those, and UPLOADER_START_GATES let it start anyway. It answers /health 503 until they clear. A chequebook warning goes by itself within CHEQUEBOOK_RECHECK_MS of the node being funded. A postage warning stays until the uploader is restarted with a batch the postage gate accepts." >&2
         ;;
     esac
 
