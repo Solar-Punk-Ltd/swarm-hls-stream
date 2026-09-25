@@ -75,7 +75,6 @@ describe('the catalog a poll leaves on screen', () => {
 
   it('keeps what is on screen when a poll on the same gateway comes back with nothing usable', () => {
     assert.equal(nextStreamList({ ...ON_SCREEN, fetched: null, fetchedSlot: null, isSameGateway: true }), null);
-    assert.equal(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: NEXT_SLOT, isSameGateway: true }), null);
     assert.equal(
       nextStreamList({ ...ON_SCREEN, fetched: 'not a catalog', fetchedSlot: NEXT_SLOT, isSameGateway: true }),
       null,
@@ -226,26 +225,78 @@ describe('a change the same gateway makes anywhere in the catalog', () => {
   });
 });
 
+/** The two ways a poll on the same gateway can have no slot to order it by. */
+const SLOTLESS_SIDES: Array<[side: string, slots: { heldSlot: bigint | null; fetchedSlot: bigint | null }]> = [
+  ['the read', { heldSlot: 7n, fetchedSlot: null }],
+  ['the list on screen', { heldSlot: null, fetchedSlot: 8n }],
+];
+
 /**
  * A head read whose `swarm-feed-index` header was missing or unreadable carries no slot, so nothing
  * orders it against the list on screen, and neither does a list that came from one. Such a catalog
  * keeps the rule this list had before reads carried a slot, rather than risk putting an older one back.
  */
 describe('a catalog on the same gateway whose slot is not known', () => {
-  const sides: Array<[side: string, slots: { heldSlot: bigint | null; fetchedSlot: bigint | null }]> = [
-    ['the read', { heldSlot: 7n, fetchedSlot: null }],
-    ['the list on screen', { heldSlot: null, fetchedSlot: 8n }],
-  ];
-
-  it.each(sides)('is taken when %s has no slot and the last entry is newer', (_side, slots) => {
+  it.each(SLOTLESS_SIDES)('is taken when %s has no slot and the last entry is newer', (_side, slots) => {
     const fetched = [streamAt(100), streamAt(300)];
 
     assert.deepEqual(nextStreamList({ held: HELD, ...slots, fetched, isSameGateway: true }), fetched);
   });
 
-  it.each(sides)('keeps what is on screen when %s has no slot and the last entry is not newer', (_side, slots) => {
-    const fetched = [streamAt(100), streamAt(200)];
+  it.each(SLOTLESS_SIDES)(
+    'keeps what is on screen when %s has no slot and the last entry is not newer',
+    (_side, slots) => {
+      const fetched = [streamAt(100), streamAt(200)];
 
-    assert.equal(nextStreamList({ held: HELD, ...slots, fetched, isSameGateway: true }), null);
+      assert.equal(nextStreamList({ held: HELD, ...slots, fetched, isSameGateway: true }), null);
+    },
+  );
+});
+
+const bodiesThatAreNotCatalogs: Array<[kind: string, fetched: unknown]> = [
+  ['a string', 'not a catalog'],
+  ['an object', { streams: [] }],
+  ['a number', 0],
+  ['null', null],
+];
+
+/**
+ * ⛔ Unpublishing the last stream leaves the admin's catalog empty, and an open page has to show that.
+ *
+ * Only a newer slot can say a catalog is empty on purpose. A read that failed or found nothing newer
+ * brings no body and no slot, and a body that does not validate is refused whatever its slot, so a
+ * writer's mistake cannot blank every open page.
+ */
+describe('a poll on the same gateway that yields no streams', () => {
+  it('empties the list when a newer slot holds an empty catalog, which is what unpublishing the last stream leaves', () => {
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: NEXT_SLOT, isSameGateway: true }), []);
   });
+
+  it.each(bodiesThatAreNotCatalogs)('keeps what is on screen when a newer slot holds %s', (_kind, fetched) => {
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: NEXT_SLOT, isSameGateway: true }), null);
+  });
+
+  it('keeps what is on screen when a newer slot holds entries that fail validation', () => {
+    const invalidEntries = [null, { title: 'no owner, topic or timestamp' }];
+
+    assert.equal(
+      nextStreamList({ ...ON_SCREEN, fetched: invalidEntries, fetchedSlot: NEXT_SLOT, isSameGateway: true }),
+      null,
+    );
+  });
+
+  it('keeps what is on screen when an empty catalog comes from the same or an older slot', () => {
+    const sameSlot = ON_SCREEN.heldSlot;
+    const olderSlot = ON_SCREEN.heldSlot - 1n;
+
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: sameSlot, isSameGateway: true }), null);
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: olderSlot, isSameGateway: true }), null);
+  });
+
+  it.each(SLOTLESS_SIDES)(
+    'keeps what is on screen when %s has no slot and the catalog is empty, as before reads carried one',
+    (_side, slots) => {
+      assert.equal(nextStreamList({ held: HELD, ...slots, fetched: [], isSameGateway: true }), null);
+    },
+  );
 });

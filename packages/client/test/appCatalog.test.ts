@@ -79,4 +79,23 @@ describe('the catalog provider state update', () => {
     assert.deepEqual(afterOlderRead, onScreen, 'a read from an older slot replaced the list on screen');
     assert.deepEqual(afterNewerRead, { gateway: gateway.current, streams: [streamAt(200, 'b')], slot: 9n });
   });
+
+  /**
+   * Unpublishing the last stream leaves the admin's catalog empty. The page has to empty with it, and a
+   * read from before the unpublish that lands late must not bring the stream back.
+   */
+  it('empties the list when the last stream is unpublished, and keeps it empty against an older read', () => {
+    const gateway = { current: 'https://gateway.example' };
+    const lastStream = [streamAt(100, 'last')];
+    const onScreen = { gateway: gateway.current, streams: lastStream, slot: 7n };
+
+    const afterUnpublish = catalogUpdater({ gateway: gateway.current, streams: [], slot: 8n }, gateway)(onScreen);
+    const afterLateRead = catalogUpdater(
+      { gateway: gateway.current, streams: lastStream, slot: 7n },
+      gateway,
+    )(afterUnpublish);
+
+    assert.deepEqual(afterUnpublish, { gateway: gateway.current, streams: [], slot: 8n });
+    assert.deepEqual(afterLateRead, afterUnpublish, 'a read from before the unpublish brought the stream back');
+  });
 });
