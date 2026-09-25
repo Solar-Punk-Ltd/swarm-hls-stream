@@ -350,6 +350,7 @@ describe('LadderFeedPoller', () => {
       return { tracker, resumed };
     }
 
+    /** A poller following the ladder with no backoff, whose finished rungs ask every {@link WATCH_MS}. */
     function watchingPoller(gateway: FakeGateway, tracker: FeedHealthTracker): LadderFeedPoller {
       const poller = new LadderFeedPoller(
         state,
