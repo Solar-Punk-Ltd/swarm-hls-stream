@@ -110,9 +110,9 @@ async function askWhetherFeedReturned(
 ): Promise<FeedReturnAnswer> {
   const { path, index } = nextFeedRequest(owner, topic, finishedAt);
 
-  let text: string;
+  let response: TimedResponse;
   try {
-    text = (await fetchResource(path)).text;
+    response = await fetchResource(path);
   } catch {
     // A refusal is the ordinary answer for a broadcast that stays over, and a gateway that did not
     // answer says nothing about the broadcaster either way. Neither is recorded anywhere: the feed is
@@ -120,7 +120,7 @@ async function askWhetherFeedReturned(
     return STILL_FINISHED;
   }
 
-  const parsed = parseManifest(text);
+  const parsed = parseManifest(response.text);
   if (parsed.segments.length === 0) {
     // A 200 that is not a playlist, a captive portal for one. Read as the broadcaster, it would
     // restart a viewer into the recording that is still the newest thing on the feed.
