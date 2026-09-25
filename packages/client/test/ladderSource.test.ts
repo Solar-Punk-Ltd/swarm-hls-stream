@@ -1,6 +1,7 @@
 import { Topic } from '@ethersphere/bee-js';
 import { buildMasterPlaylist, type Rendition } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
 import {
@@ -11,6 +12,8 @@ import {
 } from '../src/components/SwarmHlsPlayer/feedState';
 import { ManifestFetcher, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement';
 import { RequestJitter } from '../src/utils/requestJitter';
+
+import { waitFor } from './helpers/waiting';
 
 /**
  * The ladder entry points, which arrived with the ABR merge carrying no tests at all.
@@ -60,7 +63,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 async function settle(ticks = 30): Promise<void> {
   for (let tick = 0; tick < ticks; tick++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await sleep(0);
   }
 }
 
@@ -187,9 +190,7 @@ describe('the ladder entry points', () => {
 
       try {
         await watching.fetchSource(`${OWNER}/${SOURCE_TOPIC}`);
-        for (let tick = 0; tick < 2_000 && asks() < RUNG_TOPICS.length * 3; tick++) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-        }
+        await waitFor(() => asks() >= RUNG_TOPICS.length * 3, 'every finished rung to ask three times', 5_000);
 
         const asked = asks();
         assert.ok(asked >= RUNG_TOPICS.length * 3, `the finished rungs asked ${asked} times`);
