@@ -1,6 +1,7 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { makeFeedIdentifier } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
 import {
@@ -21,6 +22,8 @@ import {
 } from '../src/components/SwarmHlsPlayer/ManifestManagement';
 import { PROBE_DISTANCES, UNSERVED_POLLS_BEFORE_PROBE } from '../src/components/SwarmHlsPlayer/refusedSlot';
 import { MANIFEST_BACKOFF_JITTER_FRACTION, RequestJitter } from '../src/utils/requestJitter';
+
+import { waitFor } from './helpers/waiting';
 
 /**
  * Neither staggers nor spreads, so every assertion in this file measures what it measured before the
@@ -98,24 +101,8 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
  */
 async function settle(ticks = 50): Promise<void> {
   for (let tick = 0; tick < ticks; tick++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await sleep(0);
   }
-}
-
-/**
- * Waits for something a timer does rather than a walk. A finished feed's watch asks on its own
- * interval, so there is no walk for {@link ManifestFetcher.settled} to await, and a tick budget would
- * have to guess how many intervals fit in it.
- */
-async function waitFor(predicate: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail(`timed out waiting for ${what}`);
 }
 
 const manager = ManifestStateManager.getInstance();
@@ -1745,7 +1732,7 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
       String(input) === headUrl ? new Response(finished(FINISHED_AT)) : answerFromFixture(input);
 
     const manifest = await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-    await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 10));
+    await sleep(WATCH_MS * 10);
 
     assert.match(manifest, /#EXT-X-ENDLIST/);
     assert.deepEqual(requested, [], 'a watch started from an index nobody named');
@@ -1757,7 +1744,7 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
     const tornDownAfter = requested.length;
     written.set(FINISHED_AT + 1n, manifestForIndex(FINISHED_AT + 1n));
 
-    await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 10));
+    await sleep(WATCH_MS * 10);
 
     assert.equal(requested.length, tornDownAfter, 'a torn down topic went on being watched');
     assert.deepEqual(resumed, [], 'a torn down watch reported the broadcaster back');
@@ -1786,7 +1773,7 @@ describe('a single-rendition broadcast that comes back after it ended', () => {
     manager.clear(hexTopic);
     written.set(FINISHED_AT + 1n, manifestForIndex(FINISHED_AT + 1n));
     gate.resolve();
-    await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 5));
+    await sleep(WATCH_MS * 5);
 
     assert.deepEqual(resumed, [], 'an answer that outlived its topic was recorded');
     assert.equal(health.state(hexTopic), FEED_STATE_ENDED);

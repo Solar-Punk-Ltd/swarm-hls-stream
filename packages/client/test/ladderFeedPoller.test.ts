@@ -1,6 +1,7 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { makeFeedIdentifier } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { beforeEach, describe, it } from 'vitest';
 
 import {
@@ -21,6 +22,8 @@ import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist.js';
 import { ManifestFetchError, PROBE_DISTANCES } from '../src/components/SwarmHlsPlayer/refusedSlot.js';
 import { TimedResponse } from '../src/utils/fetchWithTimeout.js';
 import { RequestJitter } from '../src/utils/requestJitter.js';
+
+import { waitFor } from './helpers/waiting.js';
 
 const OWNER = 'aabbcc';
 const POLL_MS = 2;
@@ -134,17 +137,6 @@ class FakeGateway {
   };
 }
 
-async function waitFor(predicate: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail(`timed out waiting for ${what}`);
-}
-
 function segmentCount(state: ManifestStateManager, topic: Topic): number {
   const serialized = state.serialize(topic.toString(), '');
   return serialized ? parseManifest(serialized).segments.length : 0;
@@ -232,10 +224,10 @@ describe('LadderFeedPoller', () => {
 
     try {
       await waitFor(() => segmentCount(state, topic) === 2, 'the final playlist');
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await sleep(20);
 
       const afterStop = gateway.requests.length;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await sleep(20);
       assert.equal(gateway.requests.length, afterStop, 'a finished rung was still polled at the live cadence');
     } finally {
       poller.stop([topic]);
@@ -289,7 +281,7 @@ describe('LadderFeedPoller', () => {
 
       try {
         await waitFor(() => segmentCount(state, finalized) === 2, 'the finalized rung read');
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await sleep(20);
 
         assert.equal(tracker.state(groupHex), FEED_STATE_LIVE);
       } finally {
@@ -308,7 +300,7 @@ describe('LadderFeedPoller', () => {
 
       try {
         await waitFor(() => segmentCount(state, topic) === 2, 'the finalized rung read');
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await sleep(20);
 
         assert.equal(tracker.state(groupHex), FEED_STATE_LIVE);
       } finally {
@@ -577,7 +569,7 @@ describe('LadderFeedPoller', () => {
       const stoppedAfter = gateway.requests.length;
       publishOnEveryRung(gateway, FINISHED_AT + 1, manifest(3));
 
-      await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 10));
+      await sleep(WATCH_MS * 10);
 
       assert.equal(gateway.requests.length, stoppedAfter, 'a stopped ladder went on being watched');
       assert.deepEqual(resumed, [], 'a stopped watch reported the broadcaster back');
@@ -601,7 +593,7 @@ describe('LadderFeedPoller', () => {
       poller.stop(RUNGS);
       gateway.publishSoc(rung, FINISHED_AT + 1, manifest(3));
       release();
-      await new Promise((resolve) => setTimeout(resolve, WATCH_MS * 5));
+      await sleep(WATCH_MS * 5);
 
       assert.deepEqual(resumed, [], 'an answer that outlived its watch was recorded');
       assert.equal(tracker.state(groupHex), FEED_STATE_ENDED);
@@ -700,7 +692,7 @@ describe('LadderFeedPoller', () => {
     state.clear(topic.toString());
 
     release();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await sleep(20);
 
     assert.equal(state.getIndex(topic.toString()), null, 'teardown must stay torn down');
     assert.equal(segmentCount(state, topic), 0);
@@ -757,7 +749,7 @@ describe('LadderFeedPoller feed health', () => {
       // The load half of the fix: a backed-off rung stops polling the dead gateway rather than
       // hammering it at the flat interval, which was around 160 requests per 30s across four rungs.
       const requestsWhileBackedOff = gateway.requests.length;
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await sleep(30);
       assert.equal(gateway.requests.length, requestsWhileBackedOff, 'a backed-off rung must stop asking');
     } finally {
       poller.stop([topic]);

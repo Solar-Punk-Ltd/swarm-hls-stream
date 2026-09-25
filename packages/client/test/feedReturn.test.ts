@@ -6,19 +6,10 @@ import { FeedReturnWatch, feedReturnWatchWaitMs } from '../src/components/SwarmH
 import { TimedResponse } from '../src/utils/fetchWithTimeout';
 import { RequestJitter } from '../src/utils/requestJitter';
 
+import { waitFor } from './helpers/waiting';
+
 const OWNER = 'aabbcc';
 const TOPIC = Topic.fromString('a-finished-feed');
-
-async function waitFor(predicate: () => boolean, what: string, timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail(`timed out waiting for ${what}`);
-}
 
 /**
  * ⛔ Every viewer who saw a broadcast end starts watching for its return within a poll of the same
