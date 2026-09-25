@@ -93,7 +93,9 @@ function recordingLogger() {
  * answer, so a clock advanced straight away would look for the next timer before it had been set.
  */
 function settled(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 interface Setup {
