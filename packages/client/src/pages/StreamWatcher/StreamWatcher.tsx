@@ -3,6 +3,8 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, ButtonVariant } from '@/components/Button/Button';
 import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
 import { useAppContext } from '@/providers/App';
+import { watchPageCatalogPollMs } from '@/providers/catalogPoll';
+import { useCatalogPoll } from '@/providers/useCatalogPoll';
 import { ROUTES } from '@/routes';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED } from '@/types/stream';
 import { playableRenditions } from '@/utils/playableRenditions';
@@ -26,6 +28,15 @@ export function StreamWatcher() {
   const navigate = useNavigate();
   const { streamList, isStreamListLoaded } = useAppContext();
 
+  // The ladder lives in the catalog, keyed by the primary feed the browser links to. Current
+  // entries name the master, older ones the lowest rung. Waiting for the first catalog read
+  // rather than rendering without
+  // it keeps a deep link from starting single-rendition and rebuilding a second later.
+  const stream = streamList.find((entry) => entry.owner === owner && entry.topic === topic);
+
+  // Above the early return, because a hook may not be skipped on some renders.
+  useCatalogPoll(watchPageCatalogPollMs(stream?.state));
+
   const handleBackButtonClick = () => {
     navigate(ROUTES.STREAM_BROWSER);
   };
@@ -38,12 +49,6 @@ export function StreamWatcher() {
   // ?level=<rung name> pins playback to one rung, ?level=auto hands the choice to ABR. The route
   // carries no ladder of its own, so the rung names come from the catalog entry below.
   const level = searchParams.get('level') ?? undefined;
-
-  // The ladder lives in the catalog, keyed by the primary feed the browser links to. Current
-  // entries name the master, older ones the lowest rung. Waiting for the first catalog read
-  // rather than rendering without
-  // it keeps a deep link from starting single-rendition and rebuilding a second later.
-  const stream = streamList.find((entry) => entry.owner === owner && entry.topic === topic);
 
   /**
    * An announced broadcast has no manifest feed under its topic yet, so mounting the player would

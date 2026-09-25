@@ -94,8 +94,8 @@ describe('reporting a stalled picture to the feed state', () => {
 
   /**
    * A finished broadcast starves its buffer exactly as a failing one does. The feed state has its own
-   * terminal `ended`, and a stall counted here on the way out competes with it for the last thing a
-   * viewer is told.
+   * `ended`, and a stall counted here on the way out competes with it for the last thing a viewer is
+   * told.
    */
   it('stops counting once the broadcast has ended', () => {
     const player = makeWatchedPlayer();
