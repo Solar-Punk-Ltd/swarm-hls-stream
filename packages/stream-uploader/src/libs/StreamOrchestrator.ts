@@ -2349,7 +2349,8 @@ export class StreamOrchestrator {
   }
 
   /**
-   * What the startup gates warned about instead of refusing, from the pass that finished the boot.
+   * What the startup gates warned about instead of refusing, from the pass that finished the boot or,
+   * for the chequebook, from `ChequebookRecheck`'s latest read since.
    *
    * Here rather than anywhere closer to the gates because `/health` is derived from this object and
    * nothing else, so a finding that does not reach it is a finding an operator cannot see. Replaces
@@ -2357,6 +2358,11 @@ export class StreamOrchestrator {
    */
   public recordStartGateWarnings(warnings: readonly StartGateWarning[]): void {
     this.metrics.setStartGateWarnings(warnings);
+  }
+
+  /** What `/health` reports as `startGateWarnings` right now, without building the whole report. */
+  public getStartGateWarnings(): readonly StartGateWarning[] {
+    return this.metrics.getStartGateWarnings();
   }
 
   public async cleanup(): Promise<void> {

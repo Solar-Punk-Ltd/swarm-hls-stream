@@ -634,8 +634,9 @@ export interface HealthSignals {
    * `UPLOADER_START_GATES=refuse`, where a refusal is rethrown rather than collected.
    * Replaced by each gate pass rather than added to, because the gates are read again on every
    * attempt while the boot waits for its node, and only the last pass describes the service that is
-   * now running. Nothing re-runs them once the boot has finished, so from there it is fixed for the
-   * life of the process, like `postageRefusedPublishers`.
+   * now running. Once the boot has finished, the postage gate's warnings are fixed for the life of the
+   * process, like `postageRefusedPublishers`. The chequebook gate's are read again every
+   * `CHEQUEBOOK_RECHECK_MS` by `ChequebookRecheck` and leave this list once every node holds its floor.
    */
   startGateWarnings: StartGateWarning[];
 }
