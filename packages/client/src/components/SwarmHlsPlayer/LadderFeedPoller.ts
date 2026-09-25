@@ -3,6 +3,7 @@ import { extractFeedIndex, nextFeedRequest } from '@swarm-hls-stream/shared';
 
 import { TimedResponse } from '@/utils/fetchWithTimeout';
 
+import { FeedReturnWatch } from './feedReturn';
 import { FeedHealthTracker } from './feedState';
 import { ManifestStateManager } from './ManifestManagement';
 import { parseManifest } from './playlist';
@@ -45,8 +46,16 @@ interface PolledTopic {
   /** The topic the overlay watches, carried so the last rung to finalize can end it. Null for a walk started without one. */
   group: string | null;
   stopped: boolean;
-  /** Whether this rung's playlist carried ENDLIST, as opposed to being stopped by a teardown. */
+  /**
+   * Whether this rung's playlist carried ENDLIST, as opposed to being stopped by a teardown. False
+   * again once its broadcaster is found back, so a sibling finishing late cannot end the group anew.
+   */
   finalized: boolean;
+  /**
+   * Asking for the slot after the playlist that finished this rung, until its broadcaster comes back.
+   * Null while the rung is being followed, and again once the watch has had its answer.
+   */
+  returnWatch: FeedReturnWatch | null;
   ready: Promise<void>;
   markReady: () => void;
   misses: number;
@@ -78,6 +87,12 @@ export class LadderFeedPoller {
      * this to the same feed health and jitter the single-rendition path backs off through.
      */
     private readonly backoffMs: (hexTopic: string) => number = () => 0,
+    /**
+     * The wait before each ask a finished rung makes for its broadcaster, called once per ask so every
+     * wait is drawn afresh. The fetcher wires it to its own jitter, the way it wires {@link backoffMs}.
+     * Left out, each rung's watch draws through its own default, which spreads the same way.
+     */
+    private readonly returnWatchWaitMs?: () => number,
   ) {}
 
   public start(owner: string, topics: Topic[], groupHexTopic: string | null = null): void {
@@ -107,6 +122,7 @@ export class LadderFeedPoller {
         group: groupHexTopic,
         stopped: false,
         finalized: false,
+        returnWatch: null,
         ready,
         markReady,
         misses: 0,
@@ -129,8 +145,11 @@ export class LadderFeedPoller {
         }
         entry.stopped = true;
         // Cut the wait short rather than letting a torn-down player hold a timer, and unblock
-        // anything still awaiting a rung that will now never bootstrap.
+        // anything still awaiting a rung that will now never bootstrap. A finished rung's watch is
+        // the one timer left once its walk has ended, so it goes the same way.
         entry.wake?.();
+        entry.returnWatch?.stop();
+        entry.returnWatch = null;
         entry.markReady();
         this.polled.delete(hexTopic);
       }
@@ -298,7 +317,7 @@ export class LadderFeedPoller {
         return steps;
       }
 
-      if (!this.ingest(entry, text)) {
+      if (!this.ingest(owner, entry, text, next)) {
         return steps;
       }
 
@@ -345,7 +364,7 @@ export class LadderFeedPoller {
     this.feedHealth.recordGatewayReachable(entry.hexTopic);
     entry.misses = 0;
 
-    if (entry.stopped || !this.ingest(entry, found.response.text)) {
+    if (entry.stopped || !this.ingest(owner, entry, found.response.text, found.index)) {
       return false;
     }
 
@@ -378,16 +397,27 @@ export class LadderFeedPoller {
       return false;
     }
 
-    if (!this.ingest(entry, text)) {
+    if (!this.ingest(owner, entry, text, index)) {
       return false;
     }
 
     this.stateManager.setIndex(entry.hexTopic, index);
+    // This session's first read found the rung open, so an end still recorded against it or its group
+    // was left by an earlier session and is over. Forgotten without announcing a return. See
+    // `FeedHealthTracker.forgetStaleEnd`.
+    this.feedHealth.forgetStaleEnd(entry.hexTopic);
+    if (entry.group !== null) {
+      this.feedHealth.forgetStaleEnd(entry.group);
+    }
     return true;
   }
 
-  /** Returns false once this rung is finalized and there is nothing further to walk. */
-  private ingest(entry: PolledTopic, text: string): boolean {
+  /**
+   * Returns false once this rung is finalized and there is nothing further to walk.
+   *
+   * @param index The slot `text` was read from, which is where a finished rung's watch starts.
+   */
+  private ingest(owner: string, entry: PolledTopic, text: string, index: FeedIndex): boolean {
     const parsed = parseManifest(text);
     const shouldContinue = this.stateManager.updateManifest(
       entry.hexTopic,
@@ -403,6 +433,7 @@ export class LadderFeedPoller {
     if (parsed.isFinalized) {
       entry.finalized = true;
       this.recordGroupEndedIfComplete(entry.group);
+      this.watchForReturn(owner, entry, index);
     }
 
     if (!shouldContinue) {
@@ -410,6 +441,49 @@ export class LadderFeedPoller {
     }
 
     return shouldContinue;
+  }
+
+  /**
+   * Keep asking whether the broadcaster has come back to a rung whose playlist just finished.
+   *
+   * ⛔ **A finished playlist is the end of a session, not of the feed.** A declared stream's rungs keep
+   * their topics for the life of the declaration, so a broadcaster who stops and comes back continues
+   * every rung at the next index. This walk used to stop on ENDLIST for good, which left a viewer who
+   * had watched the end on "This broadcast has ended" until they reloaded. Measured live 2026-09-24,
+   * for fifteen minutes past the return.
+   *
+   * The walk itself still ends here: this viewer's copy of the playlist is finished and nothing can
+   * be appended to it. What comes back is joined by the player's restart, which bootstraps every rung
+   * at the live edge again. See {@link FeedReturnWatch} for what the watch asks and what it costs.
+   */
+  private watchForReturn(owner: string, entry: PolledTopic, finishedAt: FeedIndex): void {
+    entry.returnWatch?.stop();
+    entry.returnWatch = new FeedReturnWatch({
+      fetchResource: this.fetchResource,
+      owner,
+      topic: entry.topic,
+      finishedAt,
+      onReturned: () => this.recordReturn(entry),
+      nextWaitMs: this.returnWatchWaitMs,
+    });
+    entry.returnWatch.start();
+  }
+
+  /**
+   * The broadcaster is back on this rung, so the rung and the ladder it belongs to have not ended.
+   *
+   * Both are told. A ladder's end is recorded once against its group, which is what the overlay and
+   * the player listen on, and the group's return is also what ends the wait every rung sat through
+   * before the end, whichever rung was found back first. See
+   * {@link FeedHealthTracker.recordFeedResumed}.
+   */
+  private recordReturn(entry: PolledTopic): void {
+    entry.returnWatch = null;
+    entry.finalized = false;
+    this.feedHealth.recordFeedResumed(entry.hexTopic);
+    if (entry.group !== null) {
+      this.feedHealth.recordFeedResumed(entry.group);
+    }
   }
 
   /**

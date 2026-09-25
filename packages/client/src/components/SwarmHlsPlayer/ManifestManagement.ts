@@ -17,6 +17,7 @@ import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 import { RequestJitter } from '@/utils/requestJitter';
 
+import { FEED_RETURN_WATCH_INTERVAL_MS, FeedReturnWatch, feedReturnWatchWaitMs } from './feedReturn';
 import { FeedHealthTracker, UNSERVED_POLLS_PROBE_CEILING } from './feedState';
 import { LadderFeedPoller } from './LadderFeedPoller';
 import { absoluteBytesBase, buildMasterPlaylist, isMasterPlaylist, masterVariants, parseSwarmUri } from './playlist';
@@ -78,6 +79,8 @@ export class ManifestStateManager {
   private static instance: ManifestStateManager;
   private topics: Map<string, TopicState> = new Map();
   private generations: Map<string, number> = new Map();
+  /** What to call when each topic is next torn down. See {@link onTeardown}. */
+  private teardowns: Map<string, Set<() => void>> = new Map();
 
   private constructor() {}
 
@@ -260,15 +263,64 @@ export class ManifestStateManager {
     return this.generations.get(topicId) ?? 0;
   }
 
+  /**
+   * Have `onTornDown` called the next time this topic is torn down, once.
+   *
+   * ⛔ The push half of what {@link generation} answers by pull, for the one kind of work a pull cannot
+   * reach. A fetch in flight compares generations when it lands, which is enough for anything that
+   * runs to its end. A timer between two ticks runs nothing that could compare anything, so work that
+   * only pulled would stay scheduled past a teardown for as long as its interval. A finished feed's
+   * watch waits thirty seconds between asks, and this is what ends it at the teardown itself.
+   *
+   * @returns Lets go of the callback, for work that ends on its own before the topic is torn down.
+   */
+  onTeardown(topicId: string, onTornDown: () => void): () => void {
+    const forTopic = this.teardowns.get(topicId) ?? new Set<() => void>();
+    forTopic.add(onTornDown);
+    this.teardowns.set(topicId, forTopic);
+
+    return () => {
+      forTopic.delete(onTornDown);
+      if (forTopic.size === 0 && this.teardowns.get(topicId) === forTopic) {
+        this.teardowns.delete(topicId);
+      }
+    };
+  }
+
+  /**
+   * Tears one topic down, or every topic when none is named: forgets what it holds, moves it to a new
+   * {@link generation} so that a read issued before the teardown can tell it was, and ends the work
+   * bound to it through {@link onTeardown}, a finished feed's watch among it.
+   */
   clear(topicId?: string): void {
     if (topicId) {
       this.topics.delete(topicId);
       this.generations.set(topicId, this.generation(topicId) + 1);
+      this.endWorkOf([topicId]);
     } else {
       for (const id of this.topics.keys()) {
         this.generations.set(id, this.generation(id) + 1);
       }
       this.topics.clear();
+      // Every topic with work bound to it, whether or not it holds state, since the work is what has
+      // to end and holding state is a separate fact about a topic.
+      this.endWorkOf([...this.teardowns.keys()]);
+    }
+  }
+
+  /** Ends whatever {@link onTeardown} bound to these topics, after the teardown itself is done. */
+  private endWorkOf(topicIds: string[]): void {
+    for (const topicId of topicIds) {
+      const forTopic = this.teardowns.get(topicId);
+      this.teardowns.delete(topicId);
+      for (const onTornDown of [...(forTopic ?? [])]) {
+        try {
+          onTornDown();
+        } catch (error) {
+          // One piece of work failing to end must not keep the rest of the teardown from ending theirs.
+          console.error(`Ending work bound to ${topicId} threw:`, error);
+        }
+      }
     }
   }
 
@@ -338,6 +390,22 @@ interface RegisteredLadder {
   topics: Topic[];
 }
 
+/** A finished single-rendition feed's watch, and the teardown registration that would end it. */
+interface HeldReturnWatch {
+  watch: FeedReturnWatch;
+  /** Called when the watch ends some other way, so the topic's teardown does not end it again. */
+  letGoOfTeardown: () => void;
+}
+
+/** One slot read off a single-rendition feed, carried with the state it was read against. */
+interface SlotRead {
+  response: TimedResponse;
+  /** The index the topic's state held when the read was issued, which the read only applies to. */
+  readIndex: FeedIndex;
+  /** The slot the response came from. */
+  targetIndex: FeedIndex;
+}
+
 /**
  * How many of the poller's own polls a level request waits for a rung's first playlist.
  *
@@ -395,6 +463,15 @@ export class ManifestFetcher {
    */
   private readonly inFlight = new Map<string, Promise<void>>();
 
+  /**
+   * The single-rendition feeds being watched for their broadcaster coming back, by hex topic.
+   *
+   * One per topic, and bound to the topic generation it started in: the teardown that ends that
+   * generation ends the watch with it, through {@link ManifestStateManager.onTeardown}. A ladder's rungs
+   * are watched by {@link LadderFeedPoller} instead, which already owns their teardown.
+   */
+  private readonly returnWatches = new Map<string, HeldReturnWatch>();
+
   constructor(
     private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance(),
     /** Shared with whatever renders the state, so both halves see one reading. */
@@ -411,17 +488,25 @@ export class ManifestFetcher {
      * the poller's own default, which is tuned against a segment interval.
      */
     pollIntervalMs?: number,
+    /**
+     * The longest a finished feed waits between asks for its broadcaster, on both paths, with every
+     * wait drawn inside it through {@link jitter}. Injected only by tests, so a return is driven rather
+     * than waited out. See {@link FEED_RETURN_WATCH_INTERVAL_MS}.
+     */
+    private readonly returnWatchIntervalMs: number = FEED_RETURN_WATCH_INTERVAL_MS,
   ) {
     // The poller fetches through this instance rather than holding a URL of its own, so switching
     // gateway mid-session moves the walk with it. It also shares this instance's feed health and
     // computes its backoff through the same jitter, so a ladder outage records and paces exactly as
-    // the single-rendition path does rather than polling a dead gateway flat.
+    // the single-rendition path does rather than polling a dead gateway flat. A finished rung's watch
+    // draws its waits through that jitter too, as the single rendition's does.
     this.poller = new LadderFeedPoller(
       stateManager,
       (path) => this.fetchResource(path),
       pollIntervalMs,
       this.feedHealth,
       (hexTopic) => this.jitter.spread(this.feedHealth.backoffRemainingMs(hexTopic)),
+      () => this.drawReturnWatchWaitMs(),
     );
   }
 
@@ -529,7 +614,7 @@ export class ManifestFetcher {
       // Single rendition: the source feed *is* the media playlist, so the read above was the initial
       // fetch. Handing the response on rather than fetching again keeps this one request.
       this.assertTopicSurvived(hexTopic, generation);
-      const manifest = this.ingestManifest(hexTopic, res, path);
+      const manifest = this.ingestManifest(source.owner, topic, res, path);
       this.feedHealth.recordGatewayReachable(hexTopic);
       return manifest;
     } catch (error) {
@@ -662,7 +747,7 @@ export class ManifestFetcher {
       const res = await this.fetchResource(path);
       this.assertTopicSurvived(hexTopic, generation);
 
-      const manifest = this.ingestManifest(hexTopic, res, path);
+      const manifest = this.ingestManifest(owner, topic, res, path);
 
       // Reachable rather than served. This endpoint answers with the publisher's last update, so it
       // answers the same for a live broadcast and one that stopped an hour ago, and treating it as a
@@ -714,8 +799,12 @@ export class ManifestFetcher {
    * before it can tell a master playlist from a media one, and {@link handleInitialFetch}, which
    * already knows. Both are a path a mount takes, so the refusals below belong to both rather than
    * to whichever one happened to be written first.
+   *
+   * A head that is already finished is a recording being opened, and it is watched for its
+   * broadcaster coming back exactly as a finish read live is. See {@link watchForReturn}.
    */
-  private ingestManifest(hexTopic: string, response: TimedResponse, path: string): string {
+  private ingestManifest(owner: string, topic: Topic, response: TimedResponse, path: string): string {
+    const hexTopic = topic.toString();
     const parsed = parseManifest(response.text);
 
     const shouldContinue = this.stateManager.updateManifest(
@@ -734,6 +823,18 @@ export class ManifestFetcher {
     }
     if (shouldContinue) {
       this.stateManager.setIndex(hexTopic, extractFeedIndex(response.headers));
+      // A mount's first read found the feed open, so an end still recorded against it was left by an
+      // earlier mount and is over. Forgotten without announcing a return, and only once the read has
+      // proved usable. See `FeedHealthTracker.forgetStaleEnd`.
+      this.feedHealth.forgetStaleEnd(hexTopic);
+    } else if (parsed.isFinalized) {
+      // Read only here, and forgivingly. A finished head was never asked for its index before, and a
+      // gateway that leaves the header off still has a recording worth playing, so a missing index
+      // costs the watch and not the playlist.
+      const finishedAt = feedIndexOrNull(response.headers);
+      if (finishedAt !== null) {
+        this.watchForReturn(owner, topic, finishedAt);
+      }
     }
 
     return manifest;
@@ -849,7 +950,9 @@ export class ManifestFetcher {
         return;
       }
 
-      const advanced = await manifestQueue.add(() => this.applySlot(hexTopic, response, readIndex, targetIndex));
+      const advanced = await manifestQueue.add(() =>
+        this.applySlot(owner, topic, { response, readIndex, targetIndex }),
+      );
       if (advanced !== true) {
         return;
       }
@@ -862,7 +965,9 @@ export class ManifestFetcher {
    *
    * @returns Whether the feed advanced, which is also whether the walk may ask for another slot.
    */
-  private applySlot(hexTopic: string, response: TimedResponse, readIndex: FeedIndex, targetIndex: FeedIndex): boolean {
+  private applySlot(owner: string, topic: Topic, slot: SlotRead): boolean {
+    const { response, readIndex, targetIndex } = slot;
+    const hexTopic = topic.toString();
     // Nothing cancels a request already in flight. `SwarmHlsPlayer`'s effect cleanup calls
     // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
     // `restartTrigger` bump, which is the recovery path for a fatal player error and so fires
@@ -883,6 +988,9 @@ export class ManifestFetcher {
     const parsed = parseManifest(response.text);
     if (parsed.isFinalized) {
       this.feedHealth.recordFeedEnded(hexTopic);
+      // Inside the guard with the end itself, so only a finish this topic's current state was read
+      // from starts a watch, and the watch then belongs to that state's generation.
+      this.watchForReturn(owner, topic, targetIndex);
     }
 
     const shouldContinue = this.stateManager.updateManifest(
@@ -897,6 +1005,66 @@ export class ManifestFetcher {
 
     this.stateManager.setIndex(hexTopic, targetIndex);
     return true;
+  }
+
+  /**
+   * Keep asking whether the broadcaster has come back to a single-rendition feed that just finished.
+   *
+   * ⛔ **This path had nothing left that would ever ask again.** hls.js stops reloading a playlist that
+   * carries ENDLIST, and this fetcher only reads a feed when hls.js asks it to, so a finished feed was
+   * never read after the read that finished it. A declared stream continues the same feed at the next
+   * index when its broadcaster comes back, and a viewer who had watched the end was told it had ended
+   * for as long as they stayed. Measured live 2026-09-24 on the ladder, which shares the defect.
+   *
+   * One watch per topic, bound to the generation it started in. The teardown that ends that
+   * generation ends it too, synchronously, so no timer outlives a remount. A return is recorded rather
+   * than joined, because this viewer's copy of the playlist is finished and nothing can be appended to
+   * it: the player's restart is what joins the broadcast again. See {@link FeedReturnWatch}.
+   *
+   * @param finishedAt The slot whose playlist finished the feed.
+   */
+  private watchForReturn(owner: string, topic: Topic, finishedAt: FeedIndex): void {
+    const hexTopic = topic.toString();
+    if (this.returnWatches.has(hexTopic)) {
+      return;
+    }
+
+    const watch = new FeedReturnWatch({
+      fetchResource: (path) => this.fetchResource(path),
+      owner,
+      topic,
+      finishedAt,
+      onReturned: () => {
+        this.stopWatchingForReturn(hexTopic);
+        this.feedHealth.recordFeedResumed(hexTopic);
+      },
+      nextWaitMs: () => this.drawReturnWatchWaitMs(),
+    });
+    this.returnWatches.set(hexTopic, {
+      watch,
+      letGoOfTeardown: this.stateManager.onTeardown(hexTopic, () => this.stopWatchingForReturn(hexTopic)),
+    });
+    watch.start();
+  }
+
+  /**
+   * The wait before one ask of any watch this fetcher runs, a ladder rung's or a single rendition's.
+   * Drawn through {@link jitter} on every call, so viewers who saw one broadcast end drift apart.
+   */
+  private drawReturnWatchWaitMs(): number {
+    return feedReturnWatchWaitMs(this.jitter, this.returnWatchIntervalMs);
+  }
+
+  /** Ends this topic's watch, whichever of the teardown or the return got there first. */
+  private stopWatchingForReturn(hexTopic: string): void {
+    const held = this.returnWatches.get(hexTopic);
+    if (!held) {
+      return;
+    }
+
+    this.returnWatches.delete(hexTopic);
+    held.watch.stop();
+    held.letGoOfTeardown();
   }
 
   /**
@@ -959,7 +1127,9 @@ export class ManifestFetcher {
       return;
     }
 
-    await manifestQueue.add(() => this.applySlot(hexTopic, found.response, readIndex, found.index));
+    await manifestQueue.add(() =>
+      this.applySlot(owner, topic, { response: found.response, readIndex, targetIndex: found.index }),
+    );
   }
 
   /**
@@ -1015,6 +1185,15 @@ function ladderTopics(ladder: LadderSource): Topic[] {
 function groupHexOf(sourceUrl: string): string | null {
   try {
     return Topic.fromString(parseSwarmUri(sourceUrl).topic).toString();
+  } catch {
+    return null;
+  }
+}
+
+/** The slot a head read resolved to, or null where the response does not say. */
+function feedIndexOrNull(headers: Headers): FeedIndex | null {
+  try {
+    return extractFeedIndex(headers);
   } catch {
     return null;
   }

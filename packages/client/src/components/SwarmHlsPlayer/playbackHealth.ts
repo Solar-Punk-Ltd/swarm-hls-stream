@@ -33,8 +33,8 @@ export function attachPlaybackStallReporter(media: HTMLMediaElement, onStall: ()
   };
 
   // A finished broadcast starves its buffer exactly as a failing one does. The feed state has its own
-  // terminal message for that, and a stall counted on the way out competes with it for the last thing
-  // the viewer is told.
+  // message for that, and a stall counted on the way out competes with it for the last thing the
+  // viewer is told. A broadcast that comes back is rejoined by a restart, which attaches a fresh one.
   const onEnded = () => {
     hasEnded = true;
   };
