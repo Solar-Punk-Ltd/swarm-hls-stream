@@ -63,6 +63,41 @@ function gatewayAnswering(answers: TimedResponse[]) {
   };
 }
 
+/** A scheduled stream that is not the newest entry, which is the case the last-entry rule missed. */
+const announced: Stream = {
+  owner: '0xabc',
+  topic: 'announced-topic',
+  title: 'announced',
+  mediatype: 'video',
+  timestamp: 100,
+  state: STREAM_STATUS_SCHEDULED,
+};
+const newest: Stream = {
+  owner: '0xabc',
+  topic: 'newest-topic',
+  title: 'newest',
+  mediatype: 'video',
+  timestamp: 200,
+  state: STREAM_STATUS_LIVE,
+};
+
+const NOTHING_HELD: StreamCatalog = { streams: [], gateway: null, slot: null };
+
+/**
+ * One catalog poll as the app makes it: the reader's answer from a gateway that answers in the order
+ * given, applied to the list on screen through the list's own update rule.
+ */
+function pollerAnswering(answers: TimedResponse[]): (held: StreamCatalog) => Promise<StreamCatalog> {
+  const selectedGateway = { current: GATEWAY };
+  const reader = new CatalogFeedReader(announced.owner, Topic.fromString('catalog-test'), gatewayAnswering(answers));
+  return async (held) => catalogUpdater(toCatalogRead(GATEWAY, await reader.read(GATEWAY)), selectedGateway)(held);
+}
+
+/** The announced stream's entry in the list, the way the watch page finds it. */
+function listedAnnounced(catalog: StreamCatalog): Stream | undefined {
+  return catalog.streams.find((entry) => entry.owner === announced.owner && entry.topic === announced.topic);
+}
+
 /**
  * ⛔ The watch page's path from a poll to its decision, for a scheduled stream that is not the newest.
  *
@@ -76,44 +111,20 @@ function gatewayAnswering(answers: TimedResponse[]) {
  * ordering without a sound.
  */
 describe('when a scheduled stream that is not the newest entry goes live in place', () => {
-  const announced: Stream = {
-    owner: '0xabc',
-    topic: 'announced-topic',
-    title: 'announced',
-    mediatype: 'video',
-    timestamp: 100,
-    state: STREAM_STATUS_SCHEDULED,
-  };
-  const newest: Stream = {
-    owner: '0xabc',
-    topic: 'newest-topic',
-    title: 'newest',
-    mediatype: 'video',
-    timestamp: 200,
-    state: STREAM_STATUS_LIVE,
-  };
-
   /** What the watch page shows for the announced stream, from the list it holds. */
   function shownView(catalog: StreamCatalog): WatchPageView {
-    const listed = catalog.streams.find((entry) => entry.owner === announced.owner && entry.topic === announced.topic);
+    const listed = listedAnnounced(catalog);
     return watchPageView(true, listed, isWaitingForStart(true, listed));
   }
 
   it('stops showing it as not started on the next poll', async () => {
-    const selectedGateway = { current: GATEWAY };
-    const reader = new CatalogFeedReader(
-      announced.owner,
-      Topic.fromString('catalog-test'),
-      gatewayAnswering([
-        catalogHead(7, [announced, newest]),
-        catalogSlot([{ ...announced, state: STREAM_STATUS_LIVE, timestamp: 300 }, newest]),
-        SLOT_NOT_WRITTEN_YET,
-      ]),
-    );
-    const poll = async (held: StreamCatalog) =>
-      catalogUpdater(toCatalogRead(GATEWAY, await reader.read(GATEWAY)), selectedGateway)(held);
+    const poll = pollerAnswering([
+      catalogHead(7, [announced, newest]),
+      catalogSlot([{ ...announced, state: STREAM_STATUS_LIVE, timestamp: 300 }, newest]),
+      SLOT_NOT_WRITTEN_YET,
+    ]);
 
-    const opened = await poll({ streams: [], gateway: null, slot: null });
+    const opened = await poll(NOTHING_HELD);
     const afterGoLive = await poll(opened);
 
     assert.equal(shownView(opened), WATCH_VIEW_NOT_STARTED);
@@ -131,44 +142,16 @@ describe('when a scheduled stream that is not the newest entry goes live in plac
  * catalog never had.
  */
 describe('when a scheduled stream that is not the newest entry is unpublished', () => {
-  const announced: Stream = {
-    owner: '0xabc',
-    topic: 'announced-topic',
-    title: 'announced',
-    mediatype: 'video',
-    timestamp: 100,
-    state: STREAM_STATUS_SCHEDULED,
-  };
-  const newest: Stream = {
-    owner: '0xabc',
-    topic: 'newest-topic',
-    title: 'newest',
-    mediatype: 'video',
-    timestamp: 200,
-    state: STREAM_STATUS_LIVE,
-  };
-
-  function listedAnnounced(catalog: StreamCatalog) {
-    return catalog.streams.find((entry) => entry.owner === announced.owner && entry.topic === announced.topic);
-  }
-
   it('says it is no longer available, and shows it again when it is republished', async () => {
-    const selectedGateway = { current: GATEWAY };
-    const reader = new CatalogFeedReader(
-      announced.owner,
-      Topic.fromString('catalog-test'),
-      gatewayAnswering([
-        catalogHead(7, [announced, newest]),
-        catalogSlot([newest]),
-        SLOT_NOT_WRITTEN_YET,
-        catalogSlot([{ ...announced, timestamp: 300 }, newest]),
-        SLOT_NOT_WRITTEN_YET,
-      ]),
-    );
-    const poll = async (held: StreamCatalog) =>
-      catalogUpdater(toCatalogRead(GATEWAY, await reader.read(GATEWAY)), selectedGateway)(held);
+    const poll = pollerAnswering([
+      catalogHead(7, [announced, newest]),
+      catalogSlot([newest]),
+      SLOT_NOT_WRITTEN_YET,
+      catalogSlot([{ ...announced, timestamp: 300 }, newest]),
+      SLOT_NOT_WRITTEN_YET,
+    ]);
 
-    const opened = await poll({ streams: [], gateway: null, slot: null });
+    const opened = await poll(NOTHING_HELD);
     const afterUnpublish = await poll(opened);
     const afterRepublish = await poll(afterUnpublish);
 
