@@ -392,6 +392,15 @@ interface HeldReturnWatch {
   letGoOfTeardown: () => void;
 }
 
+/** One slot read off a single-rendition feed, carried with the state it was read against. */
+interface SlotRead {
+  response: TimedResponse;
+  /** The index the topic's state held when the read was issued, which the read only applies to. */
+  readIndex: FeedIndex;
+  /** The slot the response came from. */
+  targetIndex: FeedIndex;
+}
+
 /**
  * How many of the poller's own polls a level request waits for a rung's first playlist.
  *
@@ -936,7 +945,9 @@ export class ManifestFetcher {
         return;
       }
 
-      const advanced = await manifestQueue.add(() => this.applySlot(owner, topic, response, readIndex, targetIndex));
+      const advanced = await manifestQueue.add(() =>
+        this.applySlot(owner, topic, { response, readIndex, targetIndex }),
+      );
       if (advanced !== true) {
         return;
       }
@@ -949,13 +960,8 @@ export class ManifestFetcher {
    *
    * @returns Whether the feed advanced, which is also whether the walk may ask for another slot.
    */
-  private applySlot(
-    owner: string,
-    topic: Topic,
-    response: TimedResponse,
-    readIndex: FeedIndex,
-    targetIndex: FeedIndex,
-  ): boolean {
+  private applySlot(owner: string, topic: Topic, slot: SlotRead): boolean {
+    const { response, readIndex, targetIndex } = slot;
     const hexTopic = topic.toString();
     // Nothing cancels a request already in flight. `SwarmHlsPlayer`'s effect cleanup calls
     // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
@@ -1116,7 +1122,9 @@ export class ManifestFetcher {
       return;
     }
 
-    await manifestQueue.add(() => this.applySlot(owner, topic, found.response, readIndex, found.index));
+    await manifestQueue.add(() =>
+      this.applySlot(owner, topic, { response: found.response, readIndex, targetIndex: found.index }),
+    );
   }
 
   /**
