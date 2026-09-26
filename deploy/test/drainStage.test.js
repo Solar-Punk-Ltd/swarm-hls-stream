@@ -649,8 +649,8 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
    * look like to the script. Everything else it copies goes through, so only the backup is blocked.
    *
    * ⭐ This used to chmod the sandbox root to 0o500 instead, and that reads as the same thing only on
-   * a machine whose write permission bits can stop. Tests here run in a container as root, which
-   * ignores them, so the copy succeeded, no refusal was printed, and the case failed against a
+   * a machine whose write permission bits can stop. In a container that runs the tests as root they
+   * stop nothing, so the copy succeeded, no refusal was printed, and the case failed against a
    * script that was behaving correctly. Failing the tool the script actually calls says the same
    * thing to every account.
    */

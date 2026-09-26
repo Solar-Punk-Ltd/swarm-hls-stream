@@ -46,7 +46,7 @@ export function skipReasonFor(effectiveUserId: number | undefined): string | fal
  * as the image's default, root. Fourteen cases here failed there with "Missing expected exception"
  * while passing on GitHub's runners and on every laptop, and `pnpm -r test` stops at the first
  * failing package, so `packages/cli` failing took the deploy and stream-uploader suites down with it
- * and the run reported red having tested almost nothing. Ruled by Levi as decision 112.
+ * and the run reported red having tested almost nothing.
  *
  * ⛔ Not a seam, deliberately. `assertEnvKeyWritable` calls the real `accessSync`, and as root a
  * read-only file genuinely is writable, so the check is correct and it is the test's premise that is
