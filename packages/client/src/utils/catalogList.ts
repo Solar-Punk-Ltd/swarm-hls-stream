@@ -140,8 +140,9 @@ export function nextStreamList({ held, heldSlot, fetched, fetchedSlot, isSameGat
 }
 
 /**
- * The older rule, for a read whose slot is not known: a list that holds streams is newer when nothing
- * is on screen or its last entry is newer than the last one held. A list with no streams never is.
+ * The older rule, for a poll with no slot to order it by, because the read or the list on screen has
+ * none: a list that holds streams is newer when nothing is on screen or its last entry is newer than
+ * the last one held. A list with no streams never is.
  */
 function hasNewerLastEntry(held: Stream[], fetched: Stream[]): boolean {
   const latestFetched = fetched[fetched.length - 1];

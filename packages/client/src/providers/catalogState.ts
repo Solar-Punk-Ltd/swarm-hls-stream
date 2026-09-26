@@ -24,7 +24,10 @@ export function toCatalogRead(gateway: string, snapshot: CatalogSnapshot | null)
   return { gateway, streams: JSON.parse(snapshot.body), slot: snapshot.slot };
 }
 
-/** The streams on screen and the gateway that served them, held together so they cannot disagree. */
+/**
+ * The streams on screen, the gateway that served them and the feed slot they were read from, held
+ * together so they cannot disagree.
+ */
 export interface StreamCatalog {
   streams: Stream[];
   /** Null before any read has landed. */
