@@ -313,8 +313,12 @@ function readLines(path) {
  * Answers the handful of questions the deploy scripts ask git, from fixed values, and records every
  * call so a test can assert WHICH revision and WHICH paths were asked about.
  *
- * `-C <dir>` is how the scripts point git at the repo root. The sandbox is not one, so the directory
- * is journalled and otherwise ignored.
+ * `-C <dir>` is how the scripts point git at the stack's own folder. The sandbox is not a checkout,
+ * so the directory is journalled and otherwise ignored.
+ *
+ * The trees are answered for `HEAD:./<path>` only, the spelling git reads from that folder. A bare
+ * `HEAD:<path>` is read from the repository root instead, which is not the stack's folder once the
+ * stack sits in a subfolder of a larger repository, so the stub refuses it.
  */
 function gitStub(journal) {
   return `const fs = require('fs');
@@ -329,8 +333,8 @@ if (process.env.GIT_STUB_FAIL === '1') {
 const rest = argv[0] === '-C' ? argv.slice(2) : argv;
 const REVISIONS = {
   'HEAD': ${JSON.stringify(GIT_STUB.head)},
-  'HEAD:packages/client': ${JSON.stringify(GIT_STUB.clientTree)},
-  'HEAD:packages/shared': ${JSON.stringify(GIT_STUB.sharedTree)},
+  'HEAD:./packages/client': ${JSON.stringify(GIT_STUB.clientTree)},
+  'HEAD:./packages/shared': ${JSON.stringify(GIT_STUB.sharedTree)},
 };
 
 if (rest[0] === 'rev-parse') {
