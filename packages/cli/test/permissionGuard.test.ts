@@ -16,8 +16,8 @@ import {
  * anything. Nothing else would notice, because a skip is not a failure.
  *
  * Both branches are asserted here rather than only observed, because the machine that runs this is
- * never root and the root branch would otherwise be exercised for the first time on the verification
- * box, where a mistake reads as the box being wrong again.
+ * never root and the root branch would otherwise be exercised for the first time on a machine running
+ * as root, where a mistake reads as that machine being wrong again.
  */
 describe('the permission guard', () => {
   it('lets a case run for an ordinary user, whose writes the bits really do stop', () => {
@@ -53,8 +53,8 @@ describe('the decision the fourteen cases read', () => {
     const runningAsRoot = process.geteuid?.() === 0;
 
     // Deliberately not a fixed expected value. This case has to mean the same thing on a laptop, on
-    // GitHub's runners and on the verification box, and those differ in the one input that decides
-    // the answer, so the machine's own id is the only honest expectation to write.
+    // GitHub's runners and on a machine where tests run as root, and those differ in the one input
+    // that decides the answer, so the machine's own id is the only honest expectation to write.
     assert.equal(
       SKIP_WITHOUT_PERMISSION_ENFORCEMENT === false,
       !runningAsRoot,

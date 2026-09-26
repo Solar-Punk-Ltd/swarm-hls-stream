@@ -29,7 +29,7 @@ const NO_REFUSAL_TO_OBSERVE =
  * The skip decision for one effective user id: `false` runs the case, a string skips it with a reason.
  *
  * A function of the id rather than only the constant below, so both answers can be asserted on one
- * machine. The constant is read on a laptop that is never root and on a box that always is, and
+ * machine. The constant is read on a laptop that is never root and on a machine that always is, and
  * neither can exercise the other's branch.
  */
 export function skipReasonFor(effectiveUserId: number | undefined): string | false {
@@ -40,14 +40,13 @@ export function skipReasonFor(effectiveUserId: number | undefined): string | fal
  * Pass as a node:test `skip` option on any case that relies on a permission refusal.
  *
  * Skipped rather than silently passed on purpose: a case whose precondition is missing must never be
- * counted as evidence, so the box's count visibly drops there and stays whole everywhere else.
+ * counted as evidence, so the count visibly drops there and stays whole everywhere else.
  *
- * ⛔ Why this exists. The verification box runs each job in a container with no `--user`, so jobs run
+ * ⛔ Why this exists. Some test runs happen in a container with no `--user`, so jobs run
  * as the image's default, root. Fourteen cases here failed there with "Missing expected exception"
  * while passing on GitHub's runners and on every laptop, and `pnpm -r test` stops at the first
  * failing package, so `packages/cli` failing took the deploy and stream-uploader suites down with it
- * and the run reported red having tested almost nothing. Recorded as L94 of the verification-box
- * plan, ruled by Levi as decision 112.
+ * and the run reported red having tested almost nothing. Ruled by Levi as decision 112.
  *
  * ⛔ Not a seam, deliberately. `assertEnvKeyWritable` calls the real `accessSync`, and as root a
  * read-only file genuinely is writable, so the check is correct and it is the test's premise that is
