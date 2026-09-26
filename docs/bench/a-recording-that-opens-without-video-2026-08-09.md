@@ -1,11 +1,11 @@
 # A recording that opens without video plays without video, for its whole length
 
-**2026-08-09.** Task #40, answered from the three archived VOD runs and two segments fetched off the
-gateway. **Cost: nothing.** No broadcast, no postage, no BZZ beyond two reads.
+**2026-08-09.** Answered from the three archived VOD runs and two segments fetched off the gateway.
+**Cost: nothing.** No broadcast, no postage, no BZZ beyond two reads.
 
 ## The claim it replaces
 
-Task #40 was filed as _"playback of a long recording intermittently builds no video SourceBuffer,
+The defect was filed as _"playback of a long recording intermittently builds no video SourceBuffer,
 1 run in 3, mechanism unmeasured"_. Both halves of that are wrong.
 
 ⛔ **It is not intermittent and it is not a player defect.** One specific recording is unplayable, and
@@ -66,14 +66,15 @@ recording about to be published unplayable.
 ## Why that recording had no video at the start
 
 The fifth segment holds **5 video packets in 2.51s**, which is about **2 frames per second** against
-a requested 30. That is the publisher throttle of Phase 0.2 and task #76, already diagnosed: a
+a requested 30. That is the publisher throttle of Phase 0.2, already diagnosed: a
 consumer slower than the stream's bitrate does not error, it stretches media time and the delivered
 frame rate collapses. This recording caught it at its worst, with the first eight seconds delivering
 no frames whatsoever.
 
-⭐ **So the cause is old and the consequence is new.** #76 said a throttled publisher degrades the
-picture. What had never been shown is that a throttle **at second zero** does not degrade the
-picture, it removes it entirely and permanently, and reports a warning that is marked non-fatal.
+⭐ **So the cause is old and the consequence is new.** [The backpressure
+diagnosis](publisher-backpressure.md) said a throttled publisher degrades the picture. What had
+never been shown is that a throttle **at second zero** does not degrade the picture, it removes it
+entirely and permanently, and reports a warning that is marked non-fatal.
 
 ## What changed
 
@@ -86,7 +87,7 @@ pattern matching the warning would refuse usable recordings and send someone hun
 problem that is not there. There is a test for exactly that distinction, and removing the anchor
 fails it.
 
-## ✅ What was decided: the uploader withholds them (task #41)
+## ✅ What was decided: the uploader withholds them
 
 The instrument was fixed the same day. **A viewer was not**, until this: a broadcast whose opening
 segments carried no video became an unplayable recording and the deployment published it anyway.

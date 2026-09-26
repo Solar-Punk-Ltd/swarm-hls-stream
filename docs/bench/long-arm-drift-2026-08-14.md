@@ -20,7 +20,7 @@
 > See [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md).
 
 **2026-08-14 into 2026-08-15, one live broadcast of 4.2 hours, four counted arms of 40 minutes,
-4.565 BZZ.** Task #104.
+4.565 BZZ.**
 
 ## The question
 

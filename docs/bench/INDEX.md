@@ -208,7 +208,7 @@ The single-owner chunk every viewer polls.
 | 2026-08-09 | [At the live edge a miss costs 4.5x a hit in all 14 logs: the ~490ms floor is the price of asking for an unwritten slot, and it costs zero BZZ](the-announcement-floor-is-a-miss-floor-2026-08-09.md) |  |
 | 2026-08-06 | [74 of 76 refused slots at the live edge had retrievable slots behind them, and one extra request at +1 finds 73 of the 74](what-is-behind-a-refused-slot-2026-08-06.md) |  |
 | 2026-08-05 | [Asking for a feed slot that does not exist costs 4ms at the median and ~1.4s about one time in twenty, against 4012ms for a head lookup.](feed-miss-cost.md) |  |
-| 2026-08-05 | [692 slots of a just-finished broadcast all answered on the first pass: zero holes of either kind, so the trigger for #71 did not occur.](feed-hole-scan.md) |  |
+| 2026-08-05 | [692 slots of a just-finished broadcast all answered on the first pass: zero holes of either kind, so the trigger for a parked viewer did not occur.](feed-hole-scan.md) |  |
 | 2026-08-04 | [The 30-48s freeze was the instrument: reading the feed the way the player does, the worst wait was 4.8s and 85-95% of segments arrived.](feed-reader-ab.md) |  |
 | 2026-08-04 | [The feed head lookup costs a whole second at one slot and about 0.4s per doubling above it, against a flat 4ms for a read by address.](feed-head-scaling.md) |  |
 | 2026-08-03 | [Latency holds still over 5-20 min broadcasts, but the feed freezes 30-48s at a time for 42-70% of it, blamed on our own unfunded gateway node](longrun.md) | ⚠️ superseded |

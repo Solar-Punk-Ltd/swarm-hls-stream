@@ -1,15 +1,15 @@
-# What a stall costs at the shipping profile, and what #87 still needs
+# What a stall costs at the shipping profile, and what the buffer sweep still needs
 
 **2026-08-12, free.** Two reads of `hls.js@1.6.15`'s own source against our uploader's arithmetic. No
 broadcast, no browser, no BZZ.
 
-⛔⛔ **READ THE TWO AMENDMENTS AT THE FOOT BEFORE QUOTING ANYTHING HERE.** This document was written in
-one pass and corrected twice within the hour. Its second section, "#87 needs one build and one
-broadcast", is **WITHDRAWN**: our client exposes no handle to the player, so #87 needs a client change
-either way. Its first section survives but is **narrower than its heading**: the 1.0s cap holds for a
-broadcaster publishing the GOP we recommend, and the cap **ratchets to 3.0s permanently** after any
-one force-closed segment. Both headings below are left as written rather than quietly fixed, because
-what they claimed is the point.
+⛔⛔ **READ THE TWO AMENDMENTS AT THE FOOT BEFORE QUOTING ANYTHING HERE.** This document was written
+in one pass and corrected twice within the hour. Its second section, "the buffer sweep needs one
+build and one broadcast", is **WITHDRAWN**: our client exposes no handle to the player, so the
+buffer sweep needs a client change either way. Its first section survives but is **narrower than its
+heading**: the 1.0s cap holds for a broadcaster publishing the GOP we recommend, and the cap
+**ratchets to 3.0s permanently** after any one force-closed segment. Both headings below are left as
+written rather than quietly fixed, because what they claimed is the point.
 
 ## ⭐ A stall costs less than it used to, because the cap is our segment length
 
@@ -48,7 +48,7 @@ segments peak at 1.136. **A median would have got this backwards.**
 `one-stall-costs-a-second-2026-08-07.md` observed the effect at a 1.0s segment and agrees with the
 2.0s row via a different route. **Nothing here has watched a stall at 0.5s.**
 
-## ⭐⭐ #87 needs one build and one broadcast, not one build per arm
+## ⭐⭐ The buffer sweep needs one build and one broadcast, not one build per arm
 
 `LIVE_SYNC_DURATION_S` is a compile-time constant, so sweeping it looked like it needed the client
 rebuilt and redeployed for every arm. It does not. hls.js exposes a setter:
@@ -80,7 +80,7 @@ will not throw, it will silently leave the ratio at 4x. `playerConfig.ts` record
 above it the catch-up range and the seek range stop meeting, which stranded a viewer between 22 and
 30 seconds of latency at 3x and 5x.
 
-## What this changes about #87
+## What this changes about the buffer sweep
 
 The task called it the riskiest change on the board, on the grounds that a stall is permanent. It is
 permanent, but it is **bounded at one second at the shipping profile**, which is a quarter of the
@@ -93,8 +93,8 @@ plus the warm-up ones to discard.
 
 # ⛔ AMENDMENT, same day: the second half above is NARROWED
 
-**"#87 needs no rebuild per arm" was checked against hls.js and not against our client, and the
-client is the half that decides it.**
+**"The buffer sweep needs no rebuild per arm" was checked against hls.js and not against our client,
+and the client is the half that decides it.**
 
 Everything said about hls.js holds: `set targetLatency` writes `config.liveSyncDuration` and resets
 `stallCount`, and the getter re-reads config on every access. What is missing is a way to reach the
@@ -102,8 +102,8 @@ instance. `SwarmHlsPlayer.tsx` holds it as `let hls: Hls | null = null` **inside
 nothing assigns it to a global, and the QoE hook only ever **reads** `hls.targetLatency`. The
 `setTargetLatency` that appears in `hlsQoeStallPenalty.test.ts` is on a mock player, not on ours.
 
-So a Playwright harness has no handle, and **#87 needs a client change either way**. Two options,
-and the choice is a product one rather than a harness one:
+So a Playwright harness has no handle, and **the buffer sweep needs a client change either way**.
+Two options, and the choice is a product one rather than a harness one:
 
 | | what it costs |
 | --- | --- |
@@ -148,6 +148,6 @@ the worst a stall can cost is:
 the case the row above measures and the one the shipping profile describes. It says nothing about a
 2.0s publisher, whose cap was 3 before and is 3 now.
 
-⭐ **This matters for #87 directly**: a single force-close during the sitting moves the cap mid-run,
-so the sweep has to read `#EXT-X-TARGETDURATION` per arm rather than assume it, and an arm that saw
-one is not comparable with an arm that did not.
+⭐ **This matters for the buffer sweep directly**: a single force-close during the sitting moves the
+cap mid-run, so the sweep has to read `#EXT-X-TARGETDURATION` per arm rather than assume it, and an
+arm that saw one is not comparable with an arm that did not.

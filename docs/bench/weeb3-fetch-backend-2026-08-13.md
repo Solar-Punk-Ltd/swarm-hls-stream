@@ -19,8 +19,8 @@
 >
 > See [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md).
 
-**2026-08-13. Phase A of task #92, plus the free real-browser check that phase A2 was going to be.**
-Cost nothing: no broadcast, no postage, no BZZ.
+**2026-08-13. Phase A of the in-tab fetch backend, plus the free real-browser check that phase A2
+was going to be.** Cost nothing: no broadcast, no postage, no BZZ.
 
 ## What shipped
 
@@ -30,7 +30,8 @@ and every manifest still travel through the viewer's gateway on both paths, so a
 gateway arm in one thing rather than two.
 
 ⛔ Deliberately **not** `attachStream`. weeb-3 ships a complete HLS path of its own, and using it would
-measure weeb-3's player instead of ours, which is what made #44's headline unusable.
+measure weeb-3's player instead of ours, which is what made the headline of the earlier VOD run of
+weeb-3's player unusable.
 
 ## ⛔⛔⛔ The finding: weeb-3 returns the Swarm span and a gateway does not
 

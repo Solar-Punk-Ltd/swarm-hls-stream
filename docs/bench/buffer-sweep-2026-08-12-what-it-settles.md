@@ -1,7 +1,7 @@
 # The buffer sweep of 2026-08-12 13:11, and what its stall counts can and cannot settle
 
-**17 arms of 300s, 15 counted, 1.140 BZZ.** Task #87's re-gather. The artifacts sat untracked for a
-day, which is 1.140 BZZ of paid data that a lost working tree would have destroyed.
+**17 arms of 300s, 15 counted, 1.140 BZZ.** The buffer sweep's re-gather. The artifacts sat untracked
+for a day, which is 1.140 BZZ of paid data that a lost working tree would have destroyed.
 
 ## Stalls per arm, by requested buffer target
 
@@ -13,8 +13,9 @@ day, which is 1.140 BZZ of paid data that a lost working tree would have destroy
 | 2s | 0 | 0 | 1 | **1** |
 | 1.5s | 1 | 0 | 1 | **2** |
 
-⭐ **Cutting 6s to 2s did not raise the stall count here**, which is the direction #87 already reported
-and is the opposite of the worry that the buffer is a cushion whose removal costs a permanent second.
+⭐ **Cutting 6s to 2s did not raise the stall count here**, which is the direction the buffer sweep
+already reported and is the opposite of the worry that the buffer is a cushion whose removal costs a
+permanent second.
 
 ⛔⛔ **But this cannot settle it, and the reason is the same one the interleaved arms made concrete.**
 Counts of 0 to 2 over three arms cannot separate a rate of 0.3 per arm from 0.6. The six-hour soaks

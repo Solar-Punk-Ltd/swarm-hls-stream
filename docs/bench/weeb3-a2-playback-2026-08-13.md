@@ -20,7 +20,7 @@
 > See [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md).
 
 **2026-08-13. Three arms, `gateway → weeb-3 → gateway`, one recording, free.** No broadcast, no
-postage, 0 BZZ. Task #92 phase A2, on the code merged in PR #183.
+postage, 0 BZZ. Phase A2 of the in-tab fetch backend, on the code merged in PR #183.
 
 ## The answer
 
@@ -124,9 +124,9 @@ something is broken.
 
 ## Provenance
 
-- Recording: owner `8d8a30ff…feb0`, topic `e8950c8b-33d4-49d3-8e3f-ddac5d9c47ca`, 3283.77s, published
-  earlier the same day by the #93 sitting, so its manifest carries bare references and its content is
-  known healthy.
+- Recording: owner `8d8a30ff…feb0`, topic `e8950c8b-33d4-49d3-8e3f-ddac5d9c47ca`, 3283.77s,
+  published earlier the same day by the [unfunded-gateway sitting](gateway-funding-2026-08-13.md),
+  so its manifest carries bare references and its content is known healthy.
 - Reports `browser-vod-2026-08-13T09-55-22-502Z`, `…T10-02-21-787Z`, `…T10-06-40-691Z`.
 - Client rebuilt and recreated three times with `--no-deps`, so **no bee node was restarted**: both
   gateways held 134 and 133 peers throughout, and the uploader, SRS and both bee containers kept their

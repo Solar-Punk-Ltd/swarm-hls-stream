@@ -93,7 +93,7 @@ rows equally. **The growth is the finding, and a constant bias cannot produce it
 candidates are the gateway's sustained read throughput, the client's fetch concurrency, and hls.js's
 retry delay meeting the known 404-on-the-newest-segment behaviour: its `fragLoadPolicy.errorRetry`
 waits **1000ms** before retrying, which is roughly four segment intervals at this profile. That is a
-hypothesis with a mechanism, not a measurement. Task #84.
+hypothesis with a mechanism, not a measurement.
 
 **Three runs on one profile, one afternoon, one machine.** 720p 2500kbps at a 0.25s GOP, and this
 project has already been caught twice reading consecutive runs as a property of a configuration when

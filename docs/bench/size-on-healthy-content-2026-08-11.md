@@ -54,7 +54,7 @@ about 3 MB and then stops**, which is a usable design rule rather than an open-e
 
 Our 3.4 MB arm returns **1,007 KB/s** against his 4.3 MB arm's **967**. Fresh content of ours is not
 merely retrievable, it is as fast as a stream people watch. Nothing about our upload path is
-disadvantaged, which closes the question #71 opened for good.
+disadvantaged, which closes the size-versus-corpus question for good.
 
 ## What it costs to choose
 

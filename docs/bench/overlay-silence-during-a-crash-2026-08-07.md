@@ -1,6 +1,6 @@
 # The overlay is silent for the first freeze and loud for the second, and the difference is not the fault
 
-**2026-08-07.** Task #100. Answered from the recorded runs rather than from a fresh broadcast, which
+**2026-08-07.** Answered from the recorded runs rather than from a fresh broadcast, which
 turned out to be better than the single run the task asked for: two independent uploader crashes
 disagreed, and having both is what makes the answer decidable.
 
@@ -51,7 +51,8 @@ rate happens to be, and the poll rate is worst when the viewer most needs tellin
 
 ## What this does and does not settle
 
-It settles #100: the overlay was not broken on 08-06, and the two reports are consistent.
+It settles the overlay question: the overlay was not broken on 08-06, and the two reports are
+consistent.
 
 It does not settle what the threshold should be, and that is deliberately left open. The constant's
 own comment says it was chosen against how long a viewer will sit through a frozen picture, which is

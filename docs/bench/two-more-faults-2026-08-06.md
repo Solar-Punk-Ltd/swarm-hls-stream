@@ -51,11 +51,11 @@ has now been right in every scenario it has met.
 Measured from the bee node reporting ready, not from `docker start` returning, so the node's own 3.6s
 of startup is already excluded.
 
-Nothing is written while the writer's node is down, so there is no hole for the probe added in #71 to
+Nothing is written while the writer's node is down, so there is no hole for the probe added in 0.8a to
 step past: the reader is correctly waiting for a slot that does not exist. **0.8a is inert here and
 that is right.** What the 37.9s covers is the uploader flushing what it buffered, giving up on the
 segment it could not place, arming the discontinuity and resuming publication. That is the same
-family as #86, and it is server-side.
+family as [an engine that dies](an-engine-that-dies-2026-08-06.md), and it is server-side.
 
 ## What this does not say
 
@@ -83,8 +83,7 @@ permanently, to hide a fault that lasted eight seconds once.
 
 **Shortening the uploader's retry window is rejected, and it is the worse of the two.** It would trade
 a viewer's freeze for permanently lost media. A three-second freeze recovers. A segment no manifest
-ever names does not, and #81 exists because that is the quietest way this uploader can lose part of a
-broadcast.
+ever names does not, and that is the quietest way this uploader can lose part of a broadcast.
 
 **Accepted, because the measured cost is small and the buffer is already doing its job.** Eight
 seconds of write outage cost a viewer **3.1 seconds** of frozen picture. The buffer absorbed the rest,

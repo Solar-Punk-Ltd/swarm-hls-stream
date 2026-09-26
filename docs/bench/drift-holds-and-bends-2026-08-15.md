@@ -47,20 +47,20 @@ hour**, roughly doubling. Nothing here decays or plateaus.
 and is still +0.11 at 600s, so a naive interval-level standard error is far too small. The window fit
 is the conservative one and it is the one quoted.
 
-### The arm replicates #104 inside its own opening
+### The arm replicates the long-arm result inside its own opening
 
 | | slope | estimator |
 | --- | ---: | --- |
 | #203 arm A, #204 arm A, 41 min | +0.034 /hr | q50 per window, fitted on windows |
 | **this arm's own first 40.9 minutes** (n=491) | **+0.0362 /hr** | the same |
-| ⚠️ #104's published headline | +0.026 /hr | pooled over **three** weeb3 arms |
+| ⚠️ the long-arm sitting's published headline | +0.026 /hr | pooled over **three** weeb3 arms |
 
-⛔ **This table read "#104 and #203" and attributed +0.034 to #104, which published +0.026.** They are
-not the same estimator over the same arms: #104 pooled three weeb3 arms, #203 and #204 fitted the two
-41-minute ones per window. The replicate above is against the window-level family, which is what this
-arm uses, and **I have not settled which estimator is right** because #104's raw arms are no longer on
-disk. ⚠️ Treat +0.026 and +0.034 as two readings of one effect, not as a contradiction and not as
-agreement.
+⛔ **This table once attributed +0.034 to [the long-arm sitting](long-arm-drift-2026-08-14.md), which
+published +0.026.** They are not the same estimator over the same arms: the long-arm sitting pooled
+three weeb3 arms, #203 and #204 fitted the two 41-minute ones per window. The replicate above is
+against the window-level family, which is what this arm uses, and **I have not settled which
+estimator is right** because the long-arm sitting's raw arms are no longer on disk. ⚠️ Treat +0.026
+and +0.034 as two readings of one effect, not as a contradiction and not as agreement.
 
 ⭐ The extension is therefore read against a baseline the same arm reproduced, not against a different
 sitting on a different night.

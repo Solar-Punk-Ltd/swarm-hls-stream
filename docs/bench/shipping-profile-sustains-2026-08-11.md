@@ -1,4 +1,4 @@
-# ✅✅ #72 ANSWERED: the profile we ship sustains in a gateway-less in-browser node, with no stalls
+# ✅✅ ANSWERED: the profile we ship sustains in a gateway-less in-browser node, with no stalls
 
 > ⚠️ **2026-08-12: the stream this sustained is 3.21 Mbps, and the reason is now known.** It is not
 > SRS, and it is not the deployment host. **The publish path from the laptop to the host delivers
@@ -116,8 +116,9 @@ seen here. Startup to first frame was 25.1s at 0.222 cores.
 
 - ⛔ **"A browser viewer cannot hold 2.7 Mbps" stays withdrawn, and now has a positive replacement:**
   3.21 Mbps held with zero stalls on the profile we ship.
-- ⛔ **`#44`'s 0.6734 is fully explained.** It was 90 KB segments at 4.5% occupancy, and the same node
-  reaches 0.9996 at 38.5% and 0.9962 when saturated. The node was never the problem.
+- ⛔ **The 0.6734 of the earlier VOD run of weeb-3's player is fully explained.** It was 90 KB segments at
+  4.5% occupancy, and the same node reaches 0.9996 at 38.5% and 0.9962 when saturated. The node was
+  never the problem.
 - ⛔⛔ **"Segment size is a first-class product knob" is withdrawn, 2026-08-12, and points the other
   way.** It is a knob for a client fetching one segment at a time. At the concurrency hls.js really
   uses, throughput across a 8.3x size range varies by **1.26x**, while per-segment latency varies by

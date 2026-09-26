@@ -1,6 +1,6 @@
 # An engine that dies, and the broadcast that used to outlive it
 
-**2026-08-06.** Task #86, fixed and verified live against a real SRS restart. Two runs.
+**2026-08-06.** Fixed and verified live against a real SRS restart. Two runs.
 
 ## What was wrong
 
