@@ -251,9 +251,9 @@ export async function runStartGates(
       if (endsTheBoot(gate.refuses, refusal.reading)) {
         throw new GateRefusalError(refusal.message, refusal.url);
       }
-      const rung = namedRung(refusal.rung);
-      warnings.push({ gate: gate.name, rung });
-      logger.warn(warningLine(gate.name, rung, refusal.message));
+      const warning = latchedWarning(gate.name, refusal);
+      warnings.push(warning);
+      logger.warn(warningLine(gate.name, warning.rung, refusal.message));
     };
 
     try {
@@ -280,6 +280,15 @@ export async function runStartGates(
   // pass that did not. The gates are re-read on every attempt of a node wait, and only the last of
   // those describes the service that is now running.
   onWarnings(warnings);
+}
+
+/**
+ * What `/health` holds for one refusal a gate collected: the gate and the rung, and nothing the gate
+ * said. Shared with `ChequebookRecheck`, which reads the chequebook again after the boot and has to
+ * file what it finds exactly as the boot did, or a warning it replaces would not match one it keeps.
+ */
+export function latchedWarning(gate: string, refusal: GateRefusal): StartGateWarning {
+  return { gate, rung: namedRung(refusal.rung) };
 }
 
 /**

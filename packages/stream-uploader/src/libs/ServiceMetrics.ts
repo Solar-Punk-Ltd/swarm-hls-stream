@@ -285,7 +285,8 @@ export class ServiceMetrics {
    * Replaced rather than accumulated, unlike the refusals above, because the gates are read again on
    * every attempt of a node wait: a rung that was unreachable on attempt one and fine on attempt two
    * is not something to report about the service that is now running. The pass that clears is the
-   * pass that empties this.
+   * pass that empties this. After the boot the chequebook's share is replaced the same way by each of
+   * `ChequebookRecheck`'s reads, which keep the rest.
    */
   public setStartGateWarnings(warnings: readonly StartGateWarning[]): void {
     this.startGateWarnings = [...warnings];
