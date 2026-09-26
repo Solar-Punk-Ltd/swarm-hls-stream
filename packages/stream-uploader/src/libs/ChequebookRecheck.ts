@@ -112,6 +112,10 @@ export class ChequebookRecheck {
     });
   }
 
+  /**
+   * One read, and what it leaves on /health: this gate's warnings are replaced by what the read found and
+   * every other gate's are kept. The read that finds nothing is the last one.
+   */
   private async readAgain(): Promise<void> {
     const { gate, intervalMs, store, logger } = this.options;
     const found = await this.readOnce(this.heldWarnings());
