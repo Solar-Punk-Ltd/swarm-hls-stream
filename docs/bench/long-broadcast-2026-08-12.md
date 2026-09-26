@@ -37,9 +37,9 @@ Median latency is nearly the same, **5.20s against 5.38s**, because both are pin
 target rather than by the GOP. The GOP shows up in **best** latency, 3.08s against 5.03s, which is the
 segment-duration arithmetic: a 2.0s publisher can never get as close to live.
 
-⭐ Read beside #87, which found the 6s buffer can be cut to 2s for nothing measurable, this says the
-two changes **compound**: the buffer is what a viewer is currently paying, and the GOP is what decides
-how close they could get once it is cut.
+⭐ Read beside [the buffer sweep](buffer-sweep-2026-08-12.md), which found the 6s buffer can be cut
+to 2s for nothing measurable, this says the two changes **compound**: the buffer is what a viewer is
+currently paying, and the GOP is what decides how close they could get once it is cut.
 
 ## ⚠️ What these two runs cannot settle
 
@@ -53,7 +53,7 @@ how close they could get once it is cut.
 
 # Nothing degrades over four hours
 
-**2026-08-12 night, funded, 1.5501 BZZ uploader and 1.2633 gateway, 14 postage buckets.** Task #89.
+**2026-08-12 night, funded, 1.5501 BZZ uploader and 1.2633 gateway, 14 postage buckets.**
 One unbroken 720p broadcast at the shipping profile (2500 kbps, 0.5s GOP), 7,115 seconds, watched in
 a real browser throughout, with **both bee nodes sampled every 120 seconds: 60 readings**.
 

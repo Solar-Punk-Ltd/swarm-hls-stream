@@ -97,7 +97,7 @@ export interface StreamOrchestratorConfig {
   streamKey: string;
   maxQueueSize: number;
   recoveryTimeout: number;
-  /** How long a live stream may receive nothing before it is reaped as an orphan. See #86. */
+  /** How long a live stream may receive nothing before it is reaped as an orphan. */
   orphanReapMs: number;
   segmentStallMs: number;
   /**
@@ -289,7 +289,7 @@ export class StreamOrchestrator {
    * An entry means no segment carrying video has reached this stream yet, so nothing it is handed may
    * be named in a manifest: **a player fixes its codec set from the first fragment it parses and never
    * revises it**, and one built from an audio-only fragment refuses every video sample for the rest
-   * of the broadcast, non-fatally and silently. See task #41.
+   * of the broadcast, non-fatally and silently.
    *
    * Keyed by stream rather than latched per process, because the answer is about one broadcast's
    * opening. Absent means the gate is off, which covers three cases deliberately: an audio stream,
@@ -1227,7 +1227,7 @@ export class StreamOrchestrator {
       // The stream is ordinary and live from here, and this is the path production actually takes to
       // get there: neither engine re-announces a session that stayed open across the crash, so
       // `startStream` never fires. Without arming the watchdog here, surviving one crash would remove
-      // the #86 protection for the rest of the broadcast.
+      // the orphan watchdog's protection for the rest of the broadcast.
       this.armStallReaper(streamId);
       this.logger.info(`[StreamOrchestrator] Segments resumed for ${streamId}; cancelled recovery finalize timer`);
     }
@@ -1361,8 +1361,8 @@ export class StreamOrchestrator {
    * fragment it parses, so a broadcast whose first fragment carries no video plays as sound over a
    * blank picture for its whole length, with every video sample afterwards refused non-fatally. One
    * 209 second recording did exactly that, and its first four segments held 41 audio packets and no
-   * video at all. Withholding them costs those seconds of audio and buys the picture. See task #41
-   * and `docs/bench/a-recording-that-opens-without-video-2026-08-09.md`.
+   * video at all. Withholding them costs those seconds of audio and buys the picture. See
+   * `docs/bench/a-recording-that-opens-without-video-2026-08-09.md`.
    *
    * ⛔ **It gives up at a ceiling, and that bound is the point rather than a detail.** A publisher
    * that sends no video ever, under a mediatype that says it will, would otherwise have its whole
@@ -1655,7 +1655,7 @@ export class StreamOrchestrator {
     // Logged at boot; the health signal itself reads the directory at every snapshot, so the alarm
     // survives a restart AND clears the moment an operator repairs or removes the file. Caching the
     // count here is how a deployment once stayed degraded for hours after the file was gone, until a
-    // container restart re-ran this line (found live 2026-08-27). See task #38.
+    // container restart re-ran this line (found live 2026-08-27).
     const quarantined = this.recoveryStore.listQuarantined().length;
     if (quarantined > 0) {
       this.logger.error(
@@ -1687,7 +1687,7 @@ export class StreamOrchestrator {
       // ⛔ Deleting it was the whole of the old handling, and it is the one action nothing can take
       // back. The entry is the only record the broadcast was live, so removing it strands the
       // recording unfinalized, leaves its catalog entry saying `live` for good, and destroys the
-      // bytes an operator could have repaired. Keep them, and say so through /health. Task #38.
+      // bytes an operator could have repaired. Keep them, and say so through /health.
       if (entry.kind === RECOVERY_ENTRY_UNREADABLE) {
         this.recoveryStore.quarantine(fileId);
         continue;
@@ -1707,8 +1707,8 @@ export class StreamOrchestrator {
       // an entry nobody could parse, so it takes the same route. Before this, it threw inside recovery,
       // was caught, and stayed on disk as an ordinary `.json`, which meant `listActive` handed it back
       // on every boot to fail in the same place while `quarantinedRecoveryEntries` — the one signal
-      // `deriveHealthStatus` treats as permanent — stayed at zero. Narrows task #38, which covered only
-      // the entry that fails to parse.
+      // `deriveHealthStatus` treats as permanent — stayed at zero. The quarantine used to cover
+      // only the entry that fails to parse.
       if (!isRebuildableStreamState(state)) {
         this.logger.error(
           `[StreamOrchestrator] Recovery entry ${fileId} is a stream state that cannot be rebuilt ` +
@@ -1877,7 +1877,7 @@ export class StreamOrchestrator {
   }
 
   /**
-   * Watch a live stream for an engine that stops feeding it and never comes back. Task #86.
+   * Watch a live stream for an engine that stops feeding it and never comes back.
    *
    * An engine that dies does not send `on_unpublish`, so nothing tells this process the broadcast is
    * over. Before this, such a stream was held in `activeStreams` for the life of the process:
@@ -1912,7 +1912,8 @@ export class StreamOrchestrator {
    * trying — the owner's case 5. The already-armed timer needs no help: it re-derives the deadline
    * from `streamIngestAt` when it wakes, so it either reaps or sleeps exactly the remainder.
    *
-   * The arm is for the state that should not occur: a live session with no watchdog is #86 again.
+   * The arm is for the state that should not occur: a live session with no watchdog is the unreaped
+   * orphan again.
    */
   private ensureStallReaperArmed(streamId: string): void {
     if (!this.stallReapers.has(streamId)) {

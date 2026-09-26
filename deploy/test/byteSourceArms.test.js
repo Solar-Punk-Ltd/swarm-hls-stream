@@ -536,8 +536,9 @@ describe('the mid-arm floor check has something that writes its file', () => {
 });
 
 /**
- * ⭐ The CPU gap this sitting has carried since #92: both arms decode the same picture, so whatever
- * separates them is the cost of the byte source, and a weeb-3 arm runs a Swarm node in the tab.
+ * ⭐ The CPU gap this sitting has carried since the in-tab fetch work began: both arms decode the
+ * same picture, so whatever separates them is the cost of the byte source, and a weeb-3 arm runs a
+ * Swarm node in the tab.
  *
  * ⛔⛔ A reading nobody took is not a cheap viewer. The assertions below decide the COUNT before any
  * property of the samples, which is gate lesson AHU and the reason the trap line in this driver read
@@ -618,9 +619,9 @@ describe('whether the viewer had any thread left, per arm', () => {
 /**
  * That a sitting can be ONE condition, for the questions where the second one answers nothing.
  *
- * ⭐ A drift slope is read WITHIN an arm, so #106 wants one three-hour in-tab arm behind a short
- * warm-up. Run as a counterbalanced pair that is six hours of broadcast to answer a three-hour
- * question, and the half that pays for itself is the half nobody asked about.
+ * ⭐ A drift slope is read WITHIN an arm, so the drift question wants one three-hour in-tab arm
+ * behind a short warm-up. Run as a counterbalanced pair that is six hours of broadcast to answer a
+ * three-hour question, and the half that pays for itself is the half nobody asked about.
  *
  * ⛔⛔ THE EXPENSIVE FAILURE HERE IS SILENT AND ARITHMETIC. A plan whose arms are longer than
  * `ARM_MINUTES` while the broadcast is still sized from `ARM_MINUTES` starts a stream that ends

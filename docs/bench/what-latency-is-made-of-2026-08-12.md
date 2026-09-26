@@ -4,8 +4,8 @@
 already paid for. No new broadcast.
 
 Every latency comparison this project has made between two GOPs has moved **two things at once**:
-the segment gets longer and it gets bigger. `#84` exists to separate them. It turns out the reports
-already carry the separation, in the per-hop split nobody had read across arms.
+the segment gets longer and it gets bigger. A sitting is planned to separate them. It turns out the
+reports already carry the separation, in the per-hop split nobody had read across arms.
 
 ## The six arms, by hop
 
@@ -51,7 +51,7 @@ smaller pictures would help.
 That is a better sentence for a broadcaster than "a 2.0s GOP costs you 2.33 seconds", because it says
 which part is physics and which part is engineering.
 
-## The model this implies, stated so #84 can break it
+## The model this implies, stated so the separating sitting can break it
 
 ```
 totalMs  ≈  segmentDurationMs  +  k × segmentKB  +  c
@@ -64,7 +64,7 @@ manifest publish and feed propagation that does not care about either axis.
 kbps throughout, so a longer segment was also a bigger one. The model is a reading of the hops, not a
 test of it.
 
-## What #84 should now do, and what it should predict
+## What the separating sitting should now do, and what it should predict
 
 The grid separates them by construction. At 720p with segment bytes as `kbps × seconds / 8`:
 

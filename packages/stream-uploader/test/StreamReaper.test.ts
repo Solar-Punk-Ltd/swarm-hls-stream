@@ -1,5 +1,5 @@
 /**
- * What happens to a live stream whose engine stops talking and never comes back. Task #86.
+ * What happens to a live stream whose engine stops talking and never comes back.
  *
  * An engine that dies does not send `on_unpublish`, so nothing tells the uploader the broadcast is
  * over. The stream stayed in `activeStreams` for the life of the process: `/health` answered

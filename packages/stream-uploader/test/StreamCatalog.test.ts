@@ -563,7 +563,7 @@ describe('StreamCatalog unreadable-head hardening', () => {
         assert.match((error as Error).message, /aborted/);
         // ⛔ The property that matters, and the one this case asserted the opposite of until
         // 2026-09-17: bee-js leaves the code on `statusText`, so a wait reading `code` alone ended
-        // the boot here. A node that went away mid-lookup is D16's case like any other.
+        // the boot here. A node that went away mid-lookup is waited for like any other.
         assert.equal(isNodeUnavailable(error), true, 'the wait would have ended the boot on this');
         return true;
       },
@@ -1459,7 +1459,8 @@ describe('StreamCatalog master rewrite retry', () => {
  * no previous, which forks the feed for every reader still following the original chain.
  *
  * On main-v3 this path was shielded by accident: `ChequebookGate` threw on the same node before the
- * lookup ran. D16 removed that shield by design, which is what made this reachable.
+ * lookup ran. Waiting for the node instead of exiting removed that shield by design, which is what
+ * made this reachable.
  *
  * So absence is only an answer when the node says it is serving. A 404 says so by itself, since
  * nothing but a serving node answers one. A 503 is trusted only when the readiness route answers,

@@ -10,7 +10,7 @@ import { audioOnlySegment, videoSegment } from './helpers/transportStream.js';
 import { waitFor } from './helpers/waiting.js';
 
 /**
- * What the first fragment a player parses is allowed to be. Task #41.
+ * What the first fragment a player parses is allowed to be.
  *
  * **A player fixes its codec set from the first fragment and never revises it.** A broadcast that
  * opens with segments carrying no video therefore plays audio over a blank picture for its whole

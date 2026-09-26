@@ -82,8 +82,8 @@ single factor to a table of them would be inventing data.
   double and the net is small and uncertain in sign-of-magnitude, not in direction.
 - ⛔ **Do not rescore anything at 500 ms without also scaling the payload.** That is the mistake this
   document exists to prevent, and I made it first.
-- ⚠️ **`k` is the open quantity**, 0.53 against 0.88 from two sittings at the wrong sizes. **#84** is
-  the design that would settle it, and this is a second reason to run it.
+- ⚠️ **`k` is the open quantity**, 0.53 against 0.88 from two sittings at the wrong sizes. A sitting
+  that holds bytes fixed while moving duration would settle it, and this is a second reason to run it.
 
 ⚠️ **Nothing here is a new measurement.** It is 764,340 timings already on disk read against different
 thresholds, plus an exponent borrowed from two sittings measured outside the range where it is

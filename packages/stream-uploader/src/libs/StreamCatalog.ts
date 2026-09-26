@@ -345,8 +345,9 @@ export class StreamCatalog implements LadderRegistry {
    * node that cannot serve the request at all, and an intermediary in front of a node that is not
    * there answers it too, so a 503 on its own says nothing about the feed.
    *
-   * Before D16 this could not be reached with a node that was down, because `ChequebookGate` threw on
-   * the same node first. That shield was removed on purpose, so the question is asked here instead.
+   * Before the boot learned to wait for its node this could not be reached with a node that was
+   * down, because `ChequebookGate` threw on the same node first. That shield was removed on
+   * purpose, so the question is asked here instead.
    */
   private async absenceIsAnAnswer(error: unknown): Promise<boolean> {
     if (extractHttpStatus(error) === 404) {

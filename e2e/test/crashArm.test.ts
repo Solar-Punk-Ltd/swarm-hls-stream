@@ -419,11 +419,12 @@ describe('whether what the client told the viewer while the picture was stopped 
   });
 
   /**
-   * ⚠️ Issue #100, and why the requirement is per fault. Where the gateway keeps answering and only
-   * the slot is empty, the counter that would catch it is `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate
-   * collapses during exactly the stall it exists to detect, and one long freeze is a single playback
-   * stall rather than the burst `degraded` needs. The client may genuinely not know, so its silence
-   * is reported rather than refused, and the day #100 lands the case goes green rather than red.
+   * ⚠️ The silent overlay gap, and why the requirement is per fault. Where the gateway keeps
+   * answering and only the slot is empty, the counter that would catch it is
+   * `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate collapses during exactly the stall it exists to
+   * detect, and one long freeze is a single playback stall rather than the burst `degraded` needs.
+   * The client may genuinely not know, so its silence is reported rather than refused, and the day
+   * a fix lands the case goes green rather than red.
    */
   it('passes the same silence where the client is not yet known to be able to speak', () => {
     const silent = wentThrough({ saidWhileFrozen: [], explainedTheFreeze: false });
@@ -432,8 +433,9 @@ describe('whether what the client told the viewer while the picture was stopped 
   });
 
   /**
-   * ⭐ The direction that matters after the 2026-08-29 ruling. These cases used to assert the silence
-   * EXACTLY, so a fix for #100 turned them red for the product improving. It must turn them green.
+   * ⭐ The direction that matters after the 2026-08-29 ruling. These cases used to assert the
+   * silence EXACTLY, so a fix for the silent overlay gap turned them red for the product improving.
+   * It must turn them green.
    */
   it('passes a viewer the client did start explaining things to, where silence was tolerated', () => {
     assert.equal(frozenOverlayRefusal(RECOVERED, { ...STILL_LIVE, mustSpeak: false }), null);

@@ -6,9 +6,9 @@
 # result lives in the chain directory from 20260812-155429.
 #
 # 120 minutes at the shipping profile is still twelve times the longest broadcast this project has
-# ever run, and it answers the whole of #89 except the four-hour figure itself: manifest growth on
-# real segments, the targetduration ratchet in the wild, whether the read path degrades over hours,
-# and eight chances at the fourteen-minute collapse.
+# ever run, and it answers the whole of the four-hour question except the figure itself: manifest
+# growth on real segments, the targetduration ratchet in the wild, whether the read path degrades
+# over hours, and eight chances at the fourteen-minute collapse.
 #
 # ⛔ 720p. The burn constants are 720p figures.
 long-broadcast-shipped	140	viewer-arms.sh	ARMS=soak-shipped:0.5|ROUNDS=1|WARMUP_ROUNDS=0|MINUTES=120|PUBLISHER_MARGIN_S=120|METRICS_INTERVAL_S=120

@@ -359,9 +359,9 @@ browser image on the host and the settings under **Saying whether a real browser
 | `viewer/vod-playback`            | (V4) a finished recording plays through, offers every rung it was published as, and every rung ends at the uploader's last segment                                                                                                             |
 | `viewer/broadcast-ended`         | (V5) the broadcaster stops under a watching viewer and the viewer is told, rather than left on a frozen last frame                                                                                                                             |
 | `viewer/crash-gateway-outage`    | (V6) the gateway is taken away for 20s: the picture plays out its buffer, says why it stopped, and comes back on its own                                                                                                                       |
-| `viewer/crash-uploader-killed`   | (V7) the uploader is killed: the viewer waits **in silence**, which is issue #100, and resumes when it answers again                                                                                                                           |
+| `viewer/crash-uploader-killed`   | (V7) the uploader is killed: the viewer waits **in silence**, which is the silent overlay gap, and resumes when it answers again                                                                                                               |
 | `viewer/crash-writer-bee-pause`  | (V8) an 8s pause of the writer's node costs a viewer no more than the pause itself, and needs telling nothing                                                                                                                                  |
-| `viewer/crash-writer-bee-outage` | (V9) a 20s writer outage costs a segment, its sequence is published as a gap entry, and the viewer plays through the hole **in silence**, which is #100 again                                                                                  |
+| `viewer/crash-writer-bee-outage` | (V9) a 20s writer outage costs a segment, its sequence is published as a gap entry, and the viewer plays through the hole **in silence**, which is the silent overlay gap again                                                                |
 | `viewer/crash-engine-restart`    | (V10) the engine restart ends the broadcast, and the reap's terminal message reaches the screen                                                                                                                                                |
 | `viewer/batch-drain-viewer`      | (V11) a viewer watches through one rung's prepaid postage running out: the picture keeps moving, they are never told the broadcast ended, and the master this broadcast published loses exactly that rung. **Needs an armed stage**, see below |
 
@@ -370,10 +370,10 @@ turning it into a threshold is a product decision about what latency this deploy
 
 ⛔ V6 to V10 are the 2026-08-27 crash matrix, `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`,
 promoted into pass/fail. **Each asserts what that sitting recorded, including where what it recorded
-is a defect.** V7 and V9 assert an overlay that says nothing during a freeze, which is issue #100:
-they are written so that fixing #100 turns them red, with a message saying so, rather than leaving
-two cases that have never passed. Their thresholds and the reasoning behind each one are in the
-suites' own constants, and the rules they judge by are covered by the free unit run in
+is a defect.** V7 and V9 assert an overlay that says nothing during a freeze, which is the silent
+overlay gap: they are written so that fixing it turns them red, with a message saying so, rather
+than leaving two cases that have never passed. Their thresholds and the reasoning behind each one
+are in the suites' own constants, and the rules they judge by are covered by the free unit run in
 `test/crashArm.test.ts`.
 
 ⚠️ **They cost broadcast.** One fault per broadcast, since a fault ends the one it lands in, so a

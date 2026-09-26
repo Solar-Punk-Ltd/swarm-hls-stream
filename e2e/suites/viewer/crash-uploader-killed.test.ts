@@ -43,20 +43,21 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * one worth watching, since the 0.8a fix moved it from 46.7s to 2.3s, so it is measured on every arm,
  * printed in the summary line and filed in the artifact. It no longer refuses a run.
  *
- * ## ⚠️ The known gap this REPORTS rather than asserts: issue #100, the overlay says nothing
+ * ## ⚠️ The known gap this REPORTS rather than asserts: the overlay says nothing
  *
- * The picture stopped for 13.5 seconds and `FeedStateOverlay` rendered nothing at all, so the viewer
- * sat in front of a frozen frame that still claimed to be live. That is not what the product should
- * do and it IS what the product does. #100 traced it to `UNSERVED_SLOT_POLL_LIMIT` counting polls
- * whose rate collapses during the stall the limit exists to detect, so the threshold is never reached
- * while it matters. The other route into a message, the `degraded` burst, does not save it either:
- * one long continuous freeze is a single playback stall rather than the four in twenty seconds that
- * state needs.
+ * The picture stopped for 13.5 seconds and `FeedStateOverlay` rendered nothing at all, so the
+ * viewer sat in front of a frozen frame that still claimed to be live. That is not what the product
+ * should do and it IS what the product does. It was traced to `UNSERVED_SLOT_POLL_LIMIT` counting
+ * polls whose rate collapses during the stall the limit exists to detect, so the threshold is never
+ * reached while it matters. The other route into a message, the `degraded` burst, does not save it
+ * either: one long continuous freeze is a single playback stall rather than the four in twenty
+ * seconds that state needs.
  *
  * ⭐ **So the silence is printed, and only a FALSE message fails.** This used to assert the silence
- * exactly, which meant a fix for #100 turned the case red for the product improving. Under the owner
- * ruling of 2026-08-29 a correctness suite goes green when the product gets better, so the client
- * finding its voice here passes and the run's own line says which of the two happened.
+ * exactly, which meant a fix for the silent overlay gap turned the case red for the product
+ * improving. Under the owner ruling of 2026-08-29 a correctness suite goes green when the product
+ * gets better, so the client finding its voice here passes and the run's own line says which of the
+ * two happened.
  *
  * ⛔ Requires a deployed profile, a funded stamp and the browser image on the host, like every suite
  * under `suites/`. Nothing in CI runs these.
@@ -161,8 +162,8 @@ describe('V7 — a viewer watching when the uploader is killed', { skip }, () =>
     const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer never got their picture back after the uploader returned: ${notBack}`);
 
-    // ⭐ Nothing untrue, and silence tolerated. See the docblock: #100 means this client may genuinely
-    // not know, so the day it starts explaining this fault the case stays green.
+    // ⭐ Nothing untrue, and silence tolerated. See the docblock: the silent overlay gap means this
+    // client may genuinely not know, so the day it starts explaining this fault the case stays green.
     const untrue = frozenOverlayRefusal(recovery, { truthful: TRUTHFUL_WHILE_FROZEN, mustSpeak: false });
     assert.equal(untrue, null, `the client told this viewer something untrue about their picture: ${untrue}`);
     console.log(

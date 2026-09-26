@@ -2,7 +2,7 @@
 
 **2026-08-06.** One 450-second watch in real Chrome on the deployment host, 720p at a 0.25s GOP. The
 publisher was killed **150 seconds into the watch** and the viewer was left on the page for the
-remaining 300. Task #93.
+remaining 300.
 
 `browser-watch-2026-08-06T08-55-10-332Z`.
 
@@ -35,7 +35,7 @@ rides on that reload. No poll means no refusal, and no refusal means the ladder 
 finalised the stream normally. An uploader that dies mid-broadcast never writes the VOD manifest, the
 playlist stays live, and polling continues at full cadence. The earlier crash run measured that at
 **13 probes in 415 requests**, so it is real and small, but it is unbounded in time and nothing here
-tested it. Task #93 is closed as refuted for the clean end and reopened narrowly as that.
+tested it. The worry is closed as refuted for the clean end and reopened narrowly as that.
 
 ## ⛔ What the run found instead, which is worse
 
@@ -70,7 +70,7 @@ to do.
 correct and still shipped. The conclusion drawn beside it, that the client needed nothing, was
 refuted by the next run.
 
-Filed as **#94** and fixed in `f0912fd`. The chain was read end to end in hls.js's own source rather
+Fixed in `f0912fd`. The chain was read end to end in hls.js's own source rather
 than inferred:
 
 | where | what |

@@ -1,6 +1,6 @@
 # The 0.5s GOP fails 2.6x more chunk retrievals, and not one of them reaches the viewer
 
-**2026-08-12 16:00 to 16:43, task #91.** Eight arms of six minutes, one broadcast each, 720p 2500 kbps,
+**2026-08-12 16:00 to 16:43.** Eight arms of six minutes, one broadcast each, 720p 2500 kbps,
 alternating the OBS default 2.0s GOP against the shipping 0.5s. **Both bee nodes snapshotted either
 side of every arm**, sixteen readings, plus a full browser report per arm.
 
@@ -74,7 +74,8 @@ The segments are **173 KB at 0.5s against 688 KB at 2.0s**, exactly the 4x the G
 But chunk retrievals barely move, 31,900 against 29,500, because the total bytes are nearly the same.
 **So this is a genuinely higher per-request failure rate, not more requests.**
 
-The leading candidate is the publish race already established in #90: the uploader writes the feed
+The leading candidate is the publish race already established in
+[the GOP-floor replicate](gop-floor-replicate-2026-08-12.md): the uploader writes the feed
 slot with `deferred:false` and the segment bytes with `deferred:true`, so the reference beats the
 bytes by about 100 ms. A 0.5s GOP publishes four times a second where 2.0s publishes once, giving
 four times the windows in which a gateway can ask for bytes that have not landed.
@@ -117,7 +118,8 @@ falls back.
 ## What this does not answer
 
 - **Duration and size are changed together.** A 0.5s GOP means 173 KB segments here. This sitting
-  cannot say which of the two the failure rate follows, which is exactly task #84.
+  cannot say which of the two the failure rate follows. That needs a design where a long segment
+  and a short one carry the same bytes.
 - **Where the failures are.** Nothing locates them at the live edge rather than spread through the
   window, so the publish-race explanation is a hypothesis with supporting arithmetic.
 - **Whether it ever matters.** It did not here, on a funded light gateway with caching on. An

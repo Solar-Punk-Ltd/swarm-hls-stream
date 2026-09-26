@@ -20,7 +20,7 @@ It is also the first night where **the nodes' own metrics are attached to the re
 before this was scored on what the harness saw from outside while both nodes kept a complete account
 of the same events that nothing read.
 
-## Sitting 1: what an OBS-default broadcaster gets (#91)
+## Sitting 1: what an OBS-default broadcaster gets
 
 Two arms, `obs-default:2.0` against `shipped:0.5`, four rounds, first discarded, direction reversed
 each round. 56 broadcast minutes.
@@ -37,7 +37,7 @@ each round. 56 broadcast minutes.
 often than a 0.5s one over seven-minute arms, then the ratchet is a property of *how long you watch*
 rather than of the GOP, and sitting 3 is where it would show up instead.
 
-## Sitting 2: four hours at the shipping profile (#89)
+## Sitting 2: four hours at the shipping profile
 
 One continuous broadcast, 0.5s GOP, 720p, 240 minutes, browser watching throughout, both nodes
 sampled every 120s. **The longest thing this project has ever run is ten minutes**, so every number
@@ -53,7 +53,7 @@ below is an extrapolation being tested rather than a belief.
 | uploader BZZ | **~3.9** | 0.97/hr measured over 17.4 min. ⚠️ n=1, and this sitting is its own best test |
 | postage | **~26 buckets**, 199 to ~225 | 6.4/broadcast hour |
 
-## Sitting 3: three hours at the OBS default (#89 at 2.0s)
+## Sitting 3: three hours at the OBS default (sitting 2 at 2.0s)
 
 Same length regime, different GOP, so this is a second question and not a replicate of sitting 2.
 
@@ -70,11 +70,12 @@ carrying more weight in this project's recommendations than the evidence support
 
 - **1080p.** The burn constants in the drivers are 720p figures and 1080p costs about 2.2x. Three
   1080p sittings have already failed their controls for three different reasons.
-- **#52, cold-node playback.** It needs the in-browser node's localStorage cleared between arms and a
+- **Cold-node playback.** It needs the in-browser node's localStorage cleared between arms and a
   peer-count floor, and `viewer-arms.sh` restarts the gateway rather than the browser node. Running it
   tonight would produce arms that look clean and measure the wrong cold thing.
-- **#84 and #90's re-gather.** Both need `sweep-interleaved.sh`, which has the funding gate but not
-  yet the capacity gate or the node sampler.
+- **The size-versus-duration sweep and the publish-race re-gather.** Both need
+  `sweep-interleaved.sh`, which has the funding gate but not yet the capacity gate or the node
+  sampler.
 
 ## The stop conditions, in advance
 

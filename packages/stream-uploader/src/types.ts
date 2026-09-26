@@ -556,7 +556,7 @@ export interface HealthSignals {
    * withholding is the guard working, and the compose healthcheck acts on the status this feeds. What
    * it is here for is the pair. Withheld climbing while `segmentsUploadedTotal` stays at zero is a
    * publisher that has sent no frames at all, and those two readings were indistinguishable from
-   * outside before this existed. See task #41.
+   * outside before this existed.
    */
   openingSegmentsWithheld: number;
   /**
@@ -582,7 +582,7 @@ export interface HealthSignals {
    *
    * Each one is a broadcast that was live when this service last died and that it cannot finalize:
    * the recording it was building is never sealed and its catalog entry says `live` until someone
-   * repairs the quarantined file by hand. See task #38.
+   * repairs the quarantined file by hand.
    */
   quarantinedRecoveryEntries: number;
   /**

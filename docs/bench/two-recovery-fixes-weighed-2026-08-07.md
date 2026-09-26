@@ -17,9 +17,9 @@ Scenario `uploader-crash`, and both runs measure the same thing the same way.
 | run | `browser-crash-uploader-crash-2026-08-05T17-11-11-039Z` | `…2026-08-06T04-41-37-300Z` |
 | **it moved again, after the service returned** | **46.7s** | **4.1s** |
 
-✅ **Target met.** #71 set "under 5s" and it came in at 4.1s. The freeze was 54.9s of which 46.7s was
-after the uploader was healthy, and the walk had asked for one slot address 112 times without passing
-it. One extra probe request removed 42.6 seconds of frozen picture.
+✅ **Target met.** The walk fix's target was "under 5s" and it came in at 4.1s. The freeze was 54.9s
+of which 46.7s was after the uploader was healthy, and the walk had asked for one slot address 112
+times without passing it. One extra probe request removed 42.6 seconds of frozen picture.
 
 ## Fix 0.8b, noticing the gateway is back: not established
 
@@ -42,7 +42,7 @@ one sitting, and the before-run is a different sitting, where `between-session-d
 of movement on exactly the read-side hops this scenario exercises. A 2.4s difference against a 1.1s
 within-sitting spread, with n=1 on the before, is suggestive and no more.
 
-**This is not a surprise and #91 predicted it.** Most of what remains is the gateway becoming able to
+**This is not a surprise, and it was predicted.** Most of what remains is the gateway becoming able to
 serve content plus the client refilling its buffer, neither of which any client change reaches. The
 task's "under 3s" target was never achievable, because 7.2s of the original 14.1s belonged to the
 service starting up.
@@ -52,9 +52,9 @@ service starting up.
 **0.5d is answered and does not need its 50 minutes.**
 
 - **0.8a is worth 42.6 seconds of frozen picture** at a viewer, measured the same way on both sides.
-- **0.8b's effect is not established**, and a further before-run would have to be produced by reverting
-  a shipped fix, which is not worth 50 minutes of broadcast for a quantity #91 already showed is mostly
-  not ours.
+- **0.8b's effect is not established**, and a further before-run would have to be produced by
+  reverting a shipped fix, which is not worth 50 minutes of broadcast for a quantity already shown
+  to be mostly not ours.
 
 ⭐ **The lesson is about the campaign rather than the client.** An instrument was corrected in the
 middle of a before-and-after, which is the right thing to do to an instrument and the worst possible

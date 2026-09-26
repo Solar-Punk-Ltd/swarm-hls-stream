@@ -5,12 +5,12 @@
 #
 # ## The gap this closes
 #
-# #92 phase A2 proved the in-tab path works and plays: a full recording, every segment byte from the
-# node, zero `/bytes/` requests against the gateway arm's 118, all seeks landed. ⚠️ That was **VOD**.
-# A recording lets a player fetch as far ahead as it likes, and the weeb-3 arm used that freedom: it
-# held 19.99s of buffer against the gateway arm's 47.98s and played real time anyway. A live edge has
-# no ahead to fetch into. Nothing measured so far says whether the in-tab node keeps up when the only
-# segment available is the one that was published a moment ago.
+# Phase A2 of the in-tab fetch work proved the in-tab path works and plays: a full recording, every
+# segment byte from the node, zero `/bytes/` requests against the gateway arm's 118, all seeks
+# landed. ⚠️ That was **VOD**. A recording lets a player fetch as far ahead as it likes, and the
+# weeb-3 arm used that freedom: it held 19.99s of buffer against the gateway arm's 47.98s and played
+# real time anyway. A live edge has no ahead to fetch into. Nothing measured so far says whether the
+# in-tab node keeps up when the only segment available is the one that was published a moment ago.
 #
 # ## Why one broadcast
 #
@@ -30,7 +30,8 @@
 #
 # Only SEGMENT bytes move. The catalog, the feed and the manifest still come from the gateway in both
 # arms, by the design of PR #183. A weeb-3 arm is not a gateway-less viewer, it is a viewer whose video
-# comes from its own node. #44 was withdrawn for blurring exactly that line.
+# comes from its own node. The headline of an earlier VOD run of weeb-3's player was withdrawn for
+# blurring exactly that line.
 #
 # ## Two warm gateways, neither of them touched
 #
@@ -60,7 +61,8 @@ ARM_MINUTES="${ARM_MINUTES:-6}"
 #
 # ⭐ It exists for the questions that have ONE condition. A drift slope is read WITHIN an arm, so the
 # other byte source answers nothing and a paired sitting would buy a second broadcast hour per hour of
-# result. #106 is `weeb3:6:warm-up weeb3:180:counted`, three hours instead of six.
+# result. The three-hour drift arm is `weeb3:6:warm-up weeb3:180:counted`, three hours instead of
+# six.
 #
 # ⛔ Roles are not cosmetic: `read-sitting.py` counts round 1 as warm-up, so the roles here are what
 # decide which arms a published table is allowed to contain.

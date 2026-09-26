@@ -6,10 +6,10 @@
  * `sharedFeedDrain.test.ts` and `AdminStreamSession.test.ts` already hold the handover where an
  * engine **re-announces**: `startStream` finds a live session under the id, retires it and spawns its
  * replacement in the same turn. That is the polite case, and it is not the one production mostly
- * takes. An engine that dies sends no `on_unpublish` and makes no second announce, so nothing at all
- * tells this service the broadcast is over — the only thing that ends it is `scheduleStallReap`
- * firing after `orphanReapMs` of silence (task #86). Whatever comes next on that topic comes after
- * the reaper's own `stopStream`, through a code path the glue tests had never been run down:
+ * takes. An engine that dies sends no `on_unpublish` and makes no second announce, so nothing at
+ * all tells this service the broadcast is over — the only thing that ends it is `scheduleStallReap`
+ * firing after `orphanReapMs` of silence. Whatever comes next on that topic comes after the
+ * reaper's own `stopStream`, through a code path the glue tests had never been run down:
  *
  * - it is the **reaper** that hands the outgoing session's write completion to `trackSharedFeedWrites`,
  *   so the gate a successor waits on is registered from a timer handler rather than from an announce;

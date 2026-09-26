@@ -75,7 +75,7 @@ itself, and both are reported before any drift figure:
 | 1080p 1.0s, 10 min | 0.9984 | 1.0010 | 1.53s |
 
 **The first column is the check. The second is the result restated, and was wrongly read as a second
-check.** ⛔ Corrected 2026-08-07, task #101.
+check.** ⛔ Corrected 2026-08-07.
 
 `media delivered per wall second` earns the name: its numerator is the uploader's own segment
 counter times the media measured out of the packets, so nothing in it comes from the capture

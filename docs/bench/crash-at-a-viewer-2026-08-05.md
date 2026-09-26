@@ -47,7 +47,7 @@ lasted, and in both the extra time is on this side.
 The client's manifest backoff doubles from `MANIFEST_RETRY_BASE_MS = 2000` and is stamped from the
 failure, so attempts fall at t=0, 2, 6, 14, 30. The gateway came back at 20.5s and the next attempt
 was not due until 30s. **The backoff overshot the outage by about ten seconds**, and at the
-`MANIFEST_RETRY_CAP_MS = 30_000` cap it could overshoot by thirty. Task #85.
+`MANIFEST_RETRY_CAP_MS = 30_000` cap it could overshoot by thirty.
 
 **The uploader crash: 15.3s down, 54.9s frozen, 46.7s of it after the uploader was healthy.** This one
 is worse and the request log names it exactly.
@@ -71,8 +71,8 @@ So roughly 175 slots were written and retrievable while the viewer could not see
 them. The walk is strictly sequential and cannot pass its oldest missing slot.
 
 **A viewer's recovery is bounded below by the retrievability of the one oldest slot they have not
-read, however healthy the publisher is.** That is task #71, which a 692-slot scan had downgraded
-because it found no holes. The scan read chunks that had had minutes to settle. This is the case it
+read, however healthy the publisher is.** A 692-slot scan had downgraded that defect because it
+found no holes. The scan read chunks that had had minutes to settle. This is the case it
 could not see.
 
 The fix has been written down in the roadmap since before this run: on `stalled`, drop the index and
@@ -92,9 +92,9 @@ makes every later slot invisible.
 
 **The engine restart left the uploader holding a stream forever.** SRS never sends `on_unpublish`
 when it dies, so `activeStreams` stayed at 1 with no activity and the uploader reported `degraded`
-with `segment_stall` until it was restarted by hand. Correct detection, no path out of it. Task #86,
-✅ **fixed and verified live on 2026-08-06**, see [an engine that dies](./an-engine-that-dies-2026-08-06.md).
-found by running this rather than by looking for it.
+with `segment_stall` until it was restarted by hand. Correct detection, no path out of it. Found by
+running this rather than by looking for it, and ✅ **fixed and verified live on 2026-08-06**, see [an
+engine that dies](./an-engine-that-dies-2026-08-06.md).
 
 **Segment length was 0.25s throughout, and the client was the fixed one** from
 [the loop fix](./the-loop-fixed-2026-08-05.md). All three sat at 5.77 to 5.90s behind live before their

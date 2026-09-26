@@ -90,7 +90,7 @@ export interface UploaderEvents {
    * only audio plays as sound over a blank picture **for its whole length**, because the player fixes
    * its codec set from the first fragment it parses and never revises it. Measured 2026-08-09: four
    * opening segments with 0 video packets and 41 AAC packets, and every later video sample refused
-   * with a non-fatal warning. See task #40.
+   * with a non-fatal warning.
    *
    * ⚠️ The uploader reports this **once per stream**, so this names the first one and not all of them.
    * Presence is the signal; the length is not a rate.
@@ -202,7 +202,7 @@ const RE_RETRY = /Retrying in ~/g;
 /**
  * ⛔ Not a raw regex, unlike the two above, and the difference is that something refuses on this one.
  * `e2e/browser/make-recording.ts` will not hand back a recording whose segments held no video, so a
- * pattern that quietly stopped matching would let the task #40 failure through as a success: a
+ * pattern that quietly stopped matching would let exactly that failure through as a success: a
  * recording that plays as sound over a blank picture, called good. Derived from the composer the
  * uploader writes with, so a reword cannot do that silently.
  */

@@ -71,12 +71,13 @@ run, arm session `requested=weeb3, reported=weeb3`, driver proof passed, exit 0.
   to resume, 2 rebuffers, against 54.9s, 37.9s and 7 then), but that corpus run predates the loop
   fix and the probe ladder, so this is the client having improved across eras, not the byte source.
   No within-sitting control ran for this fault. ⚠️ The overlay said nothing for all 29.5s, the same
-  silence as arm 3 and the same #100 mechanism.
+  silence as arm 3 and the same overlay-silence mechanism.
 - **The engine restart is correctly terminal, and for the first time a viewer was watching when the
   orphan reap spoke.** SRS takes the SRT session with it, so the broadcast genuinely ends: the
   viewer froze 83.2s, the overlay escalated from "Waiting for the broadcast to continue" to **"This
-  broadcast has ended"**, which is #86's sixty-second reap finalizing the stream and reaching the
-  screen. The corpus run of this fault (84.3s, never recovers) could only infer that ending.
+  broadcast has ended"**, which is the uploader's sixty-second reap finalizing the stream and
+  reaching the screen. The corpus run of this fault (84.3s, never recovers) could only infer that
+  ending.
 
 ## What arms 1 to 3 say beyond the headline
 
@@ -85,7 +86,8 @@ run, arm session `requested=weeb3, reported=weeb3`, driver proof passed, exit 0.
   was verified at is 4.1s on a gateway viewer, against 46.7s before the fix. Nothing about reading
   bytes from the tab breaks the ladder.
 - **The overlay's silence during an uploader crash reproduces exactly.** Arm 3 froze 13.5s and
-  `FeedStateOverlay` said nothing, the same behaviour #100 traced to `UNSERVED_SLOT_POLL_LIMIT`
+  `FeedStateOverlay` said nothing, the same behaviour [the overlay-silence
+  report](overlay-silence-during-a-crash-2026-08-07.md) traced to `UNSERVED_SLOT_POLL_LIMIT`
   counting polls whose rate collapses during the stall it exists to detect. It is a threshold-unit
   defect, not a byte-source one, and the in-tab reading removes the last excuse to think otherwise.
 - **The freeze identity survives the byte-source change.** In all three arms the picture kept moving

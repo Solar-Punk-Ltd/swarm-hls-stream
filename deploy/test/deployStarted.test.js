@@ -105,18 +105,17 @@ describe('a deploy reports whether the services it started are up', () => {
  * ⛔⛔⛔ A five second look cannot see either of the two gates it was written for. The uploader runs
  * `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one HTTP read per bee node and
  * per batch, each bounded by START_GATE_TIMEOUT_MS at 20000ms, and only then does
- * `StreamCatalog.init` look a feed up on a node that may be cold. Since decision D16 of 2026-09-17
- * all of it runs behind the listener, so the port is open and answering `waiting_for_node` the whole
- * time. On a four-node ABR pool that answers nothing the default budget spends about 160 seconds an
- * attempt under `warn`, which reads every node of both gates, and then waits and goes round again.
- * The shipped `chequebook-warn` spends the same budget on such a pool since the owner's decision 7 b
- * of 2026-09-17, because a batch the postage gate could not read at all is warned about rather than
- * refused on.
- * At five seconds the container is `running` with its node process inside an HTTP call, and the
- * deploy prints its success line. Under UPLOADER_START_GATES=refuse the first read that times out
- * ends the pass instead, about 20 seconds in, and that pass is waited on and retried like any other.
- * What exits 1 and loops unwatched is a node that ANSWERS with a reading the gate will not accept,
- * which is the case this watch still has to be able to see.
+ * `StreamCatalog.init` look a feed up on a node that may be cold. All of it runs behind the
+ * listener, so the port is open and answering `waiting_for_node` the whole time. On a four-node ABR
+ * pool that answers nothing the default budget spends about 160 seconds an attempt under `warn`,
+ * which reads every node of both gates, and then waits and goes round again. The shipped
+ * `chequebook-warn` spends the same budget on such a pool, because under it the postage gate
+ * refuses only a batch the node answered about, and a batch it could not read at all is warned
+ * about rather than refused on. At five seconds the container is `running` with its node process
+ * inside an HTTP call, and the deploy prints its success line. Under UPLOADER_START_GATES=refuse
+ * the first read that times out ends the pass instead, about 20 seconds in, and that pass is waited
+ * on and retried like any other. What exits 1 and loops unwatched is a node that ANSWERS with a
+ * reading the gate will not accept, which is the case this watch still has to be able to see.
  *
  * The second half is the same blindness in one instant rather than over time: a crash loop spends
  * most of its life `running`, because `restarting` is the brief moment between attempts. So a look
@@ -189,11 +188,12 @@ describe('a deploy watches until its services have earned their green', () => {
    * ⛔⛔ **A warned stack does not report healthy inside the window, so the deploy's own note stopped
    * meaning anything.**
    *
-   * Since the gates warn and latch (D15 and its review), an uploader that started on a chequebook
-   * under its floor answers /health 503 until the chequebook is funded, and one whose postage gate
-   * warned answers it until it is restarted. Its healthcheck therefore cannot go green while the deploy
-   * watches, and every deploy of such a stack waited out the whole window to print "never reported
-   * healthy", which says nothing about what is wrong and trains a reader to skip the line.
+   * Since the gates warn and latch their warnings onto /health, an uploader that started on a
+   * chequebook under its floor answers /health 503 until the chequebook is funded, and one whose
+   * postage gate warned answers it until it is restarted. Its healthcheck therefore cannot go green
+   * while the deploy watches, and every deploy of such a stack waited out the whole window to print
+   * "never reported healthy", which says nothing about what is wrong and trains a reader to skip
+   * the line.
    *
    * The watch asks the container what it says about itself. A 503 whose only reason is
    * `start_gate_warned` is a service that started, so it is confirmed inside the window and the gates

@@ -27,8 +27,8 @@ const holder = globalThis as unknown as Record<string, unknown>;
  * one comparison, the backend and the build, and it makes a counterbalanced live sitting impossible:
  * `AB/AB/BA/BA` inside one broadcast would need eight rebuilds.
  *
- * The gateway switch of #180 solved the same problem for gateways and the arms of #93 were run on it.
- * This is that, for the byte source.
+ * The gateway switch of #180 solved the same problem for gateways and the unfunded-gateway arms
+ * were run on it. This is that, for the byte source.
  */
 describe('moving the fetch backend at runtime', () => {
   afterEach(() => {

@@ -17,8 +17,8 @@ ARG VITE_APP_OWNER=
 ARG VITE_APP_RAW_TOPIC=swarm-stream
 # ⛔ Empty by default, and a deployment serving viewers must leave it that way. Set, the bundle
 # publishes the hls.js instance on `globalThis` so a measurement harness can move the player's
-# latency target between arms of one broadcast (task #87). Unset, Vite substitutes the flag with a
-# literal and the whole thing is eliminated, which `packages/client/test/bundle.test.ts` asserts.
+# latency target between arms of one broadcast. Unset, Vite substitutes the flag with a literal and
+# the whole thing is eliminated, which `packages/client/test/bundle.test.ts` asserts.
 ARG VITE_EXPOSE_PLAYER=
 # ⛔ Empty by default, meaning segments come from the viewer's bee gateway. Set to `weeb3`, the bundle
 # fetches segment bytes from a Swarm node running in the viewer's own tab instead. Experimental: it

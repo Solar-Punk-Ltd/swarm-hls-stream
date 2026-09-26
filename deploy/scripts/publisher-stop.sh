@@ -12,12 +12,12 @@
 #
 #   ✗ publish FAILED (exit 127). Nothing usable was broadcast, so do not measure against this.
 #
-# The #93 sitting of 2026-08-13 printed that after eight good arms, 363,952 push-synced chunks and
-# 0.7321 BZZ, with 595s of the broadcast unused. ⭐⭐⭐ An alarm that fires on every successful run is
-# one the operator learns to skip, and the next time it is real nobody reads it. That is gate lesson
-# AHL, and it is the entire reason this marker exists rather than `publish-clock.sh` simply treating a
-# vanished container as fine: a container that goes away WITHOUT one of these is still a loud failure,
-# because nothing then knows how much was broadcast.
+# The unfunded-gateway sitting of 2026-08-13 printed that after eight good arms, 363,952 push-synced
+# chunks and 0.7321 BZZ, with 595s of the broadcast unused. ⭐⭐⭐ An alarm that fires on every
+# successful run is one the operator learns to skip, and the next time it is real nobody reads it.
+# That is gate lesson AHL, and it is the entire reason this marker exists rather than
+# `publish-clock.sh` simply treating a vanished container as fine: a container that goes away
+# WITHOUT one of these is still a loud failure, because nothing then knows how much was broadcast.
 #
 # ## What a caller owes it
 #

@@ -225,8 +225,8 @@ describe('summarizing a session', () => {
 });
 
 /**
- * Task #102. A forward jump is the player abandoning media, and it used to be counted as media the
- * viewer watched.
+ * A forward jump is the player abandoning media, and it used to be counted as media the viewer
+ * watched.
  *
  * hls.js writes `media.currentTime = liveSyncPosition` whenever latency passes
  * `LIVE_MAX_LATENCY_DURATION_S`, which is its designed response to falling behind and is the normal
@@ -328,7 +328,7 @@ describe('media a viewer watched, against media the player skipped', () => {
  *
  * A consumer slower than the stream's bitrate does not error or drop frames, it stretches media
  * time, so the encoder reports its keyframe interval hit exactly while the frame rate underneath
- * collapsed. Task #76 reproduced 12.2fps against a requested 30 that way.
+ * collapsed. A throttled publisher reproduced 12.2fps against a requested 30 that way.
  */
 describe('the frame rate that actually arrived', () => {
   /**

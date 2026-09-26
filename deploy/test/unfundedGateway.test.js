@@ -12,7 +12,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SCRIPT = join(ROOT, 'deploy/scripts/unfunded-gateway.sh');
 
 /**
- * That the second gateway of #93 can be stood up beside the funded one without touching it.
+ * That the second gateway of the unfunded-gateway sitting can be stood up beside the funded one
+ * without touching it.
  *
  * ⛔ Every viewer figure this project holds came through a chequebook-funded gateway. Measuring the
  * shipping case needs a second node that is deliberately unfunded, and it has to be warm at the same

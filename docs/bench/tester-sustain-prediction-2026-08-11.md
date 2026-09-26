@@ -78,11 +78,11 @@ both verdicts. **I am not able to call this run, and saying so now is the point 
 
 ## What each outcome licenses, decided in advance
 
-**If it sustains:** every KB/s figure this project holds for the in-browser node is re-scoped to "our
-90 KB segments on an unfunded node" and stops being a node property. #60's ceiling, the 1.8 Mbps
-profile advice in [[swarm-hls-browser-sustain]], and the fragment-size conclusion all need re-reading,
-because they would all be measurements of a starved retrieval path. The follow-up is then our shipping
-1.0s profile on the same node in the same hour.
+**If it sustains:** every KB/s figure this project holds for the in-browser node is re-scoped to
+"our 90 KB segments on an unfunded node" and stops being a node property. The browser node's sustain
+ceiling, the 1.8 Mbps profile advice in [[swarm-hls-browser-sustain]], and the fragment-size
+conclusion all need re-reading, because they would all be measurements of a starved retrieval path.
+The follow-up is then our shipping 1.0s profile on the same node in the same hour.
 
 **If it does not sustain:** the premise is what needs checking, not the node. Ask the publisher whether
 the playback was really gateway-less, on the same network, and on an unfunded node, because our own

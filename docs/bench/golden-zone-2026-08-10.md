@@ -90,8 +90,8 @@ variable across all three arms, and so is "at least one of duration or resolutio
 here separates them, because no pair holds bytes fixed while moving duration.
 
 ⛔ **So "bytes, not duration" is not a result of this sitting.** It is a reading of it. Separating the
-two needs a design where a long segment and a short one carry the same bytes, which is task **#84**
-and has never been run.
+two needs a design where a long segment and a short one carry the same bytes, and
+that design has never been run.
 
 ## ⛔⛔ Three caveats the original had no way to carry
 
@@ -137,7 +137,7 @@ as noisy.
 - ⛔ **WITHDRAW: "M480 has a worse late share than S720."** p = 0.47.
 - ⛔ **WITHDRAW: "score on the tail, never the median."** The tail is what failed to separate here.
 - ⛔ **WITHDRAW: "segment size in bytes orders the result, not segment duration."** The design cannot
-  separate them. See **#84**.
+  separate them.
 - ⛔ **WITHDRAW the cross-instrument corroboration.** It was decay.
 
 ⚠️ **None of this touches the shipping decision.** 0.5s/720p is chosen on the funded GOP sittings of
