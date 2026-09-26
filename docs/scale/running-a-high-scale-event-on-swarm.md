@@ -96,7 +96,7 @@ things that make it a different animal:
 produced it offered far less work than we believed: `RETRIEVE_DATA_GROUP_CONCURRENCY = 8` bounds
 Merkle-node expansions, each carrying up to 128 chunk requests, so the node was never saturated.
 **Do not plan against 0.59x as a ceiling and do not quote it as one.** What a browser node can actually
-sustain is open, and it is task #60. The second and third rows are unaffected.
+sustain is open. The second and third rows are unaffected.
 
 **Everything about browser nodes lives in [in-browser-phase-1.md](./in-browser-phase-1.md)**, including
 what to feed a simulator, in its section 7b. Do not model a browser-node audience from this document.
