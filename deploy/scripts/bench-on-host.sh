@@ -447,7 +447,10 @@ CLIENT_SOURCE_PATHS=(
 # carried over ssh, and an unset expectation is refused by the gate rather than guessed at.
 git_tree_or_empty() {
   local resolved
-  resolved="$(git -C "${REPO_ROOT}" rev-parse "HEAD:$1" 2>/dev/null || true)"
+  # `HEAD:./<path>` is read from the folder `-C` names, where a bare `HEAD:<path>` is read from the
+  # repository root. The stack can sit in a subfolder of a larger repository, and there the bare form
+  # names nothing.
+  resolved="$(git -C "${REPO_ROOT}" rev-parse "HEAD:./$1" 2>/dev/null || true)"
   case "${resolved}" in
     '' | *[!0-9a-f]*) printf '' ;;
     *) printf '%s' "${resolved}" ;;
