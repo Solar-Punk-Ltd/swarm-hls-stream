@@ -46,6 +46,16 @@ function stubFetcher(replies: (TimedResponse | Error)[]) {
   return { urls, fetcher: fetcher as never };
 }
 
+/** Every request is held until the test answers it, so two reads can be in flight at once. */
+function deferredFetcher() {
+  const pending: { url: string; answer: (response: TimedResponse) => void }[] = [];
+  const fetcher = (url: string) =>
+    new Promise<TimedResponse>((resolve) => {
+      pending.push({ url, answer: resolve });
+    });
+  return { pending, fetcher: fetcher as never };
+}
+
 function headerFor(index: number): Headers {
   // Hexadecimal and zero padded, which is how a gateway sends it. Decimal here would pass for every
   // index under sixteen and diverge silently after.
@@ -77,9 +87,10 @@ describe('CatalogFeedReader', () => {
     const { fetcher } = stubFetcher([respond({ headers: new Headers({ 'swarm-feed-index': '0000000000000022' }) })]);
     const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
 
-    await reader.read('http://gw');
+    const read = await reader.read('http://gw');
 
     expect(reader.getIndex()?.toBigInt()).toBe(34n);
+    expect(read?.slot).toBe(34n);
   });
 
   it('reports nothing new as null rather than repeating the last body', async () => {
@@ -89,7 +100,7 @@ describe('CatalogFeedReader', () => {
     ]);
     const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
 
-    expect(await reader.read('http://gw')).toBe('[{"live":true}]');
+    expect(await reader.read('http://gw')).toEqual({ body: '[{"live":true}]', slot: 3n });
     expect(await reader.read('http://gw')).toBeNull();
   });
 
@@ -113,7 +124,7 @@ describe('CatalogFeedReader', () => {
     await reader.read('http://gw');
     const caughtUp = await reader.read('http://gw');
 
-    expect(caughtUp).toBe('[3]');
+    expect(caughtUp).toEqual({ body: '[3]', slot: 3n });
     expect(reader.getIndex()?.toBigInt()).toBe(3n);
     expect(urls).toHaveLength(5);
   });
@@ -140,7 +151,7 @@ describe('CatalogFeedReader', () => {
     ]);
     const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
 
-    expect(await reader.read('http://gw')).toBe('[{"a":1}]');
+    expect(await reader.read('http://gw')).toEqual({ body: '[{"a":1}]', slot: null });
     expect(reader.getIndex()).toBeNull();
     await reader.read('http://gw');
 
@@ -210,7 +221,7 @@ describe('CatalogFeedReader', () => {
 
     await reader.read('http://gw');
 
-    expect(await reader.read('http://gw')).toBe('[{"live":true}]');
+    expect(await reader.read('http://gw')).toEqual({ body: '[{"live":true}]', slot: 8n });
     expect(reader.getIndex()?.toBigInt()).toBe(8n);
   });
 
@@ -236,8 +247,8 @@ describe('CatalogFeedReader', () => {
 
     await reader.read('http://gw');
 
-    expect(await reader.read('http://gw')).toBe('[{"live":true}]');
     // The position and the body have to agree: index 8 is the slot the returned body came from.
+    expect(await reader.read('http://gw')).toEqual({ body: '[{"live":true}]', slot: 8n });
     expect(reader.getIndex()?.toBigInt()).toBe(8n);
   });
 
@@ -265,16 +276,6 @@ describe('CatalogFeedReader', () => {
  * awaited reads is the case that already worked and is covered above.
  */
 describe('CatalogFeedReader when a gateway switch lands mid-read', () => {
-  /** Every request is held until the test answers it, so two reads can be in flight at once. */
-  function deferredFetcher() {
-    const pending: { url: string; answer: (response: TimedResponse) => void }[] = [];
-    const fetcher = (url: string) =>
-      new Promise<TimedResponse>((resolve) => {
-        pending.push({ url, answer: resolve });
-      });
-    return { pending, fetcher: fetcher as never };
-  }
-
   it('keeps the position the new gateway resolved when the old gateway answers after the switch', async () => {
     const { pending, fetcher } = deferredFetcher();
     const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
@@ -310,5 +311,48 @@ describe('CatalogFeedReader when a gateway switch lands mid-read', () => {
     // The walk stopped at the slot that was already in flight rather than asking the node the viewer
     // has left for another one.
     expect(pending).toHaveLength(2);
+  });
+
+  /**
+   * The slot describes the body, not this reader, so it survives the refusal to keep a position. A
+   * viewer who switches away and straight back is handed this body for the gateway they returned to,
+   * and the stream list needs its slot to know whether it is older than what is on screen.
+   */
+  it('still names the slot of a head the old gateway resolved, though it keeps no position from it', async () => {
+    const { pending, fetcher } = deferredFetcher();
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    const beforeSwitch = reader.read('http://gw-old');
+    reader.reset();
+    pending[0].answer(respond({ headers: headerFor(40), text: '[{"old":true}]' }));
+
+    expect(await beforeSwitch).toEqual({ body: '[{"old":true}]', slot: 40n });
+    expect(reader.getIndex()).toBeNull();
+  });
+});
+
+/**
+ * ⛔ Two reads can be in flight on one gateway at once, and the one that lands last is not always the
+ * newer.
+ *
+ * The app's first read runs beside the browse page's first poll, both start with no position, and
+ * each resolves the head on its own, so either can land last. The reader's own position is whichever
+ * of them wrote it last. Only the slot each body arrived with says which of the two is newer, which
+ * is what lets the stream list refuse the older one instead of putting it back on screen.
+ */
+describe('CatalogFeedReader when two reads overlap on one gateway', () => {
+  it('hands back each body with the slot it was read from, the older one landing last', async () => {
+    const { pending, fetcher } = deferredFetcher();
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    const first = reader.read('http://gw');
+    const second = reader.read('http://gw');
+    pending[1].answer(respond({ headers: headerFor(8), text: '[8]' }));
+    const newer = await second;
+    pending[0].answer(respond({ headers: headerFor(7), text: '[7]' }));
+    const older = await first;
+
+    expect(newer).toEqual({ body: '[8]', slot: 8n });
+    expect(older).toEqual({ body: '[7]', slot: 7n });
   });
 });

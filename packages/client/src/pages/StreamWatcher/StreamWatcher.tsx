@@ -6,9 +6,17 @@ import { useAppContext } from '@/providers/App';
 import { watchPageCatalogPollMs } from '@/providers/catalogPoll';
 import { useCatalogPoll } from '@/providers/useCatalogPoll';
 import { ROUTES } from '@/routes';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType, STREAM_STATUS_SCHEDULED } from '@/types/stream';
+import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 import { playableRenditions } from '@/utils/playableRenditions';
 import { scheduledStartLabel } from '@/utils/scheduledStart';
+import {
+  WATCH_VIEW_NOT_STARTED,
+  WATCH_VIEW_PLAYER,
+  WATCH_VIEW_UNAVAILABLE,
+  watchPageView,
+} from '@/utils/watchPageView';
+
+import { useIsWaitingForStart } from './useIsWaitingForStart';
 
 import './StreamWatcher.scss';
 
@@ -35,7 +43,9 @@ export function StreamWatcher() {
   const stream = streamList.find((entry) => entry.owner === owner && entry.topic === topic);
 
   // Above the early return, because a hook may not be skipped on some renders.
-  useCatalogPoll(watchPageCatalogPollMs(stream?.state));
+  const isWaiting = useIsWaitingForStart(`${owner}/${topic}`, stream);
+  const view = watchPageView(isStreamListLoaded, stream, isWaiting);
+  useCatalogPoll(watchPageCatalogPollMs(view));
 
   const handleBackButtonClick = () => {
     navigate(ROUTES.STREAM_BROWSER);
@@ -50,24 +60,24 @@ export function StreamWatcher() {
   // carries no ladder of its own, so the rung names come from the catalog entry below.
   const level = searchParams.get('level') ?? undefined;
 
-  /**
-   * An announced broadcast has no manifest feed under its topic yet, so mounting the player would
-   * start a poll loop against a slot nobody has written and show a viewer a loading player that can
-   * never finish loading. Only an entry the catalog says is scheduled takes this path: a deep link
-   * to a topic this catalog does not list still plays, because nothing here knows better.
-   */
-  const isScheduled = stream?.state === STREAM_STATUS_SCHEDULED;
+  // Neither message mounts the player. An announced broadcast has no manifest feed under its topic
+  // yet, so a player there polls a slot nobody writes and loads for ever. See `watchPageView`.
   const startsAt = scheduledStartLabel(stream?.scheduledStartTime);
 
   return (
     <div className="stream-item-page">
-      {isStreamListLoaded && isScheduled && (
-        <div className="stream-not-started">
+      {view === WATCH_VIEW_NOT_STARTED && (
+        <div className="stream-placeholder">
           <p>This stream has not started yet.</p>
-          {startsAt && <p className="stream-not-started-time">Scheduled for {startsAt}</p>}
+          {startsAt && <p className="stream-placeholder-detail">Scheduled for {startsAt}</p>}
         </div>
       )}
-      {isStreamListLoaded && !isScheduled && (
+      {view === WATCH_VIEW_UNAVAILABLE && (
+        <div className="stream-placeholder">
+          <p>This stream is no longer available.</p>
+        </div>
+      )}
+      {view === WATCH_VIEW_PLAYER && (
         <SwarmHlsPlayer
           owner={owner}
           topicString={topic}
