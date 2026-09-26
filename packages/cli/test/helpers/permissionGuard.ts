@@ -40,7 +40,8 @@ export function skipReasonFor(effectiveUserId: number | undefined): string | fal
  * Pass as a node:test `skip` option on any case that relies on a permission refusal.
  *
  * Skipped rather than silently passed on purpose: a case whose precondition is missing must never be
- * counted as evidence, so the count visibly drops there and stays whole everywhere else.
+ * counted as evidence, so the count visibly drops where tests run as root and stays whole
+ * everywhere else.
  *
  * ⛔ Why this exists. Some test runs happen in a container with no `--user`, so jobs run
  * as the image's default, root. Fourteen cases here failed there with "Missing expected exception"

@@ -15,7 +15,7 @@ import {
  * guard could introduce that is worse than the problem it solves: a green that has stopped proving
  * anything. Nothing else would notice, because a skip is not a failure.
  *
- * Both branches are asserted here rather than only observed, because the machine that runs this is
+ * Both branches are asserted here rather than only observed, because a laptop that runs this is
  * never root and the root branch would otherwise be exercised for the first time on a machine running
  * as root, where a mistake would read as a fault of that machine.
  */

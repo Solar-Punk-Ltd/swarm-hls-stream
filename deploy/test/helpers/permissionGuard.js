@@ -36,7 +36,7 @@ export function skipReasonFor(effectiveUserId) {
  * Pass as a node:test `skip` option on a case that has no refusal to observe without permission bits.
  *
  * Skipped rather than silently passed: a case whose precondition is missing must never count as
- * evidence, so the count visibly drops there and stays whole everywhere else.
+ * evidence, so the count visibly drops where tests run as root and stays whole everywhere else.
  *
  * ⛔ Some test runs happen in a container with no `--user`, so jobs run as root. This is
  * the fourth place in this repository that assumed otherwise, after Docker detection, Chrome refusing
