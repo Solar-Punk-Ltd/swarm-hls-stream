@@ -1,4 +1,4 @@
-# #71: it is not size, it is whose content it is
+# It is not size, it is whose content it is
 
 **2026-08-11.** Two headless runs, one weeb-3 node at 177-181 peers, references fetched **one at a
 time, alternating between arms**, so adjacent fetches differ only in which corpus they came from.

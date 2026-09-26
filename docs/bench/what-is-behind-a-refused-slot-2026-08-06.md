@@ -1,8 +1,9 @@
 # What is behind a refused slot
 
-**2026-08-06.** Probe: [`feed-ahead-probe.mjs`](../../e2e/src/probes/feed-ahead-probe.mjs), run beside a
-0.25s-GOP broadcast while `latbench-stream-uploader-1` was killed for 15s. Settles task #71, which
-had been argued from a run that could not answer it.
+**2026-08-06.** Probe: [`feed-ahead-probe.mjs`](../../e2e/src/probes/feed-ahead-probe.mjs), run
+beside a 0.25s-GOP broadcast while `latbench-stream-uploader-1` was killed for 15s. Settles whether
+a probe past a refused slot is worth building, which had been argued from a run that could not
+answer it.
 
 ## The question the viewer's own log could not answer
 
@@ -11,7 +12,7 @@ over sixty seconds, get served at last, and then take slots 302 to 570 in twelve
 has two readings and they call for opposite fixes:
 
 - **302 onward were retrievable the whole time** and the reader was blind to them. Worth about 44
-  seconds, and task #71 is worth building.
+  seconds, and a probe past the refused slot is worth building.
 - **Nothing was retrievable until the moment everything was.** The reader was correctly waiting,
   there was nothing to find, and a probe would cost a request per poll and return nothing.
 
@@ -72,15 +73,16 @@ publisher writing 3.75, so it lost ground continuously and was never at the live
 `longest run of polls stuck on one slot: 3`, on a run where the uploader was killed for fifteen
 seconds. Every 404 it met was a moment it had briefly caught up.
 
-**That is task #84's defect, in the instrument rather than the product**, found the day after it was
-fixed in the client. An instrument that cannot reach the edge cannot measure what happens there, and
-this one printed a calm number instead of failing. It now walks to the head as the client does.
+**That is the client's old defect of falling behind a fast publisher, in the instrument rather than
+the product**, found the day after it was fixed in the client. An instrument that cannot reach the
+edge cannot measure what happens there, and this one printed a calm number instead of failing. It
+now walks to the head as the client does.
 
 ## What this does and does not settle
 
-**Settled: the premise of task #71.** A refused slot routinely hides retrievable slots, the worst
-observed stall was 19.1 seconds with something at +1 on every poll of it, and one extra request
-finds them.
+**Settled: the premise of probing past a refused slot.** A refused slot routinely hides retrievable
+slots, the worst observed stall was 19.1 seconds with something at +1 on every poll of it, and one
+extra request finds them.
 
 **Not settled: why a slot is slow.** The chunk is committed by the uploader and accepted locally
 before the feed advances, so what varies is when the gateway can retrieve it. That is worth its own

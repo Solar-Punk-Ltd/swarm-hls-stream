@@ -23,11 +23,12 @@ No broadcast, no BZZ. Every number here comes from the eight arms of
 `1080p-main-thread-2026-08-15.md` and the published window medians of
 `thread-scaling-shape-2026-08-15.md`.
 
-Written because #106 is **one** three-hour in-tab arm, and a single long arm on this box invites an
-obvious objection: forty neighbour bee nodes share the host, so a thread that rises over three hours
-could be the session ageing or it could be the neighbours waking up. Those are the same column.
+Written because the next drift sitting is **one** three-hour in-tab arm, and a single long arm on
+this box invites an obvious objection: forty neighbour bee nodes share the host, so a thread that
+rises over three hours could be the session ageing or it could be the neighbours waking up. Those
+are the same column.
 
-The sampler has been writing `/proc/loadavg` beside every arm since #28, thirty seconds apart. The
+The sampler already writes `/proc/loadavg` beside every arm, thirty seconds apart. The
 objection was answerable from files already held. Nobody had asked, because nothing joined the two
 series.
 
@@ -64,11 +65,11 @@ between-arm difference survives.
 
 ⭐ **Neither is distinguishable from zero, across a load range of 4.7 to 56.1 on a 48-core box.**
 
-The number that matters for #106: to manufacture the **+0.034 cores/hr** in-tab creep, host load would
-have to rise **47 units every hour, monotonically, even at the two-standard-error upper bound**. Over
-three hours that is a load climbing from five to roughly a hundred and fifty and never falling back.
-That does not happen here, and the three-hour arm carries its own 360-sample load series, so it can be
-checked directly rather than assumed.
+The number that matters for the three-hour arm: to manufacture the **+0.034 cores/hr** in-tab creep,
+host load would have to rise **47 units every hour, monotonically, even at the two-standard-error
+upper bound**. Over three hours that is a load climbing from five to roughly a hundred and fifty and
+never falling back. That does not happen here, and the three-hour arm carries its own 360-sample
+load series, so it can be checked directly rather than assumed.
 
 ### ⚠️ The point estimate is not robust, the bound is
 
@@ -87,9 +88,9 @@ scale of minutes, is the first one where the two are separable within a single a
 
 ## The uncomfortable half: the creep rests on less than it looked like
 
-The same files price the evidence that prompted #106. Fitting a slope to the six published window
-medians of each 41-minute arm, with the standard error taken from the residual scatter about that
-line, four degrees of freedom:
+The same files price the evidence that prompted the three-hour arm. Fitting a slope to the six
+published window medians of each 41-minute arm, with the standard error taken from the residual
+scatter about that line, four degrees of freedom:
 
 | arm | slope /hr | ± se | t |
 | --- | ---: | ---: | ---: |
@@ -109,7 +110,7 @@ do not have. Read it as two agreeing observations at p ≈ 0.012, not as one at 
 ⭐ The gateway creep is a different matter entirely, at t = 22 and t = 14. Whatever it is, it is not
 marginal, and it is **larger** than the in-tab one. That asymmetry is still unexplained.
 
-## What this settles about #106
+## What this settles about the three-hour arm
 
 Both halves point the same way, and neither was worth a broadcast to learn.
 

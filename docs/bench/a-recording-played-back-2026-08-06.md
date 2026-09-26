@@ -158,14 +158,14 @@ It comes from SRS. `on_hls` sends a `duration` field and the uploader passes it 
 configured `hls_fragment 0.25`, and the media honours that exactly by cutting at the first GOP
 boundary at or after 0.25s. Only the number SRS reports about it is wrong.
 
-⚠️ **Both recordings here were made during the task #86 crash runs**, with SRS restarted underneath
+⚠️ **Both recordings here were made during the engine crash runs**, with SRS restarted underneath
 them. Whether a cleanly started and stopped broadcast shows the same ratio is untested.
 
 ### Why it reaches further than the scrubber
 
 The same figure is the **catalog's advertised duration** (`getTotalDuration()` sums the same values),
 it sets `#EXT-X-TARGETDURATION`, and it is the basis of any latency figure computed from a manifest.
-Task #41 already moved the bench off declared spans and onto the bytes for exactly this reason. This
+The bench had already been moved off declared spans and onto the bytes for exactly this reason. This
 is the first time the gap has been measured on the **product** path rather than the instrument's.
 
 ### ✅ Fixed, and confirmed against SRS on a clean broadcast

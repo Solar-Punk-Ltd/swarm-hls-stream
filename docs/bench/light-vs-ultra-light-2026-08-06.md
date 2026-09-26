@@ -11,7 +11,7 @@
 > branch, verified against bee's source.
 
 **2026-08-06.** Four three-minute browser runs at 720p/2500k, 0.25s GOP, **interleaved L U L U** in
-one sitting. Task #88. The gateway's `--swap-enable` was flipped and the node redeployed between
+one sitting. The gateway's `--swap-enable` was flipped and the node redeployed between
 arms.
 
 ## Why this was open

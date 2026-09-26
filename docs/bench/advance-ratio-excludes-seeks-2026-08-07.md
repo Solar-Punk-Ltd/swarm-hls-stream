@@ -1,6 +1,6 @@
 # A freeze and the seek that ended it used to net to 1.000
 
-**2026-08-07.** Task #102, raised by the pre-merge review of PR #74 and fixed here. Replayed against
+**2026-08-07.** Raised by the pre-merge review of PR #74 and fixed here. Replayed against
 every browser run this repository has recorded, rather than argued from the code.
 
 ## What was wrong

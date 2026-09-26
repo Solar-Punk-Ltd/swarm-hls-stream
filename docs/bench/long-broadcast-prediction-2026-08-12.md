@@ -1,6 +1,6 @@
 # Four hours of one broadcast, predicted before spending
 
-**Registered 2026-08-12, before the sitting.** Task #89. Predictions here so the result can refute
+**Registered 2026-08-12, before the sitting.** Predictions here so the result can refute
 them rather than be read back as having been expected.
 
 ## Why this is the biggest gap in the corpus

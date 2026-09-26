@@ -1,7 +1,7 @@
 # Quality, judged at a viewer
 
 **2026-08-06.** Three configurations at a 0.25s GOP, each watched for three minutes in real Chrome on
-the deployment host, **in one sitting**. Task #89.
+the deployment host, **in one sitting**.
 
 Everything this project knew about resolution and bitrate came from the bench, which reads bytes
 rather than playing them. So the question "does 1080p arrive" had been answered as "the bytes arrive"
@@ -10,10 +10,10 @@ and never as "the picture arrives".
 ## The instrument that had to exist first
 
 Quality had been judged on **resolution** and **dropped frames**, and the failure this project has
-actually met shows up in neither. A consumer slower than the stream's bitrate does not error and does
-not drop frames: it **stretches media time**, so the encoder's log shows its keyframe interval hit
-exactly while the frame rate underneath collapsed. Task #76 reproduced **12.2fps against a requested
-30** that way.
+actually met shows up in neither. A consumer slower than the stream's bitrate does not error and
+does not drop frames: it **stretches media time**, so the encoder's log shows its keyframe interval
+hit exactly while the frame rate underneath collapsed. [The backpressure
+diagnosis](publisher-backpressure.md) reproduced **12.2fps against a requested 30** that way.
 
 So a viewer sample now carries the decoder's own frame count and the summary divides it by **media**
 seconds. That denominator is the whole point: a frozen picture decodes nothing, so a wall-time rate
@@ -90,9 +90,9 @@ and the run finished at 1.000.
 | fatal errors | 0 | 0 |
 | behind live, median | 5.68s | 5.59s |
 
-⭐ **`deliveredFps` is 30.00 exactly across the whole hour.** That is the reading the run was for: the
-encoder was **never starved**, so this is not #76 reappearing at 2.4x the bitrate. Whatever went wrong
-was delivery timing, not the picture.
+⭐ **`deliveredFps` is 30.00 exactly across the whole hour.** That is the reading the run was for:
+the encoder was **never starved**, so this is not the publisher throttle reappearing at 2.4x the
+bitrate. Whatever went wrong was delivery timing, not the picture.
 
 **Six ten-minute windows, and only one is disturbed:**
 
@@ -168,8 +168,9 @@ and this one does not.
 ten-minute median to within 0.06s, so screen at 3 and gate at 10.
 
 ✅ **Sixty minutes has now been run at 1080p/6000k and the answer is above.** The frame rate held
-exactly, so #76's mechanism was ruled out rather than merely not seen. What sixty minutes found that
-ten could not is a single four-minute disturbance costing 7.5 seconds of rebuffering.
+exactly, so the publisher-throttle mechanism was ruled out rather than merely not seen. What sixty
+minutes found that ten could not is a single four-minute disturbance costing 7.5 seconds of
+rebuffering.
 
 ⚠️ Refusals grow with length at every profile measured: 0% at three minutes, 0.61% at ten,
 **1.27% at sixty** (174 of 13,522), all served on retry.

@@ -15,8 +15,8 @@ through the page's own resource timing and service-worker accounting.
 > *"would measure weeb-3's player instead of ours"*.
 >
 > **Nobody authorised that split.** It is my design decision, taken two days after an instruction
-> pointing the other way, and the task that would have caught it (**#52**) was closed by me as
-> *"measures weeb-3's OWN player, a component we deliberately do not ship"*.
+> pointing the other way, and the task that would have caught it (**cold-node playback**) was closed
+> by me as *"measures weeb-3's OWN player, a component we deliberately do not ship"*.
 
 ## What the split is, verified in source and not from the PR text
 
@@ -106,8 +106,8 @@ The same 162 seconds, same tab, same 200 peers:
 ⛔⛔⛔ **The playhead is 6,590 seconds away from the only 4.16 seconds it has buffered**, so there was
 nothing to decode and nothing played. Two of the five resolved segments failed outright.
 
-⭐ This is consistent with **#44**, which ran his player on a VOD and got a realtime ratio of 0.6734
-with 177 stalls.
+⭐ This is consistent with **the earlier run of weeb-3's player on a VOD**, which got a realtime ratio of
+0.6734 with 177 stalls.
 
 ⚠️ **And it is a replicate of a diagnosis this project already published, not a new finding.**
 `docs/reviews/roadmap.md` states it more sharply than today's tab does:
@@ -207,9 +207,9 @@ buffer is a delivery result, not a playback result.**
 blocked on a ten-minute test I had not run, and the answer was in our own uploader source the whole
 time: our topic is a UUID, his route takes a UUID.
 
-⭐ **#52 no longer needs anything from anyone.** A live sitting can point a real browser at his page
-with our own owner and topic, and measure the fully gateway-less path against the hybrid we have been
-measuring for five days.
+⭐ **Cold-node playback no longer needs anything from anyone.** A live sitting can point a real
+browser at his page with our own owner and topic, and measure the fully gateway-less path against
+the hybrid we have been measuring for five days.
 
 ⭐⭐⭐ **The generalisable one: I inherited a blocker from a document instead of testing it.** The
 roadmap's sentence was two removes from evidence, a report about a POC repository, and it survived

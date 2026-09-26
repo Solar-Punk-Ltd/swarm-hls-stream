@@ -1,7 +1,7 @@
 # What a viewer gets through an UNFUNDED gateway
 
 **2026-08-13. Eight arms, six counted, one broadcast, two warm gateways alternating under it.**
-Cost 0.9993 BZZ. Task #93.
+Cost 0.9993 BZZ.
 
 ## The answer
 

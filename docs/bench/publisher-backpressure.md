@@ -1,6 +1,6 @@
 # The encoder never missed its GOP
 
-**2026-08-05. Task #76, which was filed twice with the wrong cause both times.**
+**2026-08-05. Filed twice, with the wrong cause both times.**
 
 It was first filed as a 1080p limit: at 6000kbps the encoder was read as falling behind real time.
 Then the sweep of 2026-08-05 hit the same signature at 720p 2500kbps, in two of six runs, at both
