@@ -59,9 +59,10 @@ import { GateCollector, GateFinding } from './StartGates.js';
  *
  * ## Scope
  *
- * Startup only and no periodic re-check, exactly like the chequebook gate, and latched onto `/health`
- * as `start_gate_warned` the same way under `warn`. A batch that fills mid-broadcast is a different
- * question and is not answered here.
+ * Startup only and no periodic re-check. A warning this gate leaves is latched onto `/health` as
+ * `start_gate_warned` and stays there until a restart. The chequebook gate's warning is read again
+ * after the boot by `ChequebookRecheck` and this one is not. A batch that fills mid-broadcast is a
+ * different question and is not answered here.
  */
 export class PostageGate {
   constructor(

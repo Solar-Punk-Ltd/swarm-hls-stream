@@ -30,6 +30,25 @@ const DEFAULT_CHEQUEBOOK_MIN_BZZ = 0.5;
 const MAX_CHEQUEBOOK_MIN_BZZ = 1000;
 
 /**
+ * How long the uploader waits between reads of a chequebook it warned about at boot.
+ *
+ * A minute. The warning it clears is a 503 on `/health`, and the container's healthcheck asks every
+ * 30 seconds, so a funded chequebook reaches the healthcheck within about a minute and a half of the
+ * deposit settling. One read is one call per node, and nothing reads at all once the warning is gone.
+ * See `libs/ChequebookRecheck.ts`.
+ */
+const DEFAULT_CHEQUEBOOK_RECHECK_MS = 60_000;
+
+/**
+ * A second at the least, because a chequebook read is answered off the chain and anything more often is
+ * a typo rather than a policy. An hour at the most, because a funded chequebook still reported as
+ * unfunded after that is the fault the reading exists to remove. Like `MAX_START_GATE_TIMEOUT_MS` below,
+ * the ceiling catches the two-zero slip, 6000000 for 60000, and not the one-zero slip.
+ */
+const MIN_CHEQUEBOOK_RECHECK_MS = 1_000;
+const MAX_CHEQUEBOOK_RECHECK_MS = 3_600_000;
+
+/**
  * How much time a postage batch must have left before the uploader will start on it.
  *
  * Twelve hours. A batch that expires mid-broadcast stops keeping everything stored under it, the
@@ -228,6 +247,11 @@ export const config = {
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
     max: MAX_CHEQUEBOOK_MIN_BZZ,
+  }),
+  /** How long after one read of a chequebook the boot warned about the next one starts. */
+  chequebookRecheckMs: optionalInt('CHEQUEBOOK_RECHECK_MS', DEFAULT_CHEQUEBOOK_RECHECK_MS, {
+    min: MIN_CHEQUEBOOK_RECHECK_MS,
+    max: MAX_CHEQUEBOOK_RECHECK_MS,
   }),
   stampMinTtlHours: optionalNumber('STAMP_MIN_TTL_HOURS', DEFAULT_STAMP_MIN_TTL_HOURS, {
     min: 0,

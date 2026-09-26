@@ -461,7 +461,10 @@ owner's decision 7 b of 2026-09-17 the postage gate refuses a batch the node ans
 warning about one it could not read at all.
 `UPLOADER_START_GATES=refuse` in the root `.env` has both gates refusing again, `warn` has both
 warning, and `chequebook-warn` is the shipped middle. `START_GATE_TIMEOUT_MS` is how long each of
-those reads may take, twenty seconds by default and ten minutes at most. What a deployment cannot ask
+those reads may take, twenty seconds by default and ten minutes at most. A chequebook warning does
+not need a restart to clear: the uploader reads every chequebook again each `CHEQUEBOOK_RECHECK_MS`,
+a minute by default, and takes the warning off `/health` once every node holds `CHEQUEBOOK_MIN_BZZ`.
+A postage warning stays until the uploader is restarted. What a deployment cannot ask
 for is an exit on a node that never answered, which is the state the ruling removed. `bee-uploader` is the 360p rung as well as the shared default, so the
 catalog and every ladder master go through it. Their ports, data directories and what each one has to
 hold are in [.env.sample](../.env.sample) under "Per-rung Bee nodes".

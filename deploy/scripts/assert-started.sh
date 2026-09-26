@@ -81,8 +81,9 @@ SERVICE_LABEL='com.docker.compose.service'
 # ⛔ Docker cannot answer this inside the window. A healthcheck runs on its own interval, 30s for the
 # uploader, so within a 30 second watch `.State.Health.Status` is still `starting` and its log is
 # empty. The distinction that matters here is invisible at that resolution: a service whose gates
-# warned answers 503 for the life of the process and never goes green, and until this it was reported
-# as never having answered, which says nothing about what is wrong.
+# warned answers 503 and does not go green inside this window, a postage warning until the service is
+# restarted and a chequebook warning until the first read after the node is funded. Until this it was
+# reported as never having answered, which says nothing about what is wrong.
 #
 # `docker exec` rather than curl, because the only certainty about the host is that it runs docker,
 # and the uploader image carries node. The fetch carries its own deadline, so a container that is up
@@ -310,7 +311,7 @@ if [ "${#broken_services[@]}" -eq 0 ]; then
       'gates warned on: '*)
         echo "" >&2
         echo "${services[$index]} started, ${confirmed[$index]}." >&2
-        echo "  Its startup gates could not clear those, and UPLOADER_START_GATES let it start anyway. It answers /health 503 until it is restarted on a node that clears them." >&2
+        echo "  Its startup gates could not clear those, and UPLOADER_START_GATES let it start anyway. It answers /health 503 until they clear. A chequebook warning goes by itself within CHEQUEBOOK_RECHECK_MS of the node being funded. A postage warning stays until the uploader is restarted with a batch the postage gate accepts." >&2
         ;;
     esac
 
