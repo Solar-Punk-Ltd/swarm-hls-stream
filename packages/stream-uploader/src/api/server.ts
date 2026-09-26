@@ -42,8 +42,8 @@ interface ApiAppOptions {
    *
    * A function rather than a value because the app is built once, in the first second, and the answer
    * changes underneath it when the node finally answers. Omitted, the service is ready from its first
-   * request, which is what every caller before D16 assumed and what every API test but the two about
-   * the wait still drives.
+   * request, which is what every caller assumed before the uploader listened ahead of its node, and
+   * what every API test but the two about the wait still drives.
    */
   waitingForNode?: () => NodeWaitReport | null;
 }

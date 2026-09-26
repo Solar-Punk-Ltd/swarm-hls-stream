@@ -119,7 +119,7 @@ function refusingGate(name: string, reason: string, reached: string[], refuses: 
  * The owner ruled on 2026-09-17 that the uploader and the engine start whatever the chequebook says.
  * So the reading still happens, on every boot, and the chequebook gate now says so as a warning
  * carrying its whole refusal, while the postage gate warns only on a reading it could not get and
- * still refuses one the node answered, which is decision 7 option b below.
+ * still refuses one the node answered, which is the policy described below.
  * `UPLOADER_START_GATES=refuse` makes both gates refuse both readings, which is the deployment that
  * wants the old behaviour back, and nothing else changes: the same gates, the same readings, the
  * same messages.
@@ -501,10 +501,9 @@ describe('a pass with one gate warning and one refusing', () => {
  * actually wrong. The second is the node itself saying the batch is not there, or is full, or has
  * expired, and every upload on that rung would fail the same way.
  *
- * So the owner ruled on 2026-09-17, decision 7 option b, that under the shipped `chequebook-warn`
- * the postage gate refuses only a refusal the node answered with, and warns when the batch could not
- * be read at all. `warn` and `refuse` are unchanged: one warns on both readings and the other
- * refuses on both.
+ * So the owner ruled on 2026-09-17 that under the shipped `chequebook-warn` the postage gate
+ * refuses only a refusal the node answered with, and warns when the batch could not be read at all.
+ * `warn` and `refuse` are unchanged: one warns on both readings and the other refuses on both.
  */
 describe('a policy that refuses only what the node answered', () => {
   /** A gate that hands over one refusal of the reading it is given. */

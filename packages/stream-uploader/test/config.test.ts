@@ -257,8 +257,8 @@ describe('the environment contract', () => {
       (await loadConfig(mode === undefined ? requiredEnv() : { ...requiredEnv(), UPLOADER_START_GATES: mode }))
         .startGates;
 
-    // Postage refuses what the node answered about and warns what it could not read, which is the
-    // owner's decision 7 option b of the same day. See `libs/StartGates.ts`.
+    // Postage refuses what the node answered about and only warns about what it could not read at
+    // all. See `libs/StartGates.ts`.
     it('warns on the chequebook and refuses an answered postage reading by default', async () => {
       assert.deepEqual(await gatesFor(), { chequebookRefuses: 'none', postageRefuses: 'answered' });
     });

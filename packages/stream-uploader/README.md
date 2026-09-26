@@ -676,7 +676,7 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 | `node_unavailable`       | The boot has not finished, because the half of it that needs a Bee node is still waiting for one to answer. The only reason that is not a reading about this process at all, and the only one reported alone by construction: the waiting branch returns it before any other signal is looked at. See the waiting state below                                                                                                                                                                                                                                                                                                                                                             |
 | `start_gate_warned`      | A startup gate could not clear a node and the uploader started anyway, which is what `UPLOADER_START_GATES` asks for on that gate. Latched from the pass that finished the boot, and `startGateWarnings` on the same body names which gate and which rung. A postage warning stays until a restart. A chequebook warning is read again every `CHEQUEBOOK_RECHECK_MS` and goes by itself once every node holds its floor. The gate's own message is in the log and deliberately not here: this endpoint takes no credential and those messages carry node URLs and batch ids                                                                                                               |
 
-**The waiting state, `status: "waiting_for_node"`** (decision D16, the owner on 2026-09-17: "we should be
+**The waiting state, `status: "waiting_for_node"`** (the owner on 2026-09-17: "we should be
 able to start the uploader but maybe say its node not available, try to reconnect or something"). The API
 server listens before anything reads a Bee node, so `/health` answers from the first second of the
 process. While the node-dependent half of the boot has not finished, that answer is `503` with
@@ -702,14 +702,15 @@ rather than reaching an orchestrator whose catalog has never been read. `/metric
 since its counters describe this process and not the node.
 
 **What a warned gate leaves behind.** A gate that warns reads every node rather than stopping at the
-first that refuses, so one boot names every rung an operator has to fix rather than one per restart,
-and the outcome of the pass that finished the boot is latched into `startGateWarnings`. Under the
-shipped `chequebook-warn` that is the chequebook gate, and the postage gate on a batch it could not
-read at all: a batch the node answered about and the gate will not accept still ends the boot,
-because every write against it fails while the broadcast looks live to the room, the viewer and the
-catalog, while a rung whose node answered nothing has said nothing about any batch. That second half
-is the owner's decision 7 b of 2026-09-17. The
-service is degraded while a warning stands, which is what the container's healthcheck reads and what
+first that refuses, so one boot names every rung an operator has to fix rather than one per
+restart, and the outcome of the pass that finished the boot is latched into `startGateWarnings`.
+Under the shipped `chequebook-warn` that is the chequebook gate, and the postage gate on a batch it
+could not read at all: a batch the node answered about and the gate will not accept still ends the
+boot, because every write against it fails while the broadcast looks live to the room, the viewer
+and the catalog, while a rung whose node answered nothing has said nothing about any batch. So the
+postage gate refuses a batch the node answered about as absent, unusable, expired or, when it is
+immutable, full, and only warns about a batch it could not read at all. The service is degraded
+while a warning stands, which is what the container's healthcheck reads and what
 `deploy/scripts/assert-started.sh` reports. A later pass replaces an earlier one, because the gates
 are read again on every attempt while the uploader waits for its node and only the last of those
 describes the service that is now running. After the boot a postage warning stands until the
