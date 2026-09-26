@@ -63,7 +63,7 @@ after(removeSandboxes);
  * `_lib.sh`'s `log_error` writes to stdout with a plain `echo`, and node builds an `execFile`
  * rejection's message out of stderr alone. So a script that refuses for a stated reason arrives here
  * as "Command failed: bash ..." with an empty line after it, and the reason is in a stream nobody
- * printed. Twelve of these read exactly that way on the verification box and said nothing about why.
+ * printed. Twelve of these read exactly that way in one test run's log and said nothing about why.
  */
 async function runClean(sandbox, args) {
   await execFileAsync('bash', [sandbox.scriptPath('clean.sh'), '--yes', ...args], {
