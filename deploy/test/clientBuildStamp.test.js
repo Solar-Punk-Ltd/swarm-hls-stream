@@ -177,6 +177,7 @@ const FIXTURE_IDENTITY = {
 
 const STAMP_FUNCTION = /^client_build_stamp_text\(\) \{\n[\s\S]*?\n\}$/m;
 const SOURCE_PATHS_ARRAY = /^CLIENT_SOURCE_PATHS=\(\n[\s\S]*?\n\)$/m;
+const EXPECTED_TREE_FUNCTION = /^git_tree_or_empty\(\) \{\n[\s\S]*?\n\}$/m;
 
 const fixtureDirs = [];
 
@@ -246,19 +247,36 @@ function parseStamp(printed) {
   return Object.fromEntries(pairs);
 }
 
-/** The stamp function `deploy.sh` ships, run with `ROOT_DIR` at `stack`, and what it printed. */
-function stampFrom(stack, env = {}) {
-  const script = readFileSync(join(SCRIPTS, 'deploy.sh'), 'utf8');
-  const lifted = [SOURCE_PATHS_ARRAY, STAMP_FUNCTION].map((pattern) => {
+/** The declarations each pattern matches in a shipped script, cut out so they can run alone. */
+function liftFrom(scriptName, patterns) {
+  const script = readFileSync(join(SCRIPTS, scriptName), 'utf8');
+  return patterns.map((pattern) => {
     const found = pattern.exec(script);
-    assert.ok(found, `deploy.sh no longer has what ${pattern} lifts out of it`);
+    assert.ok(found, `${scriptName} no longer has what ${pattern} lifts out of it`);
     return found[0];
   });
+}
+
+/** The stamp function `deploy.sh` ships, run with `ROOT_DIR` at `stack`, and what it printed. */
+function stampFrom(stack, env = {}) {
+  const lifted = liftFrom('deploy.sh', [SOURCE_PATHS_ARRAY, STAMP_FUNCTION]);
   const printed = execFileSync('bash', ['-c', [...lifted, 'client_build_stamp_text'].join('\n')], {
     encoding: 'utf8',
     env: { ...machineEnv(), ...env, ROOT_DIR: stack },
   });
   return parseStamp(printed);
+}
+
+/**
+ * The tree `bench-on-host.sh` expects for `pkg`, from the function it ships run with `REPO_ROOT` at
+ * `stack`. The path goes in as an argument rather than into the program text.
+ */
+function expectedTreeFrom(stack, pkg, env = {}) {
+  const [lifted] = liftFrom('bench-on-host.sh', [EXPECTED_TREE_FUNCTION]);
+  return execFileSync('bash', ['-c', `${lifted}\ngit_tree_or_empty "$1"`, 'bash', pkg], {
+    encoding: 'utf8',
+    env: { ...machineEnv(), ...env, REPO_ROOT: stack },
+  });
 }
 
 /**
@@ -309,5 +327,44 @@ describe('the client stamp read by a real git, wherever the stack sits', () => {
 
     assert.equal(stamp.CLIENT_BUILD_CLIENT_TREE, '');
     assert.equal(stamp.CLIENT_BUILD_SHARED_TREE, '');
+  });
+});
+
+/**
+ * ⛔⛔ The other side of the same comparison. `bench-on-host.sh` computes the trees every sitting
+ * carries into the container as the expectation the gate measures the stamp against, and it asks
+ * git the same question the stamp does, so it has the same answer to get right. Its own filter
+ * passes on nothing that is not an object name, so from a subfolder git's echoed argument became an
+ * empty expectation, and the gate refused every sitting as unable to say what it expects.
+ */
+describe('the trees bench-on-host.sh expects, read by a real git, wherever the stack sits', () => {
+  it('names the trees from the stack folder when the stack sits inside a larger repository', () => {
+    const { repo, stack } = commitStackFixture(STACK_SUBFOLDER);
+    assert.throws(
+      () => gitIn(stack, 'rev-parse', 'HEAD:packages/client'),
+      Error,
+      'the fixture has to be one where a bare path after HEAD: names nothing from the stack folder',
+    );
+
+    for (const pkg of STAMPED_PACKAGES) {
+      assert.equal(expectedTreeFrom(stack, pkg), gitIn(repo, 'rev-parse', `HEAD:${STACK_SUBFOLDER}/${pkg}`), pkg);
+    }
+  });
+
+  it('gives a checkout of the stack on its own the same trees the root-relative form gives', () => {
+    const { repo, stack } = commitStackFixture('');
+
+    for (const pkg of STAMPED_PACKAGES) {
+      assert.equal(expectedTreeFrom(stack, pkg), gitIn(repo, 'rev-parse', `HEAD:${pkg}`), pkg);
+    }
+  });
+
+  it('still expects nothing of a stack with no history', () => {
+    const exported = tempDir('client-stamp-export-');
+    writeStampedPackages(exported);
+
+    for (const pkg of STAMPED_PACKAGES) {
+      assert.equal(expectedTreeFrom(exported, pkg, { GIT_CEILING_DIRECTORIES: dirname(exported) }), '', pkg);
+    }
   });
 });
