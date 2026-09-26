@@ -40,6 +40,7 @@ function balanceBody(availablePlur: bigint) {
   };
 }
 
+/** A rung's node whose chequebook answers what `book` holds at the moment of each read, and counts the reads. */
 function node(url: string, rung: string, book: FakeChequebook): ChequebookNode {
   return {
     url,
