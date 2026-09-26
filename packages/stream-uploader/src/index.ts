@@ -293,7 +293,7 @@ async function start() {
 
     // Only once the boot is over, because until then the node wait reads the gates again on every
     // attempt of its own. A chequebook warning that pass left is read again until the chequebook is
-    // funded, so /health turns green without a restart. See `libs/ChequebookRecheck.ts`.
+    // funded, so the warning leaves /health without a restart. See `libs/ChequebookRecheck.ts`.
     new ChequebookRecheck({
       gate: chequebookGate(gateNodes, { info: (message) => logger.debug(message) }),
       intervalMs: config.chequebookRecheckMs,
