@@ -433,9 +433,12 @@ describe('the entry point clears the gate before anything that reads or writes t
     assert.match(source, /assertFunded\(/, 'index.ts never clears the chequebook gate');
   });
 
+  // Where the boot's gate pass is handed the gate, rather than where `assertFunded(` is written: since
+  // 2026-09-26 the gate is built by `chequebookGate` above `start()`, shared with the reads after the
+  // boot, so the call's text sits ahead of everything whatever order the boot runs in.
   for (const later of ['streamCatalog.init(', 'recoverStreams(']) {
     it(`clears it before ${later}`, () => {
-      const gateAt = source.indexOf('assertFunded(');
+      const gateAt = source.indexOf('chequebookGate(gateNodes, logger)');
       const laterAt = source.indexOf(later);
 
       assert.ok(laterAt > -1, `index.ts no longer calls ${later}, so this ordering assertion checks nothing`);

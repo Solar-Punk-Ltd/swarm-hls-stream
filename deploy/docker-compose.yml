@@ -260,11 +260,14 @@ services:
       # The timeout is deliberately not the one above: a chequebook balance and a batch are answered
       # off the chain, and 4000ms borrowed from the upload loop's retry windows is what held a live
       # uploader in a restart loop on 2026-09-16 against a pool address that had no node behind it. A gate that warns leaves `start_gate_warned` on
-      # /health for the life of the process, so the container reports unhealthy rather than the
-      # finding living in one log line. See `libs/StartGates.ts`.
+      # /health, so the container reports unhealthy rather than the finding living in one log line.
+      # A postage warning stays until the uploader is restarted. A chequebook warning is read again
+      # every CHEQUEBOOK_RECHECK_MS and goes by itself once every node holds CHEQUEBOOK_MIN_BZZ, so
+      # funding the node is enough. See `libs/StartGates.ts` and `libs/ChequebookRecheck.ts`.
       UPLOADER_START_GATES: ${UPLOADER_START_GATES:-chequebook-warn}
       START_GATE_TIMEOUT_MS: ${START_GATE_TIMEOUT_MS:-20000}
       CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
+      CHEQUEBOOK_RECHECK_MS: ${CHEQUEBOOK_RECHECK_MS:-60000}
       # The other two thresholds `PostageGate` reads a batch against, and they belong here for the
       # same reason CHEQUEBOOK_MIN_BZZ does. Neither reached the container before, so the gate ran on its
       # compiled 24 and 0.9 whatever an operator wrote in .env, which is the ORPHAN_REAP_MS shape

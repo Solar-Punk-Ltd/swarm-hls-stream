@@ -279,11 +279,21 @@ describe('the entry point listens before it reads a node', () => {
     assert.ok(at('assertNodeReachable(') > at('waitForNode('), 'the probe belongs inside the wait, not in front of it');
   });
 
-  for (const step of ['assertFunded(', 'assertUsable(', 'streamCatalog.init(', 'recoverStreams(']) {
+  // The chequebook gate is found by where the boot's pass is handed it, because since 2026-09-26 it is
+  // built by `chequebookGate`, which the reads after the boot share, so `assertFunded(` is written in
+  // that helper above `start()` and says nothing about when the gate runs.
+  for (const step of ['chequebookGate(gateNodes, logger)', 'assertUsable(', 'streamCatalog.init(', 'recoverStreams(']) {
     it(`runs ${step} inside the wait, so a node that is not there is waited for rather than fatal`, () => {
       assert.ok(at('waitForNode(') < at(step), `${step} runs outside the wait and would end the boot again`);
     });
   }
+
+  it('reads a warned chequebook again only once the boot is over', () => {
+    assert.ok(
+      at('nodeWait = null;') < at('new ChequebookRecheck('),
+      'the reads after the boot would race the gate passes the node wait is still making',
+    );
+  });
 
   it('builds the first report through safeUrl, since the wait has not started yet', () => {
     assert.match(

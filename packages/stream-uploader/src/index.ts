@@ -16,7 +16,8 @@ import { AdminApiClient } from './libs/AdminApiClient.js';
 import { AdminLadderRegistry } from './libs/AdminLadderRegistry.js';
 import { BeePublisherPool, safeUrl } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
-import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
+import { bzzToPlur, ChequebookGate, ChequebookNode, FundingLogger } from './libs/ChequebookGate.js';
+import { ChequebookRecheck } from './libs/ChequebookRecheck.js';
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { LadderRegistry } from './libs/LadderRegistry.js';
 import { Logger } from './libs/Logger.js';
@@ -26,7 +27,7 @@ import { PostageGate } from './libs/PostageGate.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
-import { runStartGates } from './libs/StartGates.js';
+import { runStartGates, StartGate } from './libs/StartGates.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
@@ -113,6 +114,21 @@ async function assertAdminSignsAsThisService(adminApi: AdminApiClient, signerOwn
     );
   }
   logger.info(`[Admin] ${adminApi.describe()} signs its catalog as ${feedOwner}, the same owner as this service`);
+}
+
+/**
+ * The chequebook gate over the given nodes, one definition for the boot's pass and for the reads
+ * `ChequebookRecheck` makes after it, so the two cannot drift apart. The reads after the boot hand it a
+ * logger that files a funded node at debug, because while one rung waits for its deposit a line per
+ * funded rung every minute would bury the line that matters.
+ */
+function chequebookGate(nodes: readonly ChequebookNode[], fundingLogger: FundingLogger): StartGate {
+  return {
+    name: 'ChequebookGate',
+    refuses: config.startGates.chequebookRefuses,
+    run: (collect) =>
+      new ChequebookGate(nodes, bzzToPlur(config.chequebookMinBzz), fundingLogger).assertFunded(collect),
+  };
 }
 
 async function start() {
@@ -243,12 +259,7 @@ async function start() {
 
         await runStartGates(
           [
-            {
-              name: 'ChequebookGate',
-              refuses: config.startGates.chequebookRefuses,
-              run: (collect) =>
-                new ChequebookGate(gateNodes, bzzToPlur(config.chequebookMinBzz), logger).assertFunded(collect),
-            },
+            chequebookGate(gateNodes, logger),
             {
               name: 'PostageGate',
               refuses: config.startGates.postageRefuses,
@@ -279,6 +290,16 @@ async function start() {
 
     // Only now, so nothing reaches an orchestrator whose catalog has never been read.
     nodeWait = null;
+
+    // Only once the boot is over, because until then the node wait reads the gates again on every
+    // attempt of its own. A chequebook warning that pass left is read again until the chequebook is
+    // funded, so the warning leaves /health without a restart. See `libs/ChequebookRecheck.ts`.
+    new ChequebookRecheck({
+      gate: chequebookGate(gateNodes, { info: (message) => logger.debug(message) }),
+      intervalMs: config.chequebookRecheckMs,
+      store: streamOrchestrator,
+      logger,
+    }).start();
 
     // An engine that pulls segments itself must re-attach its fetch loop to recovered streams.
     // Otherwise the recovered stream produces no segments and is finalized as VOD at the timeout.
