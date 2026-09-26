@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
-import { Stream } from '@/types/stream';
+import { Stream, STREAM_STATUS_LIVE, STREAM_STATUS_SCHEDULED } from '@/types/stream';
 import { nextStreamList } from '@/utils/catalogList';
 
 /**
@@ -18,6 +18,12 @@ function streamAt(timestamp: number, title = `stream ${timestamp}`): Stream {
 }
 
 const HELD = [streamAt(100), streamAt(200)];
+
+/** The list on screen before each poll below, and the feed slot it was read from. */
+const ON_SCREEN = { held: HELD, heldSlot: 7n };
+
+/** The slot after the one {@link ON_SCREEN} was read from. */
+const NEXT_SLOT = 8n;
 
 const malformedCatalogs: Array<[name: string, fetched: unknown[]]> = [
   ['a null entry', [null]],
@@ -58,32 +64,43 @@ describe('the catalog a poll leaves on screen', () => {
   it('takes a newer catalog from the same gateway', () => {
     const fetched = [streamAt(100), streamAt(300)];
 
-    assert.deepEqual(nextStreamList({ held: HELD, fetched, isSameGateway: true }), fetched);
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: NEXT_SLOT, isSameGateway: true }), fetched);
   });
 
   it('keeps what is on screen when the same gateway has nothing newer', () => {
     const fetched = [streamAt(100), streamAt(200)];
 
-    assert.equal(nextStreamList({ held: HELD, fetched, isSameGateway: true }), null);
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: ON_SCREEN.heldSlot, isSameGateway: true }), null);
   });
 
   it('keeps what is on screen when a poll on the same gateway comes back with nothing usable', () => {
-    assert.equal(nextStreamList({ held: HELD, fetched: null, isSameGateway: true }), null);
-    assert.equal(nextStreamList({ held: HELD, fetched: [], isSameGateway: true }), null);
-    assert.equal(nextStreamList({ held: HELD, fetched: 'not a catalog', isSameGateway: true }), null);
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched: null, fetchedSlot: null, isSameGateway: true }), null);
+    assert.equal(
+      nextStreamList({ ...ON_SCREEN, fetched: 'not a catalog', fetchedSlot: NEXT_SLOT, isSameGateway: true }),
+      null,
+    );
   });
 
   it.each(malformedCatalogs)('rejects the whole catalog when it contains %s', (_name, fetched) => {
-    assert.equal(nextStreamList({ held: HELD, fetched, isSameGateway: true }), null);
-    assert.equal(nextStreamList({ held: [], fetched, isSameGateway: true }), null);
-    assert.deepEqual(nextStreamList({ held: HELD, fetched, isSameGateway: false }), []);
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: NEXT_SLOT, isSameGateway: true }), null);
+    assert.equal(
+      nextStreamList({ held: [], heldSlot: null, fetched, fetchedSlot: NEXT_SLOT, isSameGateway: true }),
+      null,
+    );
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: NEXT_SLOT, isSameGateway: false }), []);
   });
 
   it.each(malformedRenditions)('rejects the whole catalog when it contains %s', (_name, renditions) => {
     const malformed = [{ ...streamAt(300), renditions }];
 
-    assert.equal(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: true }), null);
-    assert.deepEqual(nextStreamList({ held: HELD, fetched: malformed, isSameGateway: false }), []);
+    assert.equal(
+      nextStreamList({ ...ON_SCREEN, fetched: malformed, fetchedSlot: NEXT_SLOT, isSameGateway: true }),
+      null,
+    );
+    assert.deepEqual(
+      nextStreamList({ ...ON_SCREEN, fetched: malformed, fetchedSlot: NEXT_SLOT, isSameGateway: false }),
+      [],
+    );
   });
 
   it('keeps compatible optional and unknown fields on entries that pass validation', () => {
@@ -111,8 +128,9 @@ describe('the catalog a poll leaves on screen', () => {
     };
 
     const result = nextStreamList({
-      held: HELD,
+      ...ON_SCREEN,
       fetched: [scheduled, futureState],
+      fetchedSlot: NEXT_SLOT,
       isSameGateway: false,
     });
 
@@ -124,22 +142,161 @@ describe('the catalog a poll leaves on screen', () => {
   it('takes the first catalog of a session, which has nothing to be newer than', () => {
     const fetched = [streamAt(1)];
 
-    assert.deepEqual(nextStreamList({ held: [], fetched, isSameGateway: true }), fetched);
+    assert.deepEqual(
+      nextStreamList({ held: [], heldSlot: null, fetched, fetchedSlot: 1n, isSameGateway: true }),
+      fetched,
+    );
   });
 
   /**
-   * ⛔ The switch case. Two nodes number their own view of the feed, so a node freshly pointed at
-   * this catalog routinely answers with one older than what is on screen, and the comparison alone
-   * would refuse it for ever.
+   * ⛔ The switch case. Each node resolves its own head, so a node freshly pointed at this catalog
+   * routinely answers with an older slot than the one on screen, and the comparison alone would refuse
+   * it for ever.
    */
   it("takes another gateway's catalog even when it is older than the one on screen", () => {
     const fetched = [streamAt(5)];
 
-    assert.deepEqual(nextStreamList({ held: HELD, fetched, isSameGateway: false }), fetched);
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: 2n, isSameGateway: false }), fetched);
   });
 
   it('clears the list when another gateway has nothing, rather than showing the last one as its answer', () => {
-    assert.deepEqual(nextStreamList({ held: HELD, fetched: null, isSameGateway: false }), []);
-    assert.deepEqual(nextStreamList({ held: HELD, fetched: [], isSameGateway: false }), []);
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched: null, fetchedSlot: null, isSameGateway: false }), []);
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: NEXT_SLOT, isSameGateway: false }), []);
   });
+});
+
+/**
+ * ⛔ The web2 admin changes an entry where it stands, and the old rule only ever looked at the end.
+ *
+ * The stack's own uploader removes a changed entry and appends it again, so every change it makes
+ * reached the last entry, which is all the old rule compared. The admin appends an entry when it
+ * first publishes it and from then on replaces it where it stands, and an unpublish removes an entry
+ * without touching any other. Seen live on 2026-09-25: an entry renamed in place was never shown by an
+ * open, polling viewer in 180 s, while a fresh page load showed it at once.
+ */
+describe('a change the same gateway makes anywhere in the catalog', () => {
+  it('takes an earlier entry going live in place while the last entry stays the same', () => {
+    const announced = { ...streamAt(100, 'announced'), state: STREAM_STATUS_SCHEDULED };
+    const newest = streamAt(200, 'newest');
+    // Stamped with the time of the write, as the admin stamps every entry it replaces. That is newer
+    // than the last entry, and it was missed all the same, because only the last entry was compared.
+    const wentLive = { ...announced, state: STREAM_STATUS_LIVE, timestamp: 300 };
+
+    const next = nextStreamList({
+      held: [announced, newest],
+      heldSlot: 7n,
+      fetched: [wentLive, newest],
+      fetchedSlot: 8n,
+      isSameGateway: true,
+    });
+
+    assert.deepEqual(next, [wentLive, newest]);
+  });
+
+  it('takes an entry removed from the middle, which is all an unpublish changes', () => {
+    const held = [streamAt(100), streamAt(200), streamAt(300)];
+    const unpublished = [streamAt(100), streamAt(300)];
+
+    assert.deepEqual(
+      nextStreamList({ held, heldSlot: 7n, fetched: unpublished, fetchedSlot: 8n, isSameGateway: true }),
+      unpublished,
+    );
+  });
+
+  /**
+   * The reader can hand back an older slot after a newer one, when two head lookups overlap and the
+   * older lands last. This catalog predates an unpublish, so taking it because it differs would put
+   * the removed stream back on screen, and so did the old rule, because its last entry is the newer.
+   */
+  it('refuses a catalog from an older slot even when it differs from the one on screen', () => {
+    const afterUnpublish = [streamAt(100), streamAt(200)];
+    const beforeUnpublish = [streamAt(100), streamAt(200), streamAt(300)];
+
+    assert.equal(
+      nextStreamList({
+        held: afterUnpublish,
+        heldSlot: 8n,
+        fetched: beforeUnpublish,
+        fetchedSlot: 7n,
+        isSameGateway: true,
+      }),
+      null,
+    );
+  });
+});
+
+/** The two ways a poll on the same gateway can have no slot to order it by. */
+const SLOTLESS_SIDES: Array<[side: string, slots: { heldSlot: bigint | null; fetchedSlot: bigint | null }]> = [
+  ['the read', { heldSlot: 7n, fetchedSlot: null }],
+  ['the list on screen', { heldSlot: null, fetchedSlot: 8n }],
+];
+
+/**
+ * A head read whose `swarm-feed-index` header was missing or unreadable carries no slot, so nothing
+ * orders it against the list on screen, and neither does a list that came from one. Such a catalog
+ * keeps the rule this list had before reads carried a slot, rather than risk putting an older one back.
+ */
+describe('a catalog on the same gateway whose slot is not known', () => {
+  it.each(SLOTLESS_SIDES)('is taken when %s has no slot and the last entry is newer', (_side, slots) => {
+    const fetched = [streamAt(100), streamAt(300)];
+
+    assert.deepEqual(nextStreamList({ held: HELD, ...slots, fetched, isSameGateway: true }), fetched);
+  });
+
+  it.each(SLOTLESS_SIDES)(
+    'keeps what is on screen when %s has no slot and the last entry is not newer',
+    (_side, slots) => {
+      const fetched = [streamAt(100), streamAt(200)];
+
+      assert.equal(nextStreamList({ held: HELD, ...slots, fetched, isSameGateway: true }), null);
+    },
+  );
+});
+
+const bodiesThatAreNotCatalogs: Array<[kind: string, fetched: unknown]> = [
+  ['a string', 'not a catalog'],
+  ['an object', { streams: [] }],
+  ['a number', 0],
+  ['null', null],
+];
+
+/**
+ * ⛔ Unpublishing the last stream leaves the admin's catalog empty, and an open page has to show that.
+ *
+ * Only a newer slot can say a catalog is empty on purpose. A read that failed or found nothing newer
+ * brings no body and no slot, and a body that does not validate is refused whatever its slot, so a
+ * writer's mistake cannot blank every open page.
+ */
+describe('a poll on the same gateway that yields no streams', () => {
+  it('empties the list when a newer slot holds an empty catalog, which is what unpublishing the last stream leaves', () => {
+    assert.deepEqual(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: NEXT_SLOT, isSameGateway: true }), []);
+  });
+
+  it.each(bodiesThatAreNotCatalogs)('keeps what is on screen when a newer slot holds %s', (_kind, fetched) => {
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched, fetchedSlot: NEXT_SLOT, isSameGateway: true }), null);
+  });
+
+  it('keeps what is on screen when a newer slot holds entries that fail validation', () => {
+    const invalidEntries = [null, { title: 'no owner, topic or timestamp' }];
+
+    assert.equal(
+      nextStreamList({ ...ON_SCREEN, fetched: invalidEntries, fetchedSlot: NEXT_SLOT, isSameGateway: true }),
+      null,
+    );
+  });
+
+  it('keeps what is on screen when an empty catalog comes from the same or an older slot', () => {
+    const sameSlot = ON_SCREEN.heldSlot;
+    const olderSlot = ON_SCREEN.heldSlot - 1n;
+
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: sameSlot, isSameGateway: true }), null);
+    assert.equal(nextStreamList({ ...ON_SCREEN, fetched: [], fetchedSlot: olderSlot, isSameGateway: true }), null);
+  });
+
+  it.each(SLOTLESS_SIDES)(
+    'keeps what is on screen when %s has no slot and the catalog is empty, as before reads carried one',
+    (_side, slots) => {
+      assert.equal(nextStreamList({ held: HELD, ...slots, fetched: [], isSameGateway: true }), null);
+    },
+  );
 });

@@ -49,10 +49,11 @@ import { GateCollector, GateFinding } from './StartGates.js';
  *
  * ## Scope
  *
- * Startup only, and no periodic re-check. Under `warn` what this pass found is latched onto `/health`
- * as `start_gate_warned`, so a chequebook read at boot is still visible hours later without anything
- * reading it again. A node that drains mid-broadcast is a different question and is not answered
- * here.
+ * The boot's read, and the reads `ChequebookRecheck` makes after it while a warning from that read
+ * stands. What a pass found is latched onto `/health` as `start_gate_warned`, so a chequebook read at
+ * boot is still visible hours later. Since 2026-09-26 it is not there for good: the chequebook is read
+ * again every `CHEQUEBOOK_RECHECK_MS` until every node holds the floor, and the warning then goes
+ * without a restart. A node that drains after that is a different question and is not answered here.
  */
 export class ChequebookGate {
   constructor(
@@ -138,7 +139,8 @@ export class ChequebookGate {
       `[ChequebookGate] ${safeUrl(url)} has ${plurToBzz(availablePlur)} BZZ available in its chequebook and the ` +
       `floor is ${plurToBzz(this.floorPlur)} BZZ. A dry node answers /health in a millisecond while ` +
       'every paid push behind it stalls, which reads as a slow network rather than as a funding ' +
-      "fault. Fund it with a chequebook deposit from the node's own wallet, then restart. " +
+      "fault. Fund it with a chequebook deposit from the node's own wallet. An uploader that started " +
+      'anyway reads it again every CHEQUEBOOK_RECHECK_MS and clears this once it holds the floor. ' +
       'CHEQUEBOOK_MIN_BZZ moves the floor.'
     );
   }

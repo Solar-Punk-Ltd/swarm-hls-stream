@@ -186,11 +186,13 @@ describe('a deploy watches until its services have earned their green', () => {
   });
 
   /**
-   * ⛔⛔ **A warned stack never reports healthy, so the deploy's own note stopped meaning anything.**
+   * ⛔⛔ **A warned stack does not report healthy inside the window, so the deploy's own note stopped
+   * meaning anything.**
    *
    * Since the gates warn and latch (D15 and its review), an uploader that started on a chequebook
-   * under its floor answers /health 503 for the life of the process. Its healthcheck therefore never
-   * goes green, and every deploy of such a stack waited out the whole window to print "never reported
+   * under its floor answers /health 503 until the chequebook is funded, and one whose postage gate
+   * warned answers it until it is restarted. Its healthcheck therefore cannot go green while the deploy
+   * watches, and every deploy of such a stack waited out the whole window to print "never reported
    * healthy", which says nothing about what is wrong and trains a reader to skip the line.
    *
    * The watch asks the container what it says about itself. A 503 whose only reason is
