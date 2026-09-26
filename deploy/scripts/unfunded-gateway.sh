@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# The second gateway of #93: an ultra-light bee node, deliberately unfunded, running beside the funded
-# one so both can be warm at the same time.
+# The second gateway of the unfunded-gateway sitting: an ultra-light bee node, deliberately
+# unfunded, running beside the funded one so both can be warm at the same time.
 #
 # ## The question it exists for
 #

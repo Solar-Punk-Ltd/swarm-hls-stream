@@ -43,8 +43,9 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  *
  * ⭐ **This is the one fault where the client is held to saying something.** Its own gateway is the
  * container that was stopped, so every manifest read fails and the client cannot fail to know. The
- * other four break something upstream of a gateway that goes on answering, where issue #100 means the
- * client may genuinely not find out, and their silence is reported rather than refused.
+ * other four break something upstream of a gateway that goes on answering, where the silent overlay
+ * gap means the client may genuinely not find out, and their silence is reported rather than
+ * refused.
  *
  * ## ⛔ What it does not assert
  *

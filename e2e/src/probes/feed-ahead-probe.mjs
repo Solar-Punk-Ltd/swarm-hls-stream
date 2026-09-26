@@ -12,7 +12,7 @@
  * That burst has two readings and they call for opposite fixes:
  *
  * - **301 was slow and 302 onward were retrievable the whole time.** The reader was blind, a probe
- *   past the hole recovers about 44 seconds, and task #71 is worth building.
+ *   past the hole recovers about 44 seconds, and a client that probes past it is worth building.
  * - **Nothing was retrievable until t+117 and then everything was.** The reader was correctly
  *   waiting, there was nothing to find, and a probe would cost a request per poll and return nothing.
  *
@@ -39,10 +39,10 @@
  *
  * ## Reading the result
  *
- * Three numbers decide task #71, and the run prints all three:
+ * Three numbers decide whether that probe is worth building, and the run prints all three:
  *
- * - **holes** is the premise. Zero holes over a crash means #71 has nothing to fix, whatever the
- *   freeze looked like.
+ * - **holes** is the premise. Zero holes over a crash means the probe has nothing to fix, whatever
+ *   the freeze looked like.
  * - **the smallest distance that found one** sizes the probe. A hole always visible at N+1 needs one
  *   extra request, not a ladder.
  * - **ahead-hits while merely caught up** is the false-positive rate, and it sets how many
@@ -138,7 +138,7 @@ while (Date.now() < deadline) {
   // Every 404 it did meet was a moment it had briefly caught up, which is why its longest stall was
   // three polls on a run where the uploader was killed for fifteen seconds. An instrument that
   // cannot reach the edge cannot see what happens there, and this is the same defect the client was
-  // fixed for in task #84.
+  // fixed for when it learned to keep up with a publisher that writes faster than hls.js reloads.
   let target = index + 1;
   let answer = await read(slotUrl(entry.owner, topic, target));
   for (let consumed = 0; answer.status === 200 && consumed < MAX_SLOTS_PER_WALK; consumed++) {

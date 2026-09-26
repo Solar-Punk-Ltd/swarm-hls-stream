@@ -2,10 +2,10 @@
  * What a viewer's browser did, sampled while it watched, and what that says about the buffer the
  * player was configured with.
  *
- * The question this exists to answer is task #48's: `LIVE_SYNC_DURATION_S` was derived from arrival
- * times the bench measured, and derived is all it has ever been. A player configured to sit six
- * seconds behind live can fail to in two directions, and only one of them is visible from outside a
- * browser:
+ * The question this exists to answer is whether a player honours `LIVE_SYNC_DURATION_S`. It was
+ * derived from arrival times the bench measured, and derived is all it has ever been. A player
+ * configured to sit six seconds behind live can fail to in two directions, and only one of them is
+ * visible from outside a browser:
  *
  * - **Clamped short.** hls.js pins its sync position to the start of the playlist, so a first
  *   manifest naming less media than the target asks for leaves a joining viewer nearer the edge than
@@ -393,8 +393,9 @@ export interface SessionSummary {
    * ⚠️ **The silent quality failure this exists for.** A consumer slower than the stream's bitrate
    * does not drop frames or raise an error: it stretches media time, so the encoder's own log shows
    * its keyframe interval hit exactly while the frame rate underneath collapsed. Reproduced at
-   * **12.2fps against a requested 30** with no engine error and no postage problem, which is task
-   * #76, and `check-axis.py` caught every instance of it while naming the wrong cause.
+   * **12.2fps against a requested 30** with no engine error and no postage problem, which is the
+   * publisher throttle, and `check-axis.py` caught every instance of it while naming the wrong
+   * cause.
    *
    * Against media rather than wall time on purpose: a frozen picture decodes nothing, so a wall-time
    * rate reads a freeze and a collapsed frame rate as the same number. Against media time a freeze

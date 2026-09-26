@@ -104,7 +104,7 @@ describe('how fast media time advanced against wall clock', () => {
   });
 
   /**
-   * Task #101, pinned as arithmetic so the claim cannot be made again.
+   * The 2026-08-07 correction, pinned as arithmetic so the claim cannot be made again.
    *
    * `timelinePerWallSecond` used to be documented as the check that told a slow publisher from a
    * slow pipeline, and as evidence when a latency climbed at `(1 - it) x elapsed`. Latency is
@@ -386,11 +386,11 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
   });
 
   /**
-   * Task #103, and the sharpest version of it. `run.ts` records a poll that failed as
-   * `newestRef: null` on purpose, and says in its own comment that a feed poll slow enough to time
-   * out is the strongest sample of LAT-10 there is. This function then read that null as a change of
-   * newest segment, so the strongest evidence of a stall ended the stall it was evidence of, and a
-   * long freeze was reported as its largest uninterrupted piece.
+   * `run.ts` records a poll that failed as `newestRef: null` on purpose, and says in its own
+   * comment that a feed poll slow enough to time out is the strongest sample of LAT-10 there is.
+   * This function then read that null as a change of newest segment, so the strongest evidence of a
+   * stall ended the stall it was evidence of, and a long freeze was reported as its largest
+   * uninterrupted piece.
    *
    * A poll that brought no answer is the absence of an observation, not the observation of a change.
    */

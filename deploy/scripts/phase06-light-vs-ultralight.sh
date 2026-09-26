@@ -93,8 +93,9 @@ FPS="${FPS:-30}"
 
 PROVING_WATCH_SECONDS="${PROVING_WATCH_SECONDS:-300}"
 FULL_WATCH_SECONDS="${FULL_WATCH_SECONDS:-1800}"
-# A restarted bee node has to re-establish peers and performs differently cold. Task #57 controlled
-# for exactly this and found the warm run slightly worse, so this does not flatter the funded arm.
+# A restarted bee node has to re-establish peers and performs differently cold. An earlier run
+# controlled for exactly this and found the warm run slightly worse, so this does not flatter the
+# funded arm.
 PROVING_WARM_SECONDS="${PROVING_WARM_SECONDS:-120}"
 FULL_WARM_SECONDS="${FULL_WARM_SECONDS:-180}"
 # The publisher outlives the watch on both ends: the stream has to exist before the browser opens and

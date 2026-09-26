@@ -304,9 +304,9 @@ function declaredSamples(run: BenchRun): DeclaredSample[] {
 /**
  * The share of the configured frame rate a run actually delivered, below which it is called throttled.
  *
- * A throttled run does not degrade a little. `#76` measured 12.0 fps and 23.7 fps against a configured
- * 30, and healthy runs came in at 28.1 to 30.1, so there is a wide gap to put a line in. 0.9 sits
- * inside it and clears the 28.1 that a good run produced.
+ * A throttled run does not degrade a little. The publisher throttle measured 12.0 fps and 23.7 fps
+ * against a configured 30, and healthy runs came in at 28.1 to 30.1, so there is a wide gap to put
+ * a line in. 0.9 sits inside it and clears the 28.1 that a good run produced.
  */
 const DELIVERED_FPS_FLOOR = 0.9;
 

@@ -2,10 +2,10 @@
 # The same segment-duration probe as `srs-segment-duration.mjs`, with the media engine on the
 # deployment host and the publisher still on this laptop.
 #
-# ⭐ THIS IS THE ARM THAT MATTERS FOR #78. Every local arm shares one machine and one loopback, so
-# none of them can reproduce a publish that crosses the internet. The deployment's 1.905s segments
-# were produced by exactly this pairing: ffmpeg here, media engine there, MPEG-TS over SRT between
-# them. What is deliberately absent is bee, the uploader and postage, so the run costs nothing and
+# ⭐ THIS IS THE ARM THAT MATTERS FOR THE DEPLOYMENT'S LONG SEGMENTS. Every local arm shares one
+# machine and one loopback, so none of them can reproduce a publish that crosses the internet. The
+# deployment's 1.905s segments were produced by exactly this pairing: ffmpeg here, media engine
+# there, MPEG-TS over SRT between them. What is deliberately absent is bee, the uploader and postage, so the run costs nothing and
 # isolates the transport from everything downstream of it.
 #
 # ⛔ It creates its own container on its own ports and removes it afterwards. It must never be

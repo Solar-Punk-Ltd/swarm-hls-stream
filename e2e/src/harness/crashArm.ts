@@ -266,11 +266,12 @@ interface FrozenOverlayExpectation {
   /**
    * Whether the client must have said one of them, or may correctly have stayed quiet.
    *
-   * ⚠️ False is not "silence is fine", it is "this client is not yet known to be able to speak here".
-   * See issue #100: where the gateway keeps answering and only the slot is empty, the counter that
-   * would catch it is `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate collapses during exactly the stall
-   * it exists to detect, and one long freeze is a single playback stall rather than the burst
-   * `degraded` needs. Requiring a message there would assert a fix that has not landed.
+   * ⚠️ False is not "silence is fine", it is "this client is not yet known to be able to speak
+   * here". See the silent overlay gap: where the gateway keeps answering and only the slot is
+   * empty, the counter that would catch it is `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate collapses
+   * during exactly the stall it exists to detect, and one long freeze is a single playback stall
+   * rather than the burst `degraded` needs. Requiring a message there would assert a fix that has
+   * not landed.
    */
   mustSpeak: boolean;
 }
@@ -288,10 +289,10 @@ interface FrozenOverlayExpectation {
  * picture under no overlay is a viewer being told everything is fine while they look at a frozen
  * frame. Where {@link FrozenOverlayExpectation.mustSpeak} is set, that is refused.
  *
- * ⚠️ This once asserted the recorded silence EXACTLY, so a fix for #100 would have turned three cases
- * red for the product improving. Under the owner ruling of 2026-08-29 a correctness suite goes green
- * when the product gets better, so a client that starts explaining a fault it used to sit through in
- * silence now passes.
+ * ⚠️ This once asserted the recorded silence EXACTLY, so a fix for the silent overlay gap would
+ * have turned three cases red for the product improving. Under the owner ruling of 2026-08-29 a
+ * correctness suite goes green when the product gets better, so a client that starts explaining a
+ * fault it used to sit through in silence now passes.
  */
 export function frozenOverlayRefusal(
   recovery: CrashRecoveryResult,

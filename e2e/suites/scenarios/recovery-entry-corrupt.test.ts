@@ -34,7 +34,7 @@ import { waitFor } from '../../src/harness/wait.js';
  * ⛔ **The first row was the defect this scenario found, and it is now the fix it guards.** The entry
  * used to be **deleted** on the next boot, so the recording was stranded, the catalog went on saying
  * `live` forever, and the bytes that could have been repaired were gone. That is the same end state
- * the repair path exists to avoid, reached through the door nobody checked. Task #38.
+ * the repair path exists to avoid, reached through the door nobody checked.
  *
  * ⚠️ The recording is still lost either way. What changed is that it is now **recoverable by hand and
  * impossible to miss**, rather than silently unrecoverable.
@@ -222,7 +222,7 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
         'an entry that cannot be parsed must be reported, since nothing else will notice it',
       );
 
-      // The whole of task #38: the bytes still exist. A recording nobody can finalize is bad and a
+      // The whole of the fix: the bytes still exist. A recording nobody can finalize is bad and a
       // recording nobody can even inspect is worse, and only one of those can be walked back.
       const quarantined = await quarantinedEntryNames(host, cfg);
       const kept = quarantined.filter((name) => name.startsWith(`${target}.json`));

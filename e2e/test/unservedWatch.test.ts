@@ -53,8 +53,8 @@ describe('timing a refused segment off the collection loop', () => {
   });
 
   /**
-   * Task #103. The watcher slept `recheckMs` before asking anything, so the smallest number it could
-   * ever report was one whole recheck interval, and at the shipped 1000ms that is the same 1 second
+   * The watcher slept `recheckMs` before asking anything, so the smallest number it could ever
+   * report was one whole recheck interval, and at the shipped 1000ms that is the same 1 second
    * the report uses as its threshold. Every resolution was overstated by exactly one interval, and a
    * segment that was there all along was indistinguishable from one that took a second to appear.
    */

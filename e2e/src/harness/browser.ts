@@ -342,8 +342,8 @@ export interface CrashRecoveryResult {
   /**
    * Whether the client explained the freeze while it was happening.
    *
-   * ⭐ False beside a non-zero freeze is the shape issue #100 describes: a stopped picture under an
-   * overlay that says nothing.
+   * ⭐ False beside a non-zero freeze is the shape of the silent overlay gap: a stopped picture
+   * under an overlay that says nothing.
    */
   explainedTheFreeze: boolean;
   /**
