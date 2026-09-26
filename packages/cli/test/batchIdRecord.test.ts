@@ -23,7 +23,7 @@ after(() => {
 /**
  * Drive `recordBatchId` down its recovery-file fallback. The env write is what normally succeeds, so
  * making `envPath` a directory forces `writeEnvKey` to throw when it reads it, without relying on
- * permission bits, which root ignores on the verification box. The fallback then builds a file name
+ * permission bits, which a test running as root ignores. The fallback then builds a file name
  * from the batch id, which is the path this fix is about.
  */
 function recordAgainstUnwritableEnv(id: string): {

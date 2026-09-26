@@ -649,8 +649,8 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
    * look like to the script. Everything else it copies goes through, so only the backup is blocked.
    *
    * ⭐ This used to chmod the sandbox root to 0o500 instead, and that reads as the same thing only on
-   * a machine whose writes permission bits can stop. The verification box runs every job as root,
-   * which ignores them, so the copy succeeded, no refusal was printed, and the case failed against a
+   * a machine where permission bits can stop a write. In a container that runs the tests as root they
+   * stop nothing, so the copy succeeded, no refusal was printed, and the case failed against a
    * script that was behaving correctly. Failing the tool the script actually calls says the same
    * thing to every account.
    */
@@ -686,8 +686,8 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
     // that is not there. That is what a removed mount looks like, and `record_original` writes with a
     // shell redirect, so there is no tool to fail instead.
     //
-    // ⭐ It used to chmod the record to 0o444, which stops nothing on the verification box because
-    // jobs run there as root. A dangling link is refused by the kernel whatever the account.
+    // ⭐ It used to chmod the record to 0o444, which stops nothing in a container where jobs run as
+    // root. A dangling link is refused by the kernel whatever the account.
     symlinkSync(join(sandbox.root, 'a-directory-that-is-not-there', RECORD), recordPath(sandbox));
 
     const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });

@@ -148,7 +148,7 @@ describe('an ssh-alias target cannot run a command', () => {
   // The target is passed to `ssh -G` to resolve an alias, and it reaches ssh only when it is not an
   // IP or FQDN, so both the marker and the ssh config live under a dot-free directory: a dot would
   // make IP_OR_FQDN treat the value as a hostname and skip ssh entirely, proving nothing. /tmp is
-  // dot-free on macOS and on the Linux container the box runs, and the random suffix is hex.
+  // dot-free on macOS and on a Linux container, and the random suffix is hex.
   function dotFreeDir(): string {
     const dir = join('/tmp', `ssh-alias-${randomBytes(8).toString('hex')}`);
     mkdirSync(dir, { recursive: true });
