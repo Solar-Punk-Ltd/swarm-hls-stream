@@ -2,13 +2,14 @@
  * How many frames per second does a publisher recipe actually produce, and does its timestamping
  * record the answer?
  *
- * ⛔ THIS EXISTS BECAUSE #76 COMPARED TWO RECIPES AND REPORTED IT AS TWO HOSTS. The bench publisher
- * stamps both inputs with `-use_wallclock_as_timestamps 1` and carries those stamps through with
- * `-copyts`, so a frame's presentation time is the instant it was demuxed. An encoder that cannot
- * keep up therefore writes its own slowness into the timeline, and a media engine cutting on that
- * timeline emits a longer segment carrying the same bytes. `srs-segment-duration.mjs` used neither
- * option, so it generated an ideal 30 fps timeline no matter how slow the encode really ran, and a
- * starved encoder was invisible to it. That is why three attempts to starve it there changed nothing.
+ * ⛔ THIS EXISTS BECAUSE THE SRS FRAGMENT BRACKET COMPARED TWO RECIPES AND REPORTED IT AS TWO
+ * HOSTS. The bench publisher stamps both inputs with `-use_wallclock_as_timestamps 1` and
+ * carries those stamps through with `-copyts`, so a frame's presentation time is the instant it was
+ * demuxed. An encoder that cannot keep up therefore writes its own slowness into the timeline, and
+ * a media engine cutting on that timeline emits a longer segment carrying the same bytes.
+ * `srs-segment-duration.mjs` used neither option, so it generated an ideal 30 fps timeline no
+ * matter how slow the encode really ran, and a starved encoder was invisible to it. That is why
+ * three attempts to starve it there changed nothing.
  *
  * ⭐ THE DISCRIMINATING PAIR, and the reason both recipes run here rather than just the bench one:
  *

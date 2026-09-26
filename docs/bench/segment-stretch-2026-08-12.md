@@ -3,8 +3,9 @@
 **2026-08-12.** Predictions in `segment-stretch-prediction-2026-08-12.md`, written before any arm ran.
 Free throughout: stock `ossrs/srs:6`, no bee, no uploader, no postage, nothing broadcast to Swarm.
 
-#76 said stock SRS honours `hls_fragment` exactly and our deployment therefore under-delivers by 45%.
-**The first half survives every arm here. The second half does not survive its own controls.**
+[The SRS fragment bracket](srs-fragment-bracket-2026-08-11.md) said stock SRS honours `hls_fragment`
+exactly and our deployment therefore under-delivers by 45%. **The first half survives every arm
+here. The second half does not survive its own controls.**
 
 ## The two things that were already ruled out before an arm ran
 
@@ -185,9 +186,9 @@ distributed system's fault is not a control, it is a different experiment.**
 
 ## What is still open
 
-- **A GOP longer than the fragment** also stretches segments, by SRS's documented rule, and no arm in
-  #76's bracket ever ran that pairing. It is not needed to explain these numbers, but it has never
-  been measured here and `DEFAULT_KNOBS` sets `gopSeconds: 2`.
+- **A GOP longer than the fragment** also stretches segments, by SRS's documented rule, and no arm
+  in the SRS fragment bracket ever ran that pairing. It is not needed to explain these numbers, but
+  it has never been measured here and `DEFAULT_KNOBS` sets `gopSeconds: 2`.
 - **Whether the uploader's `on_hls` webhook contributes.** No arm here has an uploader behind it, by
   design, so the webhook is neither implicated nor cleared.
 - **How big the effect is.** Its presence is solid at n=4 across three configurations, and a replicate

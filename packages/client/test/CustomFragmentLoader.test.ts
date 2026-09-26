@@ -151,7 +151,7 @@ describe('CustomFragmentLoader reporting the gateway it just reached', () => {
  *
  * This used to be rebuilt against `window.location.origin` and handed to the transport. That is the
  * client, whose nginx proxies `/bee/` and not `/bytes/`, so the fragment 404'd at a host that never
- * held it and no message connected the failure to the fallback. See task #90.
+ * held it and no message connected the failure to the fallback.
  */
 describe('CustomFragmentLoader meeting a url that names no gateway', () => {
   const UNRESOLVABLE = 'blob:http:/bytes/abc123';

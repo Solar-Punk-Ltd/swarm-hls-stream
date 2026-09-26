@@ -21,10 +21,11 @@
 
 **2026-08-13.** One live broadcast, eight arms, counterbalanced, 0.8188 BZZ.
 
-#92 phase A2 proved the in-tab path works on a **recording**. A recording lets a player fetch as far
-ahead as it likes, and the weeb-3 arm used that freedom: 19.99s of buffer against the gateway arm's
-47.98s, real time held. A live edge has no ahead to fetch into, so nothing in A2 said whether an
-in-tab node keeps up when the only segment available is the one published a moment ago.
+[Phase A2](weeb3-a2-playback-2026-08-13.md) proved the in-tab path works on a **recording**. A
+recording lets a player fetch as far ahead as it likes, and the weeb-3 arm used that freedom: 19.99s
+of buffer against the gateway arm's 47.98s, real time held. A live edge has no ahead to fetch into,
+so nothing in A2 said whether an in-tab node keeps up when the only segment available is the one
+published a moment ago.
 
 It does.
 
@@ -37,8 +38,9 @@ Order `gateway weeb3 gateway weeb3 weeb3 gateway weeb3 gateway`, which is positi
 one seam. Round 1 is warm-up and is discarded, leaving **n=3 per condition** of six minutes each.
 
 Only **segment bytes** move between conditions. The catalog, the feed and the manifest come from the
-gateway in both arms, by the design of PR #183. ⚠️ **A weeb-3 arm is not a gateway-less viewer**, it is
-a viewer whose video comes from its own node. #44 was withdrawn for blurring exactly that line.
+gateway in both arms, by the design of PR #183. ⚠️ **A weeb-3 arm is not a gateway-less viewer**, it
+is a viewer whose video comes from its own node. The earlier VOD run of weeb-3's player was
+withdrawn for blurring exactly that line.
 
 ## What the viewer got
 
@@ -116,9 +118,9 @@ once, so sixteen viewers behind one gateway cost close to what one costs. The in
 that is genuinely per viewer, because each tab retrieves independently. The comparison above is
 one viewer against one viewer, which is the arm that was run and not the shape of a real audience.
 
-⚠️ **The in-tab node has no chequebook.** It retrieves as an unfunded light node, which #93 measured at
-about 2x per segment against a funded one, absorbed by the buffer. This sitting is consistent with
-that and does not settle who pays the serving peers.
+⚠️ **The in-tab node has no chequebook.** It retrieves as an unfunded light node, which the
+unfunded-gateway sitting measured at about 2x per segment against a funded one, absorbed by the
+buffer. This sitting is consistent with that and does not settle who pays the serving peers.
 
 ## Preconditions and bounds, so the number can be defended
 
@@ -137,7 +139,7 @@ that and does not settle who pays the serving peers.
 - **n=3 per condition, one sitting, one host, one profile.** A replicate is worth more than any caveat.
 - Nothing about **many** in-tab viewers. One node per tab is a hard constraint: two reach 82 peers
   each and three reach zero and never re-dial.
-- Nothing about a **cold** node on fresh content, which is #52.
+- Nothing about a **cold** node on fresh content, which is cold-node playback.
 - Nothing about CPU. An in-browser viewer was measured at 0.79 to 1.05 cores elsewhere, on Apple
   Silicon, and this sitting did not sample the browser container's CPU.
 - **weeb-3 exposes no live peer count.** `networkState()` returns static configuration: 319 bootnodes,

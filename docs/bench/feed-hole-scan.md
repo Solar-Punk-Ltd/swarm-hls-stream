@@ -1,6 +1,6 @@
 # Does a feed slot ever stay unserved
 
-**2026-08-05. The trigger for task #71, measured rather than argued.**
+**2026-08-05. The trigger for a viewer parked on an unserved feed slot, measured rather than argued.**
 
 `ManifestFetcher.handleFollowupFetch` pins its index, asks for the next slot, and on a 404 polls that
 same slot again without advancing. After `UNSERVED_SLOT_POLL_LIMIT = 30` polls the UI shows
@@ -29,8 +29,8 @@ transient miss is told apart from a permanent one. Costs no broadcast and no pos
 | **permanent holes** | **0** |
 | first-pass read time | 1ms min, **4ms median**, 126ms max |
 
-**No hole of either kind.** The trigger for #71 did not occur once in a 692-slot broadcast read back
-immediately after it finished.
+**No hole of either kind.** The trigger for that park did not occur once in a 692-slot broadcast
+read back immediately after it finished.
 
 ## What this does and does not settle
 
@@ -43,5 +43,6 @@ retrieve: the same sweep's collection loop spent roughly 260ms per slot read whi
 against the 4ms median here. That is a delay rather than a hole, and no run in the sweep showed a
 reader failing to advance, but it is a different condition from the one measured above.
 
-**So #71 keeps its severity in principle and loses it in practice.** The fix is cheap and worth doing
-when the player is next opened, and it is not urgent, and it must not be done on reading alone.
+**So the parked-viewer defect keeps its severity in principle and loses it in practice.** The fix is
+cheap and worth doing when the player is next opened, and it is not urgent, and it must not be done
+on reading alone.

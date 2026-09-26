@@ -1,8 +1,9 @@
 # What stretches a segment: written before the arms ran, 2026-08-12
 
-#76 concluded that stock SRS honours `hls_fragment` exactly and that our deployment host therefore
-under-delivers by 45%. The first half survives. The second half rested on comparing two runs that
-differed in more than the host, and this is the attempt to find out which difference did it.
+[The SRS fragment bracket](srs-fragment-bracket-2026-08-11.md) concluded that stock SRS honours
+`hls_fragment` exactly and that our deployment host therefore under-delivers by 45%. The first half
+survives. The second half rested on comparing two runs that differed in more than the host, and this
+is the attempt to find out which difference did it.
 
 ## What is already known, and what it rules out
 
@@ -59,8 +60,9 @@ on the laptop during that broadcast.
 - predicts: **all four arms 1.000s**
 - killed by: any arm stretching
 
-⛔ H3 is the outcome that would leave #76's headline correction wrong in both halves, and it is the
-one to be most careful about wanting: it is also the outcome that follows from doing nothing.
+⛔ H3 is the outcome that would leave the SRS fragment bracket's headline correction wrong in both
+halves, and it is the one to be most careful about wanting: it is also the outcome that follows from
+doing nothing.
 
 ## What no arm here can settle
 

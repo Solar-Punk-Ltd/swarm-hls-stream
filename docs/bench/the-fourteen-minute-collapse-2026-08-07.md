@@ -92,9 +92,9 @@ and like those three it does not go through the player's latency target.
 buffer sat under 0.7s with 144 rebuffers behind it. A broadcast degraded to the point of stalling
 every few seconds showed the same interface as a healthy one.
 
-⛔ **This is not the `#100` mechanism, and reading it as one sends the fix to the wrong place.** That
-one says the overlay's threshold counts polls and the poll rate collapses during the stall it is
-meant to report, so the message arrives late. Here the message could not arrive at all:
+⛔ **This is not the overlay-silence mechanism, and reading it as one sends the fix to the wrong
+place.** That one says the overlay's threshold counts polls and the poll rate collapses during the
+stall it is meant to report, so the message arrives late. Here the message could not arrive at all:
 
 | | over the whole run |
 | --- | ---: |

@@ -34,21 +34,22 @@ import { GateCollector, GateFinding } from './StartGates.js';
  * ## What happens to that refusal, 2026-09-17
  *
  * ⛔ **This gate still refuses by default, and it is the only one that does, but only about a batch
- * the node answered for.** The owner ruled the two gates apart on 2026-09-17: a chequebook under its
- * floor is a node that publishes slowly, while an immutable batch that is full, or any batch that
- * has expired, fails every write while the broadcast looks live to the room, the viewer and the
- * catalog, and the recording it was meant to buy is never kept. Decision 7 b of the same day then split this gate's own refusals the
- * same way, in his words: "PostageGate refuses only a batch the node answered about and warns on an
- * unreadable one." A `usable=false`, a batch under the time floor, an immutable batch over the
- * utilization ceiling and a 4xx are the node answering, and they still end the boot under the shipped
- * `chequebook-warn`. A timeout, a 5xx and an answer with no readable fields are no reading at all,
- * and under that mode they are warned about and the uploader starts, because a rung whose node is
- * not talking has said nothing about any batch. `warn` has both gates warning about both readings,
- * `refuse` has both refusing both, and neither changed. A node that never answers is waited for
- * under all three, which is `libs/NodeWait.ts` rather than this: under `refuse` an unreadable
- * refusal is still thrown and that wait still reads its timeout text, and under the shipped mode
- * that text is a warning line that never reaches the wait at all. Which refusal is which is
- * {@link GateReading}, and the account of both rulings is in `libs/StartGates.ts`.
+ * the node answered for.** The owner ruled the two gates apart on 2026-09-17: a chequebook under
+ * its floor is a node that publishes slowly, while an immutable batch that is full, or any batch
+ * that has expired, fails every write while the broadcast looks live to the room, the viewer and
+ * the catalog, and the recording it was meant to buy is never kept. The same day the owner split
+ * this gate's own refusals the same way: "PostageGate refuses only a batch the node answered about
+ * and warns on an unreadable one." A `usable=false`, a batch under the time floor, an immutable
+ * batch over the utilization ceiling and a 4xx are the node answering, and they still end the boot
+ * under the shipped `chequebook-warn`. A timeout, a 5xx and an answer with no readable fields are
+ * no reading at all, and under that mode they are warned about and the uploader starts, because a
+ * rung whose node is not talking has said nothing about any batch. `warn` has both gates warning
+ * about both readings, `refuse` has both refusing both, and neither changed. A node that never
+ * answers is waited for under all three, which is `libs/NodeWait.ts` rather than this: under
+ * `refuse` an unreadable refusal is still thrown and that wait still reads its timeout text, and
+ * under the shipped mode that text is a warning line that never reaches the wait at all. Which
+ * refusal is which is {@link GateReading}, and the account of both rulings is in
+ * `libs/StartGates.ts`.
  *
  * ## Why per publisher rather than per node
  *

@@ -134,7 +134,7 @@ export class ServiceMetrics {
 
   /**
    * A broadcast the reaper GAVE UP ON because its engine went silent, rather than because anything
-   * asked. See #86.
+   * asked.
    *
    * ⛔ This counts the reaper's decision, not the finalize that follows it. The increment happens
    * before `stopStream`, which is fired and forgotten, so a rise here means "this many broadcasts were
@@ -371,13 +371,13 @@ interface MetricsCounters {
   segmentsLostTotal: number;
   /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */
   segmentsSkippedTotal: number;
-  /** Opening segments withheld because the broadcast had produced no video yet. See task #41. */
+  /** Opening segments withheld because the broadcast had produced no video yet. */
   openingSegmentsWithheldTotal: number;
   segmentsNeverNamedTotal: number;
   manifestPublishFailuresTotal: number;
   streamsFinalizedTotal: number;
   streamsFailedTotal: number;
-  /** Broadcasts finalized because their engine went silent rather than because anything asked. See #86. */
+  /** Broadcasts finalized because their engine went silent rather than because anything asked. */
   streamsReapedTotal: number;
   /** Segments published with the engine's declared duration because their own timestamps were unreadable. */
   segmentDurationsUnreadTotal: number;

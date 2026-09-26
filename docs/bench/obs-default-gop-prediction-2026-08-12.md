@@ -1,6 +1,6 @@
 # What a 2.0s-GOP broadcaster gets, predicted before spending
 
-**Registered 2026-08-12, before the sitting.** Task #91. Predictions here so the result can refute
+**Registered 2026-08-12, before the sitting.** Predictions here so the result can refute
 them rather than be read back as having been expected.
 
 ## Why this sitting exists when the bench already compared 0.5 against 2.0

@@ -1,4 +1,4 @@
-# ✅ #76: SRS does not double. ⛔ "Our deployment does" is WITHDRAWN
+# ✅ SRS does not double. ⛔ "Our deployment does" is WITHDRAWN
 
 > ⛔⛔ **The title's second sentence was wrong and `segment-stretch-2026-08-12.md` replaces it.** The
 > bracket below stands: every arm lands on its knob, min equal to max. What does not stand is the

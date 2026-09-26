@@ -19,7 +19,7 @@
 >
 > See [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md).
 
-**2026-08-14, one live broadcast, six counted arms, 1.095 BZZ.** Task #103.
+**2026-08-14, one live broadcast, six counted arms, 1.095 BZZ.**
 
 ## The question, and why the previous answer could not settle it
 

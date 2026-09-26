@@ -137,7 +137,7 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
 
     const result = orch.handleSegment(id, 7, 2, Buffer.from('seg7'));
     assert.equal(result.accepted, true, 'segments for a recovered stream must be accepted');
-    // One timer, not none: resuming cancels the finalize timer and arms the #86 orphan watchdog in its
+    // One timer, not none: resuming cancels the finalize timer and arms the orphan watchdog in its
     // place. Counting them still pins the cancel, because a build that failed to cancel would leave two.
     assert.equal(clock.pendingCount(), 1, 'resuming replaces the finalize timer with the orphan watchdog');
 
@@ -333,9 +333,9 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
 });
 
 /**
- * ⛔ Task #38. An entry the store cannot parse used to be deleted on the next boot, which is the one
- * action nothing can undo: the entry is the only record the broadcast was live, so the recording it
- * was building is stranded unfinalized, its catalog entry says `live` for good, and the bytes that
+ * ⛔ An entry the store cannot parse used to be deleted on the next boot, which is the one action
+ * nothing can undo: the entry is the only record the broadcast was live, so the recording it was
+ * building is stranded unfinalized, its catalog entry says `live` for good, and the bytes that
  * could have been repaired by hand are gone. Demonstrated on the deployment on 2026-08-09.
  */
 describe('StreamOrchestrator recovering an entry it cannot read', () => {
@@ -422,12 +422,13 @@ describe('StreamOrchestrator recovering an entry it cannot read', () => {
   });
 
   /**
-   * ⛔ This narrows #38, which only ever covered the entry that fails to PARSE. An entry that parses
-   * into an object of the wrong shape reached recovery, threw somewhere inside it, was caught, and was
-   * left on disk as an ordinary `.json`. So `listActive` returned it again on the next boot, it failed
-   * in exactly the same place, and `quarantinedRecoveryEntries` stayed at zero the whole time — which
-   * is the one signal `deriveHealthStatus` treats as permanent, and the only one built to say a
-   * recording is stranded. The recording was as lost as an unparseable one and nothing said so.
+   * ⛔ This widens the quarantine, which had only ever covered the entry that fails to PARSE. An
+   * entry that parses into an object of the wrong shape reached recovery, threw somewhere inside
+   * it, was caught, and was left on disk as an ordinary `.json`. So `listActive` returned it again
+   * on the next boot, it failed in exactly the same place, and `quarantinedRecoveryEntries` stayed
+   * at zero the whole time — which is the one signal `deriveHealthStatus` treats as permanent, and
+   * the only one built to say a recording is stranded. The recording was as lost as an unparseable
+   * one and nothing said so.
    *
    * `JSON.parse(data) as StreamState` is the reason a mis-shaped entry gets this far: the cast is a
    * claim about the bytes, not a check on them.
@@ -1035,7 +1036,7 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.equal(clock.pendingCount(), 1, 'resuming replaces the finalize timer with the orphan watchdog');
 
     // Fed across the whole span, because a stream receiving nothing for this long is now finalized by
-    // the #86 orphan watchdog and the test would stop being about the timer it names. Feeding does not
+    // the orphan watchdog and the test would stop being about the timer it names. Feeding does not
     // weaken it: `scheduleRecoveryFinalize` does not consult ingest, so an uncancelled recovery timer
     // would still end this stream at the first window.
     for (let elapsed = 0; elapsed < RECOVERY_TIMEOUT_60S * 10; elapsed += RECOVERY_TIMEOUT_60S / 2) {
@@ -1896,9 +1897,9 @@ describe('StreamOrchestrator stall signal during a drain', () => {
 
     // The broadcaster is back while the outgoing session is still finalizing, and then goes quiet.
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    // Comfortably past the stall window and inside the #86 reap window, which is a different question:
-    // a replacement quiet for longer than the reap window is finalized, and this test is about whether
-    // the signal can see it at all rather than about how long it is allowed to stay.
+    // Comfortably past the stall window and inside the orphan reap window, which is a different
+    // question: a replacement quiet for longer than the reap window is finalized, and this test is
+    // about whether the signal can see it at all rather than about how long it is allowed to stay.
     clock.advance(45_000);
 
     assert.equal(

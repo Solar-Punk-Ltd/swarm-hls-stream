@@ -157,8 +157,8 @@ distribution and no explanation.
 ## What this changes about the next purchase
 
 The three-hour arm was priced at ~3.3 BZZ **in the shape of the last sitting**, alternating both
-conditions. The question it answers is about the in-tab path's own creep, and #104 already established
-that both paths creep, so it needs **one long in-tab arm and no gateway arm**.
+conditions. The question it answers is about the in-tab path's own creep, and the long-arm sitting
+already established that both paths creep, so it needs **one long in-tab arm and no gateway arm**.
 
 | | modelled | measured |
 | --- | ---: | ---: |

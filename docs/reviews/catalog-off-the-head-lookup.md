@@ -1,6 +1,6 @@
 # Taking the catalog off the head lookup
 
-**2026-08-05, task #73. Written from reading, then measured against the deployment, then fix 1 built.
+**2026-08-05. Written from reading, then measured against the deployment, then fix 1 built.
 The measurement is in the middle and the state of each fix is on its heading.**
 
 The head lookup costs **1 second at minimum and about 5 on a thousand-slot feed**, against **4ms** for

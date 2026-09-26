@@ -481,10 +481,10 @@ describe('deriveHealthStatus deliberate discards (OBS-16)', () => {
 });
 
 /**
- * ⛔ Task #38. One entry the recovery store could not parse is one whole broadcast that this process
- * cannot finalize: its recording is stranded and its catalog entry says `live` until someone
- * intervenes by hand. It is reported by an operator's standards, which is why it needs no threshold
- * and no window.
+ * ⛔ One entry the recovery store could not parse is one whole broadcast that this process cannot
+ * finalize: its recording is stranded and its catalog entry says `live` until someone intervenes by
+ * hand. It is reported by an operator's standards, which is why it needs no threshold and no
+ * window.
  */
 describe('deriveHealthStatus quarantined recovery entries', () => {
   it('is ok while every entry on disk could be read', () => {

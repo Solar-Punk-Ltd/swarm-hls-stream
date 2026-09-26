@@ -19,7 +19,7 @@
  * {@link MediaPacing.deliveredPerWallSecond} is the one reading that separates that from a pipeline
  * genuinely falling behind, and it is measured rather than assumed away.
  *
- * Which member does the separating is the correction task #101 made. It used to be
+ * Which member does the separating was corrected on 2026-08-07. It used to be
  * {@link MediaPacing.timelinePerWallSecond}, and that one is the drift itself written as a rate, so
  * it agreed with the drift in every run and was read as confirming it.
  */
@@ -65,7 +65,7 @@ export interface MediaPacing {
    * `wallMs - timelineMs`, and this reduces to `1 - drift / wallSpan` identically. Reading a latency
    * that climbs at `(1 - this) x elapsed` as evidence of anything is reading an identity: it always
    * does, whatever the cause. The claim that it separates a slow publisher from a slow pipeline was
-   * wrong, and {@link deliveredPerWallSecond} is what actually separates them. Task #101.
+   * wrong, and {@link deliveredPerWallSecond} is what actually separates them.
    *
    * It stays because {@link holeMs} needs the timeline distance, and because agreeing with the
    * separately fitted drift is a real arithmetic check on the fit. It is not evidence about the
@@ -379,7 +379,7 @@ export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
   for (let i = runStart + 1; i < ordered.length; i += 1) {
     // A poll that brought no answer is the absence of an observation, not the observation of a
     // change, so it spans the stall rather than ending it. Reading it as a change let the strongest
-    // evidence of a freeze break the freeze it was evidence of. See task #103.
+    // evidence of a freeze break the freeze it was evidence of.
     if (ordered[i].newestRef === null) {
       withoutAnswer += 1;
       continue;

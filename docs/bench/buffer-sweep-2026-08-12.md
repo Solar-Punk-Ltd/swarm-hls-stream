@@ -1,6 +1,6 @@
 # The 6s player buffer can be cut to 2s for nothing, and 1.5s costs on both axes
 
-**2026-08-12, funded, 1.1401 BZZ, 8 postage buckets.** Task #87. Seventeen arms of 300s against one
+**2026-08-12, funded, 1.1401 BZZ, 8 postage buckets.** Seventeen arms of 300s against one
 continuous broadcast at the shipping profile (720p30, 2500 kbps, 0.5s GOP). Two warm-up arms
 discarded, then five targets over three rounds with the direction reversed each round. Every arm's
 instrument was judged **sound**, and `#EXT-X-TARGETDURATION` held at **1** for the whole sitting, so
@@ -55,7 +55,7 @@ interleaving is the defence against it.
 
 - n=3 per target, one sitting, one browser, one gateway.
 - **A 300s arm at a 1.5s target is not a viewer's whole session.** Whether the penalty keeps
-  accumulating over an hour is #89's question, not this one's.
+  accumulating over an hour is the long broadcast's question, not this one's.
 - ⛔ **The artefact stores each arm's sample COUNT, not its samples**, so *when* inside an arm a
   rebuffer happened is not recoverable and no rebuffer-to-404 correlation can be built from it. The
   request log beside it does keep every refusal with a timestamp, so the refusal half is there. The

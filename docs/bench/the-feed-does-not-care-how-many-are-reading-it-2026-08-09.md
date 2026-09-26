@@ -1,7 +1,7 @@
 # The feed does not care how many viewers are reading it
 
-**2026-08-09.** Task #23, the last measurable item before Phase 3. Two sittings, 20 arms, **54,400
-feed slot reads**. No broadcast, no encoder, no publisher, no postage. Attributed cost: **one cheque of
+**2026-08-09.** The last measurable item before Phase 3. Two sittings, 20 arms, **54,400 feed slot
+reads**. No broadcast, no encoder, no publisher, no postage. Attributed cost: **one cheque of
 77,000,000,000 wei**, which is 0.0000077 BZZ, on the gateway chequebook.
 
 ## The gap

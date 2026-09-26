@@ -17,8 +17,8 @@ export type FetchBackend = typeof FETCH_BACKEND_GATEWAY | typeof FETCH_BACKEND_W
  * as well would put two changes in one arm.
  *
  * ⛔ This is why the backend is not `attachStream`. weeb-3 ships a complete HLS path of its own, and
- * using it would measure weeb-3's player rather than ours, which is the mistake that made #44's
- * headline unusable.
+ * using it would measure weeb-3's player rather than ours, which is the mistake that made the
+ * headline of an earlier run of weeb-3's player on a VOD unusable.
  */
 export function selectedFetchBackend(): FetchBackend {
   // ⛔ Spelled out rather than read through a named constant, for the reason `gatewayTestHandle.ts`

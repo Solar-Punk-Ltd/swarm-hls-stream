@@ -1,6 +1,6 @@
 # What SRS actually does when it closes a segment, read from the source
 
-**#76.** Read against **SRS 6.0.184**, the version the container runs (`ossrs/srs:6`, confirmed with
+Read against **SRS 6.0.184**, the version the container runs (`ossrs/srs:6`, confirmed with
 `srs -v` on the running `latbench-srs-1`). Source from the `6.0release` branch.
 
 This is a source read, not a measurement. It settles the mechanism and it does **not** settle the

@@ -91,7 +91,7 @@ export class UnservedSegmentWatch {
     // Ask before waiting, not after. Sleeping first made one whole recheck interval the smallest
     // number this could ever report, which at the shipped 1000ms is the same 1 second the report
     // uses as its threshold: every resolution was overstated by an interval, and a segment that was
-    // already there was indistinguishable from one that took a second to arrive. See task #103.
+    // already there was indistinguishable from one that took a second to arrive.
     while (this.now() < deadlineMs) {
       asks += 1;
       try {

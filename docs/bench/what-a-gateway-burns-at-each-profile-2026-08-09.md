@@ -3,8 +3,8 @@
 **2026-08-09, 07:08 to 07:13 UTC.** Eight arms on a **funded** gateway, four quality profiles alternating,
 two rounds, 30 MB apiece. **Cost: 0.1633 BZZ**, and **zero broadcast minutes**.
 
-Task #24 has been open since the cost model was written, and its first bullet is per-MB cost at each
-profile's real segment sizes. **1080p at 6000 kbps ships and its gateway burn had never been measured.**
+Per-MB cost at each profile's real segment sizes has been open since the cost model was written.
+**1080p at 6000 kbps ships and its gateway burn had never been measured.**
 
 ## ⭐ It needed no broadcast at all
 

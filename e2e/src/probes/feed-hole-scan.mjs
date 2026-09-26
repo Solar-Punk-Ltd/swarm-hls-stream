@@ -1,5 +1,6 @@
 /**
- * Whether a manifest feed ever has a slot that stays unserved, which is the only trigger for LAT-#71.
+ * Whether a manifest feed ever has a slot that stays unserved, which is the only trigger for a
+ * viewer stalling on the oldest missing feed slot.
  *
  * `ManifestFetcher.handleFollowupFetch` pins its index, asks for the next slot, and on a 404 polls
  * that same slot again without advancing. So a slot that is briefly missing costs a delay and the

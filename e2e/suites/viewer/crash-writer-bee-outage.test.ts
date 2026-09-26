@@ -52,7 +52,7 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * admits roughly one segment a second, so half second segments cap it near half of real time. Both
  * figures are still measured, printed per arm and filed in the artifact.
  *
- * ## ⚠️ The known gap this REPORTS rather than asserts: issue #100, the overlay says nothing
+ * ## ⚠️ The known gap this REPORTS rather than asserts: the overlay says nothing
  *
  * The picture stopped for 29.5 seconds and `FeedStateOverlay` rendered nothing, the same silence V7
  * reports and the same mechanism: `UNSERVED_SLOT_POLL_LIMIT` counts polls whose rate collapses during
@@ -171,8 +171,8 @@ describe("V9 — a viewer plays through the hole a writer's outage tears", { ski
     const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer did not play through the hole: ${notBack}`);
 
-    // ⭐ Nothing untrue, and silence tolerated. See the docblock: #100 means this client may genuinely
-    // not know, so the day it starts explaining this fault the case stays green.
+    // ⭐ Nothing untrue, and silence tolerated. See the docblock: the silent overlay gap means this
+    // client may genuinely not know, so the day it starts explaining this fault the case stays green.
     const untrue = frozenOverlayRefusal(recovery, { truthful: TRUTHFUL_WHILE_FROZEN, mustSpeak: false });
     assert.equal(untrue, null, `the client told this viewer something untrue about their picture: ${untrue}`);
     console.log(

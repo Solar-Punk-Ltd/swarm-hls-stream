@@ -111,7 +111,7 @@ each of which carries up to 128 chunk requests, so "8 chunks in flight" understa
 roughly 128x. ⚠️ **Treat 203 KB/s as a property of this harness and leave the node's ceiling
 UNMEASURED.** Reading the accounting source suggests throughput should rise with peer count, because a
 per-peer reserve refreshes at most once a second, but that is a **model and not a measurement** and the
-two points above are far too close together to test it. See task #62. **[HARNESS]**
+two points above are far too close together to test it. **[HARNESS]**
 
 ### ⛔ 2026-08-10: in a REAL browser the player never requests a single segment
 
@@ -313,11 +313,11 @@ The player never sees Swarm. A service worker under `/weeb-3/` answers virtual r
 - `/weeb-3/hls/bytes/{ref}` — one segment
 - `?codec-bootstrap=4` — a **codec bootstrap** variant of the playlist
 
-⭐ **That `codec-bootstrap` parameter is weeb-3 solving our task #40.** A player fixes its codec set
-from the first fragment it parses, so weeb-3 hands it a bootstrap playlist first. We reached the same
-problem from the other end and fixed it in the uploader (task #41). **Both fixes are wanted**: ours
-stops a broadcast being published unplayable, theirs stops a player choosing wrong. Neither replaces
-the other.
+⭐ **That `codec-bootstrap` parameter is weeb-3 solving our recording that opens without video.** A
+player fixes its codec set from the first fragment it parses, so weeb-3 hands it a bootstrap playlist
+first. We reached the same problem from the other end and fixed it in the uploader. **Both fixes are
+wanted**: ours stops a broadcast being published unplayable, theirs stops a player choosing wrong.
+Neither replaces the other.
 
 ⛔ **The service worker is hardcoded to the `/weeb-3/` scope**, so `attachStream()` assumes the app
 _is_ weeb-3's deployment. Embedding it at our own path means either serving under `/weeb-3/` or

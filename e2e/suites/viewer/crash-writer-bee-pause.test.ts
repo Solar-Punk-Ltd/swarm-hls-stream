@@ -66,10 +66,10 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  *
  * Two reasons, and the second is the durable one. At the 3.1s this fault used to cost, a message
  * that appears and vanishes inside three seconds is noise rather than help, so silence is what a
- * viewer should get. At the 58.9s the ladder cost, it is issue #100 instead: the gateway keeps
- * answering and only the slot is empty, so the counter that would catch it is
- * `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate collapses during exactly the stall it exists to detect,
- * and one long freeze is a single playback stall rather than the burst `degraded` needs.
+ * viewer should get. At the 58.9s the ladder cost, it is the silent overlay gap instead: the
+ * gateway keeps answering and only the slot is empty, so the counter that would catch it is
+ * `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate collapses during exactly the stall it exists to
+ * detect, and one long freeze is a single playback stall rather than the burst `degraded` needs.
  *
  * ⭐ Either way silence is printed rather than refused, and a FALSE message is what fails. This used
  * to assert the silence exactly, so a client that started explaining the fault turned the case red

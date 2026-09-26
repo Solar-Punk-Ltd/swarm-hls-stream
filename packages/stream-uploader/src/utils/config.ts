@@ -137,17 +137,16 @@ const DEFAULT_BEE_REQUEST_TIMEOUT_MS = 4000;
  *
  * Twenty seconds is long enough for a cold node to answer a chain-backed read and short enough that a
  * `warn` pass over a hanging pool of four nodes finishes in under three minutes before the wait goes
- * round again. The API is listening throughout either way, since D16. It costs nothing on a healthy
- * boot, where both gates finish in milliseconds.
+ * round again. The API is listening throughout either way. It costs nothing on a healthy boot, where
+ * both gates finish in milliseconds.
  */
 const DEFAULT_START_GATE_TIMEOUT_MS = 20_000;
 
 /**
  * Ten minutes, and a ceiling rather than decoration.
  *
- * A chain-backed read that has not answered in ten minutes is a node that is not answering, and since
- * decision D16 this budget is spent per node per attempt of a wait that retries for as long as it
- * takes.
+ * A chain-backed read that has not answered in ten minutes is a node that is not answering, and this
+ * budget is spent per node per attempt of a wait that retries for as long as it takes.
  *
  * ⚠️ What this ceiling catches is the two-zero slip: 2000000 is 33 minutes for one read and over four
  * hours for a `warn` pass over four nodes, and it is refused here. The one-zero slip is not caught
@@ -288,7 +287,7 @@ export const config = {
     max: MAX_HLS_FRAGMENT_SECONDS,
   }),
   /**
-   * How long a live stream may receive nothing before it is finalized as a VOD. See #86.
+   * How long a live stream may receive nothing before it is finalized as a VOD.
    *
    * ⛔ **It is the reconnect window as well, and on the SRS path it is what ends a broadcast nothing
    * else ends.** An `on_unpublish` reports a disconnect and finalizes nothing, so this governs both

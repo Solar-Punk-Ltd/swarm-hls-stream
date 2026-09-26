@@ -185,10 +185,10 @@ they were the same quantity.**
 
 ## Sitting 2: going to 1.5s, where a gateway is known to strain
 
-Because both conditions were pinned at 2s, a repeat at 2s would only re-confirm the pinning. Task #87
-had already found 1.5s worse than 2.0s on achieved latency for a gateway, so 1.5s is the target where
-degradation is known to exist and the two can in principle be ranked. Same design, same broadcast
-shape, n=3 per condition, all eight arms passed every gate.
+Because both conditions were pinned at 2s, a repeat at 2s would only re-confirm the pinning. The
+buffer sweep had already found 1.5s worse than 2.0s on achieved latency for a gateway, so 1.5s is
+the target where degradation is known to exist and the two can in principle be ranked. Same design,
+same broadcast shape, n=3 per condition, all eight arms passed every gate.
 
 ### ⛔⛔⛔ 1.5s is below what this profile holds, in BOTH conditions
 
@@ -198,9 +198,9 @@ hls.js adds `min(stallCount * liveSyncOnStallIncrease, targetduration)` to the c
 **Every arm of both conditions reached an effective target of 2.5s**, against the 1.5s configured.
 The stall penalty was active everywhere.
 
-So 1.5s does not rank the conditions either. **It breaks the target mechanism in both of them**, which
-is a real result and a mechanism for #87's finding rather than a repeat of it. ⭐ **2.0s remains the
-operating point**, now for a reason rather than by comparison.
+So 1.5s does not rank the conditions either. **It breaks the target mechanism in both of them**,
+which is a real result and a mechanism for the buffer sweep's finding rather than a repeat of it. ⭐
+**2.0s remains the operating point**, now for a reason rather than by comparison.
 
 ### What separates them is the gap, not the raw latency
 

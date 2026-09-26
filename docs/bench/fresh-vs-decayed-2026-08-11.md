@@ -12,9 +12,10 @@ Instrument `deploy/scripts/corpus-delivery.mjs`, rows in `docs/bench/fresh-vs-de
 The aug03 failures are `503` after **11.0 to 14.9 seconds**. The node tried and gave up. Every other
 fetch in the same rounds, on both other arms, returned 200.
 
-## ⭐⭐⭐ This settles the fork #71 opened, and it settles it against my own suspicion
+## ⭐⭐⭐ This settles the size-or-corpus fork, and it settles it against my own suspicion
 
-#71 left two live hypotheses and could not separate them.
+[The size-versus-corpus run](size-vs-replication-2026-08-11.md) left two live hypotheses and could
+not separate them.
 
 | | claim | predicted for our fresh content | **measured** |
 | --- | --- | ---: | :--- |
@@ -63,7 +64,8 @@ Yesterday the same corpus failed 0/5 at **225 KB**. Whatever orders delivery her
 - **The mechanism.** Reserve eviction of unread chunks, incomplete initial distribution that decays
   below a retrievable threshold, and neighbourhood churn are all consistent with this. Nothing here
   separates them.
-- **The shape of the curve.** Two points eight days apart and one in between is not a curve. ⭐ Today's
-  broadcast is a dated cohort that costs nothing to re-test, which is what #74 now runs on.
+- **The shape of the curve.** Two points eight days apart and one in between is not a curve. ⭐
+  Today's broadcast is a dated cohort that costs nothing to re-test, which is what the [decay
+  cohort](DECAY-COHORT.md) now runs on.
 - **Whether reading keeps content alive.** Untested. It is the difference between a product that needs
   re-upload on a timer and one that needs an audience.

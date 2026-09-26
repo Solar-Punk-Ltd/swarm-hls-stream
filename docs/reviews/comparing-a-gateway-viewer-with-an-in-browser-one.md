@@ -28,8 +28,8 @@ it holds, and the dependency list above is the positive evidence rather than an 
 not find X" and "there is no X" are the same return value from a grep**, which is the same defect
 that produced the videoless-opening finding.
 
-⭐⭐⭐ **This is the whole reason #44's headline was withdrawn.** "A gateway-less in-browser node does
-not sustain 2.7 Mbps" was true of a throughput probe and said nothing about the product, because a
+⭐⭐⭐ **This is the whole reason an earlier headline was withdrawn.** "A gateway-less in-browser node
+does not sustain 2.7 Mbps" was true of a throughput probe and said nothing about the product, because a
 throughput probe is not a viewer. Running the two harnesses again and putting their numbers in one
 table would repeat that mistake with more decimals.
 
