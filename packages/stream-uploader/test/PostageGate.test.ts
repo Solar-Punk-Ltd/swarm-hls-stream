@@ -476,12 +476,12 @@ describe('which node a postage refusal names', () => {
 /**
  * ⛔⛔⛔ **Which of two facts a refusal is, because only one of them is about the batch.**
  *
- * A 404 from `/stamps/<id>` is the node saying it does not hold this batch, and every upload on that
- * rung would fail the same way. A timeout, a 502 or an answer with nothing readable in it says only
- * that no reading arrived, which is what the live host hit on 2026-09-16 against a pool address with
- * no node behind it. The owner ruled on 2026-09-17, decision 7 option b, that the shipped mode
- * refuses the first and warns about the second, so the gate marks every refusal with which one it is
- * and `runStartGates` decides what the boot does about it.
+ * A 404 from `/stamps/<id>` is the node saying it does not hold this batch, and every upload on
+ * that rung would fail the same way. A timeout, a 502 or an answer with nothing readable in it says
+ * only that no reading arrived, which is what the live host hit on 2026-09-16 against a pool
+ * address with no node behind it. The owner ruled on 2026-09-17 that the shipped mode refuses the
+ * first and warns about the second, so the gate marks every refusal with which one it is and
+ * `runStartGates` decides what the boot does about it.
  *
  * The gate reads the status off the error rather than out of its text, because bee-js throws
  * `BeeResponseError` with a `status` field on it. An error carrying no status at all is unreadable,

@@ -226,11 +226,12 @@ async function start() {
       attempts: 0,
     };
 
-    // ⛔ Ahead of every Bee-dependent step, which is the whole of D16. The admin owner check above
-    // contacts the admin service, but nothing above asks a Bee node anything. The Bee reads below
-    // used to run first, so a node that was not answering meant no listener at all, a
-    // container that exited, and a deploy refused on a restart count that was climbing for a reason
-    // nothing about this service could fix. See `libs/NodeWait.ts` and `refuseWhileWaiting`.
+    // ⛔ Ahead of every Bee-dependent step, so the uploader listens and answers /health while it
+    // waits for a node that is not there, rather than exiting. The admin owner check above contacts
+    // the admin service, but nothing above asks a Bee node anything. The Bee reads below used to
+    // run first, so a node that was not answering meant no listener at all, a container that
+    // exited, and a deploy refused on a restart count that was climbing for a reason nothing about
+    // this service could fix. See `libs/NodeWait.ts` and `refuseWhileWaiting`.
     const apiServer = startApiServer(streamOrchestrator, config.apiPort, {
       authToken: config.apiAuthToken,
       engines,
@@ -246,9 +247,10 @@ async function start() {
     //
     // Since 2026-09-17 the chequebook gate warns and the uploader starts whatever it found, on the
     // owner's ruling. The postage gate still stops the boot on a batch the node answered about,
-    // absent, unusable, expired or, when immutable, full, and warns only on one it could not read,
-    // which is decision 7 b of the same day. UPLOADER_START_GATES=refuse makes both gates refuse both
-    // readings. See StartGates for what that cost and why the reading still happens on every boot.
+    // absent, unusable, expired or, when immutable, full, and only warns about one it could not
+    // read at all, a timeout, a 5xx or an answer with no readable fields.
+    // UPLOADER_START_GATES=refuse makes both gates refuse both readings. See StartGates for what
+    // that cost and why the reading still happens on every boot.
     const recoveredStreamIds = await waitForNode(
       async () => {
         // ⛔ The cheapest question, before anything has to interpret an answer. A node that is not

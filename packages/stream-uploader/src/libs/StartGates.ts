@@ -24,7 +24,7 @@ import { GateRefusalError } from './GateRefusalError.js';
  * whole refusal as a warning and the service starts. `UPLOADER_START_GATES=refuse` is how a
  * deployment asks for the old behaviour, unchanged: same gates, same order, same messages.
  *
- * ## What the owner ruled next, 2026-09-17, decision 7 option b
+ * ## What the owner ruled next, 2026-09-17: the postage gate refuses only what the node answered
  *
  * "PostageGate refuses only a batch the node answered about and warns on an unreadable one." The
  * postage gate kept refusing under the shipped mode, and a batch that could not be read at all was
@@ -170,9 +170,9 @@ export interface StartGate {
   /**
    * How much of what this gate finds stops the boot, as the deployment's mode decides for it.
    *
-   * Per gate rather than per pass since the owner's ruling of 2026-09-17 separated the two, and
-   * three-valued since decision 7 b of the same day separated the two readings: see
-   * {@link gatePolicyFor}.
+   * Per gate rather than per pass, because the chequebook gate warns where the postage gate refuses,
+   * and three-valued, because the postage gate refuses a batch the node answered about but only warns
+   * about one it could not read at all: see {@link gatePolicyFor}.
    */
   readonly refuses: GateRefusalPolicy;
   /**
@@ -241,7 +241,7 @@ export function parseStartGateMode(written: string): StartGateMode {
 export async function runStartGates(
   gates: readonly StartGate[],
   logger: StartGateLogger,
-  /** Called once with everything this pass warned about, so `/health` can report it. See D16's review. */
+  /** Called once with everything this pass warned about, so `/health` can report it. */
   onWarnings: StartGateWarningSink = () => {},
 ): Promise<void> {
   const warnings: StartGateWarning[] = [];

@@ -198,7 +198,10 @@ export async function startTestApi(
   streamOrchestrator: StreamOrchestrator,
   engines: EnginePlugin[] = [],
   limits?: RequestLimits,
-  /** Omitted is a service whose boot has finished, which is what every test before D16 assumes. */
+  /**
+   * Omitted is a service whose boot has finished, which is what every test from before the uploader
+   * listened ahead of its node assumes.
+   */
   waitingForNode?: () => NodeWaitReport | null,
 ): Promise<ApiTestServer> {
   const server = http.createServer(

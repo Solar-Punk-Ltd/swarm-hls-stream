@@ -17,8 +17,8 @@ export function createHealthRouter(
   streamOrchestrator: StreamOrchestrator,
   engineNames: string[],
   /**
-   * Absent is a service whose boot has finished, which is every caller before D16 and every test
-   * but the two about the wait.
+   * Absent is a service whose boot has finished, which is every caller from before the uploader
+   * listened ahead of its node, and every test but the two about the wait.
    */
   waitingForNode: () => NodeWaitReport | null = () => null,
 ): Router {
