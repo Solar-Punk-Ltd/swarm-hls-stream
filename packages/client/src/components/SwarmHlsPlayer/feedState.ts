@@ -99,8 +99,8 @@ export const MANIFEST_RETRY_CAP_MS = 8_000;
  * is called stalled.
  *
  * ⛔⛔⛔ **This was a POLL COUNT, and the poll rate is not a constant.** It collapses during exactly
- * the stall it counts. Measured on two recorded uploader crashes (task #100 and
- * `docs/bench/overlay-silence-during-a-crash-2026-08-07.md`), feed reads went from a 264ms gap
+ * the stall it counts. Measured on two recorded uploader crashes
+ * (`docs/bench/overlay-silence-during-a-crash-2026-08-07.md`), feed reads went from a 264ms gap
  * before the crash to 1064ms during the freeze, because each read takes about three times as long
  * and the client also spaces unserved reads about four times wider. So thirty polls was about eight
  * seconds while healthy and about thirty-two during a stall, and when a viewer heard anything was a

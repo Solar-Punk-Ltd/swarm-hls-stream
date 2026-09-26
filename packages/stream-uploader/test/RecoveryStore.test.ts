@@ -117,8 +117,9 @@ describe('RecoveryStore', () => {
    * the crash it was recording is the expected shape here, not an exotic one.
    *
    * ⛔ This is `load`'s answer and it is deliberately lossy: absence and damage collapse to `null`.
-   * That collapse is what task #38 was — recovery read `null` and deleted the file. Anything deciding
-   * what to *do* with an entry asks {@link RecoveryStore.read} instead, which keeps them apart.
+   * That collapse is how damaged entries were lost: recovery read `null` and deleted the file.
+   * Anything deciding what to *do* with an entry asks {@link RecoveryStore.read} instead, which
+   * keeps them apart.
    */
   it('treats a state it cannot parse as no state at all', () => {
     const { store, dir } = storeIn(makeTempRoot(), 'state');
@@ -423,7 +424,7 @@ describe('RecoveryStore', () => {
   });
 
   /**
-   * ⛔ Task #38, at the layer that caused it.
+   * ⛔ The deleted recovery entry, at the layer that caused it.
    *
    * `load` answers `null` for a stream that was never saved and for one whose file is damaged, and
    * the recovery pass read that single `null` as permission to delete. A recovery entry is the only

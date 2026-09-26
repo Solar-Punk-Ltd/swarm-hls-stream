@@ -29,7 +29,7 @@ const STRANGER = '198.51.100.7';
 
 const STALL_MS = 30_000;
 /**
- * Far past anything these tests advance, so the #86 orphan reaper never fires inside one.
+ * Far past anything these tests advance, so the orphan reaper never fires inside one.
  *
  * Every test here asserts who may hold a stream id while the incumbent is quiet, and the reaper ends
  * a quiet broadcast outright. Left at its default those two collide on the clock rather than on the
