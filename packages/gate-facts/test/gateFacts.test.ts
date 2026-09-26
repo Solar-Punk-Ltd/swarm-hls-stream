@@ -113,7 +113,7 @@ describe('parseSuiteCounts', () => {
   });
 
   it('reads the uploader total from the line its test floor prints', () => {
-    // Verbatim from the verification box's log of main at 8c5c583a. The line names tests and suites and
+    // Verbatim from a test run's log of main at 8c5c583a. The line names tests and suites and
     // no pass count, so none is invented for it.
     const output = 'packages/stream-uploader test: assert-test-floor: 1826 tests in 331 suites, floor 1092/211';
 

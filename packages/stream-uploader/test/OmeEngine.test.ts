@@ -574,8 +574,8 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     // first polls on a zero-delay timer armed inside the announce, and this test restarts the origin
     // only once the announce's HTTP reply is back, so nothing orders the two. On a contended machine
     // the poll came first, found the first session's playlist still up and undated, and the resumed
-    // session took the first run a second time: 24 seconds recorded where 16 were sent, on the
-    // verification box on 2026-09-23. No real OME serves that. A restarted one has no playlist yet,
+    // session took the first run a second time: 24 seconds recorded where 16 were sent, on a loaded,
+    // shared runner on 2026-09-23. No real OME serves that. A restarted one has no playlist yet,
     // and one still holding a dropped session stamps every segment with `#EXT-X-PROGRAM-DATE-TIME`,
     // which the handover floor skips. See CON-20. The wait makes that early poll happen on every run.
     origin.shutDown();
