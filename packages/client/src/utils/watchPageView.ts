@@ -6,7 +6,10 @@ export const WATCH_VIEW_LOADING = 'loading';
 export const WATCH_VIEW_NOT_STARTED = 'not-started';
 /** The stream this page was waiting to start has left the catalog. */
 export const WATCH_VIEW_UNAVAILABLE = 'unavailable';
-/** A stream that is live or recorded, or a deep link to a topic the catalog does not list. */
+/**
+ * An entry that is live, recorded or in a state this page does not know, or a stream the catalog
+ * does not list that the page was not waiting for, such as a deep link.
+ */
 export const WATCH_VIEW_PLAYER = 'player';
 
 /** What the watch page puts where the player goes. */
