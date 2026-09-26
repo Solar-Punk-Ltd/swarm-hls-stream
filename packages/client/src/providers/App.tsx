@@ -8,7 +8,7 @@ import { Stream } from '@/types/stream';
 import { CatalogFeedReader } from '@/utils/catalogFeed';
 import { config } from '@/utils/config';
 
-import { CatalogRead, catalogUpdater, StreamCatalog } from './catalogState';
+import { CatalogRead, catalogUpdater, StreamCatalog, toCatalogRead } from './catalogState';
 import { exposeGatewayForInstrumentation } from './gatewayTestHandle';
 
 type AppContextState = {
@@ -71,7 +71,7 @@ function loadGatewayUrl(): string {
 }
 
 export const AppContextProvider = ({ children }: Props) => {
-  const [catalog, setCatalog] = useState<StreamCatalog>({ streams: [], gateway: null });
+  const [catalog, setCatalog] = useState<StreamCatalog>({ streams: [], gateway: null, slot: null });
   const [isStreamListLoaded, setIsStreamListLoaded] = useState(false);
   const [gatewayUrl, setGatewayUrlState] = useState<string>(() => {
     const url = loadGatewayUrl();
@@ -117,15 +117,15 @@ export const AppContextProvider = ({ children }: Props) => {
   const catalogReader = useRef(new CatalogFeedReader(config.appOwner, Topic.fromString(config.rawAppTopic)));
 
   /**
-   * A read that landed, carrying a null body when nothing was newer than the last poll.
+   * A read that landed, with the feed slot its body came from, and a null body when nothing was newer
+   * than the last poll.
    *
    * The head is resolved once, on the first call, and every call after asks for the slot after the
    * one it holds. See `CatalogFeedReader` for why that is worth about a thousand times at the median.
    */
   const fetchAppState = useCallback(async (): Promise<CatalogRead> => {
     const gateway = gatewayRef.current;
-    const body = await catalogReader.current.read(gateway);
-    return { gateway, streams: body === null ? null : JSON.parse(body) };
+    return toCatalogRead(gateway, await catalogReader.current.read(gateway));
   }, []);
 
   /**
