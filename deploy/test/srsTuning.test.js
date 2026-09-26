@@ -286,7 +286,7 @@ describe('the SRS latency knobs', () => {
    * It used to be pasted in here as a second copy of the same bash, which meant these cases proved
    * the copy rejected bad input and never touched the guard that ships: breaking the real one left
    * every case green. That is the failure `logLevel.ts` records about asserting a constant against
-   * the same constant the implementation returns. Task #104.
+   * the same constant the implementation returns.
    */
   function shippedGuard() {
     return shippedBlock(REQUIRE_NUMBER, 'require_number, so there is no guard to test');

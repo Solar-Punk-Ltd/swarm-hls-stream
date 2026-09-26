@@ -38,9 +38,9 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  *
  * ⭐ **The first time a viewer was watching when the orphan reap spoke.** The viewer froze for 83.2s
  * and the overlay escalated from "Waiting for the broadcast to continue" to "This broadcast has
- * ended", which is issue #86's sixty second reap finalizing the stream and the news reaching a
- * screen. The corpus run of this fault, on 2026-08-05, froze for 84.3s and never recovered, and could
- * only infer that the broadcast had ended.
+ * ended", which is the orphan reap finalizing the stream after sixty seconds and the news reaching
+ * a screen. The corpus run of this fault, on 2026-08-05, froze for 84.3s and never recovered, and
+ * could only infer that the broadcast had ended.
  *
  * ## How this differs from V5, which also ends a broadcast
  *
@@ -81,10 +81,10 @@ const WATCH_MINUTES = crashArmMinutes(SCENARIO);
 /**
  * The states that are TRUE of this viewer, and the one fault where that includes the terminal one.
  *
- * ⭐ The broadcast is genuinely over: the engine took the publisher's SRT connection with it, no more
- * media is coming, and the orphan reap of issue #86 finalizes the stream sixty seconds after the
- * session goes quiet. So `ended` is the truth here rather than the lie it is in every other crash
- * case, and it is what this suite exists to see reached.
+ * ⭐ The broadcast is genuinely over: the engine took the publisher's SRT connection with it, no
+ * more media is coming, and the orphan reap finalizes the stream sixty seconds after the session
+ * goes quiet. So `ended` is the truth here rather than the lie it is in every other crash case, and
+ * it is what this suite exists to see reached.
  *
  * The three non-terminal states are true on the way to it. Before the reap fires the client knows
  * only that its picture stopped and the slot is not being served, which is exactly `stalled`, and

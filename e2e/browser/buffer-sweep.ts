@@ -1,10 +1,10 @@
 /**
  * `pnpm browser:buffer-sweep` — how far behind live a viewer has to sit before the picture breaks.
  *
- * This is task #87. `LIVE_SYNC_DURATION_S` is 6, the pipeline delivers a segment in about 1.56s at
- * the shipping profile, so roughly four fifths of what a viewer feels is a number we chose rather
- * than a cost the network imposes. Nothing has measured whether 6 is right, and its own justification
- * predates the 0.5s segment #155 ships.
+ * `LIVE_SYNC_DURATION_S` is 6, the pipeline delivers a segment in about 1.56s at the shipping
+ * profile, so roughly four fifths of what a viewer feels is a number we chose rather than a cost
+ * the network imposes. Nothing has measured whether 6 is right, and its own justification predates
+ * the 0.5s segment #155 ships.
  *
  * ⭐ **Scored on stalls, not on latency.** A smaller buffer always shows a better latency, so latency
  * cannot say where the floor is. Only the picture breaking can.

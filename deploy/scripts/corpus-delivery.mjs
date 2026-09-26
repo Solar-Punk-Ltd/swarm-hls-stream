@@ -1,10 +1,10 @@
 /**
  * Does a reference come back, and how fast, as a function of WHICH CORPUS it belongs to?
  *
- * #71 asked whether the in-browser ceiling was segment size or replication and answered replication:
- * a 225 KB reference of ours missed 0/5 in the same minutes a 4.2 MB reference of his delivered
- * 10/10. Size cannot produce that. What separates the arms is which upload a reference belongs to and
- * how recently anything read it.
+ * The size-versus-replication run asked whether the in-browser ceiling was segment size or
+ * replication and answered replication: a 225 KB reference of ours missed 0/5 in the same minutes a
+ * 4.2 MB reference of his delivered 10/10. Size cannot produce that. What separates the arms is which
+ * upload a reference belongs to and how recently anything read it.
  *
  * So the instrument outlived its first question, and this is its general form: any number of named
  * corpora, fetched ONE AT A TIME with the arm order rotated between rounds, so adjacent fetches

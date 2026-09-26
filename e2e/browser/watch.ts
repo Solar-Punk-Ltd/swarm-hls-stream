@@ -1,12 +1,12 @@
 /**
  * `pnpm browser:watch` — watch a live broadcast in a real browser and report what the viewer got.
  *
- * This is task #48, and it is the last thing standing between this project and any statement about
- * what a viewer sees. Everything measured so far stops at "capture to fetchable": the instant a
- * segment could first be retrieved from the gateway. A viewer does not watch the fetchable edge,
- * they watch whatever their player chose to play, which sits a further `LIVE_SYNC_DURATION_S` behind
- * it. That constant was derived from arrival times rather than observed, and a player can fail to
- * honour it in two directions, neither visible from outside a browser.
+ * This is the last thing standing between this project and any statement about what a viewer sees.
+ * Everything measured so far stops at "capture to fetchable": the instant a segment could first be
+ * retrieved from the gateway. A viewer does not watch the fetchable edge, they watch whatever their
+ * player chose to play, which sits a further `LIVE_SYNC_DURATION_S` behind it. That constant was
+ * derived from arrival times rather than observed, and a player can fail to honour it in two
+ * directions, neither visible from outside a browser.
  *
  * Usage, on the deployment host, against a broadcast that is already running:
  *   deploy/scripts/browser-on-host.sh -- BROWSER_WATCH_SECONDS=180

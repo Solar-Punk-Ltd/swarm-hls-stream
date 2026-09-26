@@ -2,7 +2,7 @@
 /**
  * Concurrency sweep for an in-browser Swarm node (weeb-3). Collects the raw fetches that our only
  * previous throughput figures could not offer: that harness was never committed and retained aggregates
- * only, so neither of its arms can be re-derived, re-checked or extended. See task #65.
+ * only, so neither of its arms can be re-derived, re-checked or extended.
  *
  * ⭐⭐ THIS FILE ONLY COLLECTS. It deliberately computes no throughput at all. Every in-browser
  * throughput figure this project held before 2026-08-11 was retracted, and none of them for a mistimed

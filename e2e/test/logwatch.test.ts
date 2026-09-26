@@ -436,8 +436,8 @@ describe('every path that loses a segment or declares a break is counted', () =>
 });
 
 /**
- * ⛔ Task #40. A recording whose opening segments hold no video plays as sound over a blank picture
- * for its whole length, because the player fixes its codec set from the first fragment it parses.
+ * ⛔ A recording whose opening segments hold no video plays as sound over a blank picture for its
+ * whole length, because the player fixes its codec set from the first fragment it parses.
  * `make:recording` refuses on this, so the pattern going quiet would let it hand back an unplayable
  * recording and call it a success — which is exactly what happened before the check existed.
  */

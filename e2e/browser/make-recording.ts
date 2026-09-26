@@ -191,7 +191,7 @@ async function main(): Promise<void> {
     // a recording whose first four segments held 41 AAC packets and **zero video packets**, because
     // the publisher was throttled to near no frames at the start. It reported success. The playback
     // run against it then built an audio-only codec set, refused every later video sample with a
-    // non-fatal warning, and read as an intermittent player defect. See task #40.
+    // non-fatal warning, and read as an intermittent player defect.
     //
     // Refused for any videoless segment rather than only a leading one: a recording made to be
     // seeked around in is not usable with a hole in its video either, and this cannot be repaired

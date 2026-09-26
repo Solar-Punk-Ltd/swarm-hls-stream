@@ -15,9 +15,9 @@ const PUBLISHER = 'publish-clock.sh';
  *
  * ⛔⛔⛔ THE ALARM FIRED ON EVERY SUCCESSFUL SITTING. A harness budgets slack per arm and stops the
  * broadcast the moment its arms are done, by removing the container `publish-clock.sh` is watching.
- * With nothing left to read an exit status from it synthesised 127, so the #93 sitting of 2026-08-13
- * ended with "publish FAILED (exit 127). Nothing usable was broadcast" after eight good arms, 363,952
- * push-synced chunks and 0.7321 BZZ, with 595s of the broadcast unused.
+ * With nothing left to read an exit status from it synthesised 127, so the unfunded-gateway sitting
+ * of 2026-08-13 ended with "publish FAILED (exit 127). Nothing usable was broadcast" after eight
+ * good arms, 363,952 push-synced chunks and 0.7321 BZZ, with 595s of the broadcast unused.
  *
  * ⭐⭐⭐ An alarm that fires on every good run is one the operator learns to skip, and the next time it
  * is real nobody reads it. That is gate lesson AHL, and it is why HALF the cases below are about the
