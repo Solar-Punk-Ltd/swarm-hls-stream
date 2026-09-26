@@ -456,9 +456,9 @@ service listens, answers `/health` with `waiting_for_node` naming that url, and 
 is there. The other rung nodes are reached by the gates instead: under the shipped mode one that does
 not answer is warned about and the service starts degraded with that rung under `start_gate_warned`,
 and under `refuse` it is waited for like the coordinator. A node that does answer and reads badly
-is the mode's question rather than the wait's: the chequebook gate warns by default, and since the
-owner's decision 7 b of 2026-09-17 the postage gate refuses a batch the node answered about while
-warning about one it could not read at all.
+is the mode's question rather than the wait's: by default the chequebook gate only warns, and the
+postage gate refuses a batch the node answered about as expired, unusable or, when it is immutable,
+full, while only warning about a batch it could not read at all.
 `UPLOADER_START_GATES=refuse` in the root `.env` has both gates refusing again, `warn` has both
 warning, and `chequebook-warn` is the shipped middle. `START_GATE_TIMEOUT_MS` is how long each of
 those reads may take, twenty seconds by default and ten minutes at most. A chequebook warning does

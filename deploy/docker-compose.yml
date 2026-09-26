@@ -254,8 +254,8 @@ services:
       # both gates warning. `refuse` has both gates refusing. The coordinator is always waited for
       # when it does not answer. Under
       # `refuse`, an unavailable rung node is waited for too. Under either warning mode, an unavailable
-      # non-coordinator rung becomes a warning and the service starts degraded. This is D16 of the
-      # same day.
+      # non-coordinator rung becomes a warning and the service starts degraded. No mode makes a node
+      # that does not answer end the boot.
       #
       # The timeout is deliberately not the one above: a chequebook balance and a batch are answered
       # off the chain, and 4000ms borrowed from the upload loop's retry windows is what held a live
@@ -339,9 +339,9 @@ services:
     # anyway: most reasons are about media already lost or state already unwritten, and a restart
     # drops every live broadcast to re-run a recovery that changes none of it.
     #
-    # Since decision D16 of 2026-09-17 the same 503 also carries `waiting_for_node`, which is a boot
-    # whose Bee node has not answered yet. Reporting without acting is what that state needs: the
-    # process is up and retrying, and restarting it would only start the same wait again.
+    # The same 503 also carries `waiting_for_node`, which is a boot whose Bee node has not answered
+    # yet. Reporting without acting is what that state needs: the process is up and retrying, and
+    # restarting it would only start the same wait again.
     #
     # node rather than curl or wget, because the image is node:22-alpine and has neither. `r.ok` is
     # false for the 503 a degraded service answers, which is the point.

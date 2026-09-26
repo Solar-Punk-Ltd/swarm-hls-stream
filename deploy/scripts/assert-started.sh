@@ -8,8 +8,8 @@
 # startup refusal this repository has on purpose lands in that gap: the `required()` reads in
 # `utils/config.ts`, the chequebook floor on a deployment that sets UPLOADER_START_GATES=refuse, and
 # `PostageGate` under every mode but warn when the node answers that the batch is absent, unusable,
-# expired or, when it is immutable, full, which is decision 7 b of 2026-09-17.
-# A node that does not answer is no longer one of them, since decision D16 of the same day: the
+# expired or, when it is immutable, full. Under the shipped `chequebook-warn` a batch the gate could
+# not read at all is only warned about. A node that does not answer is no longer one of them: the
 # uploader listens first and waits for its node, so it stays up and says `waiting_for_node` on
 # /health instead of exiting into a restart loop. The compose healthcheck does not close the gap
 # either, deliberately: it reports without acting, and nothing declares a dependency on it.
@@ -23,16 +23,15 @@
 # In time: the uploader runs `ChequebookGate.assertFunded` and then `PostageGate.assertUsable`, one
 # HTTP read per bee node and one per batch, in turn, each bounded by START_GATE_TIMEOUT_MS at
 # 20000ms, and only then does `StreamCatalog.init` look a feed up on a node that may be cold. All of
-# that runs BEHIND the listener since decision D16 of 2026-09-17, so the port is open and answering
-# `waiting_for_node` throughout, and the container stays up whatever those reads find. On a
-# four-node pool that answers nothing the default budget spends about 160 seconds an attempt under
-# `warn`, which reads every node of both gates, and the wait then goes round again. Since the owner's
-# decision 7 b of 2026-09-17 the shipped `chequebook-warn` spends the same 160 seconds on such a pool,
-# because a batch the postage gate could not read at all is now warned about rather than refused on,
-# so that pass no longer stops at the first rung. Under
+# that runs BEHIND the listener, so the port is open and answering `waiting_for_node` throughout,
+# and the container stays up whatever those reads find. On a four-node pool that answers nothing the
+# default budget spends about 160 seconds an attempt under `warn`, which reads every node of both
+# gates, and the wait then goes round again. The shipped `chequebook-warn` spends the same 160
+# seconds on such a pool, because under it a batch the postage gate could not read at all is warned
+# about rather than refused on, so that pass does not stop at the first rung. Under
 # UPLOADER_START_GATES=refuse the first read that times out ends the pass instead, about 20 seconds
-# in, and that pass is waited on and retried like any other: a node that does not answer is D16's
-# case whatever the mode. What `refuse` still ends the boot for is a node that ANSWERS with a reading
+# in, and that pass is waited on and retried like any other: a node that does not answer is waited
+# for whatever the mode. What `refuse` still ends the boot for is a node that ANSWERS with a reading
 # the gate will not accept, a chequebook under its floor or a batch that has filled, and that arrives
 # within a second or two. Either way a five second look has already called the container started.
 #
