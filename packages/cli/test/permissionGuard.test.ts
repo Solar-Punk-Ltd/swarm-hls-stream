@@ -17,7 +17,7 @@ import {
  *
  * Both branches are asserted here rather than only observed, because the machine that runs this is
  * never root and the root branch would otherwise be exercised for the first time on a machine running
- * as root, where a mistake reads as that machine being wrong again.
+ * as root, where a mistake would read as a fault of that machine.
  */
 describe('the permission guard', () => {
   it('lets a case run for an ordinary user, whose writes the bits really do stop', () => {
