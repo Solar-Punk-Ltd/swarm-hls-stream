@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
@@ -59,15 +57,37 @@ const cfg = loadConfig();
 const STAMP_FETCH_TIMEOUT_S = 10;
 
 /**
+ * Whether git counts `dir` as inside a checkout.
+ *
+ * Asked of git rather than read off a `.git` entry in `dir`, because this repository can sit in a
+ * subfolder of a larger one, whose `.git` is at that repository's root. No git, or no history above
+ * `dir`, answers no without printing git's complaint, since that is the ordinary answer on the
+ * deployment host.
+ */
+function isInsideGitCheckout(dir: string): boolean {
+  try {
+    const answer = execFileSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return answer.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The trees this checkout holds, or null when it has no history to ask.
  *
  * ⛔ Null is the ordinary answer on the deployment host, not an error: `bench-on-host.sh` excludes
  * `.git` from its rsync, so a harness there cannot answer this for itself and the run script passes
- * the answer in instead. `existsSync` rather than a directory check because a git worktree carries
- * `.git` as a file pointing elsewhere, and a worktree has history like any other checkout.
+ * the answer in instead.
+ *
+ * The tree paths start with `./` so git reads them from `ROOT_DIR` rather than from the repository
+ * root. The two are the same folder only when this repository is checked out on its own.
  */
 function readGitTrees(): ClientTrees | null {
-  if (!existsSync(join(ROOT_DIR, '.git'))) {
+  if (!isInsideGitCheckout(ROOT_DIR)) {
     return null;
   }
 
@@ -75,8 +95,8 @@ function readGitTrees(): ClientTrees | null {
 
   try {
     return {
-      clientTree: git(['rev-parse', 'HEAD:packages/client']),
-      sharedTree: git(['rev-parse', 'HEAD:packages/shared']),
+      clientTree: git(['rev-parse', 'HEAD:./packages/client']),
+      sharedTree: git(['rev-parse', 'HEAD:./packages/shared']),
       dirty:
         git([
           'status',

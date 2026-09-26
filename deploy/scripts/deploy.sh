@@ -552,8 +552,11 @@ CLIENT_SOURCE_PATHS=(
 client_build_stamp_text() {
   local out="" head client_tree shared_tree dirty=0
   head=$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)
-  client_tree=$(git -C "$ROOT_DIR" rev-parse HEAD:packages/client 2>/dev/null || true)
-  shared_tree=$(git -C "$ROOT_DIR" rev-parse HEAD:packages/shared 2>/dev/null || true)
+  # `HEAD:./<path>` is read from the folder `-C` names, where a bare `HEAD:<path>` is read from the
+  # repository root. The stack can sit in a subfolder of a larger repository, and there the bare form
+  # names nothing.
+  client_tree=$(git -C "$ROOT_DIR" rev-parse HEAD:./packages/client 2>/dev/null || true)
+  shared_tree=$(git -C "$ROOT_DIR" rev-parse HEAD:./packages/shared 2>/dev/null || true)
   if [ -n "$(git -C "$ROOT_DIR" status --porcelain -- "${CLIENT_SOURCE_PATHS[@]}" 2>/dev/null || true)" ]; then
     dirty=1
   fi
