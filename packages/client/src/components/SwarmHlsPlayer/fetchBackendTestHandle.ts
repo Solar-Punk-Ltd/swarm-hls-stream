@@ -84,7 +84,8 @@ async function measureRetrieval(node: InTabNode, ref: string): Promise<Retrieval
  * `AB/AB/BA/BA` order inside one broadcast would need eight rebuilds, each of which is also a fresh
  * client and a cold start.
  *
- * ⭐ This is the same seam `gatewayTestHandle` opened for gateways, and the #93 arms were run on it.
+ * ⭐ This is the same seam `gatewayTestHandle` opened for gateways, and the unfunded-gateway arms
+ * were run on it.
  *
  * ⛔⛔ **An arm is seeded, not switched.** By the time this handle exists the app has mounted, and by
  * then the viewer has already resolved the catalog, fetched a manifest and pulled segments through

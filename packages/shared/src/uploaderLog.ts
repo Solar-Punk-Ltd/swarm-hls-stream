@@ -527,13 +527,14 @@ const DECLARED_SLOT = 353535353535;
  * published the engine's claim instead. Byte-identical to the line `StreamOrchestrator` wrote before
  * this composer existed.
  *
- * ⛔ **Two different faults share this one line, and only one of them costs the picture.** `reason` is
- * whatever `measureSegmentDuration` fell back for: timestamps that span no plausible segment, or a
- * segment holding no video packets at all. The second is task #40 and it is not a complaint about a
- * duration. A recording whose opening fragment carries only audio plays as sound over a blank picture
- * **for its whole length**, because the player fixes its codec set from the first fragment it parses
- * and never revises it. `e2e/browser/make-recording.ts` refuses to hand back such a recording, and
- * {@link videolessSegmentPattern} is the only thing that tells it one was made.
+ * ⛔ **Two different faults share this one line, and only one of them costs the picture.** `reason`
+ * is whatever `measureSegmentDuration` fell back for: timestamps that span no plausible segment, or
+ * a segment holding no video packets at all. The second is a recording that opens without video,
+ * and it is not a complaint about a duration. A recording whose opening fragment carries only audio
+ * plays as sound over a blank picture **for its whole length**, because the player fixes its codec
+ * set from the first fragment it parses and never revises it. `e2e/browser/make-recording.ts`
+ * refuses to hand back such a recording, and {@link videolessSegmentPattern} is the only thing that
+ * tells it one was made.
  *
  * ⚠️ Written once per stream rather than once per segment, so a reader learns that a broadcast has
  * the fault and never how many segments carried it.

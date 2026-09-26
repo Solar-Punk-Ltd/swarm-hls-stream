@@ -45,7 +45,7 @@ export interface SegmentDurationReading {
    * ⛔ **Null for bytes that are not a transport stream**, which is deliberate rather than a gap.
    * That is a segment this service cannot read, already counted by `segment_durations_unread_total`,
    * and treating it as videoless would let an engine this cannot parse be mistaken for a publisher
-   * sending no frames. See task #41.
+   * sending no frames.
    */
   audioWithoutVideo: number | null;
 }

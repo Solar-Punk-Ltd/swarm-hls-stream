@@ -496,10 +496,11 @@ describe('the message for a finalize that resumed rather than republished', () =
 });
 
 /**
- * ⛔ Task #40, and the one message here whose reader REFUSES rather than counts. A recording whose
- * opening segments hold no video plays as sound over a blank picture for its whole length, because a
- * player fixes its codec set from the first fragment it parses. `e2e/browser/make-recording.ts` will
- * not hand such a recording back, and it learns of the fault from this line alone.
+ * ⛔ A recording that opens without video, and the one message here whose reader REFUSES rather than
+ * counts. A recording whose opening segments hold no video plays as sound over a blank picture for
+ * its whole length, because a player fixes its codec set from the first fragment it parses.
+ * `e2e/browser/make-recording.ts` will not hand such a recording back, and it learns of the fault
+ * from this line alone.
  *
  * Two faults share the line and only one of them costs the picture, so the pattern is narrowed to the
  * reason. A matcher taking both would refuse a watchable recording and send someone looking for a

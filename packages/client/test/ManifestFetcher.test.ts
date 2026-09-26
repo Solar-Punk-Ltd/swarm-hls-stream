@@ -97,7 +97,8 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
  * **5491ms** under a full `pnpm verify`, past vitest's 5000ms default, which failed the repo gate with
  * nothing wrong. A budget is also the weaker wait: it can only be long enough or too short. Every loop here
  * now awaits {@link ManifestFetcher.settled}, which is the walk's own completion signal. See the note
- * above `poll` in the #84 block, which reached this conclusion first.
+ * above `poll` in the block on keeping up with a publisher that writes faster than hls.js reloads,
+ * which reached this conclusion first.
  */
 async function settle(ticks = 50): Promise<void> {
   for (let tick = 0; tick < ticks; tick++) {
@@ -403,7 +404,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
    * exactly what the state is for.
    *
    * Mutation-checked on 2026-08-29: making `recordGatewayResponse` carry the run through turns this
-   * red, which is what the sibling guard in the #84 block could not do.
+   * red, which is what the sibling guard in the keeping-up block could not do.
    */
   it('does not age a feed that keeps being served into a stall', async () => {
     console.error = () => {};
@@ -1165,7 +1166,7 @@ describe('following the feed costs one head lookup (LAT-10)', () => {
 
 /**
  * A slot that is refused while later slots are already retrievable, and the reader that cannot see
- * past it (#71).
+ * past it.
  *
  * ## The measurement this is built on
  *
@@ -1453,7 +1454,8 @@ describe('a broadcast ending under a viewer who joined partway through (#94)', (
 });
 
 /**
- * The live failure of #94, driven through the fetcher rather than asserted on the state manager.
+ * The live failure of a broadcast ending under a viewer who joined partway through, driven through
+ * the fetcher rather than asserted on the state manager.
  *
  * Measured on 2026-08-06: the uploader published the closing manifest and the recording 273ms apart,
  * the closing one was momentarily unretrievable, and the probe added in 0.8a stepped over it onto the
