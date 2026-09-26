@@ -709,10 +709,13 @@ read at all: a batch the node answered about and the gate will not accept still 
 because every write against it fails while the broadcast looks live to the room, the viewer and the
 catalog, while a rung whose node answered nothing has said nothing about any batch. That second half
 is the owner's decision 7 b of 2026-09-17. The
-service is degraded from then on, which is what the container's healthcheck reads and what
+service is degraded while a warning stands, which is what the container's healthcheck reads and what
 `deploy/scripts/assert-started.sh` reports. A later pass replaces an earlier one, because the gates
 are read again on every attempt while the uploader waits for its node and only the last of those
-describes the service that is now running.
+describes the service that is now running. After the boot a postage warning stands until the
+uploader is restarted, while a chequebook warning is read again every `CHEQUEBOOK_RECHECK_MS` and
+leaves on the first read that finds every node holding `CHEQUEBOOK_MIN_BZZ`. See
+`libs/ChequebookRecheck.ts`.
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
