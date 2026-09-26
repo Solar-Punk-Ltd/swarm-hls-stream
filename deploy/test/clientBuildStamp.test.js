@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -63,13 +65,16 @@ describe('deploy.sh minting the client build stamp', () => {
    * ⛔ The committed tree rather than the working one. A hash of what is on disk could not be
    * compared against anything, since the harness on the host has no `.git` to hash and the whole
    * point is two sides naming the same commit.
+   *
+   * The `./` makes git read each path from the stack's own folder rather than from the repository
+   * root. The real-git cases at the end of this file show why that matters.
    */
-  it('reads the trees out of the head commit', async () => {
+  it('reads the trees out of the head commit, from the stack folder', async () => {
     const { sandbox } = await deployClientRemotely();
     const asked = sandbox.gitCalls().join('\n');
 
-    assert.match(asked, /rev-parse HEAD:packages\/client/);
-    assert.match(asked, /rev-parse HEAD:packages\/shared/);
+    assert.match(asked, /rev-parse HEAD:\.\/packages\/client/);
+    assert.match(asked, /rev-parse HEAD:\.\/packages\/shared/);
   });
 
   it('judges dirtiness over every source that decides what a viewer is served', async () => {
@@ -151,4 +156,158 @@ describe('the two sides of the client stamp asking about the same sources', () =
       }
     });
   }
+});
+
+/** Where the stack sits inside a larger repository in the case that needs one. Any depth would do. */
+const STACK_SUBFOLDER = 'apps/hls-stream';
+
+/** The two packages the stamp names a tree for. */
+const STAMPED_PACKAGES = ['packages/client', 'packages/shared'];
+
+/**
+ * Who a throwaway commit is by, given here so the fixture commits on a machine with no git identity
+ * configured. The commit itself passes `commit.gpgsign=false` for a machine that signs by default.
+ */
+const FIXTURE_IDENTITY = {
+  GIT_AUTHOR_NAME: 'client stamp fixture',
+  GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+  GIT_COMMITTER_NAME: 'client stamp fixture',
+  GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+};
+
+const STAMP_FUNCTION = /^client_build_stamp_text\(\) \{\n[\s\S]*?\n\}$/m;
+const SOURCE_PATHS_ARRAY = /^CLIENT_SOURCE_PATHS=\(\n[\s\S]*?\n\)$/m;
+
+const fixtureDirs = [];
+
+after(() => {
+  for (const dir of fixtureDirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * PATH and HOME and nothing else of this machine's, so a `GIT_DIR` or `GIT_INDEX_FILE` exported by
+ * whatever launched the suite cannot point these git calls at some other repository.
+ */
+function machineEnv() {
+  return { PATH: process.env.PATH, HOME: process.env.HOME };
+}
+
+/** One git call in `dir`, trimmed. A refusal throws with git's own message on it. */
+function gitIn(dir, ...args) {
+  return execFileSync('git', ['-C', dir, ...args], {
+    encoding: 'utf8',
+    env: { ...machineEnv(), ...FIXTURE_IDENTITY },
+    stdio: 'pipe',
+  }).trim();
+}
+
+function tempDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  fixtureDirs.push(dir);
+  return dir;
+}
+
+/** One source file per stamped package, each with its own content so the two trees differ. */
+function writeStampedPackages(stack) {
+  for (const pkg of STAMPED_PACKAGES) {
+    mkdirSync(join(stack, pkg, 'src'), { recursive: true });
+    writeFileSync(join(stack, pkg, 'src', 'index.ts'), `export const origin = '${pkg}';\n`);
+  }
+}
+
+/**
+ * A throwaway repository with the stack at `stackPath` inside it, committed once. An empty
+ * `stackPath` is the stack checked out on its own.
+ */
+function commitStackFixture(stackPath) {
+  const repo = tempDir('client-stamp-repo-');
+  const stack = join(repo, stackPath);
+  writeStampedPackages(stack);
+  gitIn(repo, 'init', '-q');
+  gitIn(repo, 'add', '-A');
+  gitIn(repo, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'fixture');
+  return { repo, stack };
+}
+
+/**
+ * The KEY=VALUE pairs the stamp function printed. It separates them with a backslash and an `n`
+ * rather than a line break, and `deploy.sh` expands those later with `printf '%b'`.
+ */
+function parseStamp(printed) {
+  const pairs = printed
+    .split('\\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const at = line.indexOf('=');
+      return [line.slice(0, at), line.slice(at + 1)];
+    });
+  return Object.fromEntries(pairs);
+}
+
+/** The stamp function `deploy.sh` ships, run with `ROOT_DIR` at `stack`, and what it printed. */
+function stampFrom(stack, env = {}) {
+  const script = readFileSync(join(SCRIPTS, 'deploy.sh'), 'utf8');
+  const lifted = [SOURCE_PATHS_ARRAY, STAMP_FUNCTION].map((pattern) => {
+    const found = pattern.exec(script);
+    assert.ok(found, `deploy.sh no longer has what ${pattern} lifts out of it`);
+    return found[0];
+  });
+  const printed = execFileSync('bash', ['-c', [...lifted, 'client_build_stamp_text'].join('\n')], {
+    encoding: 'utf8',
+    env: { ...machineEnv(), ...env, ROOT_DIR: stack },
+  });
+  return parseStamp(printed);
+}
+
+/**
+ * ⛔⛔ What a path after `HEAD:` means to git, which the stub cannot say because it answers by exact
+ * text. A bare `HEAD:packages/client` is read from the repository root, and `HEAD:./packages/client`
+ * from the folder `-C` names. The two agree for a checkout of this repository on its own. They part
+ * ways once the stack sits in a subfolder of a larger repository, where the bare form names nothing.
+ * Git then prints the argument back before it fails, so the stamp named `HEAD:packages/client` as
+ * the client's tree and the gate could never match it.
+ *
+ * So these lift the stamp function out of `deploy.sh` and run it against a real git in a throwaway
+ * repository. Lifted rather than run whole, because the rest of `deploy.sh` builds and starts
+ * containers, and this function is the only part of it that asks git anything.
+ */
+describe('the client stamp read by a real git, wherever the stack sits', () => {
+  it('names the trees from the stack folder when the stack sits inside a larger repository', () => {
+    const { repo, stack } = commitStackFixture(STACK_SUBFOLDER);
+    assert.throws(
+      () => gitIn(stack, 'rev-parse', 'HEAD:packages/client'),
+      Error,
+      'the fixture has to be one where a bare path after HEAD: names nothing from the stack folder',
+    );
+
+    const stamp = stampFrom(stack);
+
+    assert.equal(stamp.CLIENT_BUILD_CLIENT_TREE, gitIn(repo, 'rev-parse', `HEAD:${STACK_SUBFOLDER}/packages/client`));
+    assert.equal(stamp.CLIENT_BUILD_SHARED_TREE, gitIn(repo, 'rev-parse', `HEAD:${STACK_SUBFOLDER}/packages/shared`));
+  });
+
+  it('gives a checkout of the stack on its own the same trees the root-relative form gives', () => {
+    const { repo, stack } = commitStackFixture('');
+
+    const stamp = stampFrom(stack);
+
+    assert.equal(stamp.CLIENT_BUILD_CLIENT_TREE, gitIn(repo, 'rev-parse', 'HEAD:packages/client'));
+    assert.equal(stamp.CLIENT_BUILD_SHARED_TREE, gitIn(repo, 'rev-parse', 'HEAD:packages/shared'));
+  });
+
+  /**
+   * `GIT_CEILING_DIRECTORIES` stops git looking above the export, so a temporary folder that happens
+   * to sit inside some other checkout cannot answer for it.
+   */
+  it('still leaves both trees empty for a stack with no history', () => {
+    const exported = tempDir('client-stamp-export-');
+    writeStampedPackages(exported);
+
+    const stamp = stampFrom(exported, { GIT_CEILING_DIRECTORIES: dirname(exported) });
+
+    assert.equal(stamp.CLIENT_BUILD_CLIENT_TREE, '');
+    assert.equal(stamp.CLIENT_BUILD_SHARED_TREE, '');
+  });
 });
