@@ -143,7 +143,7 @@ describe('the chequebook is read again while its warning stands', () => {
     assert.equal(clock.pendingCount(), 0, 'it went on reading a chequebook that had already cleared');
   });
 
-  // The postage gate's findings are about a batch, and a batch that was refused at boot is not
+  // The postage gate's findings are about a batch, and a batch it warned about at boot is not
   // something a later read of the chequebook can speak for.
   it('keeps every postage warning while it clears the chequebook ones', async () => {
     const book = chequebook(0.1);
