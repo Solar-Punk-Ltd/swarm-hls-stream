@@ -52,8 +52,8 @@ const MS_PER_SECOND = 1_000;
  * Reads never overlap, because a chequebook read is answered off the chain and can take the whole gate
  * timeout, and an older answer landing after a newer one would put back a warning the newer one had
  * cleared. Each pass replaces the chequebook's warnings with what it found and keeps every other
- * gate's: a postage batch refused at boot is a separate question, and the chequebook says nothing
- * about it. The pass that finds every node funded is the last one.
+ * gate's: a postage warning from the boot is about a batch, and the chequebook says nothing about
+ * it. The pass that finds every node funded is the last one.
  *
  * Every node rather than only the ones that warned, because a rung funded at boot may have drained
  * since, and while the warning stands that is worth naming too. Once it clears nothing reads again, so
