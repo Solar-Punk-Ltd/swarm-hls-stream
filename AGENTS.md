@@ -1,5 +1,7 @@
 # Working rules for this repository
 
+**This repository has moved.** Since 2026-09-27 all work on this project happens in `apps/hls-stream` of [Solar-Punk-Ltd/streaming-monorepo](https://github.com/Solar-Punk-Ltd/streaming-monorepo), on its `main-v3` branch. Make no change here. The rules below continue in `apps/hls-stream/AGENTS.md` there.
+
 ## ⛔⛔⛔ Never engineer around money
 
 **Owner rule. It overrides any instinct to be careful with the balance, and it overrides a previous
