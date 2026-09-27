@@ -1,5 +1,7 @@
 # Swarm HLS Stream
 
+> **This repository has moved.** Since 2026-09-27 this project lives in [`apps/hls-stream`](https://github.com/Solar-Punk-Ltd/streaming-monorepo/tree/main-v3/apps/hls-stream) on the `main-v3` branch of [Solar-Punk-Ltd/streaming-monorepo](https://github.com/Solar-Punk-Ltd/streaming-monorepo), with its full history. This repository takes no new changes, so open issues and pull requests there.
+
 Live and on-demand video streaming over [Swarm](https://www.ethswarm.org/) decentralized storage.
 
 Takes HLS segments from a media server, uploads them to Swarm in real time, and maintains a feed-based manifest that clients can play back without a centralized CDN.
